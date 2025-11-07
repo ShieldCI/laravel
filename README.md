@@ -6,7 +6,7 @@ Built on top of [`shieldci/analyzers-core`](https://github.com/shieldci/analyzer
 
 ## Requirements
 
-- PHP 8.0.2 or higher
+- PHP 8.1 or higher
 - Laravel 9.0 or higher
 
 ## Architecture

@@ -12,19 +12,19 @@ use ShieldCI\AnalyzersCore\Enums\Status;
 /**
  * Complete analysis report for a project.
  */
-final readonly class AnalysisReport
+final class AnalysisReport
 {
     /**
      * @param  Collection<int, ResultInterface>  $results
      */
     public function __construct(
-        public string $projectId,
-        public string $laravelVersion,
-        public string $packageVersion,
-        public Collection $results,
-        public float $totalExecutionTime,
-        public DateTimeImmutable $analyzedAt,
-        public array $metadata = [],
+        public readonly string $projectId,
+        public readonly string $laravelVersion,
+        public readonly string $packageVersion,
+        public readonly Collection $results,
+        public readonly float $totalExecutionTime,
+        public readonly DateTimeImmutable $analyzedAt,
+        public readonly array $metadata = [],
     ) {}
 
     public function score(): int

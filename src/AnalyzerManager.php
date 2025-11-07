@@ -21,10 +21,8 @@ class AnalyzerManager
     public function __construct(
         protected Config $config,
         protected array $analyzerClasses,
-        protected ?Container $container = null,
-    ) {
-        $this->container = $container ?? app();
-    }
+        protected Container $container,
+    ) {}
 
     /**
      * Get all registered analyzers.
@@ -34,12 +32,20 @@ class AnalyzerManager
     public function getAnalyzers(): Collection
     {
         return collect($this->analyzerClasses)
-            ->map(fn (string $class) => $this->container->make($class))
-            ->filter(fn (AnalyzerInterface $analyzer) => $analyzer->shouldRun());
+            ->map(function (string $class): AnalyzerInterface {
+                /** @var AnalyzerInterface $analyzer */
+                $analyzer = $this->container->make($class);
+
+                return $analyzer;
+            })
+            ->filter(fn (AnalyzerInterface $analyzer): bool => $analyzer->shouldRun())
+            ->values();
     }
 
     /**
      * Get analyzers by category.
+     *
+     * @return Collection<int, AnalyzerInterface>
      */
     public function getByCategory(string $category): Collection
     {

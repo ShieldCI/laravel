@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit;
 
 use Illuminate\Contracts\Config\Repository as Config;
+use Illuminate\Contracts\Container\Container;
 use Mockery;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\AnalyzerManager;
@@ -130,7 +131,13 @@ class AnalyzerManagerTest extends TestCase
         $config = Mockery::mock(Config::class);
         $config->shouldReceive('get')->andReturn(true);
 
-        return new AnalyzerManager($config, $analyzerClasses);
+        $container = Mockery::mock(Container::class);
+        $container->shouldReceive('make')
+            ->andReturnUsing(function (string $class) {
+                return new $class;
+            });
+
+        return new AnalyzerManager($config, $analyzerClasses, $container);
     }
 }
 

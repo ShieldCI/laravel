@@ -1,0 +1,16 @@
+parameters:
+    level: 6
+    paths:
+        - src
+    excludePaths:
+        - tests/Pest.php
+    tmpDir: build/phpstan
+    treatPhpDocTypesAsCertain: false
+    ignoreErrors:
+        # Allow missing generics and iterables (common in Laravel)
+        -
+            identifier: missingType.iterableValue
+        -
+            identifier: missingType.generics
+        # AstParser has extended methods beyond ParserInterface
+        - '#Call to an undefined method ShieldCI\\AnalyzersCore\\Contracts\\ParserInterface::findClasses\(\)#'

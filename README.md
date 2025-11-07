@@ -195,7 +195,7 @@ composer test
 
 ## Documentation
 
-- [Analyzers Core](https://github.com/shieldci/analyzers-core/README.md) - Core package documentation
+- [Analyzers Core](https://github.com/ShieldCI/analyzers-core/blob/master/README.md) - Core package documentation
 
 ## License
 

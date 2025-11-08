@@ -1,8 +1,10 @@
 # ShieldCI Laravel Package
 
-Modern security and code quality analysis for Laravel applications.
+> **⚠️ Initial Development Release (v0.1.x)** - This package is under active development. APIs may change between minor versions until v1.0.0 is released.
 
-Built on top of [`shieldci/analyzers-core`](https://github.com/shieldci/analyzers-core) - a shared, framework-agnostic foundation for static analysis tools.
+Modern security and code quality analysis for Laravel applications with 61 comprehensive analyzers covering security, performance, and reliability.
+
+Built on top of [`shieldci/analyzers-core`](https://github.com/shieldci/analyzers-core) (v0.1.x) - a shared, framework-agnostic foundation for static analysis tools.
 
 ## Requirements
 
@@ -78,7 +80,14 @@ php artisan shield:analyze --no-send
 
 ## Available Analyzers
 
-ShieldCI includes 21 comprehensive security analyzers providing complete OWASP Top 10 2021 coverage:
+ShieldCI includes **61 comprehensive analyzers** across three categories:
+- **21 Security Analyzers** - Complete OWASP Top 10 2021 coverage
+- **16 Performance Analyzers** - Optimize application speed and efficiency
+- **24 Reliability Analyzers** - Ensure application stability and correctness
+
+### Security Analyzers (21)
+
+Providing complete OWASP Top 10 2021 coverage:
 
 ### Injection Vulnerabilities (A03:2021)
 - **SQL Injection Analyzer** - Detects unsafe database queries with string concatenation or user input
@@ -112,6 +121,61 @@ ShieldCI includes 21 comprehensive security analyzers providing complete OWASP T
 - **Up-to-Date Dependency Analyzer** - Checks for outdated packages with available security patches
 - **Stable Dependency Analyzer** - Validates stable version usage (no dev/alpha/beta)
 - **License Analyzer** - Ensures dependencies use legally acceptable licenses (detects GPL/AGPL issues)
+
+### Performance Analyzers (16)
+
+Optimize your Laravel application for production:
+
+- **Autoloader Optimization Analyzer** - Ensures optimized Composer autoloader in production
+- **Cache Driver Analyzer** - Validates production-ready cache drivers (Redis, Memcached)
+- **Cache Header Analyzer** - Checks HTTP cache headers for static assets
+- **Collection Call Analyzer** - Detects inefficient collection usage patterns
+- **Config Caching Analyzer** - Validates configuration caching in production
+- **Dev Dependency Analyzer** - Ensures dev dependencies aren't in production
+- **Env Call Analyzer** - Detects env() calls outside configuration files
+- **Minification Analyzer** - Checks asset minification for production
+- **Mysql Single Server Analyzer** - Validates database configuration
+- **Opcache Analyzer** - Ensures OPcache is enabled in production
+- **Queue Driver Analyzer** - Validates production queue configuration
+- **Route Caching Analyzer** - Ensures route caching in production
+- **Session Driver Analyzer** - Validates production session storage
+- **Shared Cache Lock Analyzer** - Checks cache lock configuration
+- **Unused Global Middleware Analyzer** - Detects unnecessary global middleware
+- **View Caching Analyzer** - Validates Blade view compilation caching
+
+### Reliability Analyzers (24)
+
+Ensure application stability and correctness:
+
+**Configuration & Infrastructure (8):**
+- **Cache Prefix Analyzer** - Prevents cache collisions in shared environments
+- **Cache Status Analyzer** - Validates cache connectivity
+- **Composer Validation Analyzer** - Ensures composer.json integrity
+- **Database Status Analyzer** - Monitors database connections
+- **Directory Write Permissions Analyzer** - Checks critical directory permissions
+- **Env File Analyzer** - Validates .env file existence
+- **Env Variable Analyzer** - Ensures all required variables are defined
+- **Queue Timeout Analyzer** - Prevents job duplication with proper timeouts
+
+**PHPStan-Powered Static Analysis (13):**
+- **Dead Code Analyzer** - Detects unreachable code
+- **Deprecated Code Analyzer** - Identifies deprecated features
+- **Foreach Iterable Analyzer** - Validates iterable types
+- **Invalid Function Call Analyzer** - Catches undefined functions
+- **Invalid Import Analyzer** - Detects invalid use statements
+- **Invalid Method Call Analyzer** - Finds non-existent methods
+- **Invalid Method Override Analyzer** - Validates signatures
+- **Invalid Offset Analyzer** - Checks array access
+- **Invalid Property Access Analyzer** - Detects undefined properties
+- **Missing Model Relation Analyzer** - Finds missing Eloquent relations
+- **Missing Return Statement Analyzer** - Ensures proper returns
+- **Undefined Constant Analyzer** - Catches undefined constants
+- **Undefined Variable Analyzer** - Detects undefined variables
+
+**Application State (3):**
+- **Custom Error Page Analyzer** - Validates error page customization
+- **Maintenance Mode Analyzer** - Checks maintenance status
+- **Up-to-Date Migrations Analyzer** - Detects pending migrations
 
 All analyzers are automatically discovered and registered by the service provider.
 

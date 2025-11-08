@@ -68,6 +68,7 @@ class ShieldCIServiceProvider extends ServiceProvider
         $directories = [
             __DIR__.'/Analyzers/Security',
             __DIR__.'/Analyzers/Performance',
+            __DIR__.'/Analyzers/Reliability',
             __DIR__.'/Analyzers/CodeQuality',
             __DIR__.'/Analyzers/BestPractices',
         ];

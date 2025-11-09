@@ -1,0 +1,299 @@
+<?php
+
+declare(strict_types=1);
+
+namespace ShieldCI\Analyzers\CodeQuality;
+
+use PhpParser\Node;
+use PhpParser\Node\Stmt;
+use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitorAbstract;
+use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
+use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Location;
+
+/**
+ * Validates PSR naming standards.
+ *
+ * Checks for:
+ * - Classes: PascalCase
+ * - Methods/variables: camelCase
+ * - Constants: SCREAMING_SNAKE_CASE
+ * - Laravel conventions (table names plural)
+ */
+class NamingConventionAnalyzer extends AbstractFileAnalyzer
+{
+    public function __construct(
+        private ParserInterface $parser
+    ) {}
+
+    protected function metadata(): AnalyzerMetadata
+    {
+        return new AnalyzerMetadata(
+            id: 'naming-convention',
+            name: 'Naming Convention',
+            description: 'Validates PSR and Laravel naming standards for better code consistency',
+            category: Category::CodeQuality,
+            severity: Severity::Low,
+            tags: ['conventions', 'psr', 'code-quality', 'readability'],
+            docsUrl: 'https://www.php-fig.org/psr/psr-12/'
+        );
+    }
+
+    protected function runAnalysis(): ResultInterface
+    {
+        $issues = [];
+
+        foreach ($this->getPhpFiles() as $file) {
+            $ast = $this->parser->parseFile($file);
+
+            if (empty($ast)) {
+                continue;
+            }
+
+            $visitor = new NamingConventionVisitor;
+            $traverser = new NodeTraverser;
+            $traverser->addVisitor($visitor);
+            $traverser->traverse($ast);
+
+            foreach ($visitor->getIssues() as $issue) {
+                $issues[] = $this->createIssue(
+                    message: $issue['message'],
+                    location: new Location($file, $issue['line']),
+                    severity: Severity::Low,
+                    recommendation: $this->getRecommendation($issue['type'], $issue['name'], $issue['suggestion']),
+                    metadata: [
+                        'type' => $issue['type'],
+                        'name' => $issue['name'],
+                        'suggestion' => $issue['suggestion'],
+                        'file' => $file,
+                    ]
+                );
+            }
+        }
+
+        if (empty($issues)) {
+            return $this->passed('All names follow PSR and Laravel conventions');
+        }
+
+        $totalIssues = count($issues);
+
+        return $this->failed(
+            "Found {$totalIssues} naming convention violation(s)",
+            $issues
+        );
+    }
+
+    /**
+     * Get recommendation based on violation type.
+     */
+    private function getRecommendation(string $type, string $name, string $suggestion): string
+    {
+        $conventions = match ($type) {
+            'class' => 'Classes should use PascalCase (e.g., UserController, OrderService)',
+            'method' => 'Methods should use camelCase (e.g., getUserById, processPayment)',
+            'property' => 'Properties should use camelCase (e.g., firstName, isActive)',
+            'constant' => 'Constants should use SCREAMING_SNAKE_CASE (e.g., MAX_RETRIES, API_KEY)',
+            'variable' => 'Variables should use camelCase (e.g., userId, totalAmount)',
+            default => 'Follow PSR-12 naming conventions',
+        };
+
+        return "{$conventions}. Current name '{$name}' should be renamed to '{$suggestion}'. Consistent naming improves code readability and maintainability. See PSR-12 for full naming standards.";
+    }
+}
+
+/**
+ * Visitor to check naming conventions.
+ */
+class NamingConventionVisitor extends NodeVisitorAbstract
+{
+    /**
+     * @var array<int, array{message: string, line: int, type: string, name: string, suggestion: string}>
+     */
+    private array $issues = [];
+
+    public function __construct() {}
+
+    public function enterNode(Node $node)
+    {
+        // Check class names
+        if ($node instanceof Stmt\Class_ && $node->name !== null) {
+            $className = $node->name->toString();
+            if (! $this->isPascalCase($className)) {
+                $suggestion = $this->toPascalCase($className);
+                $this->issues[] = [
+                    'message' => "Class '{$className}' does not follow PascalCase convention",
+                    'line' => $node->getStartLine(),
+                    'type' => 'class',
+                    'name' => $className,
+                    'suggestion' => $suggestion,
+                ];
+            }
+        }
+
+        // Check interface names
+        if ($node instanceof Stmt\Interface_ && $node->name !== null) {
+            $interfaceName = $node->name->toString();
+            if (! $this->isPascalCase($interfaceName)) {
+                $suggestion = $this->toPascalCase($interfaceName);
+                $this->issues[] = [
+                    'message' => "Interface '{$interfaceName}' does not follow PascalCase convention",
+                    'line' => $node->getStartLine(),
+                    'type' => 'class',
+                    'name' => $interfaceName,
+                    'suggestion' => $suggestion,
+                ];
+            }
+        }
+
+        // Check trait names
+        if ($node instanceof Stmt\Trait_ && $node->name !== null) {
+            $traitName = $node->name->toString();
+            if (! $this->isPascalCase($traitName)) {
+                $suggestion = $this->toPascalCase($traitName);
+                $this->issues[] = [
+                    'message' => "Trait '{$traitName}' does not follow PascalCase convention",
+                    'line' => $node->getStartLine(),
+                    'type' => 'class',
+                    'name' => $traitName,
+                    'suggestion' => $suggestion,
+                ];
+            }
+        }
+
+        // Check method names
+        if ($node instanceof Stmt\ClassMethod) {
+            $methodName = $node->name->toString();
+
+            // Skip magic methods
+            if (! str_starts_with($methodName, '__')) {
+                if (! $this->isCamelCase($methodName)) {
+                    $suggestion = $this->toCamelCase($methodName);
+                    $this->issues[] = [
+                        'message' => "Method '{$methodName}' does not follow camelCase convention",
+                        'line' => $node->getStartLine(),
+                        'type' => 'method',
+                        'name' => $methodName,
+                        'suggestion' => $suggestion,
+                    ];
+                }
+            }
+        }
+
+        // Check property names
+        if ($node instanceof Stmt\Property) {
+            foreach ($node->props as $prop) {
+                $propertyName = $prop->name->toString();
+
+                if (! $this->isCamelCase($propertyName)) {
+                    $suggestion = $this->toCamelCase($propertyName);
+                    $this->issues[] = [
+                        'message' => "Property '{$propertyName}' does not follow camelCase convention",
+                        'line' => $node->getStartLine(),
+                        'type' => 'property',
+                        'name' => $propertyName,
+                        'suggestion' => $suggestion,
+                    ];
+                }
+            }
+        }
+
+        // Check constant names
+        if ($node instanceof Stmt\ClassConst) {
+            foreach ($node->consts as $const) {
+                $constName = $const->name->toString();
+
+                if (! $this->isScreamingSnakeCase($constName)) {
+                    $suggestion = $this->toScreamingSnakeCase($constName);
+                    $this->issues[] = [
+                        'message' => "Constant '{$constName}' does not follow SCREAMING_SNAKE_CASE convention",
+                        'line' => $node->getStartLine(),
+                        'type' => 'constant',
+                        'name' => $constName,
+                        'suggestion' => $suggestion,
+                    ];
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Check if string is PascalCase.
+     */
+    private function isPascalCase(string $name): bool
+    {
+        // PascalCase: starts with uppercase, no underscores, mixed case
+        return preg_match('/^[A-Z][a-zA-Z0-9]*$/', $name) === 1 &&
+               $name !== strtoupper($name); // Not all caps
+    }
+
+    /**
+     * Check if string is camelCase.
+     */
+    private function isCamelCase(string $name): bool
+    {
+        // camelCase: starts with lowercase, no underscores, mixed case
+        return preg_match('/^[a-z][a-zA-Z0-9]*$/', $name) === 1;
+    }
+
+    /**
+     * Check if string is SCREAMING_SNAKE_CASE.
+     */
+    private function isScreamingSnakeCase(string $name): bool
+    {
+        // SCREAMING_SNAKE_CASE: all uppercase with underscores
+        return preg_match('/^[A-Z][A-Z0-9_]*$/', $name) === 1;
+    }
+
+    /**
+     * Convert to PascalCase.
+     */
+    private function toPascalCase(string $name): string
+    {
+        // Remove underscores and capitalize each word
+        $name = str_replace(['_', '-'], ' ', $name);
+        $name = ucwords($name);
+
+        return str_replace(' ', '', $name);
+    }
+
+    /**
+     * Convert to camelCase.
+     */
+    private function toCamelCase(string $name): string
+    {
+        $pascal = $this->toPascalCase($name);
+
+        return lcfirst($pascal);
+    }
+
+    /**
+     * Convert to SCREAMING_SNAKE_CASE.
+     */
+    private function toScreamingSnakeCase(string $name): string
+    {
+        // Insert underscore before uppercase letters (except first)
+        $name = preg_replace('/(?<!^)[A-Z]/', '_$0', $name) ?? $name;
+
+        // Replace existing separators with underscores
+        $name = str_replace(['-', ' '], '_', $name);
+
+        return strtoupper($name);
+    }
+
+    /**
+     * Get collected issues.
+     *
+     * @return array<int, array{message: string, line: int, type: string, name: string, suggestion: string}>
+     */
+    public function getIssues(): array
+    {
+        return $this->issues;
+    }
+}

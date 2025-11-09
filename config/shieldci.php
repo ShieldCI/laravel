@@ -35,8 +35,8 @@ return [
     'analyzers' => [
         'security' => true,
         'performance' => true,
+        'reliability' => true,
         'code_quality' => true,
-        'best_practices' => true,
     ],
 
     'disabled_analyzers' => [
@@ -146,14 +146,105 @@ return [
     */
 
     'code_quality' => [
-        'complexity' => [
+        // Complexity & Size Analyzers
+        'cyclomatic_complexity' => [
             'enabled' => true,
-            'max_complexity' => 10,
+            'threshold' => 10, // Maximum cyclomatic complexity per method
         ],
 
-        'psr' => [
+        'cognitive_complexity' => [
             'enabled' => true,
-            'standard' => 'PSR-12',
+            'threshold' => 15, // Maximum cognitive complexity per method
+        ],
+
+        'nesting_depth' => [
+            'enabled' => true,
+            'max_depth' => 4, // Maximum nesting levels
+        ],
+
+        'class_length' => [
+            'enabled' => true,
+            'max_lines' => 500, // Maximum lines per class
+        ],
+
+        'method_length' => [
+            'enabled' => true,
+            'max_lines' => 50, // Maximum lines per method
+        ],
+
+        'parameter_count' => [
+            'enabled' => true,
+            'max_parameters' => 5, // Maximum parameters per method
+        ],
+
+        // Code Duplication
+        'duplicate_code' => [
+            'enabled' => true,
+            'min_lines' => 6, // Minimum lines to consider duplication
+            'similarity_threshold' => 85.0, // Similarity percentage (0-100)
+        ],
+
+        // Naming Conventions
+        'naming_convention' => [
+            'enabled' => true,
+            'enforce_psr' => true, // Enforce PSR naming standards
+        ],
+
+        'inconsistent_naming' => [
+            'enabled' => true,
+            'allow_mixed_case' => false, // Allow snake_case and camelCase mixing
+        ],
+
+        // Maintainability
+        'magic_number' => [
+            'enabled' => true,
+            'excluded_numbers' => [0, 1, -1, 2, 10, 100, 1000], // Numbers to exclude from detection
+        ],
+
+        'missing_docblock' => [
+            'enabled' => true,
+            'require_tags' => true, // Require @param and @return tags
+        ],
+
+        'commented_code' => [
+            'enabled' => true,
+            'min_lines' => 3, // Minimum commented lines to flag
+        ],
+
+        'todo_comment' => [
+            'enabled' => true,
+            'keywords' => ['TODO', 'FIXME', 'HACK', 'XXX', 'BUG'], // Keywords to detect
+        ],
+
+        // Laravel Best Practices
+        'eloquent_n_plus_one' => [
+            'enabled' => true,
+            'detect_eager_loading' => true, // Track with() calls
+        ],
+
+        'facade_usage' => [
+            'enabled' => true,
+            'allowed_facades' => [], // Facades to allow (empty = all flagged)
+        ],
+
+        'helper_function_abuse' => [
+            'enabled' => true,
+            'threshold' => 5, // Max helper calls per method
+        ],
+
+        'query_builder_in_controller' => [
+            'enabled' => true,
+            'allowed_methods' => [], // Controller methods to exclude
+        ],
+
+        'service_container_resolution' => [
+            'enabled' => true,
+            'allowed_in' => [], // Locations where app()/resolve() is allowed
+        ],
+
+        'complex_conditional' => [
+            'enabled' => true,
+            'max_operators' => 3, // Maximum logical operators per condition
         ],
     ],
 

@@ -8,9 +8,7 @@ use Illuminate\Support\ServiceProvider;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Commands\AnalyzeCommand;
-use ShieldCI\Contracts\ClientInterface;
 use ShieldCI\Contracts\ReporterInterface;
-use ShieldCI\Http\Client\ShieldCIClient;
 use ShieldCI\Support\Reporter;
 
 class ShieldCIServiceProvider extends ServiceProvider
@@ -28,7 +26,6 @@ class ShieldCIServiceProvider extends ServiceProvider
         // Register bindings
         $this->app->singleton(ParserInterface::class, AstParser::class);
         $this->app->singleton(ReporterInterface::class, Reporter::class);
-        $this->app->singleton(ClientInterface::class, ShieldCIClient::class);
 
         // Register analyzer manager
         $this->app->singleton(AnalyzerManager::class, function ($app) {

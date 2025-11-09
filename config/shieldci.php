@@ -4,23 +4,11 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | ShieldCI API Configuration
+    | Analysis Configuration
     |--------------------------------------------------------------------------
     */
 
     'enabled' => env('SHIELDCI_ENABLED', true),
-
-    'token' => env('SHIELDCI_TOKEN'),
-
-    'project_id' => env('SHIELDCI_PROJECT_ID'),
-
-    'api_url' => env('SHIELDCI_API_URL', 'https://api.shieldci.com'),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Analysis Configuration
-    |--------------------------------------------------------------------------
-    */
 
     'timeout' => env('SHIELDCI_TIMEOUT', 300), // 5 minutes
 
@@ -82,8 +70,6 @@ return [
         'format' => env('SHIELDCI_REPORT_FORMAT', 'console'), // console, json
 
         'output_file' => storage_path('shieldci-report.json'),
-
-        'send_to_api' => env('SHIELDCI_SEND_TO_API', true),
     ],
 
     /*

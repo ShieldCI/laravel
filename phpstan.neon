@@ -58,7 +58,6 @@ parameters:
         - '#Cannot call method find\(\) on mixed#'
 
         # Config and Laravel app operations return mixed
-        - '#Cannot call method (getAnalyzerId|getMessage|getIssues|version|error)\(\) on .*\|null#'
         - '#Cannot call method (getAnalyzerId|getMessage|getIssues|version|error)\(\) on mixed#'
         - '#Property .* does not accept mixed#'
         - '#Part .* \(mixed\) of encapsed string cannot be cast to string#'

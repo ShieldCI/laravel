@@ -7,7 +7,6 @@ namespace ShieldCI\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzerManager;
-use ShieldCI\Contracts\ClientInterface;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\ValueObjects\AnalysisReport;
 
@@ -17,15 +16,13 @@ class AnalyzeCommand extends Command
                             {--analyzer= : Run specific analyzer}
                             {--category= : Run analyzers in category}
                             {--format=console : Output format (console|json)}
-                            {--output= : Save report to file}
-                            {--no-send : Do not send results to ShieldCI API}';
+                            {--output= : Save report to file}';
 
     protected $description = 'Run ShieldCI security and code quality analysis';
 
     public function handle(
         AnalyzerManager $manager,
         ReporterInterface $reporter,
-        ClientInterface $client,
     ): int {
         $this->info('🛡️  ShieldCI Analysis Starting...');
         $this->newLine();
@@ -55,11 +52,6 @@ class AnalyzeCommand extends Command
         // Save to file if requested
         if ($output = $this->option('output')) {
             $this->saveReport($report, $reporter, $output);
-        }
-
-        // Send to API if enabled
-        if ($this->shouldSendToApi()) {
-            $this->sendToApi($report, $client);
         }
 
         // Determine exit code
@@ -112,42 +104,6 @@ class AnalyzeCommand extends Command
         file_put_contents($path, $content);
 
         $this->info("Report saved to: {$path}");
-    }
-
-    protected function shouldSendToApi(): bool
-    {
-        if ($this->option('no-send')) {
-            return false;
-        }
-
-        if (! config('shieldci.report.send_to_api')) {
-            return false;
-        }
-
-        if (! config('shieldci.token')) {
-            $this->warn('ShieldCI token not configured. Skipping API upload.');
-
-            return false;
-        }
-
-        return true;
-    }
-
-    protected function sendToApi(AnalysisReport $report, ClientInterface $client): void
-    {
-        $this->info('Sending results to ShieldCI...');
-
-        try {
-            $success = $client->sendReport($report);
-
-            if ($success) {
-                $this->info('✓ Results sent successfully!');
-            } else {
-                $this->error('✗ Failed to send results.');
-            }
-        } catch (\Exception $e) {
-            $this->error("✗ Error sending results: {$e->getMessage()}");
-        }
     }
 
     protected function determineExitCode(AnalysisReport $report): int

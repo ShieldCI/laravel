@@ -2,7 +2,7 @@
 
 > **⚠️ Initial Development Release (v0.1.x)** - This package is under active development. APIs may change between minor versions until v1.0.0 is released.
 
-Modern security and code quality analysis for Laravel applications with 61 comprehensive analyzers covering security, performance, and reliability.
+Modern security and code quality analysis for Laravel applications with 81 comprehensive analyzers covering security, performance, reliability, and code quality.
 
 Built on top of [`shieldci/analyzers-core`](https://github.com/shieldci/analyzers-core) (v0.1.x) - a shared, framework-agnostic foundation for static analysis tools.
 
@@ -80,10 +80,11 @@ php artisan shield:analyze --no-send
 
 ## Available Analyzers
 
-ShieldCI includes **61 comprehensive analyzers** across three categories:
+ShieldCI includes **81 comprehensive analyzers** across four categories:
 - **21 Security Analyzers** - Complete OWASP Top 10 2021 coverage
 - **16 Performance Analyzers** - Optimize application speed and efficiency
 - **24 Reliability Analyzers** - Ensure application stability and correctness
+- **20 Code Quality Analyzers** - Improve maintainability and code standards
 
 ### Security Analyzers (21)
 
@@ -176,6 +177,38 @@ Ensure application stability and correctness:
 - **Custom Error Page Analyzer** - Validates error page customization
 - **Maintenance Mode Analyzer** - Checks maintenance status
 - **Up-to-Date Migrations Analyzer** - Detects pending migrations
+
+### Code Quality Analyzers (20)
+
+Improve code maintainability and enforce best practices:
+
+**Complexity & Size (7):**
+- **Class Length Analyzer** - Detects classes exceeding size limits (default: 500 lines)
+- **Cognitive Complexity Analyzer** - Measures cognitive load of methods
+- **Cyclomatic Complexity Analyzer** - Detects complex methods (default threshold: 10)
+- **Method Length Analyzer** - Flags overly long methods
+- **Nesting Depth Analyzer** - Detects excessive nesting levels
+- **Parameter Count Analyzer** - Identifies methods with too many parameters
+- **Long Parameter List Analyzer** - Validates parameter list lengths
+
+**Code Duplication & Naming (3):**
+- **Duplicate Code Analyzer** - Detects similar code blocks (6+ lines, 85%+ similarity)
+- **Inconsistent Naming Analyzer** - Finds mixed naming styles (snake_case vs camelCase)
+- **Naming Convention Analyzer** - Enforces PSR naming conventions
+
+**Maintainability (5):**
+- **Complex Conditional Analyzer** - Detects complex conditional expressions
+- **Magic Number Analyzer** - Finds hard-coded numbers that should be constants
+- **Missing DocBlock Analyzer** - Checks for missing PHPDoc blocks
+- **Commented Code Analyzer** - Detects commented-out code
+- **Todo Comment Analyzer** - Finds TODO/FIXME comments in codebase
+
+**Laravel Best Practices (5):**
+- **Eloquent N+1 Query Analyzer** - Identifies missing eager loading causing N+1 queries
+- **Facade Usage Analyzer** - Detects facade usage (recommends dependency injection)
+- **Helper Function Abuse Analyzer** - Flags overuse of Laravel helper functions
+- **Query Builder in Controller Analyzer** - Detects DB queries in controllers (recommends repository pattern)
+- **Service Container Resolution Analyzer** - Flags manual service resolution (app(), resolve())
 
 All analyzers are automatically discovered and registered by the service provider.
 

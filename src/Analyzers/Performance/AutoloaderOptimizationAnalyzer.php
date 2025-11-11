@@ -21,6 +21,11 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * Autoloader optimization checks are not applicable in CI environments.
+     */
+    public static bool $runInCI = false;
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(

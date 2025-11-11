@@ -83,6 +83,18 @@ php artisan shield:baseline
 php artisan shield:analyze --baseline
 ```
 
+#### CI Mode (Optimized for CI/CD)
+Skip slow or network-dependent analyzers in CI/CD:
+```bash
+# Configure in config/shieldci.php
+'ci_mode' => env('SHIELDCI_CI_MODE', false),
+'ci_mode_analyzers' => ['sql-injection', 'xss-detection', 'csrf-analyzer'],
+'ci_mode_exclude_analyzers' => ['vulnerable-dependency', 'unused-view'],
+
+# Run in CI
+SHIELDCI_CI_MODE=true php artisan shield:analyze
+```
+
 #### Don't Report (Exit Code Control)
 Run informational analyzers without failing CI:
 ```php

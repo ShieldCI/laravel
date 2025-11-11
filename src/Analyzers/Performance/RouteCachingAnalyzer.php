@@ -21,6 +21,11 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class RouteCachingAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * Route caching checks are not applicable in CI environments.
+     */
+    public static bool $runInCI = false;
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(

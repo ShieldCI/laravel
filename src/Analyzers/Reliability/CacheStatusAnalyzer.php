@@ -23,6 +23,11 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class CacheStatusAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * Cache connectivity checks are not applicable in CI environments.
+     */
+    public static bool $runInCI = false;
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(

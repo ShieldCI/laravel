@@ -46,6 +46,13 @@ class AnalyzerManager
 
         // CI mode configuration
         $isCiMode = $this->config->get('shieldci.ci_mode', false);
+
+        // Tier 1: Whitelist (if specified, ONLY these run)
+        $ciAnalyzersConfig = $this->config->get('shieldci.ci_mode_analyzers', []);
+        /** @var array<string> $ciAnalyzers */
+        $ciAnalyzers = is_array($ciAnalyzersConfig) ? $ciAnalyzersConfig : [];
+
+        // Tier 2: Blacklist (additionally exclude these)
         $ciExcludeAnalyzersConfig = $this->config->get('shieldci.ci_mode_exclude_analyzers', []);
         /** @var array<string> $ciExcludeAnalyzers */
         $ciExcludeAnalyzers = is_array($ciExcludeAnalyzersConfig) ? $ciExcludeAnalyzersConfig : [];
@@ -86,15 +93,31 @@ class AnalyzerManager
 
                 return $analyzer;
             })
-            ->filter(function (AnalyzerInterface $analyzer) use ($disabledAnalyzers, $enabledCategories, $isCiMode, $ciExcludeAnalyzers): bool {
+            ->filter(function (AnalyzerInterface $analyzer) use ($disabledAnalyzers, $enabledCategories, $isCiMode, $ciAnalyzers, $ciExcludeAnalyzers): bool {
                 // Filter by disabled analyzers
                 if (in_array($analyzer->getId(), $disabledAnalyzers, true)) {
                     return false;
                 }
 
-                // Filter by CI mode exclusions
-                if ($isCiMode && in_array($analyzer->getId(), $ciExcludeAnalyzers, true)) {
-                    return false;
+                // CI Mode: 3-tier filtering
+                if ($isCiMode) {
+                    // Priority 1: If whitelist exists, ONLY run those
+                    if (! empty($ciAnalyzers)) {
+                        if (! in_array($analyzer->getId(), $ciAnalyzers, true)) {
+                            return false;
+                        }
+                    } else {
+                        // Priority 2: Check analyzer's $runInCI property
+                        $analyzerClass = get_class($analyzer);
+                        if (property_exists($analyzerClass, 'runInCI') && ! $analyzerClass::$runInCI) {
+                            return false;
+                        }
+
+                        // Priority 3: Check blacklist (overrides $runInCI)
+                        if (in_array($analyzer->getId(), $ciExcludeAnalyzers, true)) {
+                            return false;
+                        }
+                    }
                 }
 
                 // Filter by enabled categories

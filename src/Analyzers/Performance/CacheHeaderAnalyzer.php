@@ -22,6 +22,11 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class CacheHeaderAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * HTTP cache header checks require a live web server, not applicable in CI.
+     */
+    public static bool $runInCI = false;
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(

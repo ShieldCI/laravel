@@ -21,6 +21,11 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class DevDependencyAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * Dev dependency checks are not applicable in CI environments.
+     */
+    public static bool $runInCI = false;
+
     private array $commonDevPackages = [
         'barryvdh/laravel-debugbar',
         'facade/ignition',

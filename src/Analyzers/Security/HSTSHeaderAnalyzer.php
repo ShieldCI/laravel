@@ -23,6 +23,11 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * HSTS header checks require a live web server, not applicable in CI.
+     */
+    public static bool $runInCI = false;
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(

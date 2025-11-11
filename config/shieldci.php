@@ -19,6 +19,29 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | CI Mode Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Configure ShieldCI behavior in CI/CD environments.
+    |
+    */
+
+    'ci_mode' => env('SHIELDCI_CI_MODE', false),
+
+    'ci_mode_analyzers' => [
+        // Whitelist: If specified, ONLY these analyzers run in CI mode
+        // Leave empty to use the default $runInCI property from each analyzer
+        // Example: ['sql-injection', 'xss-detection', 'csrf-analyzer']
+    ],
+
+    'ci_mode_exclude_analyzers' => [
+        // Blacklist: Additionally exclude these analyzers in CI mode
+        // These override the analyzer's $runInCI property
+        // Example: ['collection-call-analyzer', 'code-smell-detector']
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Environment-Specific Analyzers
     |--------------------------------------------------------------------------
     |

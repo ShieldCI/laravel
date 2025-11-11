@@ -79,22 +79,6 @@ class ReporterTest extends TestCase
     }
 
     #[Test]
-    public function it_can_format_to_api(): void
-    {
-        $results = collect([
-            AnalysisResult::passed('test-analyzer', 'All checks passed'),
-        ]);
-
-        $report = $this->reporter->generate($results);
-        $payload = $this->reporter->toApi($report);
-
-        $this->assertIsArray($payload);
-        $this->assertArrayHasKey('project_id', $payload);
-        $this->assertArrayHasKey('results', $payload);
-        $this->assertArrayHasKey('metadata', $payload);
-    }
-
-    #[Test]
     public function console_output_includes_failed_analyzers(): void
     {
         $results = collect([

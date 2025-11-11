@@ -120,11 +120,6 @@ class Reporter implements ReporterInterface
         return json_encode($report->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
     }
 
-    public function toApi(AnalysisReport $report): array
-    {
-        return $report->toArray();
-    }
-
     protected function getPackageVersion(): string
     {
         $composerPath = __DIR__.'/../../composer.json';

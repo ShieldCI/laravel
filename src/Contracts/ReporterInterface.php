@@ -29,9 +29,4 @@ interface ReporterInterface
      * Format the report for JSON output.
      */
     public function toJson(AnalysisReport $report): string;
-
-    /**
-     * Format the report for sending to ShieldCI API.
-     */
-    public function toApi(AnalysisReport $report): array;
 }

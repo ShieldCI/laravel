@@ -203,26 +203,27 @@ class MixedQueryVisitor extends NodeVisitorAbstract
     {
         $eloquentTables = [];
         $queryBuilderTables = [];
+        $mixedTables = [];
 
         foreach ($this->tableUsage as $table => $usage) {
             if ($usage['type'] === 'eloquent') {
                 $eloquentTables[$table] = $usage['line'];
+            } elseif ($usage['type'] === 'mixed') {
+                $mixedTables[$table] = $usage;
             } else {
                 $queryBuilderTables[$table] = $usage['line'];
             }
         }
 
-        // Check for tables accessed via both methods
-        $mixedTables = array_intersect_key($eloquentTables, $queryBuilderTables);
-
-        foreach ($mixedTables as $table => $line) {
+        // Report tables marked as mixed (used with both Eloquent and Query Builder)
+        foreach ($mixedTables as $table => $usage) {
             $this->issues[] = [
                 'message' => sprintf(
                     'Class "%s" uses both Eloquent and Query Builder for table "%s"',
                     $this->currentClassName ?? 'Unknown',
                     $table
                 ),
-                'line' => $line,
+                'line' => $usage['line'],
                 'severity' => Severity::Medium,
                 'recommendation' => 'Use consistent approach: prefer Eloquent for better code organization, global scopes, and relationships. Use Query Builder only for performance-critical raw queries. Mixing both approaches can bypass global scopes and make code harder to maintain',
                 'code' => null,

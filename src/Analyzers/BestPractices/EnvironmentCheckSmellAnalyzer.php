@@ -44,7 +44,10 @@ class EnvironmentCheckSmellAnalyzer extends AbstractFileAnalyzer
 
         foreach ($phpFiles as $file) {
             // Skip service providers and exception handlers where env checks are appropriate
-            if (str_contains($file, 'ServiceProvider') || str_contains($file, 'ExceptionHandler')) {
+            $normalizedPath = str_replace('\\', '/', $file);
+            if (str_contains($file, 'ServiceProvider')
+                || str_contains($file, 'ExceptionHandler')
+                || str_contains($normalizedPath, '/Exceptions/Handler.php')) {
                 continue;
             }
 

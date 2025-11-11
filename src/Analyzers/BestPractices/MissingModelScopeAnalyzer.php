@@ -20,7 +20,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class MissingModelScopeAnalyzer extends AbstractFileAnalyzer
 {
-    private const REPETITION_THRESHOLD = 3;
+    private const REPETITION_THRESHOLD = 2;
 
     public function __construct(
         private ParserInterface $parser
@@ -85,7 +85,7 @@ class MissingModelScopeAnalyzer extends AbstractFileAnalyzer
                 $firstLocation = $data['locations'][0];
                 $issues[] = $this->createIssue(
                     message: sprintf(
-                        'Query pattern "%s" is repeated %d times across the codebase',
+                        'Query pattern "%s" appears %d times across the codebase',
                         $data['pattern'],
                         $data['count']
                     ),
@@ -123,16 +123,33 @@ class ModelScopeCollector extends NodeVisitorAbstract
     {
         // Detect chained where() calls
         if ($node instanceof Node\Expr\MethodCall) {
+            // Skip if this node itself is a where-related method
+            // (it will be captured when we visit the terminal method like get(), first(), etc.)
+            if ($node->name instanceof Node\Identifier) {
+                $method = $node->name->toString();
+                if (str_starts_with($method, 'where') || $method === 'orWhere') {
+                    return null;
+                }
+            }
+
             $chain = $this->getWhereChain($node);
             if (! empty($chain)) {
-                $signature = $this->createSignature($chain);
-                $pattern = $this->createPattern($chain);
+                // Generate patterns for all sub-chains of length >= 2
+                // This helps detect common patterns even when they appear with additional clauses
+                $chainLength = count($chain);
+                for ($start = 0; $start < $chainLength; $start++) {
+                    for ($length = 2; $start + $length <= $chainLength; $length++) {
+                        $subChain = array_slice($chain, $start, $length);
+                        $signature = $this->createSignature($subChain);
+                        $pattern = $this->createPattern($subChain);
 
-                $this->patterns[] = [
-                    'signature' => $signature,
-                    'pattern' => $pattern,
-                    'line' => $node->getLine(),
-                ];
+                        $this->patterns[] = [
+                            'signature' => $signature,
+                            'pattern' => $pattern,
+                            'line' => $node->getLine(),
+                        ];
+                    }
+                }
             }
         }
 
@@ -144,30 +161,36 @@ class ModelScopeCollector extends NodeVisitorAbstract
         $chain = [];
         $current = $node;
 
-        // Walk up the chain
-        while ($current instanceof Node\Expr\MethodCall) {
-            if ($current->name instanceof Node\Identifier) {
-                $method = $current->name->toString();
+        // Walk up the chain (handle both MethodCall and StaticCall)
+        while ($current !== null) {
+            if ($current instanceof Node\Expr\MethodCall || $current instanceof Node\Expr\StaticCall) {
+                if ($current->name instanceof Node\Identifier) {
+                    $method = $current->name->toString();
 
-                // Only collect where-related methods
-                if (str_starts_with($method, 'where') || in_array($method, ['orWhere'], true)) {
-                    $args = [];
-                    foreach ($current->args as $arg) {
-                        if ($arg->value instanceof Node\Scalar\String_ || $arg->value instanceof Node\Scalar\LNumber) {
-                            $args[] = $arg->value->value;
-                        } elseif ($arg->value instanceof Node\Expr\ConstFetch) {
-                            $args[] = $arg->value->name->toString();
+                    // Only collect where-related methods
+                    if (str_starts_with($method, 'where') || in_array($method, ['orWhere'], true)) {
+                        $args = [];
+                        foreach ($current->args as $arg) {
+                            if ($arg->value instanceof Node\Scalar\String_ || $arg->value instanceof Node\Scalar\LNumber) {
+                                $args[] = $arg->value->value;
+                            } elseif ($arg->value instanceof Node\Expr\ConstFetch) {
+                                $args[] = $arg->value->name->toString();
+                            }
                         }
+
+                        array_unshift($chain, [
+                            'method' => $method,
+                            'args' => $args,
+                        ]);
                     }
-
-                    array_unshift($chain, [
-                        'method' => $method,
-                        'args' => $args,
-                    ]);
                 }
-            }
 
-            $current = $current->var;
+                // Get the next node in the chain
+                // MethodCall has 'var', StaticCall doesn't continue the chain
+                $current = $current instanceof Node\Expr\MethodCall ? $current->var : null;
+            } else {
+                break;
+            }
         }
 
         // Only return if we have multiple where clauses

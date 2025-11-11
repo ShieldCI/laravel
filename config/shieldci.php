@@ -71,9 +71,6 @@ return [
         'node_modules/*',
         'storage/*',
         'bootstrap/cache/*',
-        '*/migrations/*',
-        '*/seeds/*',
-        '*/factories/*',
     ],
 
     /*

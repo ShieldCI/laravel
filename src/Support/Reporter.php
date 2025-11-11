@@ -27,6 +27,9 @@ class Reporter implements ReporterInterface
 
     public function toConsole(AnalysisReport $report): string
     {
+        $showRecommendations = config('shieldci.report.show_recommendations', true);
+        $showCodeSnippets = config('shieldci.report.show_code_snippets', true);
+
         $output = [];
 
         // Header
@@ -70,12 +73,18 @@ class Reporter implements ReporterInterface
                     $issueCount = count($issues);
                     $output[] = "  Issues found: {$issueCount}";
 
-                    foreach (array_slice($issues, 0, 3) as $issue) {
+                    $displayCount = $showCodeSnippets ? 3 : 5;
+                    foreach (array_slice($issues, 0, $displayCount) as $issue) {
                         $output[] = "    - {$issue->location}: {$issue->message}";
+
+                        // Show recommendation if enabled
+                        if ($showRecommendations && ! empty($issue->recommendation)) {
+                            $output[] = "      💡 {$issue->recommendation}";
+                        }
                     }
 
-                    if ($issueCount > 3) {
-                        $remaining = $issueCount - 3;
+                    if ($issueCount > $displayCount) {
+                        $remaining = $issueCount - $displayCount;
                         $output[] = "    ... and {$remaining} more";
                     }
                 }

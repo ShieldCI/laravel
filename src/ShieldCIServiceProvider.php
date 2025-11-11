@@ -27,11 +27,20 @@ class ShieldCIServiceProvider extends ServiceProvider
         $this->app->singleton(ParserInterface::class, AstParser::class);
         $this->app->singleton(ReporterInterface::class, Reporter::class);
 
+        // Register path filter
+        $this->app->singleton(\ShieldCI\Support\PathFilter::class, function ($app) {
+            return new \ShieldCI\Support\PathFilter(
+                $app['config']->get('shieldci.paths.analyze', []),
+                $app['config']->get('shieldci.excluded_paths', [])
+            );
+        });
+
         // Register analyzer manager
         $this->app->singleton(AnalyzerManager::class, function ($app) {
             return new AnalyzerManager(
                 $app->make('config'),
-                $this->discoverAnalyzers()
+                $this->discoverAnalyzers(),
+                $app
             );
         });
     }

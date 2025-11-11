@@ -24,6 +24,18 @@ class AnalyzeCommand extends Command
         AnalyzerManager $manager,
         ReporterInterface $reporter,
     ): int {
+        // Apply memory limit
+        $memoryLimit = config('shieldci.memory_limit');
+        if ($memoryLimit !== null && is_string($memoryLimit)) {
+            ini_set('memory_limit', $memoryLimit);
+        }
+
+        // Set timeout
+        $timeout = config('shieldci.timeout');
+        if ($timeout !== null && is_int($timeout)) {
+            set_time_limit($timeout);
+        }
+
         $this->info('🛡️  ShieldCI Analysis Starting...');
         $this->newLine();
 
@@ -49,8 +61,14 @@ class AnalyzeCommand extends Command
         // Output report
         $this->outputReport($report, $reporter);
 
-        // Save to file if requested
-        if ($output = $this->option('output')) {
+        // Save to file if requested (CLI option or config default)
+        $output = $this->option('output');
+        if (! $output) {
+            $configOutput = config('shieldci.report.output_file');
+            $output = is_string($configOutput) ? $configOutput : null;
+        }
+
+        if ($output && is_string($output)) {
             $this->saveReport($report, $reporter, $output);
         }
 
@@ -86,7 +104,8 @@ class AnalyzeCommand extends Command
 
     protected function outputReport(AnalysisReport $report, ReporterInterface $reporter): void
     {
-        $format = $this->option('format');
+        // Use CLI option or fall back to config
+        $format = $this->option('format') ?: config('shieldci.report.format', 'console');
 
         if ($format === 'json') {
             $this->line($reporter->toJson($report));

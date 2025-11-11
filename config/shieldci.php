@@ -85,7 +85,7 @@ return [
     'report' => [
         'format' => env('SHIELDCI_REPORT_FORMAT', 'console'), // console, json
 
-        'output_file' => storage_path('shieldci-report.json'),
+        'output_file' => null, // Only save when explicitly requested via --output
 
         'show_recommendations' => true,
 

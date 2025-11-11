@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace ShieldCI\Analyzers\CodeQuality;
+namespace ShieldCI\Analyzers\BestPractices;
 
 use PhpParser\Node;
 use PhpParser\Node\Expr;
@@ -55,7 +55,7 @@ class QueryBuilderInControllerAnalyzer extends AbstractFileAnalyzer
             id: 'query-builder-in-controller',
             name: 'Query Builder in Controller',
             description: 'Detects direct database query building in controllers that should use repositories or services',
-            category: Category::CodeQuality,
+            category: Category::BestPractices,
             severity: Severity::Medium,
             tags: ['architecture', 'separation-of-concerns', 'maintainability', 'repository-pattern'],
             docsUrl: 'https://laravel.com/docs/repositories'

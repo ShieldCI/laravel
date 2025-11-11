@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace ShieldCI\Tests\Unit\Analyzers\CodeQuality;
+namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
-use ShieldCI\Analyzers\CodeQuality\QueryBuilderInControllerAnalyzer;
+use ShieldCI\Analyzers\BestPractices\QueryBuilderInControllerAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
 

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace ShieldCI\Analyzers\CodeQuality;
+namespace ShieldCI\Analyzers\BestPractices;
 
 use PhpParser\Node;
 use PhpParser\Node\Expr;
@@ -56,7 +56,7 @@ class FacadeUsageAnalyzer extends AbstractFileAnalyzer
             id: 'facade-usage',
             name: 'Facade Usage',
             description: 'Identifies excessive facade usage that makes classes hard to test and violates dependency inversion',
-            category: Category::CodeQuality,
+            category: Category::BestPractices,
             severity: Severity::Medium,
             tags: ['architecture', 'testability', 'dependency-injection', 'facades', 'coupling'],
             docsUrl: 'https://laravel.com/docs/facades#facades-vs-dependency-injection'

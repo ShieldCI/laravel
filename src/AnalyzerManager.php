@@ -49,6 +49,27 @@ class AnalyzerManager
                 /** @var AnalyzerInterface $analyzer */
                 $analyzer = $this->container->make($class);
 
+                // Set base path for file analyzers
+                if (method_exists($analyzer, 'setBasePath')) {
+                    $analyzer->setBasePath(base_path());
+                }
+
+                // Set paths to analyze (from config)
+                if (method_exists($analyzer, 'setPaths')) {
+                    $paths = $this->config->get('shieldci.paths.analyze', []);
+                    if (is_array($paths) && ! empty($paths)) {
+                        $analyzer->setPaths($paths);
+                    }
+                }
+
+                // Set excluded patterns (from config)
+                if (method_exists($analyzer, 'setExcludePatterns')) {
+                    $excludedPaths = $this->config->get('shieldci.excluded_paths', []);
+                    if (is_array($excludedPaths)) {
+                        $analyzer->setExcludePatterns($excludedPaths);
+                    }
+                }
+
                 return $analyzer;
             })
             ->filter(function (AnalyzerInterface $analyzer) use ($disabledAnalyzers, $enabledCategories): bool {

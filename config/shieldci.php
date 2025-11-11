@@ -96,6 +96,25 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Baseline Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Baseline support allows you to suppress existing issues and only
+    | report new ones. Use 'php artisan shield:baseline' to generate.
+    |
+    */
+
+    'baseline_file' => base_path('.shieldci-baseline.json'),
+
+    'ignore_errors' => [
+        // Populated by php artisan shield:baseline or manually configured
+        // Example:
+        // 'sql-injection' => [
+        //     ['path' => 'app/Legacy/*', 'pattern' => '*'],
+        // ],
+    ],
+    /*
+    |--------------------------------------------------------------------------
     | Fail Conditions
     |--------------------------------------------------------------------------
     |

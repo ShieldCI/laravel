@@ -8,6 +8,7 @@ use Illuminate\Support\ServiceProvider;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Commands\AnalyzeCommand;
+use ShieldCI\Commands\BaselineCommand;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\Support\Reporter;
 
@@ -59,6 +60,7 @@ class ShieldCIServiceProvider extends ServiceProvider
             // Register commands
             $this->commands([
                 AnalyzeCommand::class,
+                BaselineCommand::class,
             ]);
         }
     }

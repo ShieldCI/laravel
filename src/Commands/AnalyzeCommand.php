@@ -16,7 +16,8 @@ class AnalyzeCommand extends Command
                             {--analyzer= : Run specific analyzer}
                             {--category= : Run analyzers in category}
                             {--format=console : Output format (console|json)}
-                            {--output= : Save report to file}';
+                            {--output= : Save report to file}
+                            {--baseline : Compare against baseline and only report new issues}';
 
     protected $description = 'Run ShieldCI security and code quality analysis';
 
@@ -57,6 +58,11 @@ class AnalyzeCommand extends Command
 
         // Generate report
         $report = $reporter->generate($results);
+
+        // Filter against baseline if requested
+        if ($this->option('baseline')) {
+            $report = $this->filterAgainstBaseline($report);
+        }
 
         // Output report
         $this->outputReport($report, $reporter);
@@ -133,6 +139,15 @@ class AnalyzeCommand extends Command
             return self::SUCCESS;
         }
 
+        // Get don't report analyzers
+        $dontReportConfig = config('shieldci.dont_report', []);
+        $dontReport = is_array($dontReportConfig) ? $dontReportConfig : [];
+
+        // Filter out analyzers in dont_report list
+        $criticalResults = $report->failed()->filter(function ($result) use ($dontReport) {
+            return ! in_array($result->getAnalyzerId(), $dontReport, true);
+        });
+
         // Check threshold if configured
         if ($threshold = config('shieldci.fail_threshold')) {
             if ($report->score() < $threshold) {
@@ -141,7 +156,7 @@ class AnalyzeCommand extends Command
         }
 
         // Check severity levels
-        $hasCritical = $report->failed()->some(function ($result) {
+        $hasCritical = $criticalResults->some(function ($result) {
             $issues = $result->getIssues();
             foreach ($issues as $issue) {
                 if ($issue->severity->value === 'critical') {
@@ -157,5 +172,90 @@ class AnalyzeCommand extends Command
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Filter report against baseline to show only new issues.
+     */
+    protected function filterAgainstBaseline(AnalysisReport $report): AnalysisReport
+    {
+        $baselineFileRaw = config('shieldci.baseline_file');
+        $baselineFile = is_string($baselineFileRaw) ? $baselineFileRaw : null;
+
+        if (! $baselineFile || ! file_exists($baselineFile)) {
+            $this->warn('⚠️  No baseline file found. Run "php artisan shield:baseline" to create one.');
+
+            return $report;
+        }
+
+        $baseline = json_decode(file_get_contents($baselineFile), true);
+        $baselineErrors = $baseline['errors'] ?? [];
+
+        $this->info('📋 Filtering against baseline...');
+
+        // Filter results
+        $filteredResults = $report->results->map(function ($result) use ($baselineErrors) {
+            $analyzerId = $result->getAnalyzerId();
+
+            // If no baseline for this analyzer, return as-is
+            if (! isset($baselineErrors[$analyzerId])) {
+                return $result;
+            }
+
+            $baselineIssues = $baselineErrors[$analyzerId];
+            $currentIssues = $result->getIssues();
+
+            // Filter out issues that exist in baseline
+            $newIssues = collect($currentIssues)->filter(function ($issue) use ($baselineIssues) {
+                $issueHash = $this->generateIssueHash($issue);
+
+                foreach ($baselineIssues as $baselineIssue) {
+                    if (isset($baselineIssue['hash']) && $baselineIssue['hash'] === $issueHash) {
+                        return false; // Issue exists in baseline, filter it out
+                    }
+                }
+
+                return true; // New issue
+            });
+
+            // Create new result with filtered issues
+            $status = $newIssues->isEmpty()
+                ? \ShieldCI\AnalyzersCore\Enums\Status::Passed
+                : $result->getStatus();
+
+            return new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
+                analyzerId: $result->getAnalyzerId(),
+                status: $status,
+                message: $newIssues->isEmpty() ? 'All issues are in baseline' : $result->getMessage(),
+                issues: $newIssues->all(),
+                executionTime: $result->getExecutionTime(),
+                metadata: $result->getMetadata(),
+            );
+        });
+
+        // Return new report with filtered results
+        return new AnalysisReport(
+            laravelVersion: $report->laravelVersion,
+            packageVersion: $report->packageVersion,
+            results: $filteredResults,
+            totalExecutionTime: $report->totalExecutionTime,
+            analyzedAt: $report->analyzedAt,
+        );
+    }
+
+    /**
+     * Generate a unique hash for an issue.
+     */
+    private function generateIssueHash(\ShieldCI\AnalyzersCore\ValueObjects\Issue $issue): string
+    {
+        $data = [
+            'file' => $issue->location->file ?? 'unknown',
+            'line' => $issue->location->line,
+            'message' => $issue->message,
+        ];
+
+        $json = json_encode($data);
+
+        return hash('sha256', $json !== false ? $json : '');
     }
 }

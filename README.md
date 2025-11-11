@@ -71,6 +71,18 @@ Save report to file:
 php artisan shield:analyze --output=report.json
 ```
 
+### Advanced Features
+
+#### Baseline Support (Gradual Adoption)
+Generate a baseline to suppress existing issues and only catch new ones:
+```bash
+# Generate baseline from current state
+php artisan shield:baseline
+
+# Analyze against baseline (only NEW issues reported)
+php artisan shield:analyze --baseline
+```
+
 ## Available Analyzers
 
 ShieldCI includes **99 comprehensive analyzers** across five categories:

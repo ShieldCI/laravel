@@ -31,11 +31,13 @@ class AnalyzerManager
      */
     public function getAnalyzers(): Collection
     {
+        $disabledAnalyzersConfig = $this->config->get('shieldci.disabled_analyzers', []);
         /** @var array<string> $disabledAnalyzers */
-        $disabledAnalyzers = $this->config->get('shieldci.disabled_analyzers', []);
+        $disabledAnalyzers = is_array($disabledAnalyzersConfig) ? $disabledAnalyzersConfig : [];
 
+        $analyzersConfigRaw = $this->config->get('shieldci.analyzers', []);
         /** @var array<string, bool> $analyzersConfig */
-        $analyzersConfig = $this->config->get('shieldci.analyzers', []);
+        $analyzersConfig = is_array($analyzersConfigRaw) ? $analyzersConfigRaw : [];
         $enabledCategories = collect($analyzersConfig)
             ->filter(fn ($enabled) => $enabled === true)
             ->keys()

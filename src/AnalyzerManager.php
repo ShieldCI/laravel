@@ -44,8 +44,17 @@ class AnalyzerManager
             ->keys()
             ->toArray();
 
+        // CI mode configuration
+        $isCiMode = $this->config->get('shieldci.ci_mode', false);
+        $ciExcludeAnalyzersConfig = $this->config->get('shieldci.ci_mode_exclude_analyzers', []);
+        /** @var array<string> $ciExcludeAnalyzers */
+        $ciExcludeAnalyzers = is_array($ciExcludeAnalyzersConfig) ? $ciExcludeAnalyzersConfig : [];
+
+        // Environment-specific configuration
+        $skipEnvSpecific = $this->config->get('shieldci.skip_env_specific', false);
+
         return collect($this->analyzerClasses)
-            ->map(function (string $class): AnalyzerInterface {
+            ->map(function (string $class) use ($skipEnvSpecific): AnalyzerInterface {
                 /** @var AnalyzerInterface $analyzer */
                 $analyzer = $this->container->make($class);
 
@@ -70,11 +79,21 @@ class AnalyzerManager
                     }
                 }
 
+                // Pass skip_env_specific to analyzer if it supports it
+                if ($skipEnvSpecific && method_exists($analyzer, 'setSkipEnvSpecific')) {
+                    $analyzer->setSkipEnvSpecific($skipEnvSpecific);
+                }
+
                 return $analyzer;
             })
-            ->filter(function (AnalyzerInterface $analyzer) use ($disabledAnalyzers, $enabledCategories): bool {
+            ->filter(function (AnalyzerInterface $analyzer) use ($disabledAnalyzers, $enabledCategories, $isCiMode, $ciExcludeAnalyzers): bool {
                 // Filter by disabled analyzers
                 if (in_array($analyzer->getId(), $disabledAnalyzers, true)) {
+                    return false;
+                }
+
+                // Filter by CI mode exclusions
+                if ($isCiMode && in_array($analyzer->getId(), $ciExcludeAnalyzers, true)) {
                     return false;
                 }
 

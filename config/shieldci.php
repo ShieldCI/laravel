@@ -19,6 +19,18 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Environment-Specific Analyzers
+    |--------------------------------------------------------------------------
+    |
+    | Skip environment-specific analyzers when set to true.
+    | Useful for forcing all analyzers to run regardless of environment.
+    |
+    */
+
+    'skip_env_specific' => env('SHIELDCI_SKIP_ENV_SPECIFIC', false),
+
+    /*
+    |--------------------------------------------------------------------------
     | Analyzer Categories
     |--------------------------------------------------------------------------
     |

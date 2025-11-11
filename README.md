@@ -83,6 +83,19 @@ php artisan shield:baseline
 php artisan shield:analyze --baseline
 ```
 
+#### Environment Control
+Force-run all analyzers regardless of environment:
+```bash
+SHIELDCI_SKIP_ENV_SPECIFIC=true php artisan shield:analyze
+```
+
+#### Compact Output
+Limit displayed issues per check:
+```bash
+# Show only 3 issues per check
+SHIELDCI_MAX_ISSUES=3 php artisan shield:analyze
+```
+
 ## Available Analyzers
 
 ShieldCI includes **99 comprehensive analyzers** across five categories:

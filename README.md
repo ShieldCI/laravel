@@ -73,11 +73,12 @@ php artisan shield:analyze --output=report.json
 
 ## Available Analyzers
 
-ShieldCI includes **81 comprehensive analyzers** across four categories:
+ShieldCI includes **99 comprehensive analyzers** across five categories:
 - **21 Security Analyzers** - Complete OWASP Top 10 2021 coverage
 - **16 Performance Analyzers** - Optimize application speed and efficiency
 - **24 Reliability Analyzers** - Ensure application stability and correctness
 - **20 Code Quality Analyzers** - Improve maintainability and code standards
+- **18 Best Practices Analyzers** - Enforce Laravel-specific best practices
 
 ### Security Analyzers (21)
 
@@ -196,12 +197,42 @@ Improve code maintainability and enforce best practices:
 - **Commented Code Analyzer** - Detects commented-out code
 - **Todo Comment Analyzer** - Finds TODO/FIXME comments in codebase
 
-**Laravel Best Practices (5):**
+### Best Practices Analyzers (18)
+
+Enforce Laravel-specific best practices and architectural patterns:
+
+**Query & Database Best Practices (8):**
 - **Eloquent N+1 Query Analyzer** - Identifies missing eager loading causing N+1 queries
+- **Missing Model Scope Analyzer** - Detects repeated query patterns that should be extracted to model scopes
+- **Mixed Query Builder Eloquent Analyzer** - Detects inconsistent mixing of Query Builder and Eloquent ORM
+- **Raw Eloquent Avoidance Analyzer** - Identifies overuse of raw SQL queries instead of Eloquent
+- **Select Asterisk Analyzer** - Detects SELECT * queries that should specify columns
+- **Chunk Missing Analyzer** - Identifies large dataset queries missing chunk() for memory efficiency
+- **Missing Database Transactions Analyzer** - Detects operations that should be wrapped in transactions
+- **PHP Side Filtering Analyzer** - Finds filtering done in PHP that should be in SQL queries
+
+**Architecture & Structure (5):**
+- **MVC Structure Violation Analyzer** - Detects violations of MVC pattern separation
+- **Logic in Routes Analyzer** - Identifies business logic in route files
+- **Logic in Blade Analyzer** - Detects complex logic in Blade templates
+- **Query Builder in Controller Analyzer** - Detects DB queries in controllers (recommends repository pattern)
+- **Fat Model Analyzer** - Identifies models with too many responsibilities
+
+**Dependency Injection & Service Container (3):**
 - **Facade Usage Analyzer** - Detects facade usage (recommends dependency injection)
 - **Helper Function Abuse Analyzer** - Flags overuse of Laravel helper functions
-- **Query Builder in Controller Analyzer** - Detects DB queries in controllers (recommends repository pattern)
 - **Service Container Resolution Analyzer** - Flags manual service resolution (app(), resolve())
+
+**Configuration & Error Handling (5):**
+- **Config Outside Config Analyzer** - Detects configuration values not in config files
+- **Environment Check Smell Analyzer** - Detects environment checks that should use configuration
+- **Missing Error Tracking Analyzer** - Identifies missing error tracking integration
+- **Silent Failure Analyzer** - Detects suppressed exceptions and errors
+- **Generic Exception Catch Analyzer** - Finds overly broad exception handling
+
+**Infrastructure (2):**
+- **Hardcoded Storage Paths Analyzer** - Detects hardcoded paths instead of Laravel helpers
+- **Framework Override Analyzer** - Identifies dangerous framework core overrides
 
 All analyzers are automatically discovered and registered by the service provider.
 

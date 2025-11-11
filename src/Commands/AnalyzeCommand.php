@@ -141,9 +141,15 @@ class AnalyzeCommand extends Command
         }
 
         // Check severity levels
-        $hasCritical = $report->failed()->some(fn ($result) => $result->issues->some(fn ($issue) => $issue->severity->value === 'critical'
-        )
-        );
+        $hasCritical = $report->failed()->some(function ($result) {
+            $issues = $result->getIssues();
+            foreach ($issues as $issue) {
+                if ($issue->severity->value === 'critical') {
+                    return true;
+                }
+            }
+            return false;
+        });
 
         if ($hasCritical && in_array($failOn, ['critical', 'high', 'medium', 'low'])) {
             return self::FAILURE;

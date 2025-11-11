@@ -66,8 +66,8 @@ class BaselineCommand extends Command
 
             // Get metadata for display
             $metadata = $result->getMetadata();
-            $analyzerName = is_array($metadata) && isset($metadata['name']) 
-                ? $metadata['name'] 
+            $analyzerName = is_array($metadata) && isset($metadata['name'])
+                ? $metadata['name']
                 : $analyzerId;
 
             $issues = $result->getIssues();
@@ -75,10 +75,10 @@ class BaselineCommand extends Command
                 continue;
             }
 
-            $this->line("  📌 {$analyzerName}: ".count($issues)." issue(s)");
+            $this->line("  📌 {$analyzerName}: ".count($issues).' issue(s)');
 
             // Initialize analyzer entry if not exists
-            if (!isset($baseline[$analyzerId])) {
+            if (! isset($baseline[$analyzerId])) {
                 $baseline[$analyzerId] = [];
             }
 
@@ -99,7 +99,7 @@ class BaselineCommand extends Command
                     }
                 }
 
-                if (!$exists) {
+                if (! $exists) {
                     $baseline[$analyzerId][] = $issueData;
                     $newIssuesCount++;
                 }
@@ -120,7 +120,7 @@ class BaselineCommand extends Command
         file_put_contents($outputPath, $json);
 
         $this->newLine();
-        $this->info("✅ Baseline file generated successfully!");
+        $this->info('✅ Baseline file generated successfully!');
         $this->line("   📁 Location: {$outputPath}");
         $this->line("   📊 Total issues: {$baselineData['total_issues']}");
 
@@ -151,4 +151,3 @@ class BaselineCommand extends Command
         return hash('sha256', $json !== false ? $json : '');
     }
 }
-

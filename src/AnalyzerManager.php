@@ -31,6 +31,18 @@ class AnalyzerManager
      */
     public function getAnalyzers(): Collection
     {
+        $disabledAnalyzersConfig = $this->config->get('shieldci.disabled_analyzers', []);
+        /** @var array<string> $disabledAnalyzers */
+        $disabledAnalyzers = is_array($disabledAnalyzersConfig) ? $disabledAnalyzersConfig : [];
+
+        $analyzersConfigRaw = $this->config->get('shieldci.analyzers', []);
+        /** @var array<string, bool> $analyzersConfig */
+        $analyzersConfig = is_array($analyzersConfigRaw) ? $analyzersConfigRaw : [];
+        $enabledCategories = collect($analyzersConfig)
+            ->filter(fn ($enabled) => $enabled === true)
+            ->keys()
+            ->toArray();
+
         return collect($this->analyzerClasses)
             ->map(function (string $class): AnalyzerInterface {
                 /** @var AnalyzerInterface $analyzer */
@@ -38,7 +50,20 @@ class AnalyzerManager
 
                 return $analyzer;
             })
-            ->filter(fn (AnalyzerInterface $analyzer): bool => $analyzer->shouldRun())
+            ->filter(function (AnalyzerInterface $analyzer) use ($disabledAnalyzers, $enabledCategories): bool {
+                // Filter by disabled analyzers
+                if (in_array($analyzer->getId(), $disabledAnalyzers, true)) {
+                    return false;
+                }
+
+                // Filter by enabled categories
+                $category = $analyzer->getMetadata()->category->value;
+                if (! empty($enabledCategories) && ! in_array($category, $enabledCategories, true)) {
+                    return false;
+                }
+
+                return $analyzer->shouldRun();
+            })
             ->values();
     }
 

@@ -53,7 +53,7 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
     {
         $issues = [];
         $excludePatterns = $this->excludedPatterns;
-        $requireTags = (bool) (config('shieldci.code_quality.missing_docblock.require_tags', true) ?? true);
+        $requireTags = true;
 
         foreach ($this->getPhpFiles() as $file) {
             $ast = $this->parser->parseFile($file);

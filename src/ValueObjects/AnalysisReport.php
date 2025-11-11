@@ -10,7 +10,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Status;
 
 /**
- * Complete analysis report for a project.
+ * Complete analysis report
  */
 final class AnalysisReport
 {
@@ -18,7 +18,6 @@ final class AnalysisReport
      * @param  Collection<int, ResultInterface>  $results
      */
     public function __construct(
-        public readonly string $projectId,
         public readonly string $laravelVersion,
         public readonly string $packageVersion,
         public readonly Collection $results,
@@ -92,7 +91,6 @@ final class AnalysisReport
     public function toArray(): array
     {
         return [
-            'project_id' => $this->projectId,
             'laravel_version' => $this->laravelVersion,
             'package_version' => $this->packageVersion,
             'analyzed_at' => $this->analyzedAt->format('c'),

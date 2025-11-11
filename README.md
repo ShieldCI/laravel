@@ -53,7 +53,7 @@ php artisan shield:analyze
 
 Run a specific analyzer:
 ```bash
-php artisan shield:analyze --analyzer=sql-injection-detector
+php artisan shield:analyze --analyzer=sql-injection
 ```
 
 Run analyzers by category:

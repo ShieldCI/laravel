@@ -72,7 +72,6 @@ class ReporterTest extends TestCase
         $this->assertJson($json);
 
         $decoded = json_decode($json, true);
-        $this->assertArrayHasKey('project_id', $decoded);
         $this->assertArrayHasKey('summary', $decoded);
         $this->assertArrayHasKey('score', $decoded['summary']);
         $this->assertArrayHasKey('results', $decoded);

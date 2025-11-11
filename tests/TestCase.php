@@ -25,9 +25,6 @@ abstract class TestCase extends Orchestra
     {
         // Setup test configuration
         config()->set('shieldci.enabled', true);
-        config()->set('shieldci.token', 'test-token');
-        config()->set('shieldci.project_id', 'test-project-id');
-        config()->set('shieldci.api_url', 'https://api.test.shieldci.com');
     }
 
     /**

@@ -90,6 +90,8 @@ return [
         'show_recommendations' => true,
 
         'show_code_snippets' => true,
+
+        'max_issues_per_check' => env('SHIELDCI_MAX_ISSUES', 5), // Limit displayed issues per check
     ],
 
     /*

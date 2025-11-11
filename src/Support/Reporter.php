@@ -29,6 +29,8 @@ class Reporter implements ReporterInterface
     {
         $showRecommendations = config('shieldci.report.show_recommendations', true);
         $showCodeSnippets = config('shieldci.report.show_code_snippets', true);
+        $maxIssuesPerCheckRaw = config('shieldci.report.max_issues_per_check', 5);
+        $maxIssuesPerCheck = is_int($maxIssuesPerCheckRaw) ? $maxIssuesPerCheckRaw : 5;
 
         $output = [];
 
@@ -78,7 +80,7 @@ class Reporter implements ReporterInterface
 
                     $issues = $result->getIssues();
                     if (! empty($issues)) {
-                        $displayCount = $showCodeSnippets ? 3 : 5;
+                        $displayCount = $maxIssuesPerCheck;
 
                         // Show issue locations
                         foreach (array_slice($issues, 0, $displayCount) as $issue) {

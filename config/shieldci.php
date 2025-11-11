@@ -91,6 +91,7 @@ return [
             'config',
             'database',
             'routes',
+            'resources/views',
         ],
     ],
 
@@ -99,6 +100,7 @@ return [
         'node_modules/*',
         'storage/*',
         'bootstrap/cache/*',
+        'tests/*',
     ],
 
     /*

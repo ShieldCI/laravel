@@ -68,7 +68,13 @@ class Reporter implements ReporterInterface
 
                 // Show detailed info for failed/warning analyzers
                 if ($result->getStatus()->value === 'failed' || $result->getStatus()->value === 'warning') {
-                    $output[] = $this->color($result->getMessage(), 'red');
+                    // Use bold for critical failures
+                    $isCritical = $result->getStatus()->value === 'failed';
+                    $message = $isCritical
+                        ? $this->bold($this->color($result->getMessage(), 'red'))
+                        : $this->color($result->getMessage(), 'red');
+
+                    $output[] = $message;
 
                     $issues = $result->getIssues();
                     if (! empty($issues)) {
@@ -76,7 +82,12 @@ class Reporter implements ReporterInterface
 
                         // Show issue locations
                         foreach (array_slice($issues, 0, $displayCount) as $issue) {
-                            $output[] = $this->color("At {$issue->location}.", 'magenta');
+                            // Highlight critical issues with background color
+                            if (isset($issue->severity) && $issue->severity->value === 'critical') {
+                                $output[] = $this->color("At {$issue->location}.", 'white', 'bg_red');
+                            } else {
+                                $output[] = $this->color("At {$issue->location}.", 'magenta');
+                            }
                         }
 
                         if (count($issues) > $displayCount) {
@@ -96,15 +107,17 @@ class Reporter implements ReporterInterface
                             }
 
                             if ($recommendation !== null) {
-                                $output[] = $recommendation;
+                                // Use italic for recommendations
+                                $output[] = $this->italic($recommendation);
                             }
                         }
                     }
 
-                    // Documentation URL if available
+                    // Documentation URL if available (with hyperlink support)
                     $docsUrl = $metadata['docsUrl'] ?? null;
-                    if (! empty($docsUrl)) {
-                        $output[] = $this->color("Documentation URL: {$docsUrl}", 'cyan');
+                    if (! empty($docsUrl) && is_string($docsUrl)) {
+                        $linkText = $this->hyperlink($docsUrl, $docsUrl);
+                        $output[] = $this->color('Documentation URL: ', 'cyan').$this->color($linkText, 'cyan');
                     }
                 }
 
@@ -182,7 +195,7 @@ class Reporter implements ReporterInterface
     /**
      * Apply ANSI color to text.
      */
-    private function color(string $text, string $color): string
+    private function color(string $text, string $color, ?string $background = null): string
     {
         $colors = [
             'black' => '0;30',
@@ -198,11 +211,56 @@ class Reporter implements ReporterInterface
             'bright_yellow' => '1;33',
         ];
 
+        $backgrounds = [
+            'bg_black' => '40',
+            'bg_red' => '41',
+            'bg_green' => '42',
+            'bg_yellow' => '43',
+            'bg_blue' => '44',
+            'bg_magenta' => '45',
+            'bg_cyan' => '46',
+            'bg_white' => '47',
+        ];
+
         if (! isset($colors[$color])) {
             return $text;
         }
 
-        return "\033[{$colors[$color]}m{$text}\033[0m";
+        $code = $colors[$color];
+
+        // Add background color if specified
+        if ($background !== null && isset($backgrounds[$background])) {
+            $code .= ';'.$backgrounds[$background];
+        }
+
+        return "\033[{$code}m{$text}\033[0m";
+    }
+
+    /**
+     * Make text bold.
+     */
+    private function bold(string $text): string
+    {
+        return "\033[1m{$text}\033[0m";
+    }
+
+    /**
+     * Make text italic.
+     */
+    private function italic(string $text): string
+    {
+        return "\033[3m{$text}\033[0m";
+    }
+
+    /**
+     * Create a clickable hyperlink (OSC 8).
+     * Supported in: iTerm2, GNOME Terminal, Konsole, Windows Terminal, VS Code terminal
+     */
+    private function hyperlink(string $url, ?string $text = null): string
+    {
+        $displayText = $text ?? $url;
+
+        return "\033]8;;{$url}\033\\{$displayText}\033]8;;\033\\";
     }
 
     /**

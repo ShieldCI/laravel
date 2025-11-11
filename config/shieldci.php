@@ -62,6 +62,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Don't Report Analyzers
+    |--------------------------------------------------------------------------
+    |
+    | Analyzers listed here will run but won't affect the exit code.
+    | Useful for informational checks that shouldn't fail CI/CD.
+    |
+    */
+
+    'dont_report' => [
+        // 'missing-error-tracking',
+        // 'select-asterisk',
+        // 'missing-docblock',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Paths Configuration
     |--------------------------------------------------------------------------
     |

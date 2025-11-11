@@ -83,6 +83,16 @@ php artisan shield:baseline
 php artisan shield:analyze --baseline
 ```
 
+#### Don't Report (Exit Code Control)
+Run informational analyzers without failing CI:
+```php
+// config/shieldci.php
+'dont_report' => [
+    'missing-docblock',    // Informational only
+    'select-asterisk',     // Won't fail CI
+],
+```
+
 #### Environment Control
 Force-run all analyzers regardless of environment:
 ```bash

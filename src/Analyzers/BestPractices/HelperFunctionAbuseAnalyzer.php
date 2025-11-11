@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace ShieldCI\Analyzers\CodeQuality;
+namespace ShieldCI\Analyzers\BestPractices;
 
 use PhpParser\Node;
 use PhpParser\Node\Expr;
@@ -57,7 +57,7 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
             id: 'helper-function-abuse',
             name: 'Helper Function Abuse',
             description: 'Detects excessive use of Laravel helper functions that hide dependencies and hinder testing',
-            category: Category::CodeQuality,
+            category: Category::BestPractices,
             severity: Severity::Low,
             tags: ['testability', 'dependency-injection', 'laravel', 'helpers', 'code-quality'],
             docsUrl: 'https://laravel.com/docs/helpers'

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace ShieldCI\Analyzers\CodeQuality;
+namespace ShieldCI\Analyzers\BestPractices;
 
 use PhpParser\Node;
 use PhpParser\Node\Expr;
@@ -37,7 +37,7 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
             id: 'eloquent-n-plus-one',
             name: 'Eloquent N+1 Query',
             description: 'Identifies missing eager loading that causes N+1 query performance problems',
-            category: Category::CodeQuality,
+            category: Category::BestPractices,
             severity: Severity::High,
             tags: ['performance', 'eloquent', 'database', 'n+1', 'optimization'],
             docsUrl: 'https://laravel.com/docs/eloquent-relationships#eager-loading'

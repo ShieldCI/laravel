@@ -77,8 +77,8 @@ ShieldCI includes **99 comprehensive analyzers** across five categories:
 - **21 Security Analyzers** - Complete OWASP Top 10 2021 coverage
 - **16 Performance Analyzers** - Optimize application speed and efficiency
 - **24 Reliability Analyzers** - Ensure application stability and correctness
-- **20 Code Quality Analyzers** - Improve maintainability and code standards
-- **18 Best Practices Analyzers** - Enforce Laravel-specific best practices
+- **15 Code Quality Analyzers** - Improve maintainability and code standards
+- **23 Best Practices Analyzers** - Enforce Laravel-specific best practices
 
 ### Security Analyzers (21)
 
@@ -172,7 +172,7 @@ Ensure application stability and correctness:
 - **Maintenance Mode Analyzer** - Checks maintenance status
 - **Up-to-Date Migrations Analyzer** - Detects pending migrations
 
-### Code Quality Analyzers (20)
+### Code Quality Analyzers (15)
 
 Improve code maintainability and enforce best practices:
 
@@ -197,7 +197,7 @@ Improve code maintainability and enforce best practices:
 - **Commented Code Analyzer** - Detects commented-out code
 - **Todo Comment Analyzer** - Finds TODO/FIXME comments in codebase
 
-### Best Practices Analyzers (18)
+### Best Practices Analyzers (23)
 
 Enforce Laravel-specific best practices and architectural patterns:
 

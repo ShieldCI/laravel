@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace ShieldCI\Analyzers\CodeQuality;
+namespace ShieldCI\Analyzers\BestPractices;
 
 use PhpParser\Node;
 use PhpParser\Node\Expr;
@@ -39,7 +39,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             id: 'service-container-resolution',
             name: 'Service Container Resolution',
             description: 'Detects manual service container resolution that should use dependency injection',
-            category: Category::CodeQuality,
+            category: Category::BestPractices,
             severity: Severity::Medium,
             tags: ['dependency-injection', 'architecture', 'testability', 'laravel', 'ioc'],
             docsUrl: 'https://laravel.com/docs/container'

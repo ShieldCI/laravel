@@ -9,6 +9,7 @@ use Illuminate\Contracts\Container\Container;
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\AnalyzersCore\Results\AnalysisResult;
 
 /**
  * Manages and runs analyzers.
@@ -87,7 +88,27 @@ class AnalyzerManager
     public function runAll(): Collection
     {
         return $this->getAnalyzers()
-            ->map(fn (AnalyzerInterface $analyzer) => $analyzer->analyze());
+            ->map(function (AnalyzerInterface $analyzer) {
+                $result = $analyzer->analyze();
+                $metadata = $analyzer->getMetadata();
+
+                // Enrich result with analyzer metadata
+                return new AnalysisResult(
+                    analyzerId: $result->getAnalyzerId(),
+                    status: $result->getStatus(),
+                    message: $result->getMessage(),
+                    issues: $result->getIssues(),
+                    executionTime: $result->getExecutionTime(),
+                    metadata: [
+                        'id' => $metadata->id,
+                        'name' => $metadata->name,
+                        'description' => $metadata->description,
+                        'category' => $metadata->category,
+                        'severity' => $metadata->severity,
+                        'docsUrl' => $metadata->docsUrl,
+                    ],
+                );
+            });
     }
 
     /**

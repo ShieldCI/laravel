@@ -148,6 +148,7 @@ class AnalyzeCommand extends Command
                     return true;
                 }
             }
+
             return false;
         });
 

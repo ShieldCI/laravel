@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
+use GuzzleHttp\Client;
+use Illuminate\Routing\Router;
+use Illuminate\Support\Str;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -11,32 +14,89 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\AnalyzesHeaders;
+use ShieldCI\Concerns\FindsLoginRoute;
 
 /**
- * Detects potential Cross-Site Scripting (XSS) vulnerabilities.
+ * Detects XSS vulnerabilities through dual analysis:
+ * 1. Static code analysis (always runs) - finds code-level vulnerabilities
+ * 2. HTTP header verification (production only) - validates CSP headers
  *
- * Checks for:
- * - Unescaped output in Blade templates ({!! $var !!})
- * - Direct echo of user input without escaping
- * - Response::make() with unescaped content
- * - HTML rendering without sanitization
+ * Provides defense-in-depth protection against XSS attacks.
  */
 class XssAnalyzer extends AbstractFileAnalyzer
 {
+    use AnalyzesHeaders;
+    use FindsLoginRoute;
+
+    /**
+     * Skip HTTP checks in CI (requires live server).
+     */
+    private bool $skipHttpChecks = false;
+
+    public function __construct(Router $router)
+    {
+        $this->router = $router;
+        $this->httpClient = new Client;
+
+        // Skip HTTP checks in CI mode
+        $this->skipHttpChecks = config('shieldci.ci_mode', false);
+    }
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
             id: 'xss-detection',
             name: 'XSS Vulnerability Detector',
-            description: 'Detects potential Cross-Site Scripting (XSS) vulnerabilities in views and responses',
+            description: 'Detects XSS vulnerabilities via code analysis and HTTP header verification (dual protection)',
             category: Category::Security,
             severity: Severity::High,
-            tags: ['xss', 'cross-site-scripting', 'security', 'blade'],
+            tags: ['xss', 'cross-site-scripting', 'security', 'blade', 'csp', 'headers'],
             docsUrl: 'https://laravel.com/docs/blade#displaying-data'
         );
     }
 
     protected function runAnalysis(): ResultInterface
+    {
+        $issues = [];
+
+        // PART 1: Static Code Analysis (always runs)
+        $staticIssues = $this->analyzeCodePatterns();
+        $issues = array_merge($issues, $staticIssues);
+
+        // PART 2: HTTP Header Analysis (production only)
+        if (! $this->skipHttpChecks) {
+            $headerIssues = $this->analyzeHttpHeaders();
+            $issues = array_merge($issues, $headerIssues);
+        }
+
+        if (empty($issues)) {
+            return $this->passed(
+                $this->skipHttpChecks
+                    ? 'No XSS vulnerabilities detected in code'
+                    : 'No XSS vulnerabilities detected (code and headers verified)'
+            );
+        }
+
+        return $this->failed(
+            sprintf('Found %d XSS issue(s)', count($issues)),
+            $issues
+        );
+    }
+
+    /**
+     * PART 1: Static Code Analysis.
+     *
+     * Analyzes PHP and Blade files for XSS vulnerabilities:
+     * - Unescaped blade output ({!! $var !!})
+     * - Direct echo of superglobals
+     * - Request data without escaping
+     * - Response::make() with user input
+     * - Unsafe JavaScript injection
+     *
+     * @return array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>
+     */
+    private function analyzeCodePatterns(): array
     {
         $issues = [];
 
@@ -147,14 +207,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        if (empty($issues)) {
-            return $this->passed('No XSS vulnerabilities detected');
-        }
-
-        return $this->failed(
-            sprintf('Found %d potential XSS vulnerabilities', count($issues)),
-            $issues
-        );
+        return $issues;
     }
 
     /**
@@ -226,5 +279,123 @@ class XssAnalyzer extends AbstractFileAnalyzer
         }
 
         return false;
+    }
+
+    /**
+     * PART 2: HTTP Header Analysis.
+     *
+     * Checks Content-Security-Policy (CSP) headers for XSS protection:
+     * - Verifies CSP header is present
+     * - Ensures script-src or default-src directive exists
+     * - Validates no unsafe-inline or unsafe-eval directives
+     *
+     * @return array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>
+     */
+    private function analyzeHttpHeaders(): array
+    {
+        $issues = [];
+
+        // Try to find a guest URL to check
+        $url = $this->findLoginRoute();
+
+        if ($url === null) {
+            // Can't check headers without a URL (not a failure, just skip)
+            return [];
+        }
+
+        // Skip localhost URLs
+        if (str_contains($url, 'localhost') || str_contains($url, '127.0.0.1')) {
+            return [];
+        }
+
+        // Get Content-Security-Policy headers
+        $cspHeaders = $this->getHeadersOnUrl($url, 'Content-Security-Policy');
+
+        // Check if CSP is set
+        if ($cspHeaders === null || empty($cspHeaders)) {
+            // Try meta tags as fallback
+            $metaPolicy = $this->getCspFromMetaTags($url);
+
+            if (empty($metaPolicy)) {
+                $issues[] = $this->createIssue(
+                    message: 'HTTP XSS: Content-Security-Policy header not set',
+                    location: new Location('HTTP Headers', 0),
+                    severity: Severity::High,
+                    recommendation: 'Set Content-Security-Policy header with script-src or default-src directive without unsafe-eval or unsafe-inline. Example: "default-src \'self\'; script-src \'self\'"'
+                );
+
+                return $issues;
+            }
+
+            $cspHeaders = [$metaPolicy];
+        }
+
+        // Ensure $cspHeaders is array<string> for type safety
+        /** @var array<string> $cspHeaders */
+        $cspHeaders = is_array($cspHeaders) ? $cspHeaders : [];
+
+        // Validate CSP headers
+        $hasValidPolicy = false;
+        foreach ($cspHeaders as $policy) {
+            if (is_string($policy) && $this->isValidCspPolicy($policy)) {
+                $hasValidPolicy = true;
+                break;
+            }
+        }
+
+        if (! $hasValidPolicy) {
+            $issues[] = $this->createIssue(
+                message: 'HTTP XSS: Content-Security-Policy header is inadequate for XSS protection',
+                location: new Location('HTTP Headers', 0),
+                severity: Severity::High,
+                recommendation: 'Set a "script-src" or "default-src" policy directive without "unsafe-eval" or "unsafe-inline". Current policy may allow inline scripts which defeats XSS protection.',
+                code: 'Current CSP: '.implode('; ', array_filter($cspHeaders, 'is_string'))
+            );
+        }
+
+        return $issues;
+    }
+
+    /**
+     * Check if CSP policy is valid (has script-src/default-src without unsafe).
+     */
+    private function isValidCspPolicy(string $policy): bool
+    {
+        // Must contain script-src or default-src
+        if (! Str::contains($policy, ['default-src', 'script-src'])) {
+            return false;
+        }
+
+        // Must not contain unsafe-eval or unsafe-inline
+        if (Str::contains($policy, ['unsafe-eval', 'unsafe-inline'])) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Get CSP from meta tags (fallback).
+     */
+    private function getCspFromMetaTags(string $url): string
+    {
+        try {
+            $response = $this->httpClient->get($url, [
+                'timeout' => 5,
+                'http_errors' => false,
+                'verify' => false,
+            ]);
+
+            $html = $response->getBody()->getContents();
+
+            // Parse meta tags for CSP
+            if (preg_match('/<meta[^>]+http-equiv=["\']Content-Security-Policy["\'][^>]+content=["\']([^"\']+)["\']/', $html, $matches)) {
+                return $matches[1];
+            }
+
+            return '';
+        } catch (\Exception $e) {
+            return '';
+        }
     }
 }

@@ -21,6 +21,11 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class MysqlSingleServerAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * MySQL server configuration is not applicable in CI environments.
+     */
+    public static bool $runInCI = false;
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(

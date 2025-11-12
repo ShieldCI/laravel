@@ -55,8 +55,8 @@ class ReporterTest extends TestCase
         $output = $this->reporter->toConsole($report);
 
         $this->assertIsString($output);
-        $this->assertStringContainsString('ShieldCI Security Analysis', $output);
-        $this->assertStringContainsString('Score:', $output);
+        $this->assertStringContainsString('ShieldCI', $output);
+        $this->assertStringContainsString('Report Card', $output);
     }
 
     #[Test]
@@ -94,8 +94,8 @@ class ReporterTest extends TestCase
         $report = $this->reporter->generate($results);
         $output = $this->reporter->toConsole($report);
 
-        $this->assertStringContainsString('FAILED ANALYZERS', $output);
-        $this->assertStringContainsString('Security vulnerability detected', $output);
+        $this->assertStringContainsString('Failed', $output);
+        $this->assertStringContainsString('Found issues', $output);
         $this->assertStringContainsString('/app/Controller.php:42', $output);
     }
 
@@ -116,7 +116,7 @@ class ReporterTest extends TestCase
         $report = $this->reporter->generate($results);
         $output = $this->reporter->toConsole($report);
 
-        $this->assertStringContainsString('WARNINGS', $output);
+        $this->assertStringContainsString('Warning', $output);
         $this->assertStringContainsString('test-analyzer', $output);
         $this->assertStringContainsString('Warning issued', $output);
     }

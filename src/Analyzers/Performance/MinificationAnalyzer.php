@@ -21,6 +21,11 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class MinificationAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * Asset minification checks require compiled assets, not applicable in CI.
+     */
+    public static bool $runInCI = false;
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(

@@ -9,6 +9,7 @@ use Illuminate\Contracts\Container\Container;
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\AnalyzersCore\Results\AnalysisResult;
 
 /**
  * Manages and runs analyzers.
@@ -43,17 +44,80 @@ class AnalyzerManager
             ->keys()
             ->toArray();
 
+        // CI mode configuration
+        $isCiMode = $this->config->get('shieldci.ci_mode', false);
+
+        // Tier 1: Whitelist (if specified, ONLY these run)
+        $ciAnalyzersConfig = $this->config->get('shieldci.ci_mode_analyzers', []);
+        /** @var array<string> $ciAnalyzers */
+        $ciAnalyzers = is_array($ciAnalyzersConfig) ? $ciAnalyzersConfig : [];
+
+        // Tier 2: Blacklist (additionally exclude these)
+        $ciExcludeAnalyzersConfig = $this->config->get('shieldci.ci_mode_exclude_analyzers', []);
+        /** @var array<string> $ciExcludeAnalyzers */
+        $ciExcludeAnalyzers = is_array($ciExcludeAnalyzersConfig) ? $ciExcludeAnalyzersConfig : [];
+
+        // Environment-specific configuration
+        $skipEnvSpecific = $this->config->get('shieldci.skip_env_specific', false);
+
         return collect($this->analyzerClasses)
-            ->map(function (string $class): AnalyzerInterface {
+            ->map(function (string $class) use ($skipEnvSpecific): AnalyzerInterface {
                 /** @var AnalyzerInterface $analyzer */
                 $analyzer = $this->container->make($class);
 
+                // Set base path for file analyzers
+                if (method_exists($analyzer, 'setBasePath')) {
+                    $analyzer->setBasePath(base_path());
+                }
+
+                // Set paths to analyze (from config)
+                if (method_exists($analyzer, 'setPaths')) {
+                    $paths = $this->config->get('shieldci.paths.analyze', []);
+                    if (is_array($paths) && ! empty($paths)) {
+                        $analyzer->setPaths($paths);
+                    }
+                }
+
+                // Set excluded patterns (from config)
+                if (method_exists($analyzer, 'setExcludePatterns')) {
+                    $excludedPaths = $this->config->get('shieldci.excluded_paths', []);
+                    if (is_array($excludedPaths)) {
+                        $analyzer->setExcludePatterns($excludedPaths);
+                    }
+                }
+
+                // Pass skip_env_specific to analyzer if it supports it
+                if ($skipEnvSpecific && method_exists($analyzer, 'setSkipEnvSpecific')) {
+                    $analyzer->setSkipEnvSpecific($skipEnvSpecific);
+                }
+
                 return $analyzer;
             })
-            ->filter(function (AnalyzerInterface $analyzer) use ($disabledAnalyzers, $enabledCategories): bool {
+            ->filter(function (AnalyzerInterface $analyzer) use ($disabledAnalyzers, $enabledCategories, $isCiMode, $ciAnalyzers, $ciExcludeAnalyzers): bool {
                 // Filter by disabled analyzers
                 if (in_array($analyzer->getId(), $disabledAnalyzers, true)) {
                     return false;
+                }
+
+                // CI Mode: 3-tier filtering
+                if ($isCiMode) {
+                    // Priority 1: If whitelist exists, ONLY run those
+                    if (! empty($ciAnalyzers)) {
+                        if (! in_array($analyzer->getId(), $ciAnalyzers, true)) {
+                            return false;
+                        }
+                    } else {
+                        // Priority 2: Check analyzer's $runInCI property
+                        $analyzerClass = get_class($analyzer);
+                        if (property_exists($analyzerClass, 'runInCI') && ! $analyzerClass::$runInCI) {
+                            return false;
+                        }
+
+                        // Priority 3: Check blacklist (overrides $runInCI)
+                        if (in_array($analyzer->getId(), $ciExcludeAnalyzers, true)) {
+                            return false;
+                        }
+                    }
                 }
 
                 // Filter by enabled categories
@@ -87,7 +151,27 @@ class AnalyzerManager
     public function runAll(): Collection
     {
         return $this->getAnalyzers()
-            ->map(fn (AnalyzerInterface $analyzer) => $analyzer->analyze());
+            ->map(function (AnalyzerInterface $analyzer) {
+                $result = $analyzer->analyze();
+                $metadata = $analyzer->getMetadata();
+
+                // Enrich result with analyzer metadata
+                return new AnalysisResult(
+                    analyzerId: $result->getAnalyzerId(),
+                    status: $result->getStatus(),
+                    message: $result->getMessage(),
+                    issues: $result->getIssues(),
+                    executionTime: $result->getExecutionTime(),
+                    metadata: [
+                        'id' => $metadata->id,
+                        'name' => $metadata->name,
+                        'description' => $metadata->description,
+                        'category' => $metadata->category,
+                        'severity' => $metadata->severity,
+                        'docsUrl' => $metadata->docsUrl,
+                    ],
+                );
+            });
     }
 
     /**

@@ -23,6 +23,11 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * Migration status checks are deployment-specific, not applicable in CI.
+     */
+    public static bool $runInCI = false;
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(

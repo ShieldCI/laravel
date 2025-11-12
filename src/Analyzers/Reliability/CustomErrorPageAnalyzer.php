@@ -23,6 +23,11 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
 class CustomErrorPageAnalyzer extends AbstractFileAnalyzer
 {
     /**
+     * Custom error page checks require a live web server, not applicable in CI.
+     */
+    public static bool $runInCI = false;
+
+    /**
      * @var array<int, array{code: int, description: string}>
      */
     private array $errorPages = [

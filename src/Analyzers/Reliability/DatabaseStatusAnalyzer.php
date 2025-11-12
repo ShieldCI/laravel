@@ -22,6 +22,11 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * Database connectivity checks are not applicable in CI environments.
+     */
+    public static bool $runInCI = false;
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(

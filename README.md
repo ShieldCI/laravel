@@ -71,22 +71,78 @@ Save report to file:
 php artisan shield:analyze --output=report.json
 ```
 
+### Advanced Features
+
+#### Baseline Support (Gradual Adoption)
+Generate a baseline to suppress existing issues and only catch new ones:
+```bash
+# Generate baseline from current state
+php artisan shield:baseline
+
+# Analyze against baseline (only NEW issues reported)
+php artisan shield:analyze --baseline
+```
+
+#### CI Mode (Optimized for CI/CD)
+Skip slow or network-dependent analyzers in CI/CD:
+```bash
+# Configure in config/shieldci.php
+'ci_mode' => env('SHIELDCI_CI_MODE', false),
+'ci_mode_analyzers' => ['sql-injection', 'xss-detection', 'csrf-analyzer'],
+'ci_mode_exclude_analyzers' => ['vulnerable-dependency', 'unused-view'],
+
+# Run in CI
+SHIELDCI_CI_MODE=true php artisan shield:analyze
+```
+
+#### Don't Report (Exit Code Control)
+Run informational analyzers without failing CI:
+```php
+// config/shieldci.php
+'dont_report' => [
+    'missing-docblock',    // Informational only
+    'select-asterisk',     // Won't fail CI
+],
+```
+
+#### Environment Control
+Force-run all analyzers regardless of environment:
+```bash
+SHIELDCI_SKIP_ENV_SPECIFIC=true php artisan shield:analyze
+```
+
+#### Compact Output
+Limit displayed issues per check:
+```bash
+# Show only 3 issues per check
+SHIELDCI_MAX_ISSUES=3 php artisan shield:analyze
+```
+
 ## Available Analyzers
 
-ShieldCI includes **99 comprehensive analyzers** across five categories:
-- **21 Security Analyzers** - Complete OWASP Top 10 2021 coverage
+ShieldCI includes **100 comprehensive analyzers** across five categories:
+- **22 Security Analyzers** - Complete OWASP Top 10 2021 coverage
 - **16 Performance Analyzers** - Optimize application speed and efficiency
 - **24 Reliability Analyzers** - Ensure application stability and correctness
 - **15 Code Quality Analyzers** - Improve maintainability and code standards
 - **23 Best Practices Analyzers** - Enforce Laravel-specific best practices
 
-### Security Analyzers (21)
+### Security Analyzers (22)
 
 Providing complete OWASP Top 10 2021 coverage:
 
 ### Injection Vulnerabilities (A03:2021)
 - **SQL Injection Analyzer** - Detects unsafe database queries with string concatenation or user input
-- **XSS Analyzer** - Identifies unescaped output, unsafe JavaScript embedding, and Response::make() issues
+- **XSS Analyzer (Dual Protection)** ⭐ **ENHANCED**
+  - **Static Code Analysis** (always runs in CI/Production):
+    - Detects unescaped Blade output `{!! $var !!}`
+    - Identifies unsafe JavaScript embedding
+    - Finds Response::make() issues
+    - Checks for superglobal echoing
+  - **HTTP Header Verification** (production only):
+    - Validates Content-Security-Policy (CSP) headers
+    - Ensures script-src/default-src directives present
+    - Blocks unsafe-inline and unsafe-eval directives
 
 ### Broken Access Control (A01:2021)
 - **Authentication Analyzer** - Validates route authentication and authorization
@@ -109,6 +165,7 @@ Providing complete OWASP Top 10 2021 coverage:
 - **PHP Ini Analyzer** - Validates PHP configuration security settings
 - **File Permissions Analyzer** - Checks directory and file permissions for security issues
 - **Environment File Security Analyzer** - Validates .env location, permissions, git exclusion, and secrets
+- **Environment File HTTP Accessibility Analyzer** - Verifies .env is not accessible via web server (runtime check)
 
 ### Vulnerable and Outdated Components (A06:2021)
 - **Vulnerable Dependency Analyzer** - Scans Composer dependencies for known CVEs using `composer audit`

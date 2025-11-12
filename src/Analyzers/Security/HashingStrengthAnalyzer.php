@@ -23,6 +23,11 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class HashingStrengthAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * Hashing configuration is environment-specific, not applicable in CI.
+     */
+    public static bool $runInCI = false;
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(

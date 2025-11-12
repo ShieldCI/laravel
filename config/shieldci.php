@@ -19,6 +19,41 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | CI Mode Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Configure ShieldCI behavior in CI/CD environments.
+    |
+    */
+
+    'ci_mode' => env('SHIELDCI_CI_MODE', false),
+
+    'ci_mode_analyzers' => [
+        // Whitelist: If specified, ONLY these analyzers run in CI mode
+        // Leave empty to use the default $runInCI property from each analyzer
+        // Example: 'sql-injection', 'xss-detection', 'csrf-analyzer'
+    ],
+
+    'ci_mode_exclude_analyzers' => [
+        // Blacklist: Additionally exclude these analyzers in CI mode
+        // These override the analyzer's $runInCI property
+        // Example: 'collection-call-analyzer', 'code-smell-detector'
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Environment-Specific Analyzers
+    |--------------------------------------------------------------------------
+    |
+    | Skip environment-specific analyzers when set to true.
+    | Useful for forcing all analyzers to run regardless of environment.
+    |
+    */
+
+    'skip_env_specific' => env('SHIELDCI_SKIP_ENV_SPECIFIC', false),
+
+    /*
+    |--------------------------------------------------------------------------
     | Analyzer Categories
     |--------------------------------------------------------------------------
     |
@@ -50,6 +85,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Don't Report Analyzers
+    |--------------------------------------------------------------------------
+    |
+    | Analyzers listed here will run but won't affect the exit code.
+    | Useful for informational checks that shouldn't fail CI/CD.
+    |
+    */
+
+    'dont_report' => [
+        // 'missing-error-tracking',
+        // 'select-asterisk',
+        // 'missing-docblock',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Paths Configuration
     |--------------------------------------------------------------------------
     |
@@ -63,6 +114,7 @@ return [
             'config',
             'database',
             'routes',
+            'resources/views',
         ],
     ],
 
@@ -71,9 +123,7 @@ return [
         'node_modules/*',
         'storage/*',
         'bootstrap/cache/*',
-        '*/migrations/*',
-        '*/seeds/*',
-        '*/factories/*',
+        'tests/*',
     ],
 
     /*
@@ -88,12 +138,47 @@ return [
     'report' => [
         'format' => env('SHIELDCI_REPORT_FORMAT', 'console'), // console, json
 
-        'output_file' => storage_path('shieldci-report.json'),
+        'output_file' => null,
 
         'show_recommendations' => true,
 
         'show_code_snippets' => true,
+
+        'max_issues_per_check' => env('SHIELDCI_MAX_ISSUES', 5), // Limit displayed issues per check
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Baseline Configuration
+    |--------------------------------------------------------------------------
+    |
+    | Baseline support allows you to suppress existing issues and only
+    | report new ones. Use 'php artisan shield:baseline' to generate.
+    |
+    */
+
+    'baseline_file' => base_path('.shieldci-baseline.json'),
+
+    'ignore_errors' => [],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Guest URL Path
+    |--------------------------------------------------------------------------
+    |
+    | Specify a guest url or path (preferably your app's login url) here.
+    | This is used by HTTP-based analyzers to inspect your application.
+    |
+    | If not set, the system will automatically try to find a suitable route:
+    | 1. Named 'login' route
+    | 2. Any route with 'guest' middleware
+    | 3. Fallback to root URL '/'
+    |
+    | Example: '/login', '/register', '/forgot-password'
+    |
+    */
+
+    'guest_url' => env('SHIELDCI_GUEST_URL', null),
 
     /*
     |--------------------------------------------------------------------------

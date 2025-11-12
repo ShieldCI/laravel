@@ -24,6 +24,11 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class PHPIniAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * PHP ini settings checks are environment-specific and not applicable in CI.
+     */
+    public static bool $runInCI = false;
+
     private array $secureSettings = [
         'allow_url_fopen' => false,
         'allow_url_include' => false,
@@ -43,7 +48,7 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::High,
             tags: ['php', 'configuration', 'ini', 'security', 'server'],
-            docsUrl: 'https://www.php.net/manual/en/ini.core.php'
+            docsUrl: 'https://www.php.net/manual/en/ini.list.php'
         );
     }
 

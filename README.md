@@ -106,7 +106,7 @@ Run informational analyzers without failing CI:
 ```
 
 #### Environment Control
-Force-run all analyzers regardless of environment:
+Exclude checks specific to non-local environments when running in local:
 ```bash
 SHIELDCI_SKIP_ENV_SPECIFIC=true php artisan shield:analyze
 ```

@@ -46,7 +46,7 @@ return [
     |--------------------------------------------------------------------------
     |
     | Skip environment-specific analyzers when set to true.
-    | Useful for forcing all analyzers to run regardless of environment.
+    | Useful for excluding checks specific to non-local environments when running in local.
     |
     */
 

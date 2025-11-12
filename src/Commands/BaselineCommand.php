@@ -18,7 +18,8 @@ class BaselineCommand extends Command
      */
     protected $signature = 'shield:baseline
                             {--output= : Custom output path for baseline file}
-                            {--merge : Merge with existing baseline instead of overwriting}';
+                            {--merge : Merge with existing baseline instead of overwriting}
+                            {--ci : Generate baseline for CI mode (only CI-compatible analyzers)}';
 
     /**
      * The console command description.
@@ -32,11 +33,23 @@ class BaselineCommand extends Command
      */
     public function handle(AnalyzerManager $manager): int
     {
-        $this->info('🔍 Running analysis to generate baseline...');
+        // If --ci flag is used, temporarily enable CI mode for baseline generation
+        $wasCiMode = config('shieldci.ci_mode', false);
+        if ($this->option('ci')) {
+            config()->set('shieldci.ci_mode', true);
+            $this->info('🔍 Running analysis to generate baseline (CI mode)...');
+        } else {
+            $this->info('🔍 Running analysis to generate baseline...');
+        }
         $this->newLine();
 
-        // Run all analyzers
+        // Run all analyzers (respects CI mode from config or --ci flag)
         $results = $manager->runAll();
+
+        // Restore original CI mode setting
+        if ($this->option('ci')) {
+            config()->set('shieldci.ci_mode', $wasCiMode);
+        }
 
         // Determine output path
         $outputPathRaw = $this->option('output') ?? config('shieldci.baseline_file');

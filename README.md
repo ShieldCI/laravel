@@ -133,7 +133,16 @@ Providing complete OWASP Top 10 2021 coverage:
 
 ### Injection Vulnerabilities (A03:2021)
 - **SQL Injection Analyzer** - Detects unsafe database queries with string concatenation or user input
-- **XSS Analyzer** - Identifies unescaped output, unsafe JavaScript embedding, and Response::make() issues
+- **XSS Analyzer (Dual Protection)** ⭐ **ENHANCED**
+  - **Static Code Analysis** (always runs in CI/Production):
+    - Detects unescaped Blade output `{!! $var !!}`
+    - Identifies unsafe JavaScript embedding
+    - Finds Response::make() issues
+    - Checks for superglobal echoing
+  - **HTTP Header Verification** (production only):
+    - Validates Content-Security-Policy (CSP) headers
+    - Ensures script-src/default-src directives present
+    - Blocks unsafe-inline and unsafe-eval directives
 
 ### Broken Access Control (A01:2021)
 - **Authentication Analyzer** - Validates route authentication and authorization

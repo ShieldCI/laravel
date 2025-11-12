@@ -31,13 +31,13 @@ return [
     'ci_mode_analyzers' => [
         // Whitelist: If specified, ONLY these analyzers run in CI mode
         // Leave empty to use the default $runInCI property from each analyzer
-        // Example: ['sql-injection', 'xss-detection', 'csrf-analyzer']
+        // Example: 'sql-injection', 'xss-detection', 'csrf-analyzer'
     ],
 
     'ci_mode_exclude_analyzers' => [
         // Blacklist: Additionally exclude these analyzers in CI mode
         // These override the analyzer's $runInCI property
-        // Example: ['collection-call-analyzer', 'code-smell-detector']
+        // Example: 'collection-call-analyzer', 'code-smell-detector'
     ],
 
     /*
@@ -138,7 +138,7 @@ return [
     'report' => [
         'format' => env('SHIELDCI_REPORT_FORMAT', 'console'), // console, json
 
-        'output_file' => null, // Only save when explicitly requested via --output
+        'output_file' => null,
 
         'show_recommendations' => true,
 
@@ -159,13 +159,7 @@ return [
 
     'baseline_file' => base_path('.shieldci-baseline.json'),
 
-    'ignore_errors' => [
-        // Populated by php artisan shield:baseline or manually configured
-        // Example:
-        // 'sql-injection' => [
-        //     ['path' => 'app/Legacy/*', 'pattern' => '*'],
-        // ],
-    ],
+    'ignore_errors' => [],
 
     /*
     |--------------------------------------------------------------------------

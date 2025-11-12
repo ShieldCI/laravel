@@ -159,6 +159,16 @@ return [
 
     'baseline_file' => base_path('.shieldci-baseline.json'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Ignoring Errors
+    |--------------------------------------------------------------------------
+    |
+    | Use this config option to ignore specific errors.
+    | Run php artisan shield:baseline to auto-generate this.
+    |
+    */
+
     'ignore_errors' => [],
 
     /*

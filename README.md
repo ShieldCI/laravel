@@ -120,14 +120,14 @@ SHIELDCI_MAX_ISSUES=3 php artisan shield:analyze
 
 ## Available Analyzers
 
-ShieldCI includes **99 comprehensive analyzers** across five categories:
-- **21 Security Analyzers** - Complete OWASP Top 10 2021 coverage
+ShieldCI includes **100 comprehensive analyzers** across five categories:
+- **22 Security Analyzers** - Complete OWASP Top 10 2021 coverage
 - **16 Performance Analyzers** - Optimize application speed and efficiency
 - **24 Reliability Analyzers** - Ensure application stability and correctness
 - **15 Code Quality Analyzers** - Improve maintainability and code standards
 - **23 Best Practices Analyzers** - Enforce Laravel-specific best practices
 
-### Security Analyzers (21)
+### Security Analyzers (22)
 
 Providing complete OWASP Top 10 2021 coverage:
 
@@ -156,6 +156,7 @@ Providing complete OWASP Top 10 2021 coverage:
 - **PHP Ini Analyzer** - Validates PHP configuration security settings
 - **File Permissions Analyzer** - Checks directory and file permissions for security issues
 - **Environment File Security Analyzer** - Validates .env location, permissions, git exclusion, and secrets
+- **Environment File HTTP Accessibility Analyzer** - Verifies .env is not accessible via web server (runtime check)
 
 ### Vulnerable and Outdated Components (A06:2021)
 - **Vulnerable Dependency Analyzer** - Scans Composer dependencies for known CVEs using `composer audit`

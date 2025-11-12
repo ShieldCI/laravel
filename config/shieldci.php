@@ -166,6 +166,26 @@ return [
         //     ['path' => 'app/Legacy/*', 'pattern' => '*'],
         // ],
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Guest URL Path
+    |--------------------------------------------------------------------------
+    |
+    | Specify a guest url or path (preferably your app's login url) here.
+    | This is used by HTTP-based analyzers to inspect your application.
+    |
+    | If not set, the system will automatically try to find a suitable route:
+    | 1. Named 'login' route
+    | 2. Any route with 'guest' middleware
+    | 3. Fallback to root URL '/'
+    |
+    | Example: '/login', '/register', '/forgot-password'
+    |
+    */
+
+    'guest_url' => env('SHIELDCI_GUEST_URL', null),
+
     /*
     |--------------------------------------------------------------------------
     | Fail Conditions

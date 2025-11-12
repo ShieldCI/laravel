@@ -44,16 +44,21 @@ class BaselineCommand extends Command
 
         // Load existing baseline if merging
         $existingBaseline = [];
+        $existingDontReport = [];
         if ($this->option('merge') && file_exists($outputPath)) {
             $decoded = json_decode(file_get_contents($outputPath), true);
             $existingBaseline = is_array($decoded) && isset($decoded['errors']) && is_array($decoded['errors'])
                 ? $decoded['errors']
                 : [];
+            $existingDontReport = is_array($decoded) && isset($decoded['dont_report']) && is_array($decoded['dont_report'])
+                ? $decoded['dont_report']
+                : [];
             $this->info("📋 Merging with existing baseline at: {$outputPath}");
         }
 
-        // Extract all issues
+        // Extract all issues and detect analyzers with no specific issues
         $baseline = $existingBaseline;
+        $dontReport = $existingDontReport;
         $newIssuesCount = 0;
 
         foreach ($results as $result) {
@@ -71,7 +76,14 @@ class BaselineCommand extends Command
                 : $analyzerId;
 
             $issues = $result->getIssues();
+
+            // If analyzer failed but has no specific issues, add to dont_report
             if (count($issues) === 0) {
+                if (! in_array($analyzerId, $dontReport, true)) {
+                    $dontReport[] = $analyzerId;
+                    $this->line("  ⚠️  {$analyzerName}: No specific issues (added to dont_report)");
+                }
+
                 continue;
             }
 
@@ -84,6 +96,7 @@ class BaselineCommand extends Command
 
             foreach ($issues as $issue) {
                 $issueData = [
+                    'type' => 'hash',
                     'path' => $issue->location->file ?? 'unknown',
                     'line' => $issue->location->line,
                     'message' => $issue->message,
@@ -112,6 +125,7 @@ class BaselineCommand extends Command
             'generator' => 'ShieldCI Baseline Command',
             'version' => '1.0.0',
             'total_issues' => array_sum(array_map('count', $baseline)),
+            'dont_report' => array_values(array_unique($dontReport)),
             'errors' => $baseline,
         ];
 
@@ -123,6 +137,9 @@ class BaselineCommand extends Command
         $this->info('✅ Baseline file generated successfully!');
         $this->line("   📁 Location: {$outputPath}");
         $this->line("   📊 Total issues: {$baselineData['total_issues']}");
+        if (count($baselineData['dont_report']) > 0) {
+            $this->line('   ⚠️  Analyzers in dont_report: '.count($baselineData['dont_report']));
+        }
 
         if ($this->option('merge')) {
             $this->line("   🆕 New issues added: {$newIssuesCount}");

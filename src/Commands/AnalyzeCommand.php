@@ -342,7 +342,7 @@ class AnalyzeCommand extends Command
     /**
      * Check if an issue matches an ignore_errors config entry.
      *
-     * @param array<int, array<string, mixed>> $ignoreErrors
+     * @param  array<int, array<string, mixed>>  $ignoreErrors
      */
     private function matchesIgnoreError(\ShieldCI\AnalyzersCore\ValueObjects\Issue $issue, array $ignoreErrors): bool
     {
@@ -419,7 +419,7 @@ class AnalyzeCommand extends Command
     /**
      * Check if an issue matches a baseline entry.
      *
-     * @param array<string, mixed> $baselineIssue
+     * @param  array<string, mixed>  $baselineIssue
      */
     private function matchesBaselineIssue(\ShieldCI\AnalyzersCore\ValueObjects\Issue $issue, array $baselineIssue): bool
     {
@@ -473,7 +473,7 @@ class AnalyzeCommand extends Command
     /**
      * Validate baseline file structure.
      *
-     * @param array<string, mixed>|null $baseline
+     * @param  array<string, mixed>|null  $baseline
      */
     private function validateBaseline(?array $baseline): bool
     {

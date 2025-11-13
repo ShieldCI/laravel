@@ -25,7 +25,10 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
             ],
         ]);
 
-        $tempDir = $this->createTempDirectory(['composer.json' => $composerJson]);
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -45,7 +48,10 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
             ],
         ]);
 
-        $tempDir = $this->createTempDirectory(['composer.json' => $composerJson]);
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -65,7 +71,10 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
             ],
         ]);
 
-        $tempDir = $this->createTempDirectory(['composer.json' => $composerJson]);
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -85,7 +94,10 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
             ],
         ]);
 
-        $tempDir = $this->createTempDirectory(['composer.json' => $composerJson]);
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -105,7 +117,10 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
             ],
         ]);
 
-        $tempDir = $this->createTempDirectory(['composer.json' => $composerJson]);
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -127,7 +142,10 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
             ],
         ]);
 
-        $tempDir = $this->createTempDirectory(['composer.json' => $composerJson]);
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -146,7 +164,10 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
             ],
         ]);
 
-        $tempDir = $this->createTempDirectory(['composer.json' => $composerJson]);
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -159,7 +180,9 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
 
     public function test_passes_when_composer_json_not_found(): void
     {
-        $tempDir = $this->createTempDirectory([]);
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_ENV=production',
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -178,7 +201,10 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
             ],
         ]);
 
-        $tempDir = $this->createTempDirectory(['composer.json' => $composerJson]);
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -194,7 +220,10 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
 
     public function test_handles_malformed_composer_json(): void
     {
-        $tempDir = $this->createTempDirectory(['composer.json' => 'invalid json {{{']);
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => 'invalid json {{{',
+            '.env' => 'APP_ENV=production',
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);

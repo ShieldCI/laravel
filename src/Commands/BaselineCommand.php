@@ -17,7 +17,6 @@ class BaselineCommand extends Command
      * @var string
      */
     protected $signature = 'shield:baseline
-                            {--output= : Custom output path for baseline file}
                             {--merge : Merge with existing baseline instead of overwriting}
                             {--ci : Generate baseline for CI mode (only CI-compatible analyzers)}';
 
@@ -51,8 +50,8 @@ class BaselineCommand extends Command
             config()->set('shieldci.ci_mode', $wasCiMode);
         }
 
-        // Determine output path
-        $outputPathRaw = $this->option('output') ?? config('shieldci.baseline_file');
+        // Get output path
+        $outputPathRaw = config('shieldci.baseline_file');
         $outputPath = is_string($outputPathRaw) ? $outputPathRaw : base_path('.shieldci-baseline.json');
 
         // Load existing baseline if merging

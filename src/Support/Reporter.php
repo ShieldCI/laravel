@@ -284,9 +284,9 @@ class Reporter implements ReporterInterface
 
         // Header
         $categories = array_keys($byCategory);
-        $table[] = '+----------------+'.str_repeat('-------------+', count($categories)).'-----------+';
-        $table[] = '| Status         |'.implode('|', array_map(fn ($c) => str_pad(' '.$c, 13), $categories)).'|     Total |';
-        $table[] = '+----------------+'.str_repeat('-------------+', count($categories)).'-----------+';
+        $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';
+        $table[] = '| Status         |'.implode('|', array_map(fn ($c) => str_pad(' '.$c, 16), $categories)).'|     Total  |';
+        $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';
 
         // Calculate stats per category
         $stats = [];
@@ -317,12 +317,12 @@ class Reporter implements ReporterInterface
             $passed = $stats[$category]['passed'];
             $total = $stats[$category]['total'];
             $pct = $total > 0 ? round(($passed / $total) * 100) : 0;
-            $passedRow .= str_pad("   {$passed}  ({$pct}%)", 13).'|';
+            $passedRow .= str_pad("   {$passed}  ({$pct}%)", 16).'|';
             $totalPassed += $passed;
         }
         $totalAll = $report->results->count();
         $totalPct = $totalAll > 0 ? round(($totalPassed / $totalAll) * 100) : 0;
-        $passedRow .= str_pad(" {$totalPassed}  ({$totalPct}%)", 11).'|';
+        $passedRow .= str_pad(" {$totalPassed}  ({$totalPct}%)", 12).'|';
         $table[] = $passedRow;
 
         // Failed row
@@ -332,11 +332,11 @@ class Reporter implements ReporterInterface
             $failed = $stats[$category]['failed'];
             $total = $stats[$category]['total'];
             $pct = $total > 0 ? round(($failed / $total) * 100) : 0;
-            $failedRow .= str_pad("    {$failed}   ({$pct}%)", 13).'|';
+            $failedRow .= str_pad("    {$failed}   ({$pct}%)", 16).'|';
             $totalFailed += $failed;
         }
         $totalPct = $totalAll > 0 ? round(($totalFailed / $totalAll) * 100) : 0;
-        $failedRow .= str_pad("  {$totalFailed}  ({$totalPct}%)", 11).'|';
+        $failedRow .= str_pad("  {$totalFailed}  ({$totalPct}%)", 12).'|';
         $table[] = $failedRow;
 
         // Not Applicable row
@@ -346,11 +346,11 @@ class Reporter implements ReporterInterface
             $skipped = $stats[$category]['skipped'];
             $total = $stats[$category]['total'];
             $pct = $total > 0 ? round(($skipped / $total) * 100) : 0;
-            $skippedRow .= str_pad("    {$skipped}   ({$pct}%)", 13).'|';
+            $skippedRow .= str_pad("    {$skipped}   ({$pct}%)", 16).'|';
             $totalSkipped += $skipped;
         }
         $totalPct = $totalAll > 0 ? round(($totalSkipped / $totalAll) * 100) : 0;
-        $skippedRow .= str_pad("  {$totalSkipped}   ({$totalPct}%)", 11).'|';
+        $skippedRow .= str_pad("  {$totalSkipped}   ({$totalPct}%)", 12).'|';
         $table[] = $skippedRow;
 
         // Error row
@@ -360,15 +360,15 @@ class Reporter implements ReporterInterface
             $errors = $stats[$category]['error'];
             $total = $stats[$category]['total'];
             $pct = $total > 0 ? round(($errors / $total) * 100) : 0;
-            $errorRow .= str_pad("    {$errors}   ({$pct}%)", 13).'|';
+            $errorRow .= str_pad("    {$errors}   ({$pct}%)", 16).'|';
             $totalErrors += $errors;
         }
         $totalPct = $totalAll > 0 ? round(($totalErrors / $totalAll) * 100) : 0;
-        $errorRow .= str_pad("  {$totalErrors}   ({$totalPct}%)", 11).'|';
+        $errorRow .= str_pad("  {$totalErrors}   ({$totalPct}%)", 12).'|';
         $table[] = $errorRow;
 
         // Footer
-        $table[] = '+----------------+'.str_repeat('-------------+', count($categories)).'-----------+';
+        $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';
 
         return implode(PHP_EOL, $table);
     }

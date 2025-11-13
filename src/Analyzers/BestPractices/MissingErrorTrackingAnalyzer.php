@@ -32,16 +32,8 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        // Skip in local environment if configured
-        if ($this->isLocalAndShouldSkip()) {
-            return false;
-        }
-
-        $environment = $this->getEnvironment();
-
-        // Only check in production and staging environments
-        // Error tracking is not necessary in local or testing
-        return ! in_array($environment, ['local', 'testing']);
+        // Skip if user configured to skip in local environment
+        return ! $this->isLocalAndShouldSkip();
     }
 
     protected function runAnalysis(): ResultInterface

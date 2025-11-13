@@ -13,7 +13,6 @@ use Illuminate\Support\Str;
  * Trait FindsLoginRoute
  *
  * Provides functionality to discover a guest-accessible URL for HTTP inspection.
- * This trait mirrors Enlightn's approach for finding suitable routes to test.
  */
 trait FindsLoginRoute
 {

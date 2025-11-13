@@ -111,7 +111,9 @@ class ShieldCIServiceProvider extends ServiceProvider
             return null;
         }
 
-        if (! preg_match('/class\s+(\w+)/', $content, $classMatch)) {
+        // Match class declaration, ensuring it's not in a comment
+        // Look for "class" at start of line (with optional whitespace) or after visibility modifier
+        if (! preg_match('/^\s*(?:final\s+|abstract\s+)?class\s+(\w+)/m', $content, $classMatch)) {
             return null;
         }
 

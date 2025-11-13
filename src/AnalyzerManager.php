@@ -58,31 +58,44 @@ class AnalyzerManager
         $ciExcludeAnalyzers = is_array($ciExcludeAnalyzersConfig) ? $ciExcludeAnalyzersConfig : [];
 
         return collect($this->analyzerClasses)
-            ->map(function (string $class): AnalyzerInterface {
+            ->map(function (string $class): ?AnalyzerInterface {
+                try {
+                    /** @var AnalyzerInterface $analyzer */
+                    $analyzer = $this->container->make($class);
+
+                    // Set base path for file analyzers
+                    if (method_exists($analyzer, 'setBasePath')) {
+                        $analyzer->setBasePath(base_path());
+                    }
+
+                    // Set paths to analyze (from config)
+                    if (method_exists($analyzer, 'setPaths')) {
+                        $paths = $this->config->get('shieldci.paths.analyze', []);
+                        if (is_array($paths) && ! empty($paths)) {
+                            $analyzer->setPaths($paths);
+                        }
+                    }
+
+                    // Set excluded patterns (from config)
+                    if (method_exists($analyzer, 'setExcludePatterns')) {
+                        $excludedPaths = $this->config->get('shieldci.excluded_paths', []);
+                        if (is_array($excludedPaths)) {
+                            $analyzer->setExcludePatterns($excludedPaths);
+                        }
+                    }
+
+                    return $analyzer;
+                } catch (\Throwable $e) {
+                    // If analyzer fails to instantiate, return null (will be filtered out)
+                    // It will be handled in getSkippedAnalyzers()
+                    return null;
+                }
+            })
+            ->filter(function (?AnalyzerInterface $analyzer): bool {
+                return $analyzer !== null;
+            })
+            ->map(function (?AnalyzerInterface $analyzer): AnalyzerInterface {
                 /** @var AnalyzerInterface $analyzer */
-                $analyzer = $this->container->make($class);
-
-                // Set base path for file analyzers
-                if (method_exists($analyzer, 'setBasePath')) {
-                    $analyzer->setBasePath(base_path());
-                }
-
-                // Set paths to analyze (from config)
-                if (method_exists($analyzer, 'setPaths')) {
-                    $paths = $this->config->get('shieldci.paths.analyze', []);
-                    if (is_array($paths) && ! empty($paths)) {
-                        $analyzer->setPaths($paths);
-                    }
-                }
-
-                // Set excluded patterns (from config)
-                if (method_exists($analyzer, 'setExcludePatterns')) {
-                    $excludedPaths = $this->config->get('shieldci.excluded_paths', []);
-                    if (is_array($excludedPaths)) {
-                        $analyzer->setExcludePatterns($excludedPaths);
-                    }
-                }
-
                 return $analyzer;
             })
             ->filter(function (AnalyzerInterface $analyzer) use ($disabledAnalyzers, $enabledCategories, $isCiMode, $ciAnalyzers, $ciExcludeAnalyzers): bool {
@@ -142,7 +155,7 @@ class AnalyzerManager
      */
     public function runAll(): Collection
     {
-        return $this->getAnalyzers()
+        $results = $this->getAnalyzers()
             ->map(function (AnalyzerInterface $analyzer) {
                 $result = $analyzer->analyze();
                 $metadata = $analyzer->getMetadata();
@@ -164,6 +177,226 @@ class AnalyzerManager
                     ],
                 );
             });
+
+        // Add skipped analyzers to results
+        $skippedResults = $this->getSkippedAnalyzers();
+
+        // Convert both to arrays and merge, then convert back to collection
+        /** @var Collection<int, ResultInterface> $allResults */
+        $allResults = collect(array_merge($results->all(), $skippedResults->all()));
+
+        return $allResults;
+    }
+
+    /**
+     * Get skipped analyzers as results with "Not Applicable" status.
+     *
+     * @return Collection<int, ResultInterface>
+     */
+    public function getSkippedAnalyzers(): Collection
+    {
+        // Get IDs of analyzers that are actually running (to exclude from skipped list)
+        $runningAnalyzerIds = $this->getAnalyzers()
+            ->map(fn (AnalyzerInterface $analyzer) => $analyzer->getId())
+            ->toArray();
+
+        $disabledAnalyzersConfig = $this->config->get('shieldci.disabled_analyzers', []);
+        /** @var array<string> $disabledAnalyzers */
+        $disabledAnalyzers = is_array($disabledAnalyzersConfig) ? $disabledAnalyzersConfig : [];
+
+        $analyzersConfigRaw = $this->config->get('shieldci.analyzers', []);
+        /** @var array<string, bool> $analyzersConfig */
+        $analyzersConfig = is_array($analyzersConfigRaw) ? $analyzersConfigRaw : [];
+        $enabledCategories = collect($analyzersConfig)
+            ->filter(fn ($enabled) => $enabled === true)
+            ->keys()
+            ->toArray();
+
+        // CI mode configuration
+        $isCiMode = $this->config->get('shieldci.ci_mode', false);
+
+        // Tier 1: Whitelist (if specified, ONLY these run)
+        $ciAnalyzersConfig = $this->config->get('shieldci.ci_mode_analyzers', []);
+        /** @var array<string> $ciAnalyzers */
+        $ciAnalyzers = is_array($ciAnalyzersConfig) ? $ciAnalyzersConfig : [];
+
+        // Tier 2: Blacklist (additionally exclude these)
+        $ciExcludeAnalyzersConfig = $this->config->get('shieldci.ci_mode_exclude_analyzers', []);
+        /** @var array<string> $ciExcludeAnalyzers */
+        $ciExcludeAnalyzers = is_array($ciExcludeAnalyzersConfig) ? $ciExcludeAnalyzersConfig : [];
+
+        $skipped = collect($this->analyzerClasses)
+            ->map(function (string $class): ?AnalyzerInterface {
+                try {
+                    /** @var AnalyzerInterface $analyzer */
+                    $analyzer = $this->container->make($class);
+
+                    // Set base path for file analyzers
+                    if (method_exists($analyzer, 'setBasePath')) {
+                        $analyzer->setBasePath(base_path());
+                    }
+
+                    // Set paths to analyze (from config)
+                    if (method_exists($analyzer, 'setPaths')) {
+                        $paths = $this->config->get('shieldci.paths.analyze', []);
+                        if (is_array($paths) && ! empty($paths)) {
+                            $analyzer->setPaths($paths);
+                        }
+                    }
+
+                    // Set excluded patterns (from config)
+                    if (method_exists($analyzer, 'setExcludePatterns')) {
+                        $excludedPaths = $this->config->get('shieldci.excluded_paths', []);
+                        if (is_array($excludedPaths)) {
+                            $analyzer->setExcludePatterns($excludedPaths);
+                        }
+                    }
+
+                    return $analyzer;
+                } catch (\Throwable $e) {
+                    return null;
+                }
+            })
+            ->filter()
+            ->filter(function (?AnalyzerInterface $analyzer) use ($runningAnalyzerIds, $disabledAnalyzers, $enabledCategories, $isCiMode, $ciAnalyzers, $ciExcludeAnalyzers): bool {
+                if ($analyzer === null) {
+                    return false;
+                }
+
+                // Exclude analyzers that are already running
+                if (in_array($analyzer->getId(), $runningAnalyzerIds, true)) {
+                    return false; // This analyzer is running, not skipped
+                }
+
+                // Filter by disabled analyzers
+                if (in_array($analyzer->getId(), $disabledAnalyzers, true)) {
+                    return true; // This analyzer was skipped
+                }
+
+                // CI Mode: 3-tier filtering
+                if ($isCiMode) {
+                    // Priority 1: If whitelist exists, ONLY run those
+                    if (! empty($ciAnalyzers)) {
+                        if (! in_array($analyzer->getId(), $ciAnalyzers, true)) {
+                            return true; // This analyzer was skipped
+                        }
+                    } else {
+                        // Priority 2: Check analyzer's $runInCI property
+                        $analyzerClass = get_class($analyzer);
+                        if (property_exists($analyzerClass, 'runInCI') && ! $analyzerClass::$runInCI) {
+                            return true; // This analyzer was skipped
+                        }
+
+                        // Priority 3: Check blacklist (overrides $runInCI)
+                        if (in_array($analyzer->getId(), $ciExcludeAnalyzers, true)) {
+                            return true; // This analyzer was skipped
+                        }
+                    }
+                }
+
+                // Filter by enabled categories
+                $category = $analyzer->getMetadata()->category->value;
+                if (! empty($enabledCategories) && ! in_array($category, $enabledCategories, true)) {
+                    return true; // This analyzer was skipped
+                }
+
+                // Check if analyzer should run
+                if (! $analyzer->shouldRun()) {
+                    return true; // This analyzer was skipped
+                }
+
+                return false; // This analyzer was not skipped
+            })
+            ->map(function (?AnalyzerInterface $analyzer): ?ResultInterface {
+                if ($analyzer === null) {
+                    return null;
+                }
+                $metadata = $analyzer->getMetadata();
+
+                // Determine skip reason
+                $skipReason = $this->getSkipReason($analyzer);
+
+                return AnalysisResult::skipped(
+                    analyzerId: $analyzer->getId(),
+                    message: $skipReason,
+                    executionTime: 0.0,
+                    metadata: [
+                        'id' => $metadata->id,
+                        'name' => $metadata->name,
+                        'description' => $metadata->description,
+                        'category' => $metadata->category,
+                        'severity' => $metadata->severity,
+                        'docsUrl' => $metadata->docsUrl,
+                        'skipReason' => $skipReason,
+                    ],
+                );
+            })
+            ->filter()
+            ->values();
+
+        /** @var Collection<int, ResultInterface> $skipped */
+        return $skipped;
+    }
+
+    /**
+     * Get the reason why an analyzer was skipped.
+     */
+    private function getSkipReason(AnalyzerInterface $analyzer): string
+    {
+        $disabledAnalyzersConfig = $this->config->get('shieldci.disabled_analyzers', []);
+        /** @var array<string> $disabledAnalyzers */
+        $disabledAnalyzers = is_array($disabledAnalyzersConfig) ? $disabledAnalyzersConfig : [];
+
+        $analyzersConfigRaw = $this->config->get('shieldci.analyzers', []);
+        /** @var array<string, bool> $analyzersConfig */
+        $analyzersConfig = is_array($analyzersConfigRaw) ? $analyzersConfigRaw : [];
+        $enabledCategories = collect($analyzersConfig)
+            ->filter(fn ($enabled) => $enabled === true)
+            ->keys()
+            ->toArray();
+
+        $isCiMode = $this->config->get('shieldci.ci_mode', false);
+        $ciAnalyzersConfig = $this->config->get('shieldci.ci_mode_analyzers', []);
+        /** @var array<string> $ciAnalyzers */
+        $ciAnalyzers = is_array($ciAnalyzersConfig) ? $ciAnalyzersConfig : [];
+        $ciExcludeAnalyzersConfig = $this->config->get('shieldci.ci_mode_exclude_analyzers', []);
+        /** @var array<string> $ciExcludeAnalyzers */
+        $ciExcludeAnalyzers = is_array($ciExcludeAnalyzersConfig) ? $ciExcludeAnalyzersConfig : [];
+
+        // Check disabled analyzers
+        if (in_array($analyzer->getId(), $disabledAnalyzers, true)) {
+            return 'Disabled in configuration';
+        }
+
+        // Check CI mode
+        if ($isCiMode) {
+            if (! empty($ciAnalyzers)) {
+                if (! in_array($analyzer->getId(), $ciAnalyzers, true)) {
+                    return 'Not in CI mode whitelist';
+                }
+            } else {
+                $analyzerClass = get_class($analyzer);
+                if (property_exists($analyzerClass, 'runInCI') && ! $analyzerClass::$runInCI) {
+                    return 'Not applicable in CI environment';
+                }
+                if (in_array($analyzer->getId(), $ciExcludeAnalyzers, true)) {
+                    return 'Excluded from CI mode';
+                }
+            }
+        }
+
+        // Check enabled categories
+        $category = $analyzer->getMetadata()->category->value;
+        if (! empty($enabledCategories) && ! in_array($category, $enabledCategories, true)) {
+            return 'Category not enabled';
+        }
+
+        // Check shouldRun
+        if (! $analyzer->shouldRun()) {
+            return 'Not applicable in current environment or configuration';
+        }
+
+        return 'Unknown reason';
     }
 
     /**

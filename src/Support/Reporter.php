@@ -68,6 +68,14 @@ class Reporter implements ReporterInterface
 
                 $output[] = $this->color("Check {$current}/{$total}: ", 'yellow')."{$name}. {$status}";
 
+                // Show skip reason for skipped analyzers
+                if ($result->getStatus()->value === 'skipped') {
+                    $output[] = $this->color("  ⊝ {$result->getMessage()}", 'gray');
+                    $output[] = '';
+
+                    continue;
+                }
+
                 // Show detailed info for failed/warning analyzers
                 if ($result->getStatus()->value === 'failed' || $result->getStatus()->value === 'warning') {
                     // Use bold for critical failures

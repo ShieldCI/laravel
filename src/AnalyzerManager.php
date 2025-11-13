@@ -57,11 +57,8 @@ class AnalyzerManager
         /** @var array<string> $ciExcludeAnalyzers */
         $ciExcludeAnalyzers = is_array($ciExcludeAnalyzersConfig) ? $ciExcludeAnalyzersConfig : [];
 
-        // Environment-specific configuration
-        $skipEnvSpecific = $this->config->get('shieldci.skip_env_specific', false);
-
         return collect($this->analyzerClasses)
-            ->map(function (string $class) use ($skipEnvSpecific): AnalyzerInterface {
+            ->map(function (string $class): AnalyzerInterface {
                 /** @var AnalyzerInterface $analyzer */
                 $analyzer = $this->container->make($class);
 
@@ -84,11 +81,6 @@ class AnalyzerManager
                     if (is_array($excludedPaths)) {
                         $analyzer->setExcludePatterns($excludedPaths);
                     }
-                }
-
-                // Pass skip_env_specific to analyzer if it supports it
-                if ($skipEnvSpecific && method_exists($analyzer, 'setSkipEnvSpecific')) {
-                    $analyzer->setSkipEnvSpecific($skipEnvSpecific);
                 }
 
                 return $analyzer;

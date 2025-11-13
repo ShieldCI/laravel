@@ -58,14 +58,6 @@ class DeadCodeAnalyzer extends AbstractFileAnalyzer
         );
     }
 
-    public function shouldRun(): bool
-    {
-        // Check if PHPStan is available
-        $runner = new PHPStanRunner($this->basePath);
-
-        return $runner->isAvailable();
-    }
-
     protected function runAnalysis(): ResultInterface
     {
         $runner = new PHPStanRunner($this->basePath);

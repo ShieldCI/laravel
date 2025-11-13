@@ -24,13 +24,14 @@
         "illuminate/contracts": "^9.0|^10.0|^11.0|^12.0",
         "illuminate/http": "^9.0|^10.0|^11.0|^12.0",
         "illuminate/support": "^9.0|^10.0|^11.0|^12.0",
+        "larastan/larastan": "^2.0",
+        "phpstan/phpstan": "^1.10",
         "shieldci/analyzers-core": "^0.1"
     },
     "require-dev": {
         "phpunit/phpunit": "^10.0",
         "orchestra/testbench": "^8.0|^9.0",
         "mockery/mockery": "^1.6",
-        "phpstan/phpstan": "^1.10",
         "laravel/pint": "^1.13"
     },
     "autoload": {

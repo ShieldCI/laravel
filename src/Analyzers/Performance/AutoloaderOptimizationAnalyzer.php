@@ -137,21 +137,4 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
         // Check if setClassMapAuthoritative is called
         return str_contains($content, 'setClassMapAuthoritative(true)');
     }
-
-    private function getEnvironment(): string
-    {
-        $envFile = $this->basePath.'/.env';
-
-        if (! file_exists($envFile)) {
-            return 'production';
-        }
-
-        $content = file_get_contents($envFile);
-
-        if (preg_match('/^APP_ENV\s*=\s*(\w+)/m', $content, $matches)) {
-            return $matches[1];
-        }
-
-        return 'production';
-    }
 }

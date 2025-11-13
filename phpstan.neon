@@ -5,6 +5,10 @@ parameters:
         - tests
     tmpDir: build/phpstan
     treatPhpDocTypesAsCertain: false
+    # Include analyzers-core base classes for proper inheritance analysis
+    scanFiles:
+        - vendor/shieldci/analyzers-core/src/Abstracts/AbstractFileAnalyzer.php
+        - vendor/shieldci/analyzers-core/src/Abstracts/AbstractAnalyzer.php
 
     ignoreErrors:
         # Test files - AnalyzerInterface doesn't have setBasePath/setPaths, but concrete implementations do

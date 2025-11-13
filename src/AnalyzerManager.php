@@ -407,7 +407,29 @@ class AnalyzerManager
         $analyzer = $this->getAnalyzers()
             ->first(fn (AnalyzerInterface $a) => $a->getId() === $analyzerId);
 
-        return $analyzer?->analyze();
+        if ($analyzer === null) {
+            return null;
+        }
+
+        $result = $analyzer->analyze();
+        $metadata = $analyzer->getMetadata();
+
+        // Enrich result with analyzer metadata (same as runAll)
+        return new AnalysisResult(
+            analyzerId: $result->getAnalyzerId(),
+            status: $result->getStatus(),
+            message: $result->getMessage(),
+            issues: $result->getIssues(),
+            executionTime: $result->getExecutionTime(),
+            metadata: [
+                'id' => $metadata->id,
+                'name' => $metadata->name,
+                'description' => $metadata->description,
+                'category' => $metadata->category,
+                'severity' => $metadata->severity,
+                'docsUrl' => $metadata->docsUrl,
+            ],
+        );
     }
 
     /**

@@ -42,12 +42,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
     public function shouldRun(): bool
     {
         // Skip if user configured to skip in local environment
-        if ($this->isLocalAndShouldSkip()) {
-            return false;
-        }
-
-        // Check other conditions
-        return file_exists($this->basePath.'/vendor/autoload.php');
+        return ! $this->isLocalAndShouldSkip();
     }
 
     protected function runAnalysis(): ResultInterface

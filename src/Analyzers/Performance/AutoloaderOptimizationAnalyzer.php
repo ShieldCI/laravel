@@ -41,10 +41,13 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        $environment = $this->getEnvironment();
+        // Skip if user configured to skip in local environment
+        if ($this->isLocalAndShouldSkip()) {
+            return false;
+        }
 
-        // Skip in local environment
-        return $environment !== 'local' && file_exists($this->basePath.'/vendor/autoload.php');
+        // Check other conditions
+        return file_exists($this->basePath.'/vendor/autoload.php');
     }
 
     protected function runAnalysis(): ResultInterface
@@ -136,22 +139,5 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
 
         // Check if setClassMapAuthoritative is called
         return str_contains($content, 'setClassMapAuthoritative(true)');
-    }
-
-    private function getEnvironment(): string
-    {
-        $envFile = $this->basePath.'/.env';
-
-        if (! file_exists($envFile)) {
-            return 'production';
-        }
-
-        $content = file_get_contents($envFile);
-
-        if (preg_match('/^APP_ENV\s*=\s*(\w+)/m', $content, $matches)) {
-            return $matches[1];
-        }
-
-        return 'production';
     }
 }

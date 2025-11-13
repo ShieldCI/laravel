@@ -41,10 +41,13 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        $environment = $this->getEnvironment();
+        // Skip if user configured to skip in local environment
+        if ($this->isLocalAndShouldSkip()) {
+            return false;
+        }
 
-        // Only run in non-local environments
-        return $environment !== 'local' && file_exists($this->basePath.'/public');
+        // Check other conditions
+        return file_exists($this->basePath.'/public');
     }
 
     protected function runAnalysis(): ResultInterface
@@ -217,26 +220,5 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
 
         // If average line length is less than 500 chars, likely not minified
         return $avgLineLength < 500;
-    }
-
-    private function getEnvironment(): string
-    {
-        $envFile = $this->basePath.'/.env';
-
-        if (! file_exists($envFile)) {
-            return 'production';
-        }
-
-        $content = file_get_contents($envFile);
-
-        if ($content === false) {
-            return 'production';
-        }
-
-        if (preg_match('/^APP_ENV\s*=\s*(\w+)/m', $content, $matches)) {
-            return $matches[1];
-        }
-
-        return 'production';
     }
 }

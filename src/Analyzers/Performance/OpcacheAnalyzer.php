@@ -41,10 +41,8 @@ class OpcacheAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        $environment = $this->getEnvironment();
-
-        // Only check in production/staging environments
-        return $environment !== 'local' && $environment !== 'testing';
+        // Skip if user configured to skip in local environment
+        return ! $this->isLocalAndShouldSkip();
     }
 
     protected function runAnalysis(): ResultInterface
@@ -152,26 +150,5 @@ class OpcacheAnalyzer extends AbstractFileAnalyzer
                 ]
             );
         }
-    }
-
-    private function getEnvironment(): string
-    {
-        $envFile = $this->basePath.'/.env';
-
-        if (! file_exists($envFile)) {
-            return 'production';
-        }
-
-        $content = file_get_contents($envFile);
-
-        if ($content === false) {
-            return 'production';
-        }
-
-        if (preg_match('/^APP_ENV\s*=\s*(\w+)/m', $content, $matches)) {
-            return $matches[1];
-        }
-
-        return 'production';
     }
 }

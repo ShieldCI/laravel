@@ -59,6 +59,9 @@ class AnalyzeCommand extends Command
         // Generate report
         $report = $reporter->generate($results);
 
+        // Filter against ignore_errors config (always applied)
+        $report = $this->filterAgainstIgnoreErrors($report);
+
         // Filter against baseline if requested
         if ($this->option('baseline')) {
             $report = $this->filterAgainstBaseline($report);
@@ -139,9 +142,22 @@ class AnalyzeCommand extends Command
             return self::SUCCESS;
         }
 
-        // Get don't report analyzers
+        // Get don't report analyzers (from config and baseline if using baseline)
         $dontReportConfig = config('shieldci.dont_report', []);
         $dontReport = is_array($dontReportConfig) ? $dontReportConfig : [];
+
+        // If baseline was used, merge with baseline's dont_report
+        if ($this->option('baseline')) {
+            $baselineFileRaw = config('shieldci.baseline_file');
+            $baselineFile = is_string($baselineFileRaw) ? $baselineFileRaw : null;
+
+            if ($baselineFile && file_exists($baselineFile)) {
+                $baseline = json_decode(file_get_contents($baselineFile), true);
+                if (is_array($baseline) && isset($baseline['dont_report']) && is_array($baseline['dont_report'])) {
+                    $dontReport = array_values(array_unique(array_merge($dontReport, $baseline['dont_report'])));
+                }
+            }
+        }
 
         // Filter out analyzers in dont_report list
         $criticalResults = $report->failed()->filter(function ($result) use ($dontReport) {
@@ -175,6 +191,63 @@ class AnalyzeCommand extends Command
     }
 
     /**
+     * Filter report against ignore_errors config.
+     */
+    protected function filterAgainstIgnoreErrors(AnalysisReport $report): AnalysisReport
+    {
+        $configIgnoreErrors = config('shieldci.ignore_errors', []);
+        $configIgnoreErrors = is_array($configIgnoreErrors) ? $configIgnoreErrors : [];
+
+        if (empty($configIgnoreErrors)) {
+            return $report;
+        }
+
+        // Filter results
+        $filteredResults = $report->results->map(function ($result) use ($configIgnoreErrors) {
+            $analyzerId = $result->getAnalyzerId();
+
+            // If no ignore_errors for this analyzer, return as-is
+            if (! isset($configIgnoreErrors[$analyzerId])) {
+                return $result;
+            }
+
+            $currentIssues = $result->getIssues();
+
+            // Filter out issues that match ignore_errors config
+            $newIssues = collect($currentIssues)->filter(function ($issue) use ($configIgnoreErrors, $analyzerId) {
+                if ($this->matchesIgnoreError($issue, $configIgnoreErrors[$analyzerId])) {
+                    return false; // Issue matches ignore_errors, filter it out
+                }
+
+                return true; // Keep issue
+            });
+
+            // Create new result with filtered issues
+            $status = $newIssues->isEmpty()
+                ? \ShieldCI\AnalyzersCore\Enums\Status::Passed
+                : $result->getStatus();
+
+            return new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
+                analyzerId: $result->getAnalyzerId(),
+                status: $status,
+                message: $newIssues->isEmpty() ? 'All issues are ignored via config' : $result->getMessage(),
+                issues: $newIssues->all(),
+                executionTime: $result->getExecutionTime(),
+                metadata: $result->getMetadata(),
+            );
+        });
+
+        // Return new report with filtered results
+        return new AnalysisReport(
+            laravelVersion: $report->laravelVersion,
+            packageVersion: $report->packageVersion,
+            results: $filteredResults,
+            totalExecutionTime: $report->totalExecutionTime,
+            analyzedAt: $report->analyzedAt,
+        );
+    }
+
+    /**
      * Filter report against baseline to show only new issues.
      */
     protected function filterAgainstBaseline(AnalysisReport $report): AnalysisReport
@@ -188,12 +261,36 @@ class AnalyzeCommand extends Command
             return $report;
         }
 
-        $baseline = json_decode(file_get_contents($baselineFile), true);
-        $baselineErrors = $baseline['errors'] ?? [];
+        $baselineRaw = json_decode(file_get_contents($baselineFile), true);
+        /** @var array<string, mixed>|null $baseline */
+        $baseline = is_array($baselineRaw) ? $baselineRaw : null;
+
+        // Validate baseline structure
+        if (! $this->validateBaseline($baseline)) {
+            return $report;
+        }
+
+        /** @var array<string, array<int, array<string, mixed>>> $baselineErrors */
+        $baselineErrors = is_array($baseline) && isset($baseline['errors']) && is_array($baseline['errors'])
+            ? $baseline['errors']
+            : [];
+
+        /** @var array<int, string> $baselineDontReport */
+        $baselineDontReport = is_array($baseline) && isset($baseline['dont_report']) && is_array($baseline['dont_report'])
+            ? $baseline['dont_report']
+            : [];
+
+        // Merge baseline dont_report with config dont_report
+        $configDontReport = config('shieldci.dont_report', []);
+        $configDontReport = is_array($configDontReport) ? $configDontReport : [];
+        $allDontReport = array_values(array_unique(array_merge($baselineDontReport, $configDontReport)));
 
         $this->info('📋 Filtering against baseline...');
+        if (count($baselineDontReport) > 0) {
+            $this->line('   ⚠️  Using '.count($baselineDontReport).' analyzer(s) from baseline dont_report');
+        }
 
-        // Filter results
+        // Filter results (ignore_errors already filtered in filterAgainstIgnoreErrors)
         $filteredResults = $report->results->map(function ($result) use ($baselineErrors) {
             $analyzerId = $result->getAnalyzerId();
 
@@ -207,11 +304,10 @@ class AnalyzeCommand extends Command
 
             // Filter out issues that exist in baseline
             $newIssues = collect($currentIssues)->filter(function ($issue) use ($baselineIssues) {
-                $issueHash = $this->generateIssueHash($issue);
-
+                /** @var array<int, array<string, mixed>> $baselineIssues */
                 foreach ($baselineIssues as $baselineIssue) {
-                    if (isset($baselineIssue['hash']) && $baselineIssue['hash'] === $issueHash) {
-                        return false; // Issue exists in baseline, filter it out
+                    if (is_array($baselineIssue) && $this->matchesBaselineIssue($issue, $baselineIssue)) {
+                        return false; // Issue matches baseline, filter it out
                     }
                 }
 
@@ -241,6 +337,169 @@ class AnalyzeCommand extends Command
             totalExecutionTime: $report->totalExecutionTime,
             analyzedAt: $report->analyzedAt,
         );
+    }
+
+    /**
+     * Check if an issue matches an ignore_errors config entry.
+     *
+     * @param  array<int, array<string, mixed>>  $ignoreErrors
+     */
+    private function matchesIgnoreError(\ShieldCI\AnalyzersCore\ValueObjects\Issue $issue, array $ignoreErrors): bool
+    {
+        if (! is_array($ignoreErrors)) {
+            return false;
+        }
+
+        $issuePath = $issue->location->file ?? 'unknown';
+        $issueMessage = $issue->message;
+
+        foreach ($ignoreErrors as $ignoreError) {
+            if (! is_array($ignoreError)) {
+                continue;
+            }
+
+            $pathMatches = true;
+            $messageMatches = true;
+
+            // Check path (supports exact match or pattern)
+            if (isset($ignoreError['path']) && is_string($ignoreError['path'])) {
+                $ignorePath = $ignoreError['path'];
+                $normalizedIssuePath = str_replace('\\', '/', $issuePath);
+                $normalizedIgnorePath = str_replace('\\', '/', $ignorePath);
+
+                // Try exact match first
+                if ($ignorePath === $issuePath || $normalizedIgnorePath === $normalizedIssuePath) {
+                    $pathMatches = true;
+                } elseif ((isset($ignoreError['path_pattern']) && is_string($ignoreError['path_pattern'])) || str_contains($ignorePath, '*')) {
+                    // Pattern matching (glob or Str::is)
+                    $pattern = (isset($ignoreError['path_pattern']) && is_string($ignoreError['path_pattern']))
+                        ? $ignoreError['path_pattern']
+                        : $ignorePath;
+                    if (is_string($pattern)) {
+                        $pathMatches = fnmatch($pattern, $issuePath) ||
+                                     fnmatch($pattern, $normalizedIssuePath) ||
+                                     \Illuminate\Support\Str::is($pattern, $issuePath);
+                    } else {
+                        $pathMatches = false;
+                    }
+                } else {
+                    $pathMatches = false;
+                }
+            }
+
+            // Check message (supports exact match or pattern)
+            if (isset($ignoreError['message']) && is_string($ignoreError['message'])) {
+                $ignoreMessage = $ignoreError['message'];
+                if ($ignoreMessage === $issueMessage) {
+                    $messageMatches = true;
+                } elseif ((isset($ignoreError['message_pattern']) && is_string($ignoreError['message_pattern'])) || str_contains($ignoreMessage, '*')) {
+                    // Pattern matching (Laravel Str::is)
+                    $pattern = (isset($ignoreError['message_pattern']) && is_string($ignoreError['message_pattern']))
+                        ? $ignoreError['message_pattern']
+                        : $ignoreMessage;
+                    if (is_string($pattern)) {
+                        $messageMatches = \Illuminate\Support\Str::is($pattern, $issueMessage);
+                    } else {
+                        $messageMatches = false;
+                    }
+                } else {
+                    $messageMatches = false;
+                }
+            }
+
+            // Both path and message must match (if both are specified)
+            if ($pathMatches && $messageMatches) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if an issue matches a baseline entry.
+     *
+     * @param  array<string, mixed>  $baselineIssue
+     */
+    private function matchesBaselineIssue(\ShieldCI\AnalyzersCore\ValueObjects\Issue $issue, array $baselineIssue): bool
+    {
+        if (! is_array($baselineIssue)) {
+            return false;
+        }
+
+        $issuePath = $issue->location->file ?? 'unknown';
+        $issueMessage = $issue->message;
+
+        // Type 1: Hash-based matching (exact, most precise)
+        if (isset($baselineIssue['hash'])) {
+            $issueHash = $this->generateIssueHash($issue);
+            if ($baselineIssue['hash'] === $issueHash) {
+                return true;
+            }
+        }
+
+        // Type 2: Pattern-based matching (flexible)
+        if (isset($baselineIssue['type']) && $baselineIssue['type'] === 'pattern') {
+            $pathMatches = true;
+            $messageMatches = true;
+
+            // Check path pattern
+            if (isset($baselineIssue['path_pattern']) && is_string($baselineIssue['path_pattern'])) {
+                $normalizedIssuePath = str_replace('\\', '/', $issuePath);
+                $pathPattern = $baselineIssue['path_pattern'];
+                $pathMatches = fnmatch($pathPattern, $issuePath) ||
+                              fnmatch($pathPattern, $normalizedIssuePath);
+            } elseif (isset($baselineIssue['path']) && is_string($baselineIssue['path'])) {
+                $pathMatches = $baselineIssue['path'] === $issuePath;
+            }
+
+            // Check message pattern
+            if (isset($baselineIssue['message_pattern']) && is_string($baselineIssue['message_pattern'])) {
+                $messagePattern = $baselineIssue['message_pattern'];
+                $messageMatches = \Illuminate\Support\Str::is($messagePattern, $issueMessage);
+            } elseif (isset($baselineIssue['message']) && is_string($baselineIssue['message'])) {
+                $messageMatches = $baselineIssue['message'] === $issueMessage;
+            }
+
+            return $pathMatches && $messageMatches;
+        }
+
+        // Type 3: Legacy format (backward compatibility - hash only)
+        // This is handled by the hash check above
+
+        return false;
+    }
+
+    /**
+     * Validate baseline file structure.
+     *
+     * @param  array<string, mixed>|null  $baseline
+     */
+    private function validateBaseline(?array $baseline): bool
+    {
+        if (! is_array($baseline)) {
+            $this->error('❌ Invalid baseline: file is not valid JSON or is empty');
+
+            return false;
+        }
+
+        $required = ['generated_at', 'version', 'errors'];
+
+        foreach ($required as $key) {
+            if (! isset($baseline[$key])) {
+                $this->error("❌ Invalid baseline: missing '{$key}' field");
+
+                return false;
+            }
+        }
+
+        if (! is_array($baseline['errors'])) {
+            $this->error("❌ Invalid baseline: 'errors' must be an array");
+
+            return false;
+        }
+
+        return true;
     }
 
     /**

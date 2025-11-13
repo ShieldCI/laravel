@@ -15,7 +15,7 @@ class AutoloaderOptimizationAnalyzerTest extends AnalyzerTestCase
         return new AutoloaderOptimizationAnalyzer;
     }
 
-    public function test_skips_in_local_environment(): void
+    public function test_runs_in_local_environment_by_default(): void
     {
         $envContent = 'APP_ENV=local';
 
@@ -29,7 +29,9 @@ class AutoloaderOptimizationAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertSkipped($result);
+        // Analyzer should run in local by default (not skip)
+        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertNotEquals('skipped', $result->getStatus()->value);
     }
 
     public function test_skips_when_vendor_not_found(): void

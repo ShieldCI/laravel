@@ -76,8 +76,14 @@ php artisan shield:analyze --output=report.json
 #### Baseline Support (Gradual Adoption)
 Generate a baseline to suppress existing issues and only catch new ones:
 ```bash
-# Generate baseline from current state
+# Generate baseline from current state (all analyzers, respects config)
 php artisan shield:baseline
+
+# Generate baseline for CI mode (only CI-compatible analyzers)
+php artisan shield:baseline --ci
+
+# Merge with existing baseline
+php artisan shield:baseline --merge
 
 # Analyze against baseline (only NEW issues reported)
 php artisan shield:analyze --baseline
@@ -106,7 +112,7 @@ Run informational analyzers without failing CI:
 ```
 
 #### Environment Control
-Force-run all analyzers regardless of environment:
+Exclude checks specific to non-local environments when running in local:
 ```bash
 SHIELDCI_SKIP_ENV_SPECIFIC=true php artisan shield:analyze
 ```

@@ -41,6 +41,11 @@ class OpcacheAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
+        // Skip in local environment if configured
+        if ($this->isLocalAndShouldSkip()) {
+            return false;
+        }
+
         $environment = $this->getEnvironment();
 
         // Only check in production/staging environments

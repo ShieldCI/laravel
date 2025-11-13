@@ -42,6 +42,11 @@ class CacheHeaderAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
+        // Skip in local environment if configured
+        if ($this->isLocalAndShouldSkip()) {
+            return false;
+        }
+
         $environment = $this->getEnvironment();
 
         // Skip in local environment

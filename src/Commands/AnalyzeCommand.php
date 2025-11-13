@@ -95,11 +95,15 @@ class AnalyzeCommand extends Command
         }
 
         if ($category = $this->option('category')) {
-            $this->line("Running {$category} analyzers...");
             $analyzers = $manager->getByCategory($category);
+            $totalCount = $manager->count(); // Total registered analyzers
+            $enabledCount = $analyzers->count();
+            $this->line("Running {$category} analyzers... ({$enabledCount}/{$totalCount})");
         } else {
-            $this->line('Running all analyzers...');
             $analyzers = $manager->getAnalyzers();
+            $totalCount = $manager->count(); // Total registered analyzers
+            $enabledCount = $analyzers->count();
+            $this->line("Running all analyzers... ({$enabledCount}/{$totalCount})");
         }
 
         $this->withProgressBar($analyzers, function ($analyzer) {

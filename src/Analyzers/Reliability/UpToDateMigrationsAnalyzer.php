@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Reliability;
 
-use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\Artisan;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;

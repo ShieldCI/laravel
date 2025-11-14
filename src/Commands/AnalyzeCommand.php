@@ -125,12 +125,17 @@ class AnalyzeCommand extends Command
             $analyzers = $manager->getAnalyzers();
             $totalCount = $manager->count(); // Total registered analyzers
             $enabledCount = $analyzers->count();
+
             // Get actual skipped count (may differ from calculated due to instantiation failures)
+            // Note: The final Report Card may show more "Not Applicable" than this count because
+            // some analyzers may return Status::Skipped at runtime (via shouldRun() or conditional logic).
+            // This count only reflects analyzers pre-filtered before execution.
             $skippedCount = $manager->getSkippedAnalyzers()->count();
+
             if ($skippedCount > 0) {
-                $this->line("Running all analyzers... ({$enabledCount} running, {$skippedCount} skipped, {$totalCount} total)");
+                $this->line("Running {$enabledCount} of {$totalCount} analyzers ({$skippedCount} pre-filtered)...");
             } else {
-                $this->line("Running all analyzers... ({$enabledCount}/{$totalCount})");
+                $this->line("Running all {$enabledCount} analyzers...");
             }
         }
 

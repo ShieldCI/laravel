@@ -257,7 +257,6 @@ class AnalyzerManager
                     return null;
                 }
             })
-            ->filter()
             ->filter(function (?AnalyzerInterface $analyzer) use ($runningAnalyzerIds, $disabledAnalyzers, $enabledCategories, $isCiMode, $ciAnalyzers, $ciExcludeAnalyzers): bool {
                 if ($analyzer === null) {
                     return false;

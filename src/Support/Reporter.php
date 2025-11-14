@@ -381,6 +381,20 @@ class Reporter implements ReporterInterface
         $failedRow .= str_pad("  {$totalFailed}  ({$totalPct}%)", 12).'|';
         $table[] = $failedRow;
 
+        // Warning row
+        $warningRow = '| Warning        |';
+        $totalWarnings = 0;
+        foreach ($categories as $category) {
+            $warnings = $stats[$category]['warning'];
+            $total = $stats[$category]['total'];
+            $pct = $total > 0 ? round(($warnings / $total) * 100) : 0;
+            $warningRow .= str_pad("    {$warnings}   ({$pct}%)", 16).'|';
+            $totalWarnings += $warnings;
+        }
+        $totalPct = $totalAll > 0 ? round(($totalWarnings / $totalAll) * 100) : 0;
+        $warningRow .= str_pad("  {$totalWarnings}  ({$totalPct}%)", 12).'|';
+        $table[] = $warningRow;
+
         // Not Applicable row
         $skippedRow = '| Not Applicable |';
         $totalSkipped = 0;

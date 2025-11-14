@@ -39,12 +39,6 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractFileAnalyzer
         );
     }
 
-    public function shouldRun(): bool
-    {
-        // Always run - middleware is core to Laravel
-        return true;
-    }
-
     protected function runAnalysis(): ResultInterface
     {
         $kernelPath = $this->basePath.'/app/Http/Kernel.php';

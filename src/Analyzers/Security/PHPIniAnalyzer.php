@@ -52,6 +52,12 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
         );
     }
 
+    public function shouldRun(): bool
+    {
+        // Skip if user configured to skip in local environment
+        return ! $this->isLocalAndShouldSkip();
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];

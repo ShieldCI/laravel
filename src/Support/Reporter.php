@@ -136,8 +136,8 @@ class Reporter implements ReporterInterface
         }
 
         // Report Card
-        $output[] = 'Report Card';
-        $output[] = '===========';
+        $output[] = $this->color('Report Card', 'bright_yellow');
+        $output[] = $this->color('===========', 'bright_yellow');
         $output[] = '';
         $output[] = $this->generateReportCard($report, $byCategory);
         $output[] = '';
@@ -255,6 +255,40 @@ class Reporter implements ReporterInterface
     }
 
     /**
+     * Get visible width of a string (strips ANSI color codes).
+     */
+    private function visibleWidth(string $text): int
+    {
+        // Remove ANSI escape sequences
+        $stripped = preg_replace('/\033\[[0-9;]*m/', '', $text);
+        if (! is_string($stripped)) {
+            $stripped = '';
+        }
+
+        return mb_strwidth($stripped, 'UTF-8');
+    }
+
+    /**
+     * Pad a string to a specific visible width (accounts for ANSI codes).
+     */
+    private function padVisible(string $text, int $width, string $padString = ' ', int $padType = STR_PAD_RIGHT): string
+    {
+        $visibleLen = $this->visibleWidth($text);
+        $paddingNeeded = max(0, $width - $visibleLen);
+
+        if ($padType === STR_PAD_LEFT) {
+            return str_repeat($padString, $paddingNeeded).$text;
+        } elseif ($padType === STR_PAD_BOTH) {
+            $left = (int) floor($paddingNeeded / 2);
+            $right = $paddingNeeded - $left;
+
+            return str_repeat($padString, $left).$text.str_repeat($padString, $right);
+        }
+
+        return $text.str_repeat($padString, $paddingNeeded);
+    }
+
+    /**
      * Make text italic.
      */
     private function italic(string $text): string
@@ -285,7 +319,15 @@ class Reporter implements ReporterInterface
         // Header
         $categories = array_keys($byCategory);
         $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';
-        $table[] = '| Status         |'.implode('|', array_map(fn ($c) => str_pad(' '.$c, 16), $categories)).'|     Total  |';
+
+        // Build header row with colored labels
+        $statusCell = $this->padVisible(' '.$this->color('Status', 'green'), 16);
+        $categoryCells = array_map(function ($c) {
+            return $this->padVisible(' '.$this->color($c, 'green'), 16);
+        }, $categories);
+        $totalCell = $this->padVisible('     '.$this->color('Total', 'green'), 12);
+
+        $table[] = '|'.$statusCell.'|'.implode('|', $categoryCells).'|'.$totalCell.'|';
         $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';
 
         // Calculate stats per category

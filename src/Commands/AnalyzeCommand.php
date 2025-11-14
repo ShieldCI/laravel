@@ -133,7 +133,7 @@ class AnalyzeCommand extends Command
             $skippedCount = $manager->getSkippedAnalyzers()->count();
 
             if ($skippedCount > 0) {
-                $this->line("Running {$enabledCount} of {$totalCount} analyzers ({$skippedCount} pre-filtered)...");
+                $this->line("Running {$enabledCount} of {$totalCount} analyzers ({$skippedCount} skipped)...");
             } else {
                 $this->line("Running all {$enabledCount} analyzers...");
             }

@@ -12,8 +12,6 @@ use ReflectionClass;
 
 /**
  * Provides methods for analyzing middleware usage in the application.
- *
- * Inspired by Enlightn's AnalyzesMiddleware concern.
  */
 trait AnalyzesMiddleware
 {

@@ -20,7 +20,7 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 /**
  * Checks for custom error pages using runtime exception rendering.
  *
- * Inspired by Enlightn's approach, this analyzer:
+ * This analyzer:
  * - Checks all configured view paths (not just default)
  * - Detects custom error view namespaces
  * - Actually renders a 404 exception to test if custom pages are used

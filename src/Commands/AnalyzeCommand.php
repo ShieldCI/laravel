@@ -7,6 +7,7 @@ namespace ShieldCI\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzerManager;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\ValueObjects\AnalysisReport;
 
@@ -103,12 +104,34 @@ class AnalyzeCommand extends Command
             $analyzers = $manager->getByCategory($category);
             $totalCount = $manager->count(); // Total registered analyzers
             $enabledCount = $analyzers->count();
-            $this->line("Running {$category} analyzers... ({$enabledCount}/{$totalCount})");
+            // Get actual skipped count (may differ from calculated due to instantiation failures)
+            $skippedCount = $manager->getSkippedAnalyzers()
+                ->filter(function (ResultInterface $result) use ($category): bool {
+                    $metadata = $result->getMetadata();
+                    $resultCategory = $metadata['category'] ?? 'Unknown';
+                    if (is_object($resultCategory) && isset($resultCategory->value)) {
+                        $resultCategory = $resultCategory->value;
+                    }
+
+                    return is_string($resultCategory) && strtolower($resultCategory) === strtolower($category);
+                })
+                ->count();
+            if ($skippedCount > 0) {
+                $this->line("Running {$category} analyzers... ({$enabledCount} running, {$skippedCount} skipped, {$totalCount} total)");
+            } else {
+                $this->line("Running {$category} analyzers... ({$enabledCount}/{$totalCount})");
+            }
         } else {
             $analyzers = $manager->getAnalyzers();
             $totalCount = $manager->count(); // Total registered analyzers
             $enabledCount = $analyzers->count();
-            $this->line("Running all analyzers... ({$enabledCount}/{$totalCount})");
+            // Get actual skipped count (may differ from calculated due to instantiation failures)
+            $skippedCount = $manager->getSkippedAnalyzers()->count();
+            if ($skippedCount > 0) {
+                $this->line("Running all analyzers... ({$enabledCount} running, {$skippedCount} skipped, {$totalCount} total)");
+            } else {
+                $this->line("Running all analyzers... ({$enabledCount}/{$totalCount})");
+            }
         }
 
         $this->withProgressBar($analyzers, function ($analyzer) {

@@ -216,6 +216,7 @@ class Reporter implements ReporterInterface
             'magenta' => '0;35',
             'cyan' => '0;36',
             'white' => '0;37',
+            'gray' => '0;90',
             'bright_red' => '1;31',
             'bright_green' => '1;32',
             'bright_yellow' => '1;33',

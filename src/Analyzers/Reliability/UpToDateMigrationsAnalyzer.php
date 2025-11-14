@@ -41,23 +41,6 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
         );
     }
 
-    public function shouldRun(): bool
-    {
-        // Don't run in local development where pending migrations are normal
-        $app = app();
-        if (! $app instanceof Application) {
-            return true;
-        }
-
-        $environment = $app->environment();
-
-        if (in_array($environment, ['local', 'testing'])) {
-            return false;
-        }
-
-        return true;
-    }
-
     protected function runAnalysis(): ResultInterface
     {
         try {

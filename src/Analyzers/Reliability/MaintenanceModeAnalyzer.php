@@ -36,23 +36,6 @@ class MaintenanceModeAnalyzer extends AbstractFileAnalyzer
         );
     }
 
-    public function shouldRun(): bool
-    {
-        // Only check in production
-        $app = app();
-        if (! $app instanceof Application) {
-            return true;
-        }
-
-        $environment = $app->environment();
-
-        if (in_array($environment, ['local', 'testing'])) {
-            return false;
-        }
-
-        return true;
-    }
-
     protected function runAnalysis(): ResultInterface
     {
         if (App::isDownForMaintenance()) {

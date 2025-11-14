@@ -57,6 +57,18 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
         return $driver === 'redis';
     }
 
+    public function getSkipReason(): string
+    {
+        $defaultStore = config('cache.default');
+        if (! is_string($defaultStore)) {
+            return 'Default cache store not configured';
+        }
+
+        $driver = config("cache.stores.{$defaultStore}.driver");
+
+        return "Not using Redis cache driver (current: {$driver})";
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         // Check if lock_connection is configured separately (Laravel 8.20+)

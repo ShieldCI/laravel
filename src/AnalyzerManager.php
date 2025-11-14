@@ -390,9 +390,11 @@ class AnalyzerManager
             return 'Category not enabled';
         }
 
-        // Check shouldRun
+        // Check shouldRun - use analyzer's custom skip reason
         if (! $analyzer->shouldRun()) {
-            return 'Not applicable in current environment or configuration';
+            return method_exists($analyzer, 'getSkipReason')
+                ? $analyzer->getSkipReason()
+                : 'Analyzer conditions not met';
         }
 
         return 'Unknown reason';

@@ -94,6 +94,18 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
         return true;
     }
 
+    public function getSkipReason(): string
+    {
+        $url = $this->findLoginRoute();
+
+        if ($url === null) {
+            return 'No guest URL found for HTTP accessibility check';
+        }
+
+        // Otherwise, provide specific reason about localhost URLs
+        return 'Skipped for localhost URLs (local development environment)';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];

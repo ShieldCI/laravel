@@ -40,6 +40,11 @@ class CacheDriverAnalyzer extends AbstractFileAnalyzer
         return file_exists($this->getConfigPath('cache.php'));
     }
 
+    public function getSkipReason(): string
+    {
+        return 'Cache configuration file (config/cache.php) not found';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];

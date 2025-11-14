@@ -45,6 +45,11 @@ class OpcacheAnalyzer extends AbstractFileAnalyzer
         return ! $this->isLocalAndShouldSkip();
     }
 
+    public function getSkipReason(): string
+    {
+        return 'Skipped in local environment (configured)';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];

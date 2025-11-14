@@ -43,23 +43,41 @@ class CacheHeaderAnalyzer extends AbstractFileAnalyzer
     public function shouldRun(): bool
     {
         // Skip if user configured to skip in local environment
-        return ! $this->isLocalAndShouldSkip();
-    }
+        if ($this->isLocalAndShouldSkip()) {
+            return false;
+        }
 
-    protected function runAnalysis(): ResultInterface
-    {
-        $issues = [];
-
-        // Check for Laravel Mix manifest
+        // Only run if an asset build system is present
         $mixManifestPath = $this->basePath.'/public/mix-manifest.json';
         $viteManifestPath = $this->basePath.'/public/build/manifest.json';
 
         $hasMix = file_exists($mixManifestPath);
         $hasVite = file_exists($viteManifestPath);
 
-        if (! $hasMix && ! $hasVite) {
-            return $this->skipped('No asset build system detected (Laravel Mix or Vite)');
+        return $hasMix || $hasVite;
+    }
+
+    public function getSkipReason(): string
+    {
+        // If configured to skip in local, use default reason
+        if ($this->isLocalAndShouldSkip()) {
+            return 'Skipped in local environment (configured)';
         }
+
+        // Otherwise, provide specific reason about missing build system
+        return 'No asset build system detected (Laravel Mix or Vite)';
+    }
+
+    protected function runAnalysis(): ResultInterface
+    {
+        $issues = [];
+
+        // Determine which build system is present
+        $mixManifestPath = $this->basePath.'/public/mix-manifest.json';
+        $viteManifestPath = $this->basePath.'/public/build/manifest.json';
+
+        $hasMix = file_exists($mixManifestPath);
+        $hasVite = file_exists($viteManifestPath);
 
         // Check for .htaccess or nginx config recommendations
         $hasHtaccess = file_exists($this->basePath.'/public/.htaccess');

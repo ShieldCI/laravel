@@ -44,6 +44,11 @@ class ConfigCachingAnalyzer extends AbstractFileAnalyzer
         return file_exists($this->basePath.'/bootstrap/cache');
     }
 
+    public function getSkipReason(): string
+    {
+        return 'Bootstrap cache directory (bootstrap/cache) not found';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];

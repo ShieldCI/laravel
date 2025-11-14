@@ -52,6 +52,15 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
         return file_exists($this->basePath.'/composer.json');
     }
 
+    public function getSkipReason(): string
+    {
+        if ($this->isLocalAndShouldSkip()) {
+            return 'Skipped in local environment (configured)';
+        }
+
+        return 'Composer configuration file (composer.json) not found';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];

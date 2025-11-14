@@ -46,18 +46,25 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        // Check other conditions
-        return file_exists($this->basePath.'/public');
+        // Only run if public directory exists
+        $publicPath = $this->basePath.'/public';
+
+        return is_dir($publicPath);
+    }
+
+    public function getSkipReason(): string
+    {
+        if ($this->isLocalAndShouldSkip()) {
+            return 'Skipped in local environment (configured)';
+        }
+
+        return 'Public directory (public/) not found';
     }
 
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
         $publicPath = $this->basePath.'/public';
-
-        if (! is_dir($publicPath)) {
-            return $this->skipped('Public directory not found');
-        }
 
         // Check for build directories
         $hasMix = file_exists($publicPath.'/mix-manifest.json');

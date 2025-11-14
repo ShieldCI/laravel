@@ -40,6 +40,11 @@ class SessionDriverAnalyzer extends AbstractFileAnalyzer
         return file_exists($this->getConfigPath('session.php'));
     }
 
+    public function getSkipReason(): string
+    {
+        return 'Session configuration file (config/session.php) not found';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];

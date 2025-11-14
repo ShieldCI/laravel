@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Reliability;
 
+use Illuminate\Filesystem\Filesystem;
 use ShieldCI\Analyzers\Reliability\DirectoryWritePermissionsAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -12,11 +13,12 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 {
     protected function createAnalyzer(): AnalyzerInterface
     {
-        return new DirectoryWritePermissionsAnalyzer;
+        return new DirectoryWritePermissionsAnalyzer(new Filesystem);
     }
 
     public function test_checks_directory_permissions(): void
     {
+        // Create writable directories
         $tempDir = $this->createTempDirectory([
             'storage/app/.gitkeep' => '',
             'storage/framework/cache/.gitkeep' => '',
@@ -26,18 +28,30 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
             'bootstrap/cache/.gitkeep' => '',
         ]);
 
+        // Configure to check these specific directories
+        config(['shieldci.writable_directories' => [
+            $tempDir.'/storage',
+            $tempDir.'/bootstrap/cache',
+        ]]);
+
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
 
         $result = $analyzer->analyze();
 
-        // May pass or fail depending on permissions
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        // Should pass since directories exist and are writable
+        $this->assertPassed($result);
     }
 
     public function test_fails_when_directories_missing(): void
     {
         $tempDir = $this->createTempDirectory([]);
+
+        // Configure to check non-existent directories
+        config(['shieldci.writable_directories' => [
+            $tempDir.'/storage',
+            $tempDir.'/bootstrap/cache',
+        ]]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -45,6 +59,6 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('does not exist', $result);
+        $this->assertHasIssueContaining('not writable', $result);
     }
 }

@@ -136,6 +136,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Writable Directories
+    |--------------------------------------------------------------------------
+    |
+    | Directories that must be writable for the application to function.
+    | Uses Laravel helper functions for path resolution.
+    |
+    */
+
+    'writable_directories' => [
+        storage_path(),
+        base_path('bootstrap/cache'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Reporting Configuration
     |--------------------------------------------------------------------------
     |

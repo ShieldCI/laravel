@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Reliability;
 
+use Illuminate\Filesystem\Filesystem;
+use Illuminate\Support\Str;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -17,47 +19,13 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * Checks for:
  * - storage/ directory is writable
  * - bootstrap/cache/ directory is writable
- * - Proper permissions for application functionality
+ * - Configurable via shieldci.writable_directories
  */
 class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
 {
-    /**
-     * @var array<string, array{description: string, severity: string}>
-     */
-    private array $criticalDirectories = [
-        'storage' => [
-            'description' => 'Required for logs, sessions, cache, and file uploads',
-            'severity' => 'critical',
-        ],
-        'storage/app' => [
-            'description' => 'Required for file storage',
-            'severity' => 'high',
-        ],
-        'storage/framework' => [
-            'description' => 'Required for sessions, cache, and compiled views',
-            'severity' => 'critical',
-        ],
-        'storage/framework/cache' => [
-            'description' => 'Required for file-based cache',
-            'severity' => 'high',
-        ],
-        'storage/framework/sessions' => [
-            'description' => 'Required for file-based sessions',
-            'severity' => 'high',
-        ],
-        'storage/framework/views' => [
-            'description' => 'Required for compiled Blade templates',
-            'severity' => 'critical',
-        ],
-        'storage/logs' => [
-            'description' => 'Required for application logs',
-            'severity' => 'critical',
-        ],
-        'bootstrap/cache' => [
-            'description' => 'Required for configuration and route caching',
-            'severity' => 'critical',
-        ],
-    ];
+    public function __construct(
+        private Filesystem $files
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -72,74 +40,65 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
         );
     }
 
-    public function shouldRun(): bool
-    {
-        // Don't run on Windows where permissions work differently
-        return PHP_OS_FAMILY !== 'Windows';
-    }
-
     protected function runAnalysis(): ResultInterface
     {
-        $issues = [];
+        // Get directories to check from config (Laravel-style helper functions)
+        $directoriesToCheck = config('shieldci.writable_directories');
 
-        foreach ($this->criticalDirectories as $dir => $info) {
-            $fullPath = $this->basePath.'/'.$dir;
-
-            if (! file_exists($fullPath)) {
-                $issues[] = $this->createIssue(
-                    message: "Directory '{$dir}' does not exist",
-                    location: new Location($this->basePath, 0),
-                    severity: $info['severity'] === 'critical' ? Severity::Critical : Severity::High,
-                    recommendation: "Create the '{$dir}' directory. {$info['description']}. Run: mkdir -p {$fullPath} && chmod -R 775 {$fullPath}",
-                    metadata: [
-                        'directory' => $dir,
-                        'full_path' => $fullPath,
-                        'exists' => false,
-                    ]
-                );
-
-                continue;
-            }
-
-            if (! is_writable($fullPath)) {
-                $currentPerms = $this->getPermissions($fullPath);
-
-                $issues[] = $this->createIssue(
-                    message: "Directory '{$dir}' is not writable",
-                    location: new Location($fullPath, 0),
-                    severity: $info['severity'] === 'critical' ? Severity::Critical : Severity::High,
-                    recommendation: "Make '{$dir}' writable. {$info['description']}. ".
-                                   "Run: chmod -R 775 {$fullPath} or chown -R www-data:www-data {$fullPath} (adjust user/group as needed). ".
-                                   "Current permissions: {$currentPerms}",
-                    metadata: [
-                        'directory' => $dir,
-                        'full_path' => $fullPath,
-                        'exists' => true,
-                        'writable' => false,
-                        'permissions' => $currentPerms,
-                    ]
-                );
-            }
+        if (! is_array($directoriesToCheck)) {
+            $directoriesToCheck = [
+                storage_path(),
+                base_path('bootstrap/cache'),
+            ];
         }
 
-        if (empty($issues)) {
+        // Find directories that are not writable
+        $failedDirs = collect($directoriesToCheck)
+            ->reject(function ($directory) {
+                if (! is_string($directory)) {
+                    return true;
+                }
+
+                return $this->files->isWritable($directory);
+            })
+            ->map(fn ($path) => $this->formatPath((string) $path))
+            ->values()
+            ->all();
+
+        if (empty($failedDirs)) {
             return $this->passed('All critical directories have proper write permissions');
         }
 
+        // Create a single issue with all failed directories
+        $failedDirsList = implode(', ', $failedDirs);
+
         return $this->failed(
-            sprintf('Found %d directory permission issue(s)', count($issues)),
-            $issues
+            sprintf('Found %d directory permission issue(s)', count($failedDirs)),
+            [$this->createIssue(
+                message: 'Storage and cache directories are not writable',
+                location: new Location($this->basePath, 1),
+                severity: Severity::Critical,
+                recommendation: "The following directories must be writable: {$failedDirsList}. ".
+                    'Run: chmod -R 775 storage bootstrap/cache or '.
+                    'chown -R www-data:www-data storage bootstrap/cache (adjust user/group as needed). '.
+                    'These directories are required for logs, sessions, cache, compiled views, and configuration caching.',
+                metadata: [
+                    'failed_directories' => $failedDirs,
+                    'count' => count($failedDirs),
+                ]
+            )]
         );
     }
 
-    private function getPermissions(string $path): string
+    /**
+     * Format a path for display (relative to base path if possible).
+     */
+    private function formatPath(string $path): string
     {
-        $perms = fileperms($path);
-
-        if ($perms === false) {
-            return 'unknown';
+        if (Str::contains($path, $this->basePath)) {
+            return trim(Str::after($path, $this->basePath), '/');
         }
 
-        return substr(sprintf('%o', $perms), -4);
+        return $path;
     }
 }

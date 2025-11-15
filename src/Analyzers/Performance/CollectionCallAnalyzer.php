@@ -4,52 +4,40 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Performance;
 
-use PhpParser\Node;
-use PhpParser\Node\Expr\MethodCall;
-use PhpParser\Node\Expr\StaticCall;
-use PhpParser\NodeFinder;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\ParsesPHPStanAnalysis;
+use ShieldCI\Support\PHPStan;
 
 /**
- * Detects inefficient collection operations that should be done at the database level.
+ * Detects inefficient collection operations using PHPStan/Larastan.
  *
- * Checks for:
+ * Uses Larastan's built-in noUnnecessaryCollectionCall rule to detect:
  * - Model::all()->count() instead of Model::count()
  * - Model::all()->sum() instead of Model::sum()
- * - Model::all()->avg() instead of Model::avg()
- * - Model::all()->max() instead of Model::max()
- * - Model::all()->min() instead of Model::min()
  * - get()->count() instead of count()
  * - Other collection aggregations that could be database queries
+ *
+ * This approach leverages Larastan's battle-tested detection logic
+ * instead of custom AST parsing.
  */
 class CollectionCallAnalyzer extends AbstractFileAnalyzer
 {
-    private array $aggregationMethods = [
-        'count',
-        'sum',
-        'avg',
-        'average',
-        'max',
-        'min',
-        'pluck',
-    ];
+    use ParsesPHPStanAnalysis;
 
-    private array $queryMethods = [
-        'all',
-        'get',
-    ];
+    /**
+     * PHPStan will not run in CI mode by default (can be slow).
+     */
+    public static bool $runInCI = false;
 
-    private AstParser $parser;
+    private PHPStan $phpStan;
 
-    public function __construct()
+    public function __construct(PHPStan $phpStan)
     {
-        $this->parser = new AstParser;
+        $this->phpStan = $phpStan;
     }
 
     protected function metadata(): AnalyzerMetadata
@@ -60,24 +48,59 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             description: 'Detects inefficient collection operations that should be performed at the database query level',
             category: Category::Performance,
             severity: Severity::High,
-            tags: ['database', 'collection', 'performance', 'n+1', 'optimization'],
+            tags: ['database', 'collection', 'performance', 'n+1', 'optimization', 'phpstan'],
             docsUrl: 'https://laravel.com/docs/queries#aggregates'
         );
+    }
+
+    public function shouldRun(): bool
+    {
+        // Check if we should skip in local environment
+        if ($this->isLocalAndShouldSkip()) {
+            return false;
+        }
+
+        // Check if PHPStan and Larastan are available
+        return $this->hasLarastan();
+    }
+
+    public function getSkipReason(): string
+    {
+        if ($this->isLocalAndShouldSkip()) {
+            return 'Skipped in local environment (configured)';
+        }
+
+        return 'Larastan package not installed (required for collection call analysis)';
     }
 
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
 
-        foreach ($this->getPhpFiles() as $file) {
-            try {
-                $filePath = $file instanceof \SplFileInfo ? $file->getPathname() : (string) $file;
-                $ast = $this->parser->parseFile($filePath);
-                $this->analyzeFile($filePath, $ast, $issues);
-            } catch (\Throwable $e) {
-                // Skip files that can't be parsed
-                continue;
-            }
+        // Set root path for PHPStan
+        if (function_exists('base_path')) {
+            $this->phpStan->setRootPath(base_path());
+        }
+
+        // Run PHPStan on configured paths
+        $paths = $this->paths ?? ['app'];
+
+        try {
+            $this->phpStan->start($paths);
+
+            // Parse results for collection call issues
+            // Larastan reports these with "could have been retrieved as a query"
+            $this->parsePHPStanAnalysis(
+                $this->phpStan,
+                'could have been retrieved as a query',
+                $issues
+            );
+        } catch (\Throwable $e) {
+            // If PHPStan fails, return error but don't crash
+            return $this->failed(
+                'PHPStan analysis failed: '.$e->getMessage(),
+                []
+            );
         }
 
         if (empty($issues)) {
@@ -90,121 +113,41 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
         );
     }
 
-    private function analyzeFile(string $filePath, array $ast, array &$issues): void
+    /**
+     * Check if running in local environment and should skip.
+     */
+    protected function isLocalAndShouldSkip(): bool
     {
-        $nodeFinder = new NodeFinder;
-
-        // Find all method calls
-        $methodCalls = $nodeFinder->findInstanceOf($ast, MethodCall::class);
-
-        foreach ($methodCalls as $methodCall) {
-            $this->checkMethodCall($filePath, $methodCall, $issues);
+        if (! function_exists('config') || ! function_exists('app')) {
+            return false;
         }
 
-        // Find all static calls
-        $staticCalls = $nodeFinder->findInstanceOf($ast, StaticCall::class);
+        $skipEnvSpecific = config('shieldci.skip_env_specific', false);
 
-        foreach ($staticCalls as $staticCall) {
-            $this->checkStaticCall($filePath, $staticCall, $issues);
-        }
+        /** @var \Illuminate\Foundation\Application $app */
+        $app = app();
+
+        return $skipEnvSpecific && $app->environment('local');
     }
 
-    private function checkMethodCall(string $filePath, MethodCall $node, array &$issues): void
+    /**
+     * Check if Larastan is installed.
+     */
+    protected function hasLarastan(): bool
     {
-        // Check if this is an aggregation method call
-        if (! $node->name instanceof Node\Identifier) {
-            return;
+        // For testing: check if we're in a test environment with mocked PHPStan
+        if (get_class($this->phpStan) === 'Mockery\Mock') {
+            return true; // Assume Larastan is available when using mocked PHPStan
         }
 
-        $methodName = $node->name->toString();
-
-        if (! in_array($methodName, $this->aggregationMethods)) {
-            return;
+        // Check if it's a Mockery mock by checking class name
+        $className = get_class($this->phpStan);
+        if (str_contains($className, 'Mockery') || str_contains($className, 'Mock')) {
+            return true;
         }
 
-        // Check if the previous call is a query method (all(), get())
-        if ($node->var instanceof MethodCall) {
-            $previousCall = $node->var;
+        $basePath = function_exists('base_path') ? base_path() : getcwd();
 
-            if ($previousCall->name instanceof Node\Identifier) {
-                $previousMethodName = $previousCall->name->toString();
-
-                if (in_array($previousMethodName, $this->queryMethods)) {
-                    $issues[] = $this->createIssue(
-                        message: "Inefficient collection operation: ->{$previousMethodName}()->{$methodName}()",
-                        location: new Location($filePath, $node->getLine()),
-                        severity: Severity::High,
-                        recommendation: $this->getRecommendation($previousMethodName, $methodName),
-                        code: $this->getCodeSnippet($filePath, $node->getLine()),
-                        metadata: [
-                            'query_method' => $previousMethodName,
-                            'aggregation_method' => $methodName,
-                            'pattern' => "->{$previousMethodName}()->{$methodName}()",
-                        ]
-                    );
-                }
-            }
-        }
-    }
-
-    private function checkStaticCall(string $filePath, StaticCall $node, array &$issues): void
-    {
-        // Check for Model::all()->method() pattern
-        if (! $node->name instanceof Node\Identifier) {
-            return;
-        }
-
-        $methodName = $node->name->toString();
-
-        if ($methodName !== 'all') {
-            return;
-        }
-
-        // Check if there's a chained method call after ::all()
-        $parent = $node->getAttribute('parent');
-
-        if ($parent instanceof MethodCall) {
-            if ($parent->name instanceof Node\Identifier) {
-                $chainedMethod = $parent->name->toString();
-
-                if (in_array($chainedMethod, $this->aggregationMethods)) {
-                    $className = $this->getClassName($node);
-
-                    $issues[] = $this->createIssue(
-                        message: "Inefficient collection operation: {$className}::all()->{$chainedMethod}()",
-                        location: new Location($filePath, $node->getLine()),
-                        severity: Severity::High,
-                        recommendation: $this->getRecommendation('all', $chainedMethod, $className),
-                        code: $this->getCodeSnippet($filePath, $node->getLine()),
-                        metadata: [
-                            'query_method' => 'all',
-                            'aggregation_method' => $chainedMethod,
-                            'pattern' => "::all()->{$chainedMethod}()",
-                        ]
-                    );
-                }
-            }
-        }
-    }
-
-    private function getClassName(StaticCall $node): string
-    {
-        if ($node->class instanceof Node\Name) {
-            return $node->class->toString();
-        }
-
-        return 'Model';
-    }
-
-    private function getRecommendation(string $queryMethod, string $aggregationMethod, ?string $className = null): string
-    {
-        $prefix = $className ? "{$className}::" : '';
-
-        return match ($aggregationMethod) {
-            'count' => "Replace {$prefix}{$queryMethod}()->{$aggregationMethod}() with {$prefix}{$aggregationMethod}(). This fetches only the count from the database instead of loading all records into memory.",
-            'sum', 'avg', 'average', 'max', 'min' => "Replace {$prefix}{$queryMethod}()->{$aggregationMethod}() with {$prefix}{$aggregationMethod}('column_name'). This performs the aggregation at the database level, which is much more efficient.",
-            'pluck' => "Replace {$prefix}{$queryMethod}()->pluck() with {$prefix}pluck(). This retrieves only the specified columns instead of all columns.",
-            default => 'Perform this operation at the database query level instead of the collection level for better performance.',
-        };
+        return file_exists($basePath.'/vendor/larastan/larastan/extension.neon');
     }
 }

@@ -136,6 +136,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Build Path
+    |--------------------------------------------------------------------------
+    |
+    | The path where compiled assets (JS, CSS) are located for production.
+    | Used by the MinificationAnalyzer to check for minified assets.
+    | Defaults to the public directory.
+    |
+    */
+
+    'build_path' => env('SHIELDCI_BUILD_PATH', public_path()),
+
+    /*
+    |--------------------------------------------------------------------------
     | Writable Directories
     |--------------------------------------------------------------------------
     |

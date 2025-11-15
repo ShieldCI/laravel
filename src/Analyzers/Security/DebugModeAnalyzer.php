@@ -109,22 +109,6 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                         code: trim($line)
                     );
                 }
-
-                // Check for LOG_LEVEL=debug in production
-                if (preg_match('/^LOG_LEVEL\s*=\s*debug/i', trim($line))) {
-                    if (str_contains($envFile, 'production') || str_contains($envFile, 'prod')) {
-                        $issues[] = $this->createIssue(
-                            message: 'Debug logging level in production environment',
-                            location: new Location(
-                                $this->getRelativePath($envFile),
-                                $lineNumber + 1
-                            ),
-                            severity: Severity::Medium,
-                            recommendation: 'Use LOG_LEVEL=error or LOG_LEVEL=warning in production',
-                            code: trim($line)
-                        );
-                    }
-                }
             }
         }
     }

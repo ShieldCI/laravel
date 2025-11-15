@@ -4,28 +4,72 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Performance;
 
-use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
+use Illuminate\Filesystem\Filesystem;
+use Illuminate\Support\Str;
+use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\AnalyzesHeaders;
 
 /**
- * Analyzes cache headers for compiled assets.
+ * Analyzes cache headers for compiled assets using HTTP verification.
  *
- * Checks for:
- * - Cache-Control headers on versioned assets (mix-manifest.json)
- * - Cache-Control headers on versioned assets (vite manifest)
- * - Proper cache configuration for static assets
- * - Browser caching recommendations
+ * Makes actual HTTP requests to verify
+ * that Cache-Control headers are properly set on compiled assets.
+ *
+ * This approach is superior because:
+ * - Actually verifies headers are set (not just config files exist)
+ * - Identifies specific assets missing headers
+ * - Works with both Laravel Mix and Vite
+ * - Tests real HTTP responses, not assumptions
  */
-class CacheHeaderAnalyzer extends AbstractFileAnalyzer
+class CacheHeaderAnalyzer extends AbstractAnalyzer
 {
+    use AnalyzesHeaders;
+
     /**
      * HTTP cache header checks require a live web server, not applicable in CI.
      */
     public static bool $runInCI = false;
+
+    /**
+     * The list of uncached assets.
+     *
+     * @var \Illuminate\Support\Collection<int, string>
+     */
+    protected $uncachedAssets;
+
+    /**
+     * The public path (for testing).
+     */
+    private ?string $publicPath = null;
+
+    public function __construct(
+        private Filesystem $files
+    ) {}
+
+    /**
+     * Set the public path (for testing).
+     */
+    public function setPublicPath(string $path): void
+    {
+        $this->publicPath = $path;
+    }
+
+    /**
+     * Get the public path.
+     */
+    private function getPublicPath(string $path = ''): string
+    {
+        if ($this->publicPath !== null) {
+            return $this->publicPath.($path ? '/'.$path : $path);
+        }
+
+        return function_exists('public_path') ? public_path($path) : '';
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -34,7 +78,7 @@ class CacheHeaderAnalyzer extends AbstractFileAnalyzer
             name: 'Asset Cache Headers',
             description: 'Ensures compiled assets have appropriate cache headers for optimal browser caching',
             category: Category::Performance,
-            severity: Severity::Medium,
+            severity: Severity::High,
             tags: ['cache', 'assets', 'performance', 'headers', 'browser-cache'],
             docsUrl: 'https://laravel.com/docs/mix#versioning-and-cache-busting'
         );
@@ -42,162 +86,236 @@ class CacheHeaderAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        // Skip if user configured to skip in local environment
+        // Skip if in local environment and configured to skip
         if ($this->isLocalAndShouldSkip()) {
             return false;
         }
 
         // Only run if an asset build system is present
-        $mixManifestPath = $this->basePath.'/public/mix-manifest.json';
-        $viteManifestPath = $this->basePath.'/public/build/manifest.json';
-
-        $hasMix = file_exists($mixManifestPath);
-        $hasVite = file_exists($viteManifestPath);
-
-        return $hasMix || $hasVite;
+        return $this->hasMixManifest() || $this->hasViteManifest();
     }
 
     public function getSkipReason(): string
     {
-        // If configured to skip in local, use default reason
         if ($this->isLocalAndShouldSkip()) {
             return 'Skipped in local environment (configured)';
         }
 
-        // Otherwise, provide specific reason about missing build system
         return 'No asset build system detected (Laravel Mix or Vite)';
     }
 
     protected function runAnalysis(): ResultInterface
     {
-        $issues = [];
+        $this->uncachedAssets = collect();
 
-        // Determine which build system is present
-        $mixManifestPath = $this->basePath.'/public/mix-manifest.json';
-        $viteManifestPath = $this->basePath.'/public/build/manifest.json';
-
-        $hasMix = file_exists($mixManifestPath);
-        $hasVite = file_exists($viteManifestPath);
-
-        // Check for .htaccess or nginx config recommendations
-        $hasHtaccess = file_exists($this->basePath.'/public/.htaccess');
-        $hasNginxConfig = file_exists($this->basePath.'/nginx.conf') ||
-                          file_exists($this->basePath.'/.nginx.conf');
-
-        if ($hasMix) {
-            $this->checkMixAssets($mixManifestPath, $hasHtaccess, $hasNginxConfig, $issues);
+        // Check Laravel Mix assets
+        if ($this->hasMixManifest()) {
+            $this->checkMixAssets();
         }
 
-        if ($hasVite) {
-            $this->checkViteAssets($viteManifestPath, $hasHtaccess, $hasNginxConfig, $issues);
+        // Check Vite assets
+        if ($this->hasViteManifest()) {
+            $this->checkViteAssets();
         }
 
-        if (empty($issues)) {
-            return $this->passed('Asset caching configuration appears to be properly configured');
+        if ($this->uncachedAssets->isEmpty()) {
+            return $this->passed('All compiled assets have appropriate cache headers');
         }
 
-        return $this->warning(
-            sprintf('Found %d asset caching recommendations', count($issues)),
-            $issues
+        return $this->failed(
+            sprintf('Found %d asset(s) without proper cache headers', $this->uncachedAssets->count()),
+            [$this->createIssue(
+                message: 'Compiled assets are missing Cache-Control headers',
+                location: new Location('public', 1),
+                severity: Severity::High,
+                recommendation: sprintf(
+                    'Your application does not set appropriate cache headers on compiled assets. '.
+                    'To improve performance, configure Cache-Control headers via your web server. '.
+                    'Uncached assets: %s. '.
+                    'For Apache, add rules to .htaccess. For Nginx, add cache headers in server config. '.
+                    'Versioned assets should use "Cache-Control: public, max-age=31536000, immutable".',
+                    $this->formatUncachedAssets()
+                ),
+                metadata: [
+                    'uncached_assets' => $this->uncachedAssets->toArray(),
+                    'count' => $this->uncachedAssets->count(),
+                ]
+            )]
         );
     }
 
-    private function checkMixAssets(string $manifestPath, bool $hasHtaccess, bool $hasNginxConfig, array &$issues): void
+    /**
+     * Check Laravel Mix assets for cache headers.
+     */
+    private function checkMixAssets(): void
     {
-        $manifest = json_decode(file_get_contents($manifestPath), true);
+        try {
+            $manifestPath = $this->getPublicPath('mix-manifest.json');
+            $manifest = json_decode($this->files->get($manifestPath), true);
 
-        if (empty($manifest)) {
-            return;
-        }
-
-        // Check if assets are versioned (contain hash)
-        $versionedAssets = [];
-        $unversionedAssets = [];
-
-        foreach ($manifest as $key => $value) {
-            if (is_string($value) && (str_contains($value, '?id=') || preg_match('/\.[a-f0-9]{8,}\.(js|css)$/', $value))) {
-                $versionedAssets[] = $key;
-            } else {
-                $unversionedAssets[] = $key;
+            if (! is_array($manifest)) {
+                return;
             }
-        }
 
-        if (! empty($versionedAssets) && ! $hasHtaccess && ! $hasNginxConfig) {
-            $issues[] = $this->createIssue(
-                message: 'Versioned assets detected but no web server cache configuration found',
-                location: new Location($this->basePath.'/public', 1),
-                severity: Severity::Medium,
-                recommendation: 'Configure your web server to set Cache-Control headers for versioned assets. For Apache, add rules to .htaccess. For Nginx, add cache headers in your server configuration. This enables browser caching and improves load times significantly.',
-                metadata: [
-                    'versioned_assets_count' => count($versionedAssets),
-                    'build_system' => 'Laravel Mix',
-                    'has_htaccess' => $hasHtaccess,
-                    'has_nginx_config' => $hasNginxConfig,
-                ]
-            );
-        }
+            foreach ($manifest as $key => $value) {
+                // Only check versioned (cache-busted) files
+                if (is_string($value) && Str::contains($value, '?id=')) {
+                    // Try both mix() and asset() URLs
+                    $mixUrl = $this->getMixUrl($key);
+                    $assetUrl = $this->getAssetUrl($key);
 
-        if ($hasHtaccess) {
-            $this->checkHtaccessCacheRules($issues);
+                    if (! $this->headerExistsOnUrl($mixUrl, 'Cache-Control')
+                        && ! $this->headerExistsOnUrl($assetUrl, 'Cache-Control')) {
+                        $this->uncachedAssets->push($key);
+                    }
+                }
+            }
+        } catch (\Throwable) {
+            // Gracefully handle missing or invalid manifest
         }
     }
 
-    private function checkViteAssets(string $manifestPath, bool $hasHtaccess, bool $hasNginxConfig, array &$issues): void
+    /**
+     * Check Vite assets for cache headers.
+     */
+    private function checkViteAssets(): void
     {
-        $manifest = json_decode(file_get_contents($manifestPath), true);
+        try {
+            $manifestPath = $this->getPublicPath('build/manifest.json');
+            $manifest = json_decode($this->files->get($manifestPath), true);
 
-        if (! is_array($manifest) || empty($manifest)) {
-            return;
-        }
+            if (! is_array($manifest)) {
+                return;
+            }
 
-        // Vite assets are typically in /public/build/ and are hashed
-        $assetCount = count($manifest);
+            foreach ($manifest as $key => $entry) {
+                if (! is_array($entry)) {
+                    continue;
+                }
 
-        if ($assetCount > 0 && ! $hasHtaccess && ! $hasNginxConfig) {
-            $issues[] = $this->createIssue(
-                message: 'Vite compiled assets detected but no web server cache configuration found',
-                location: new Location($this->basePath.'/public/build', 1),
-                severity: Severity::Medium,
-                recommendation: 'Configure your web server to set long-term Cache-Control headers for Vite assets in /public/build/. These assets are fingerprinted and can be cached for a year. Add "Cache-Control: public, max-age=31536000, immutable" for optimal performance.',
-                metadata: [
-                    'assets_count' => $assetCount,
-                    'build_system' => 'Vite',
-                    'has_htaccess' => $hasHtaccess,
-                    'has_nginx_config' => $hasNginxConfig,
-                ]
-            );
-        }
+                // Check the main file
+                if (isset($entry['file']) && is_string($entry['file'])) {
+                    $url = $this->getViteAssetUrl($entry['file']);
+                    if (! $this->headerExistsOnUrl($url, 'Cache-Control')) {
+                        $this->uncachedAssets->push('build/'.$entry['file']);
+                    }
+                }
 
-        if ($hasHtaccess) {
-            $this->checkHtaccessCacheRules($issues);
+                // Check CSS files
+                if (isset($entry['css']) && is_array($entry['css'])) {
+                    foreach ($entry['css'] as $cssFile) {
+                        if (is_string($cssFile)) {
+                            $url = $this->getViteAssetUrl($cssFile);
+                            if (! $this->headerExistsOnUrl($url, 'Cache-Control')) {
+                                $this->uncachedAssets->push('build/'.$cssFile);
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (\Throwable) {
+            // Gracefully handle missing or invalid manifest
         }
     }
 
-    private function checkHtaccessCacheRules(array &$issues): void
+    /**
+     * Get the URL for a Mix asset.
+     */
+    private function getMixUrl(string $path): ?string
     {
-        $htaccessPath = $this->basePath.'/public/.htaccess';
-        $content = file_get_contents($htaccessPath);
+        try {
+            if (! function_exists('mix')) {
+                return null;
+            }
 
-        if ($content === false) {
-            return;
+            $result = mix($path);
+
+            return is_string($result) ? $result : (string) $result;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * Get the URL for an asset.
+     */
+    private function getAssetUrl(string $path): ?string
+    {
+        try {
+            if (! function_exists('asset')) {
+                return null;
+            }
+
+            $result = asset($path);
+
+            return is_string($result) ? $result : (string) $result;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * Get the URL for a Vite asset.
+     */
+    private function getViteAssetUrl(string $file): ?string
+    {
+        try {
+            if (! function_exists('asset')) {
+                return null;
+            }
+
+            $result = asset('build/'.$file);
+
+            return is_string($result) ? $result : (string) $result;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * Check if Laravel Mix manifest exists.
+     */
+    private function hasMixManifest(): bool
+    {
+        $path = $this->getPublicPath('mix-manifest.json');
+
+        return $path !== '' && file_exists($path);
+    }
+
+    /**
+     * Check if Vite manifest exists.
+     */
+    private function hasViteManifest(): bool
+    {
+        $path = $this->getPublicPath('build/manifest.json');
+
+        return $path !== '' && file_exists($path);
+    }
+
+    /**
+     * Format uncached assets for display.
+     */
+    private function formatUncachedAssets(): string
+    {
+        return $this->uncachedAssets->map(function ($file) {
+            return "[{$file}]";
+        })->join(', ', ' and ');
+    }
+
+    /**
+     * Check if running in local environment and should skip.
+     */
+    private function isLocalAndShouldSkip(): bool
+    {
+        if (! function_exists('config') || ! function_exists('app')) {
+            return false;
         }
 
-        // Check if cache headers are configured
-        $hasCacheControl = str_contains($content, 'Cache-Control') ||
-                          str_contains($content, 'mod_expires') ||
-                          str_contains($content, 'ExpiresActive');
+        $skipEnvSpecific = config('shieldci.skip_env_specific', false);
 
-        if (! $hasCacheControl) {
-            $issues[] = $this->createIssue(
-                message: '.htaccess exists but does not configure cache headers',
-                location: new Location($htaccessPath, 1),
-                severity: Severity::Low,
-                recommendation: 'Add cache control rules to .htaccess for static assets. Example: Use mod_expires to set far-future expiration dates for CSS, JS, and image files. This reduces server requests and improves page load times.',
-                metadata: [
-                    'has_mod_expires' => false,
-                    'has_cache_control' => false,
-                ]
-            );
-        }
+        /** @var \Illuminate\Foundation\Application $app */
+        $app = app();
+
+        return $skipEnvSpecific && $app->environment('local');
     }
 }

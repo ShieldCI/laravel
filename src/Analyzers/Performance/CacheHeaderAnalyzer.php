@@ -301,21 +301,4 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             return "[{$file}]";
         })->join(', ', ' and ');
     }
-
-    /**
-     * Check if running in local environment and should skip.
-     */
-    private function isLocalAndShouldSkip(): bool
-    {
-        if (! function_exists('config') || ! function_exists('app')) {
-            return false;
-        }
-
-        $skipEnvSpecific = config('shieldci.skip_env_specific', false);
-
-        /** @var \Illuminate\Foundation\Application $app */
-        $app = app();
-
-        return $skipEnvSpecific && $app->environment('local');
-    }
 }

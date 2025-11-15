@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Performance;
 
-use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
+use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -18,13 +19,19 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - MySQL connections using TCP instead of Unix sockets
  * - Performance improvements from using Unix sockets
  * - Single-server optimization recommendations
+ *
+ * Uses Laravel's ConfigRepository for proper configuration access.
  */
-class MysqlSingleServerAnalyzer extends AbstractFileAnalyzer
+class MysqlSingleServerAnalyzer extends AbstractAnalyzer
 {
     /**
      * MySQL server configuration is not applicable in CI environments.
      */
     public static bool $runInCI = false;
+
+    public function __construct(
+        private ConfigRepository $config
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -46,11 +53,8 @@ class MysqlSingleServerAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        // Check if MySQL is the database driver
-        $databaseConfig = $this->getDatabaseConfig();
-        $defaultConnection = $databaseConfig['default'] ?? 'mysql';
-        $connection = $databaseConfig['connections'][$defaultConnection] ?? [];
-        $driver = $connection['driver'] ?? '';
+        $defaultConnection = $this->config->get('database.default');
+        $driver = $this->config->get("database.connections.{$defaultConnection}.driver");
 
         return $driver === 'mysql';
     }
@@ -61,10 +65,8 @@ class MysqlSingleServerAnalyzer extends AbstractFileAnalyzer
             return 'Skipped in local environment (configured)';
         }
 
-        $databaseConfig = $this->getDatabaseConfig();
-        $defaultConnection = $databaseConfig['default'] ?? 'mysql';
-        $connection = $databaseConfig['connections'][$defaultConnection] ?? [];
-        $driver = $connection['driver'] ?? 'unknown';
+        $defaultConnection = $this->config->get('database.default', 'unknown');
+        $driver = $this->config->get("database.connections.{$defaultConnection}.driver", 'unknown');
 
         return "Not using MySQL database driver (current: {$driver})";
     }
@@ -73,11 +75,15 @@ class MysqlSingleServerAnalyzer extends AbstractFileAnalyzer
     {
         $issues = [];
 
-        $databaseConfig = $this->getDatabaseConfig();
-        $defaultConnection = $databaseConfig['default'] ?? 'mysql';
-        $connections = $databaseConfig['connections'] ?? [];
+        $defaultConnection = $this->config->get('database.default', 'mysql');
+        $connections = $this->config->get('database.connections', []);
 
         foreach ($connections as $name => $connection) {
+            // Ensure $name is a string
+            if (! is_string($name)) {
+                continue;
+            }
+
             if (! isset($connection['driver']) || $connection['driver'] !== 'mysql') {
                 continue;
             }
@@ -86,12 +92,13 @@ class MysqlSingleServerAnalyzer extends AbstractFileAnalyzer
             $unixSocket = $connection['unix_socket'] ?? '';
 
             // Check if using localhost/127.0.0.1 without unix_socket
+            // Both localhost and 127.0.0.1 indicate local connections
             if (($host === 'localhost' || $host === '127.0.0.1') && empty($unixSocket)) {
                 $severity = $name === $defaultConnection ? Severity::Medium : Severity::Low;
 
                 $issues[] = $this->createIssue(
                     message: "MySQL connection '{$name}' uses TCP on localhost instead of Unix socket",
-                    location: new Location($this->basePath.'/config/database.php', $this->findLineInConfig('database', $name)),
+                    location: new Location('config/database.php', 1),
                     severity: $severity,
                     recommendation: $this->getRecommendation($name),
                     metadata: [
@@ -120,41 +127,5 @@ class MysqlSingleServerAnalyzer extends AbstractFileAnalyzer
                "Add 'unix_socket' => env('DB_SOCKET', '/var/run/mysqld/mysqld.sock') to the '{$connectionName}' connection config, ".
                'then set DB_SOCKET in your .env file with the path to your MySQL socket file. Common paths: '.
                '/var/run/mysqld/mysqld.sock (Ubuntu/Debian), /tmp/mysql.sock (macOS), /var/lib/mysql/mysql.sock (RHEL/CentOS).';
-    }
-
-    private function getDatabaseConfig(): array
-    {
-        $configFile = $this->basePath.'/config/database.php';
-
-        if (! file_exists($configFile)) {
-            return [];
-        }
-
-        return include $configFile;
-    }
-
-    private function findLineInConfig(string $file, string $key): int
-    {
-        $configFile = $this->basePath.'/config/'.$file.'.php';
-
-        if (! file_exists($configFile)) {
-            return 1;
-        }
-
-        $content = file_get_contents($configFile);
-
-        if ($content === false) {
-            return 1;
-        }
-
-        $lines = explode("\n", $content);
-
-        foreach ($lines as $lineNumber => $line) {
-            if (str_contains($line, "'{$key}'") || str_contains($line, "\"{$key}\"")) {
-                return $lineNumber + 1;
-            }
-        }
-
-        return 1;
     }
 }

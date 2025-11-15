@@ -4,396 +4,229 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
+use Mockery;
 use ShieldCI\Analyzers\Security\UpToDateDependencyAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\Support\Composer;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class UpToDateDependencyAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
-    {
-        return new UpToDateDependencyAnalyzer;
+    protected function createAnalyzer(
+        ?string $composerLockPath = '/path/to/composer.lock',
+        ?string $allDepsOutput = null,
+        ?string $prodDepsOutput = null
+    ): AnalyzerInterface {
+        /** @var Composer&\Mockery\MockInterface $composer */
+        $composer = Mockery::mock(Composer::class);
+
+        // Mock getLockFile
+        $composer->shouldReceive('getLockFile')
+            ->andReturn($composerLockPath);
+
+        // Mock installDryRun - called twice per analysis
+        if ($allDepsOutput !== null && $prodDepsOutput !== null) {
+            /** @phpstan-ignore-next-line Mockery's times() is not recognized by PHPStan */
+            $composer->shouldReceive('installDryRun')
+                ->times(2)
+                ->andReturnUsing(function ($args = []) use ($allDepsOutput, $prodDepsOutput) {
+                    if (empty($args)) {
+                        return $allDepsOutput;
+                    }
+                    if (in_array('--no-dev', $args)) {
+                        return $prodDepsOutput;
+                    }
+
+                    return '';
+                });
+        }
+
+        return new UpToDateDependencyAnalyzer($composer);
     }
 
-    public function test_passes_when_no_composer_lock_exists(): void
+    public function test_skips_when_no_composer_lock_exists(): void
     {
-        $tempDir = $this->createTempDirectory([
-            'composer.json' => '{"require": {}}',
-        ]);
+        $analyzer = $this->createAnalyzer(composerLockPath: null);
 
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
+        $this->assertFalse($analyzer->shouldRun());
+
+        if (method_exists($analyzer, 'getSkipReason')) {
+            $this->assertStringContainsString('composer.lock', $analyzer->getSkipReason());
+        }
+    }
+
+    public function test_passes_when_all_dependencies_up_to_date_composer_1(): void
+    {
+        $output = "Nothing to install or update\n";
+
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $output,
+            prodDepsOutput: $output
+        );
 
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
-        $this->assertStringContainsString('No composer.lock found', $result->getMessage());
+        $this->assertStringContainsString('up-to-date', $result->getMessage());
     }
 
-    public function test_passes_with_up_to_date_dependencies(): void
+    public function test_passes_when_all_dependencies_up_to_date_composer_2(): void
     {
-        $composerJson = json_encode([
-            'name' => 'test/app',
-            'require' => [
-                'php' => '^8.1',
-            ],
-        ]);
+        $output = "Nothing to install, update or remove\n";
 
-        $composerLock = json_encode([
-            'packages' => [
-                [
-                    'name' => 'vendor/package',
-                    'version' => '2.0.0',
-                ],
-            ],
-        ]);
-
-        $tempDir = $this->createTempDirectory([
-            'composer.json' => $composerJson,
-            'composer.lock' => $composerLock,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $output,
+            prodDepsOutput: $output
+        );
 
         $result = $analyzer->analyze();
 
-        // Result depends on actual composer outdated command
-        // In most test environments without actual outdated packages, this will pass
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertPassed($result);
+        $this->assertStringContainsString('up-to-date', $result->getMessage());
     }
 
-    public function test_checks_composer_lock_age(): void
+    public function test_fails_when_all_dependencies_need_updates(): void
     {
-        $composerJson = json_encode([
-            'name' => 'test/app',
-            'require' => [
-                'php' => '^8.1',
-            ],
-        ]);
+        $allDepsOutput = <<<'OUTPUT'
+Loading composer repositories with package information
+Installing dependencies (including require-dev) from lock file
+Package operations: 0 installs, 5 updates, 0 removals
+  - Updating vendor/package1 (v1.0.0 => v1.0.1)
+  - Updating vendor/package2 (v2.0.0 => v2.1.0)
+OUTPUT;
 
-        $composerLock = json_encode([
-            'packages' => [],
-        ]);
+        $prodDepsOutput = <<<'OUTPUT'
+Loading composer repositories with package information
+Installing dependencies from lock file
+Package operations: 0 installs, 3 updates, 0 removals
+  - Updating vendor/package1 (v1.0.0 => v1.0.1)
+OUTPUT;
 
-        $tempDir = $this->createTempDirectory([
-            'composer.json' => $composerJson,
-            'composer.lock' => $composerLock,
-        ]);
-
-        // Touch the lock file to make it recent
-        touch($tempDir.'/composer.lock');
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        // Should not flag recent lock files
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
-    }
-
-    public function test_warns_about_old_composer_lock(): void
-    {
-        $composerJson = json_encode([
-            'name' => 'test/app',
-            'require' => [
-                'php' => '^8.1',
-            ],
-        ]);
-
-        $composerLock = json_encode([
-            'packages' => [],
-        ]);
-
-        $tempDir = $this->createTempDirectory([
-            'composer.json' => $composerJson,
-            'composer.lock' => $composerLock,
-        ]);
-
-        // Set lock file modification time to 200 days ago
-        $oldTime = time() - (200 * 24 * 60 * 60);
-        touch($tempDir.'/composer.lock', $oldTime);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $allDepsOutput,
+            prodDepsOutput: $prodDepsOutput
+        );
 
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('has not been updated', $result);
+        $this->assertHasIssueContaining('Dependencies are not up-to-date', $result);
+
+        // Check metadata contains scope information
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertEquals('all (production and dev)', $issues[0]->metadata['scope'] ?? '');
     }
 
-    public function test_handles_composer_outdated_json_output(): void
+    public function test_fails_when_production_and_all_dependencies_need_updates(): void
     {
-        $composerJson = json_encode([
-            'name' => 'test/app',
-            'require' => [
-                'php' => '^8.1',
-                'vendor/package' => '^1.0',
-            ],
-        ]);
+        // This tests when BOTH production and dev dependencies have updates
+        $allDepsOutput = <<<'OUTPUT'
+Loading composer repositories with package information
+Installing dependencies (including require-dev) from lock file
+Package operations: 0 installs, 3 updates, 0 removals
+  - Updating vendor/package1 (v1.0.0 => v1.0.1)
+OUTPUT;
 
-        $composerLock = json_encode([
-            'packages' => [
-                [
-                    'name' => 'vendor/package',
-                    'version' => '1.0.0',
-                ],
-            ],
-        ]);
+        $prodDepsOutput = <<<'OUTPUT'
+Loading composer repositories with package information
+Installing dependencies from lock file
+Package operations: 0 installs, 3 updates, 0 removals
+  - Updating vendor/package1 (v1.0.0 => v1.0.1)
+OUTPUT;
 
-        $tempDir = $this->createTempDirectory([
-            'composer.json' => $composerJson,
-            'composer.lock' => $composerLock,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $allDepsOutput,
+            prodDepsOutput: $prodDepsOutput
+        );
 
         $result = $analyzer->analyze();
 
-        // Should handle composer outdated output gracefully
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertFailed($result);
+        // When both fail, it should report as all dependencies
+        $this->assertHasIssueContaining('Dependencies are not up-to-date', $result);
+
+        // Check metadata contains scope information
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertEquals('all (production and dev)', $issues[0]->metadata['scope'] ?? '');
     }
 
-    public function test_categorizes_patch_updates(): void
+    public function test_fails_with_low_severity_when_only_dev_dependencies_need_updates(): void
     {
-        // This test verifies the analyzer can categorize patch updates (1.0.0 -> 1.0.1)
-        $composerJson = json_encode([
-            'name' => 'test/app',
-            'require' => [
-                'php' => '^8.1',
-            ],
-        ]);
+        $allDepsOutput = <<<'OUTPUT'
+Loading composer repositories with package information
+Installing dependencies (including require-dev) from lock file
+Package operations: 0 installs, 2 updates, 0 removals
+  - Updating phpunit/phpunit (v9.0.0 => v9.1.0)
+OUTPUT;
 
-        $composerLock = json_encode([
-            'packages' => [
-                [
-                    'name' => 'vendor/package',
-                    'version' => '1.0.0',
-                ],
-            ],
-        ]);
+        $prodDepsOutput = "Nothing to install or update\n";
 
-        $tempDir = $this->createTempDirectory([
-            'composer.json' => $composerJson,
-            'composer.lock' => $composerLock,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $allDepsOutput,
+            prodDepsOutput: $prodDepsOutput
+        );
 
         $result = $analyzer->analyze();
 
-        // Result depends on composer outdated
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Development dependencies are not up-to-date', $result);
+
+        // Dev dependencies should be low severity
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
+        $this->assertEquals('dev only', $issues[0]->metadata['scope'] ?? '');
     }
 
-    public function test_categorizes_minor_updates(): void
+    public function test_metadata(): void
     {
-        // This test verifies the analyzer can categorize minor updates (1.0.0 -> 1.1.0)
-        $composerJson = json_encode([
-            'name' => 'test/app',
-            'require' => [
-                'php' => '^8.1',
-            ],
-        ]);
-
-        $composerLock = json_encode([
-            'packages' => [
-                [
-                    'name' => 'vendor/package',
-                    'version' => '1.0.0',
-                ],
-            ],
-        ]);
-
-        $tempDir = $this->createTempDirectory([
-            'composer.json' => $composerJson,
-            'composer.lock' => $composerLock,
-        ]);
-
         $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
+        $metadata = $analyzer->getMetadata();
+
+        $this->assertEquals('up-to-date-dependencies', $metadata->id);
+        $this->assertEquals('Up-to-Date Dependency Analyzer', $metadata->name);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Security, $metadata->category);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $metadata->severity);
+        $this->assertContains('dependencies', $metadata->tags);
+        $this->assertContains('security-patches', $metadata->tags);
+    }
+
+    public function test_provides_helpful_recommendations(): void
+    {
+        $allDepsOutput = <<<'OUTPUT'
+Package operations: 0 installs, 5 updates, 0 removals
+OUTPUT;
+
+        $prodDepsOutput = "Nothing to install or update\n";
+
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $allDepsOutput,
+            prodDepsOutput: $prodDepsOutput
+        );
 
         $result = $analyzer->analyze();
 
-        // Result depends on composer outdated
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        // Verify recommendation contains actionable advice
+        $recommendation = $issues[0]->recommendation;
+        $this->assertStringContainsString('composer update', $recommendation);
     }
 
-    public function test_categorizes_major_updates(): void
+    protected function tearDown(): void
     {
-        // This test verifies the analyzer can categorize major updates (1.0.0 -> 2.0.0)
-        $composerJson = json_encode([
-            'name' => 'test/app',
-            'require' => [
-                'php' => '^8.1',
-            ],
-        ]);
-
-        $composerLock = json_encode([
-            'packages' => [
-                [
-                    'name' => 'vendor/package',
-                    'version' => '1.0.0',
-                ],
-            ],
-        ]);
-
-        $tempDir = $this->createTempDirectory([
-            'composer.json' => $composerJson,
-            'composer.lock' => $composerLock,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        // Result depends on composer outdated
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
-    }
-
-    public function test_handles_empty_outdated_output(): void
-    {
-        $composerJson = json_encode([
-            'name' => 'test/app',
-            'require' => [
-                'php' => '^8.1',
-            ],
-        ]);
-
-        $composerLock = json_encode([
-            'packages' => [],
-        ]);
-
-        $tempDir = $this->createTempDirectory([
-            'composer.json' => $composerJson,
-            'composer.lock' => $composerLock,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        // Should handle empty outdated list gracefully
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
-    }
-
-    public function test_provides_recommendations_for_updates(): void
-    {
-        $composerJson = json_encode([
-            'name' => 'test/app',
-            'require' => [
-                'php' => '^8.1',
-                'vendor/package' => '^1.0',
-            ],
-        ]);
-
-        $composerLock = json_encode([
-            'packages' => [
-                [
-                    'name' => 'vendor/package',
-                    'version' => '1.0.0',
-                ],
-            ],
-        ]);
-
-        $tempDir = $this->createTempDirectory([
-            'composer.json' => $composerJson,
-            'composer.lock' => $composerLock,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        // Verify the analyzer runs and produces a result
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
-    }
-
-    public function test_handles_version_without_v_prefix(): void
-    {
-        $composerJson = json_encode([
-            'name' => 'test/app',
-            'require' => [
-                'php' => '^8.1',
-            ],
-        ]);
-
-        $composerLock = json_encode([
-            'packages' => [
-                [
-                    'name' => 'vendor/package',
-                    'version' => '2.0.0',
-                ],
-            ],
-        ]);
-
-        $tempDir = $this->createTempDirectory([
-            'composer.json' => $composerJson,
-            'composer.lock' => $composerLock,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        // Should handle version strings without 'v' prefix
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
-    }
-
-    public function test_only_checks_direct_dependencies(): void
-    {
-        $composerJson = json_encode([
-            'name' => 'test/app',
-            'require' => [
-                'php' => '^8.1',
-                'vendor/direct-package' => '^1.0',
-            ],
-        ]);
-
-        $composerLock = json_encode([
-            'packages' => [
-                [
-                    'name' => 'vendor/direct-package',
-                    'version' => '1.0.0',
-                ],
-                [
-                    'name' => 'vendor/transitive-package',
-                    'version' => '2.0.0',
-                ],
-            ],
-        ]);
-
-        $tempDir = $this->createTempDirectory([
-            'composer.json' => $composerJson,
-            'composer.lock' => $composerLock,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        // Analyzer uses --direct flag to only check direct dependencies
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        Mockery::close();
+        parent::tearDown();
     }
 }

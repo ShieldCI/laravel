@@ -39,6 +39,11 @@ class QueueDriverAnalyzer extends AbstractFileAnalyzer
         return file_exists($this->getConfigPath('queue.php'));
     }
 
+    public function getSkipReason(): string
+    {
+        return 'Queue configuration file (config/queue.php) not found';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];

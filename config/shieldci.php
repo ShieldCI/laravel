@@ -63,11 +63,11 @@ return [
     */
 
     'analyzers' => [
-        'security' => true,
-        'performance' => true,
-        'reliability' => true,
-        'code_quality' => true,
-        'best_practices' => true,
+        'security' => env('SHIELDCI_SECURITY_ANALYZERS', true),
+        'performance' => env('SHIELDCI_PERFORMANCE_ANALYZERS', true),
+        'reliability' => env('SHIELDCI_RELIABILITY_ANALYZERS', true),
+        'code_quality' => env('SHIELDCI_CODE_QUALITY_ANALYZERS', true),
+        'best_practices' => env('SHIELDCI_BEST_PRACTICES_ANALYZERS', true),
     ],
 
     /*
@@ -136,6 +136,34 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Build Path
+    |--------------------------------------------------------------------------
+    |
+    | The path where compiled assets (JS, CSS) are located for production.
+    | Used by the MinificationAnalyzer to check for minified assets.
+    | Defaults to the public directory.
+    |
+    */
+
+    'build_path' => env('SHIELDCI_BUILD_PATH', public_path()),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Writable Directories
+    |--------------------------------------------------------------------------
+    |
+    | Directories that must be writable for the application to function.
+    | Uses Laravel helper functions for path resolution.
+    |
+    */
+
+    'writable_directories' => [
+        storage_path(),
+        base_path('bootstrap/cache'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Reporting Configuration
     |--------------------------------------------------------------------------
     |
@@ -148,9 +176,9 @@ return [
 
         'output_file' => null,
 
-        'show_recommendations' => true,
+        'show_recommendations' => env('SHIELDCI_SHOW_RECOMMENDATIONS', true),
 
-        'show_code_snippets' => true,
+        'show_code_snippets' => env('SHIELDCI_SHOW_CODE_SNIPPETS', true),
 
         'max_issues_per_check' => env('SHIELDCI_MAX_ISSUES', 5), // Limit displayed issues per check
     ],

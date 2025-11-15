@@ -41,18 +41,6 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
         );
     }
 
-    public function shouldRun(): bool
-    {
-        // Don't run if using null cache driver (intentionally disabled)
-        $driver = config('cache.default');
-
-        if ($driver === 'null') {
-            return false;
-        }
-
-        return true;
-    }
-
     protected function runAnalysis(): ResultInterface
     {
         $testKey = 'shieldci:cache:test:'.Str::random(10);

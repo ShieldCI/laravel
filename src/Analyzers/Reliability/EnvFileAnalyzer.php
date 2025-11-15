@@ -33,12 +33,6 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
         );
     }
 
-    public function shouldRun(): bool
-    {
-        // Always run - .env is critical for Laravel
-        return true;
-    }
-
     protected function runAnalysis(): ResultInterface
     {
         $envPath = $this->basePath.'/.env';

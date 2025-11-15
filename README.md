@@ -126,9 +126,9 @@ SHIELDCI_MAX_ISSUES=3 php artisan shield:analyze
 
 ## Available Analyzers
 
-ShieldCI includes **100 comprehensive analyzers** across five categories:
+ShieldCI includes **101 comprehensive analyzers** across five categories:
 - **22 Security Analyzers** - Complete OWASP Top 10 2021 coverage
-- **16 Performance Analyzers** - Optimize application speed and efficiency
+- **17 Performance Analyzers** - Optimize application speed and efficiency
 - **24 Reliability Analyzers** - Ensure application stability and correctness
 - **15 Code Quality Analyzers** - Improve maintainability and code standards
 - **23 Best Practices Analyzers** - Enforce Laravel-specific best practices
@@ -180,15 +180,16 @@ Providing complete OWASP Top 10 2021 coverage:
 - **Stable Dependency Analyzer** - Validates stable version usage (no dev/alpha/beta)
 - **License Analyzer** - Ensures dependencies use legally acceptable licenses (detects GPL/AGPL issues)
 
-### Performance Analyzers (16)
+### Performance Analyzers (17)
 
 Optimize your Laravel application for production:
 
 - **Autoloader Optimization Analyzer** - Ensures optimized Composer autoloader in production
 - **Cache Driver Analyzer** - Validates production-ready cache drivers (Redis, Memcached)
 - **Cache Header Analyzer** - Checks HTTP cache headers for static assets
-- **Collection Call Analyzer** - Detects inefficient collection usage patterns
+- **Collection Call Analyzer** - Detects inefficient collection usage patterns (PHPStan/Larastan-powered)
 - **Config Caching Analyzer** - Validates configuration caching in production
+- **Debug Log Analyzer** - Detects debug-level logging in production environments
 - **Dev Dependency Analyzer** - Ensures dev dependencies aren't in production
 - **Env Call Analyzer** - Detects env() calls outside configuration files
 - **Minification Analyzer** - Checks asset minification for production

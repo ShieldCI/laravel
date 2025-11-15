@@ -52,6 +52,13 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
         return in_array($driver, ['redis', 'memcached', 'dynamodb', 'database']);
     }
 
+    public function getSkipReason(): string
+    {
+        $driver = config('cache.default');
+
+        return "Not using shared cache driver (current: {$driver}, requires: redis/memcached/dynamodb/database)";
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $cacheConfig = $this->getCacheConfig();

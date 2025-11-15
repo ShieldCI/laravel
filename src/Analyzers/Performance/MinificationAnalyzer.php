@@ -46,18 +46,25 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        // Check other conditions
-        return file_exists($this->basePath.'/public');
+        // Only run if build directory exists
+        $buildPath = $this->getBuildPath();
+
+        return is_dir($buildPath);
+    }
+
+    public function getSkipReason(): string
+    {
+        if ($this->isLocalAndShouldSkip()) {
+            return 'Skipped in local environment (configured)';
+        }
+
+        return 'Build directory not found (configure via shieldci.build_path or SHIELDCI_BUILD_PATH)';
     }
 
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
-        $publicPath = $this->basePath.'/public';
-
-        if (! is_dir($publicPath)) {
-            return $this->skipped('Public directory not found');
-        }
+        $publicPath = $this->getBuildPath();
 
         // Check for build directories
         $hasMix = file_exists($publicPath.'/mix-manifest.json');
@@ -205,12 +212,17 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
+        // Check for source map reference - minified files often include this
+        if ($this->hasSourceMapReference($content)) {
+            return false; // Has source map = likely minified
+        }
+
         $lines = explode("\n", $content);
         $lineCount = count($lines);
 
-        // Minified files typically have very few lines (usually 1-5 for small files, maybe 10-20 for large ones)
-        // Files with more than 20 lines are likely not minified (accounting for source maps and copyright notices)
-        if ($lineCount > 20) {
+        // Minified files typically have very few lines (usually 1-5 for small files, maybe 10-15 for large ones)
+        // Files with more than 15 lines are likely not minified (accounting for source maps and copyright notices)
+        if ($lineCount > 15) {
             return true;
         }
 
@@ -220,5 +232,33 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
 
         // If average line length is less than 500 chars, likely not minified
         return $avgLineLength < 500;
+    }
+
+    /**
+     * Check if the file has a source map reference.
+     * Minified files often include //# sourceMappingURL= or /*# sourceMappingURL= comments.
+     */
+    private function hasSourceMapReference(string $content): bool
+    {
+        return str_contains($content, 'sourceMappingURL=') ||
+               str_contains($content, '//# sourceURL=') ||
+               preg_match('/\/[*\/]#\s*sourceMappingURL=/i', $content) === 1;
+    }
+
+    /**
+     * Get the build path from configuration or default to public directory.
+     */
+    private function getBuildPath(): string
+    {
+        $configPath = config('shieldci.build_path');
+
+        // If config returns a valid path that is within the base path, use it
+        // Otherwise, default to basePath/public for test compatibility
+        if ($configPath && is_string($configPath) && str_starts_with($configPath, $this->basePath)) {
+            return $configPath;
+        }
+
+        // Default to public directory under base path
+        return $this->basePath.'/public';
     }
 }

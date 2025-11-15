@@ -1,0 +1,25 @@
+includes:
+	- ./vendor/larastan/larastan/extension.neon
+
+parameters:
+	# Enable collection call optimization detection
+	noUnnecessaryCollectionCall: true
+	noUnnecessaryCollectionCallOnly: []
+	noUnnecessaryCollectionCallExcept: []
+
+	# Disable checks we don't need for analyzers
+	checkModelProperties: false
+	reportMagicMethods: false
+	reportMagicProperties: false
+	checkDynamicProperties: false
+	checkPhpDocMissingReturn: false
+	checkExplicitMixed: false
+
+	# Basic settings
+	level: 5
+	paths:
+		- app
+
+	# Ignore common Laravel patterns
+	ignoreErrors:
+		- '#Unsafe usage of new static#'

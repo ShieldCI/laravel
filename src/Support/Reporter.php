@@ -136,8 +136,8 @@ class Reporter implements ReporterInterface
         }
 
         // Report Card
-        $output[] = 'Report Card';
-        $output[] = '===========';
+        $output[] = $this->color('Report Card', 'bright_yellow');
+        $output[] = $this->color('===========', 'bright_yellow');
         $output[] = '';
         $output[] = $this->generateReportCard($report, $byCategory);
         $output[] = '';
@@ -216,6 +216,7 @@ class Reporter implements ReporterInterface
             'magenta' => '0;35',
             'cyan' => '0;36',
             'white' => '0;37',
+            'gray' => '0;90',
             'bright_red' => '1;31',
             'bright_green' => '1;32',
             'bright_yellow' => '1;33',
@@ -255,6 +256,40 @@ class Reporter implements ReporterInterface
     }
 
     /**
+     * Get visible width of a string (strips ANSI color codes).
+     */
+    private function visibleWidth(string $text): int
+    {
+        // Remove ANSI escape sequences
+        $stripped = preg_replace('/\033\[[0-9;]*m/', '', $text);
+        if (! is_string($stripped)) {
+            $stripped = '';
+        }
+
+        return mb_strwidth($stripped, 'UTF-8');
+    }
+
+    /**
+     * Pad a string to a specific visible width (accounts for ANSI codes).
+     */
+    private function padVisible(string $text, int $width, string $padString = ' ', int $padType = STR_PAD_RIGHT): string
+    {
+        $visibleLen = $this->visibleWidth($text);
+        $paddingNeeded = max(0, $width - $visibleLen);
+
+        if ($padType === STR_PAD_LEFT) {
+            return str_repeat($padString, $paddingNeeded).$text;
+        } elseif ($padType === STR_PAD_BOTH) {
+            $left = (int) floor($paddingNeeded / 2);
+            $right = $paddingNeeded - $left;
+
+            return str_repeat($padString, $left).$text.str_repeat($padString, $right);
+        }
+
+        return $text.str_repeat($padString, $paddingNeeded);
+    }
+
+    /**
      * Make text italic.
      */
     private function italic(string $text): string
@@ -284,9 +319,17 @@ class Reporter implements ReporterInterface
 
         // Header
         $categories = array_keys($byCategory);
-        $table[] = '+----------------+'.str_repeat('-------------+', count($categories)).'-----------+';
-        $table[] = '| Status         |'.implode('|', array_map(fn ($c) => str_pad(' '.$c, 13), $categories)).'|     Total |';
-        $table[] = '+----------------+'.str_repeat('-------------+', count($categories)).'-----------+';
+        $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';
+
+        // Build header row with colored labels
+        $statusCell = $this->padVisible(' '.$this->color('Status', 'green'), 16);
+        $categoryCells = array_map(function ($c) {
+            return $this->padVisible(' '.$this->color($c, 'green'), 16);
+        }, $categories);
+        $totalCell = $this->padVisible('     '.$this->color('Total', 'green'), 12);
+
+        $table[] = '|'.$statusCell.'|'.implode('|', $categoryCells).'|'.$totalCell.'|';
+        $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';
 
         // Calculate stats per category
         $stats = [];
@@ -317,12 +360,12 @@ class Reporter implements ReporterInterface
             $passed = $stats[$category]['passed'];
             $total = $stats[$category]['total'];
             $pct = $total > 0 ? round(($passed / $total) * 100) : 0;
-            $passedRow .= str_pad("   {$passed}  ({$pct}%)", 13).'|';
+            $passedRow .= str_pad("   {$passed}  ({$pct}%)", 16).'|';
             $totalPassed += $passed;
         }
         $totalAll = $report->results->count();
         $totalPct = $totalAll > 0 ? round(($totalPassed / $totalAll) * 100) : 0;
-        $passedRow .= str_pad(" {$totalPassed}  ({$totalPct}%)", 11).'|';
+        $passedRow .= str_pad(" {$totalPassed}  ({$totalPct}%)", 12).'|';
         $table[] = $passedRow;
 
         // Failed row
@@ -332,12 +375,26 @@ class Reporter implements ReporterInterface
             $failed = $stats[$category]['failed'];
             $total = $stats[$category]['total'];
             $pct = $total > 0 ? round(($failed / $total) * 100) : 0;
-            $failedRow .= str_pad("    {$failed}   ({$pct}%)", 13).'|';
+            $failedRow .= str_pad("    {$failed}   ({$pct}%)", 16).'|';
             $totalFailed += $failed;
         }
         $totalPct = $totalAll > 0 ? round(($totalFailed / $totalAll) * 100) : 0;
-        $failedRow .= str_pad("  {$totalFailed}  ({$totalPct}%)", 11).'|';
+        $failedRow .= str_pad("  {$totalFailed}  ({$totalPct}%)", 12).'|';
         $table[] = $failedRow;
+
+        // Warning row
+        $warningRow = '| Warning        |';
+        $totalWarnings = 0;
+        foreach ($categories as $category) {
+            $warnings = $stats[$category]['warning'];
+            $total = $stats[$category]['total'];
+            $pct = $total > 0 ? round(($warnings / $total) * 100) : 0;
+            $warningRow .= str_pad("    {$warnings}   ({$pct}%)", 16).'|';
+            $totalWarnings += $warnings;
+        }
+        $totalPct = $totalAll > 0 ? round(($totalWarnings / $totalAll) * 100) : 0;
+        $warningRow .= str_pad("  {$totalWarnings}  ({$totalPct}%)", 12).'|';
+        $table[] = $warningRow;
 
         // Not Applicable row
         $skippedRow = '| Not Applicable |';
@@ -346,11 +403,11 @@ class Reporter implements ReporterInterface
             $skipped = $stats[$category]['skipped'];
             $total = $stats[$category]['total'];
             $pct = $total > 0 ? round(($skipped / $total) * 100) : 0;
-            $skippedRow .= str_pad("    {$skipped}   ({$pct}%)", 13).'|';
+            $skippedRow .= str_pad("    {$skipped}   ({$pct}%)", 16).'|';
             $totalSkipped += $skipped;
         }
         $totalPct = $totalAll > 0 ? round(($totalSkipped / $totalAll) * 100) : 0;
-        $skippedRow .= str_pad("  {$totalSkipped}   ({$totalPct}%)", 11).'|';
+        $skippedRow .= str_pad("  {$totalSkipped}   ({$totalPct}%)", 12).'|';
         $table[] = $skippedRow;
 
         // Error row
@@ -360,15 +417,15 @@ class Reporter implements ReporterInterface
             $errors = $stats[$category]['error'];
             $total = $stats[$category]['total'];
             $pct = $total > 0 ? round(($errors / $total) * 100) : 0;
-            $errorRow .= str_pad("    {$errors}   ({$pct}%)", 13).'|';
+            $errorRow .= str_pad("    {$errors}   ({$pct}%)", 16).'|';
             $totalErrors += $errors;
         }
         $totalPct = $totalAll > 0 ? round(($totalErrors / $totalAll) * 100) : 0;
-        $errorRow .= str_pad("  {$totalErrors}   ({$totalPct}%)", 11).'|';
+        $errorRow .= str_pad("  {$totalErrors}   ({$totalPct}%)", 12).'|';
         $table[] = $errorRow;
 
         // Footer
-        $table[] = '+----------------+'.str_repeat('-------------+', count($categories)).'-----------+';
+        $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';
 
         return implode(PHP_EOL, $table);
     }

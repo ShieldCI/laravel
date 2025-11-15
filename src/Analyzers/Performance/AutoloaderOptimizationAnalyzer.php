@@ -42,18 +42,30 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
     public function shouldRun(): bool
     {
         // Skip if user configured to skip in local environment
-        return ! $this->isLocalAndShouldSkip();
+        if ($this->isLocalAndShouldSkip()) {
+            return false;
+        }
+
+        // Only run if vendor directory exists
+        $autoloadPath = $this->basePath.'/vendor/autoload.php';
+
+        return file_exists($autoloadPath);
+    }
+
+    public function getSkipReason(): string
+    {
+        // If configured to skip in local, use default reason
+        if ($this->isLocalAndShouldSkip()) {
+            return 'Skipped in local environment (configured)';
+        }
+
+        // Otherwise, provide specific reason about missing vendor directory
+        return 'Composer vendor directory not found';
     }
 
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
-
-        $autoloadPath = $this->basePath.'/vendor/autoload.php';
-
-        if (! file_exists($autoloadPath)) {
-            return $this->skipped('Composer vendor directory not found');
-        }
 
         // Check if autoloader is optimized
         $isOptimized = $this->isAutoloaderOptimized();

@@ -7,6 +7,7 @@ namespace ShieldCI\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzerManager;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\ValueObjects\AnalysisReport;
 
@@ -25,6 +26,11 @@ class AnalyzeCommand extends Command
         AnalyzerManager $manager,
         ReporterInterface $reporter,
     ): int {
+        // Validate options
+        if (! $this->validateOptions($manager)) {
+            return self::FAILURE;
+        }
+
         // Apply memory limit
         $memoryLimit = config('shieldci.memory_limit');
         if ($memoryLimit !== null && is_string($memoryLimit)) {
@@ -98,12 +104,39 @@ class AnalyzeCommand extends Command
             $analyzers = $manager->getByCategory($category);
             $totalCount = $manager->count(); // Total registered analyzers
             $enabledCount = $analyzers->count();
-            $this->line("Running {$category} analyzers... ({$enabledCount}/{$totalCount})");
+            // Get actual skipped count (may differ from calculated due to instantiation failures)
+            $skippedCount = $manager->getSkippedAnalyzers()
+                ->filter(function (ResultInterface $result) use ($category): bool {
+                    $metadata = $result->getMetadata();
+                    $resultCategory = $metadata['category'] ?? 'Unknown';
+                    if (is_object($resultCategory) && isset($resultCategory->value)) {
+                        $resultCategory = $resultCategory->value;
+                    }
+
+                    return is_string($resultCategory) && strtolower($resultCategory) === strtolower($category);
+                })
+                ->count();
+            if ($skippedCount > 0) {
+                $this->line("Running {$category} analyzers... ({$enabledCount} running, {$skippedCount} skipped, {$totalCount} total)");
+            } else {
+                $this->line("Running {$category} analyzers... ({$enabledCount}/{$totalCount})");
+            }
         } else {
             $analyzers = $manager->getAnalyzers();
             $totalCount = $manager->count(); // Total registered analyzers
             $enabledCount = $analyzers->count();
-            $this->line("Running all analyzers... ({$enabledCount}/{$totalCount})");
+
+            // Get actual skipped count (may differ from calculated due to instantiation failures)
+            // Note: The final Report Card may show more "Not Applicable" than this count because
+            // some analyzers may return Status::Skipped at runtime (via shouldRun() or conditional logic).
+            // This count only reflects analyzers pre-filtered before execution.
+            $skippedCount = $manager->getSkippedAnalyzers()->count();
+
+            if ($skippedCount > 0) {
+                $this->line("Running {$enabledCount} of {$totalCount} analyzers ({$skippedCount} skipped)...");
+            } else {
+                $this->line("Running all {$enabledCount} analyzers...");
+            }
         }
 
         $this->withProgressBar($analyzers, function ($analyzer) {
@@ -520,5 +553,215 @@ class AnalyzeCommand extends Command
         $json = json_encode($data);
 
         return hash('sha256', $json !== false ? $json : '');
+    }
+
+    /**
+     * Validate command options.
+     */
+    protected function validateOptions(AnalyzerManager $manager): bool
+    {
+        // Validate analyzer option
+        $analyzerId = $this->option('analyzer');
+        if ($analyzerId !== null) {
+            if (! is_string($analyzerId) || $analyzerId === '') {
+                $this->error('❌ Invalid analyzer ID provided.');
+
+                return false;
+            }
+
+            // Check if analyzer exists
+            $allAnalyzers = $manager->getAnalyzers();
+            $analyzerExists = $allAnalyzers->contains(function ($analyzer) use ($analyzerId) {
+                return $analyzer->getId() === $analyzerId;
+            });
+
+            if (! $analyzerExists) {
+                $this->error("❌ Analyzer '{$analyzerId}' not found.");
+                $this->line('');
+                $this->line('Available analyzers:');
+                $allAnalyzers->each(function ($analyzer) {
+                    $metadata = $analyzer->getMetadata();
+                    $this->line("  - {$analyzer->getId()}: {$metadata->name}");
+                });
+
+                return false;
+            }
+        }
+
+        // Validate category option
+        $category = $this->option('category');
+        if ($category !== null) {
+            if (! is_string($category) || $category === '') {
+                $this->error('❌ Invalid category provided.');
+
+                return false;
+            }
+
+            // Get valid categories from Category enum
+            $validCategories = array_map(
+                fn ($case) => $case->value,
+                \ShieldCI\AnalyzersCore\Enums\Category::cases()
+            );
+
+            $normalizedCategory = strtolower($category);
+            $categoryExists = in_array($normalizedCategory, array_map('strtolower', $validCategories), true);
+
+            if (! $categoryExists) {
+                $this->error("❌ Category '{$category}' is not valid.");
+                $this->line('');
+                $this->line('Valid categories:');
+                foreach ($validCategories as $validCategory) {
+                    $this->line("  - {$validCategory}");
+                }
+
+                return false;
+            }
+
+            // Check if category has any analyzers
+            $analyzersInCategory = $manager->getByCategory($normalizedCategory);
+            if ($analyzersInCategory->isEmpty()) {
+                $this->warn("⚠️  No analyzers found for category '{$category}'.");
+
+                return false;
+            }
+        }
+
+        // Validate format option
+        $format = $this->option('format');
+        if ($format !== null) {
+            if (! is_string($format)) {
+                $this->error('❌ Invalid format provided.');
+
+                return false;
+            }
+
+            $validFormats = ['console', 'json'];
+            if (! in_array(strtolower($format), $validFormats, true)) {
+                $this->error("❌ Format '{$format}' is not valid. Must be one of: ".implode(', ', $validFormats));
+
+                return false;
+            }
+        }
+
+        // Validate output option (if provided)
+        $output = $this->option('output');
+        if ($output !== null) {
+            if (! is_string($output) || $output === '') {
+                $this->error('❌ Invalid output path provided.');
+
+                return false;
+            }
+
+            // Security: Prevent path traversal attacks
+            // Normalize path separators
+            $normalizedPath = str_replace('\\', '/', $output);
+
+            // Check for path traversal sequences
+            if (str_contains($normalizedPath, '../') ||
+                str_contains($normalizedPath, '..\\') ||
+                str_starts_with($normalizedPath, '/') ||
+                str_starts_with($normalizedPath, '..')) {
+                $this->error('❌ Output path cannot contain path traversal sequences (../) or absolute paths.');
+                $this->line('   Paths must be relative to the application base directory.');
+
+                return false;
+            }
+
+            // Security: Enforce JSON file extension
+            $filename = basename($normalizedPath);
+            $extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+
+            if ($extension !== 'json') {
+                $this->error('❌ Output file must have a .json extension.');
+                $this->line("   Provided: {$filename}");
+                $this->line('   Example: shieldci-report.json or reports/shieldci-report.json');
+
+                return false;
+            }
+
+            // Security: Prevent overwriting critical dependency files
+            $normalizedFilename = strtolower($filename);
+            $protectedFiles = ['composer.json', 'package.json', 'package-lock.json'];
+
+            if (in_array($normalizedFilename, $protectedFiles, true)) {
+                $this->error("❌ Cannot write to protected file: {$filename}");
+                $this->line('   This file is protected to prevent accidental overwrites.');
+                $this->line('   Please use a different filename (e.g., "shieldci-report.json" or "reports/shieldci-report.json").');
+
+                return false;
+            }
+
+            // Resolve the final path relative to base path
+            $basePath = base_path();
+            $resolvedPath = $basePath.'/'.ltrim($normalizedPath, '/');
+
+            // Normalize the resolved path (removes redundant separators, etc.)
+            $resolvedPath = str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $resolvedPath);
+            $resolvedPathNormalized = preg_replace('#'.preg_quote(DIRECTORY_SEPARATOR, '#').'{2,}#', DIRECTORY_SEPARATOR, $resolvedPath);
+
+            // Ensure resolved path is a string
+            if (! is_string($resolvedPathNormalized) || $resolvedPathNormalized === '') {
+                $this->error('❌ Invalid output path after normalization.');
+
+                return false;
+            }
+
+            $resolvedPath = $resolvedPathNormalized;
+
+            // Use realpath to resolve symlinks and ensure we're within base path
+            $realBasePath = realpath($basePath);
+            if ($realBasePath === false) {
+                $this->error("❌ Cannot resolve base path: {$basePath}");
+
+                return false;
+            }
+
+            $resolvedDir = dirname($resolvedPath);
+            $realResolvedPath = realpath($resolvedDir);
+            if ($realResolvedPath === false) {
+                // Directory doesn't exist yet, check if parent is within base path
+                $parentPath = dirname($resolvedDir);
+                $realParentPath = realpath($parentPath);
+
+                if ($realParentPath === false) {
+                    // Try to create the directory structure
+                    if (! @mkdir($resolvedDir, 0755, true)) {
+                        $this->error("❌ Cannot create output directory: {$resolvedDir}");
+
+                        return false;
+                    }
+                    $realResolvedPath = realpath($resolvedDir);
+                    if ($realResolvedPath === false) {
+                        $this->error('❌ Cannot resolve output directory path.');
+
+                        return false;
+                    }
+                } else {
+                    $realResolvedPath = $realParentPath;
+                }
+            }
+
+            // Security check: Ensure resolved path is within base path
+            $realBasePathNormalized = str_replace('\\', '/', $realBasePath);
+            $realResolvedPathNormalized = str_replace('\\', '/', $realResolvedPath);
+
+            if (! str_starts_with($realResolvedPathNormalized, $realBasePathNormalized.'/') &&
+                $realResolvedPathNormalized !== $realBasePathNormalized) {
+                $this->error('❌ Output path is outside the application base directory.');
+                $this->line("   Base path: {$realBasePathNormalized}");
+                $this->line("   Resolved path: {$realResolvedPathNormalized}");
+
+                return false;
+            }
+
+            // Check if directory is writable
+            if (! is_writable($realResolvedPath)) {
+                $this->error("❌ Output directory is not writable: {$realResolvedPath}");
+
+                return false;
+            }
+        }
+
+        return true;
     }
 }

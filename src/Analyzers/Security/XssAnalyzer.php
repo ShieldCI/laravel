@@ -37,7 +37,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
     public function __construct(Router $router)
     {
         $this->router = $router;
-        $this->httpClient = new Client;
+        $this->client = new Client;
 
         // Skip HTTP checks in CI mode
         $this->skipHttpChecks = config('shieldci.ci_mode', false);
@@ -312,7 +312,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
         $cspHeaders = $this->getHeadersOnUrl($url, 'Content-Security-Policy');
 
         // Check if CSP is set
-        if ($cspHeaders === null || empty($cspHeaders)) {
+        if (empty($cspHeaders)) {
             // Try meta tags as fallback
             $metaPolicy = $this->getCspFromMetaTags($url);
 
@@ -380,7 +380,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
     private function getCspFromMetaTags(string $url): string
     {
         try {
-            $response = $this->httpClient->get($url, [
+            $response = $this->getClient()->get($url, [
                 'timeout' => 5,
                 'http_errors' => false,
                 'verify' => false,

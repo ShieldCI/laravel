@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Reliability;
 
-use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\Artisan;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -39,23 +38,6 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
             tags: ['database', 'migrations', 'reliability', 'deployment'],
             docsUrl: 'https://laravel.com/docs/migrations'
         );
-    }
-
-    public function shouldRun(): bool
-    {
-        // Don't run in local development where pending migrations are normal
-        $app = app();
-        if (! $app instanceof Application) {
-            return true;
-        }
-
-        $environment = $app->environment();
-
-        if (in_array($environment, ['local', 'testing'])) {
-            return false;
-        }
-
-        return true;
     }
 
     protected function runAnalysis(): ResultInterface

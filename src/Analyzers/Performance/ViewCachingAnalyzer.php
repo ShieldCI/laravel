@@ -44,6 +44,11 @@ class ViewCachingAnalyzer extends AbstractFileAnalyzer
         return file_exists($this->basePath.'/resources/views');
     }
 
+    public function getSkipReason(): string
+    {
+        return 'Views directory (resources/views) not found';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];

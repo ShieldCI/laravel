@@ -8,59 +8,105 @@ use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 
 /**
- * Trait for analyzing HTTP headers.
+ * Provides methods for analyzing HTTP headers.
  *
  * Provides methods to retrieve and analyze HTTP response headers
  * from a given URL, useful for security header verification.
  */
 trait AnalyzesHeaders
 {
-    protected Client $httpClient;
+    /**
+     * The Guzzle client instance.
+     */
+    protected Client $client;
 
     /**
-     * Get HTTP headers from a URL.
-     *
-     * @param  string  $url  The URL to request
-     * @param  string|null  $headerName  Specific header to retrieve (null for all headers)
-     * @return array<string>|array<string, array<string>>|null Array of header values, all headers, or null on error
+     * Set the Guzzle client.
      */
-    protected function getHeadersOnUrl(string $url, ?string $headerName = null): ?array
+    public function setClient(Client $client): void
     {
-        try {
-            $response = $this->httpClient->get($url, [
-                'timeout' => 5,
-                'connect_timeout' => 3,
+        $this->client = $client;
+    }
+
+    /**
+     * Get the Guzzle client instance.
+     */
+    protected function getClient(): Client
+    {
+        if (! isset($this->client)) {
+            $this->client = new Client([
+                'timeout' => 10,
+                'connect_timeout' => 5,
                 'http_errors' => false,
                 'verify' => false, // Allow self-signed certs in staging
             ]);
+        }
 
-            if ($headerName === null) {
-                // Return all headers
-                $headers = [];
-                foreach ($response->getHeaders() as $name => $values) {
-                    $headers[$name] = $values;
-                }
+        return $this->client;
+    }
 
-                return $headers;
-            }
+    /**
+     * Determine if the header(s) exist on the URL.
+     *
+     * @param  string|array<int, string>  $headers
+     * @param  array<string, mixed>  $options
+     */
+    protected function headerExistsOnUrl(?string $url, string|array $headers, array $options = []): bool
+    {
+        if ($url === null) {
+            // If we can't find the route, we cannot perform this check.
+            return false;
+        }
 
-            // Return specific header
-            if ($response->hasHeader($headerName)) {
-                return $response->getHeader($headerName);
-            }
+        try {
+            $response = $this->getClient()->get($url, array_merge([
+                'http_errors' => false,
+                'verify' => false,
+            ], $options));
 
-            return null;
-        } catch (GuzzleException $e) {
-            // Network error - return null (graceful failure)
-            return null;
+            $headerList = is_array($headers) ? $headers : [$headers];
+
+            return collect($headerList)->contains(function ($header) use ($response) {
+                return $response->hasHeader($header);
+            });
+        } catch (GuzzleException) {
+            return false;
         }
     }
 
     /**
+     * Get the headers on the URL.
+     *
+     * @param  array<string, mixed>  $options
+     * @return array<int, string>
+     */
+    protected function getHeadersOnUrl(?string $url, string $header, array $options = []): array
+    {
+        if ($url === null) {
+            // If we can't find the route, we cannot perform this check.
+            return [];
+        }
+
+        try {
+            $response = $this->getClient()->get($url, array_merge([
+                'http_errors' => false,
+                'verify' => false,
+            ], $options));
+
+            return $response->getHeader($header);
+        } catch (GuzzleException) {
+            return [];
+        }
+    }
+
+    /**
+     * Legacy method for backward compatibility.
      * Set HTTP client (for testing).
+     *
+     * @deprecated Use setClient() instead
      */
     public function setHttpClient(Client $client): void
     {
-        $this->httpClient = $client;
+        $this->setClient($client);
     }
 }

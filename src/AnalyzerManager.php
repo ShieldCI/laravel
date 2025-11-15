@@ -257,7 +257,6 @@ class AnalyzerManager
                     return null;
                 }
             })
-            ->filter()
             ->filter(function (?AnalyzerInterface $analyzer) use ($runningAnalyzerIds, $disabledAnalyzers, $enabledCategories, $isCiMode, $ciAnalyzers, $ciExcludeAnalyzers): bool {
                 if ($analyzer === null) {
                     return false;
@@ -391,9 +390,11 @@ class AnalyzerManager
             return 'Category not enabled';
         }
 
-        // Check shouldRun
+        // Check shouldRun - use analyzer's custom skip reason
         if (! $analyzer->shouldRun()) {
-            return 'Not applicable in current environment or configuration';
+            return method_exists($analyzer, 'getSkipReason')
+                ? $analyzer->getSkipReason()
+                : 'Analyzer conditions not met';
         }
 
         return 'Unknown reason';
@@ -407,7 +408,29 @@ class AnalyzerManager
         $analyzer = $this->getAnalyzers()
             ->first(fn (AnalyzerInterface $a) => $a->getId() === $analyzerId);
 
-        return $analyzer?->analyze();
+        if ($analyzer === null) {
+            return null;
+        }
+
+        $result = $analyzer->analyze();
+        $metadata = $analyzer->getMetadata();
+
+        // Enrich result with analyzer metadata (same as runAll)
+        return new AnalysisResult(
+            analyzerId: $result->getAnalyzerId(),
+            status: $result->getStatus(),
+            message: $result->getMessage(),
+            issues: $result->getIssues(),
+            executionTime: $result->getExecutionTime(),
+            metadata: [
+                'id' => $metadata->id,
+                'name' => $metadata->name,
+                'description' => $metadata->description,
+                'category' => $metadata->category,
+                'severity' => $metadata->severity,
+                'docsUrl' => $metadata->docsUrl,
+            ],
+        );
     }
 
     /**

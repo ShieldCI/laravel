@@ -55,6 +55,20 @@ class MysqlSingleServerAnalyzer extends AbstractFileAnalyzer
         return $driver === 'mysql';
     }
 
+    public function getSkipReason(): string
+    {
+        if ($this->isLocalAndShouldSkip()) {
+            return 'Skipped in local environment (configured)';
+        }
+
+        $databaseConfig = $this->getDatabaseConfig();
+        $defaultConnection = $databaseConfig['default'] ?? 'mysql';
+        $connection = $databaseConfig['connections'][$defaultConnection] ?? [];
+        $driver = $connection['driver'] ?? 'unknown';
+
+        return "Not using MySQL database driver (current: {$driver})";
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];

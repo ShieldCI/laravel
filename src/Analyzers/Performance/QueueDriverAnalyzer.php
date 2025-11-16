@@ -182,39 +182,4 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
             ]
         );
     }
-
-    /**
-     * Override getEnvironment to use ConfigRepository.
-     *
-     * ConfigRepository-based analyzers get environment directly from
-     * injected config instead of using the config() helper.
-     *
-     * @return string The environment name (e.g., 'local', 'production', 'staging')
-     */
-    protected function getEnvironment(): string
-    {
-        $env = $this->config->get('app.env');
-
-        return is_string($env) && $env !== '' ? $env : 'production';
-    }
-
-    /**
-     * Override isLocalAndShouldSkip to use ConfigRepository.
-     *
-     * ConfigRepository-based analyzers need to use their injected config
-     * for both environment and skip_env_specific checks.
-     *
-     * @return bool True if analyzer should be skipped in local environment
-     */
-    protected function isLocalAndShouldSkip(): bool
-    {
-        // Check if environment is local
-        $isLocal = $this->getEnvironment() === 'local';
-
-        // Check if user has enabled skipping (default: false = don't skip)
-        $skipEnabled = $this->config->get('shieldci.skip_env_specific', false);
-        $skipEnabled = is_bool($skipEnabled) ? $skipEnabled : false;
-
-        return $isLocal && $skipEnabled;
-    }
 }

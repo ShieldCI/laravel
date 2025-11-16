@@ -55,21 +55,12 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        // Check if we should skip in local environment
-        if ($this->isLocalAndShouldSkip()) {
-            return false;
-        }
-
         // Check if PHPStan and Larastan are available
         return $this->hasLarastan();
     }
 
     public function getSkipReason(): string
     {
-        if ($this->isLocalAndShouldSkip()) {
-            return 'Skipped in local environment (configured)';
-        }
-
         return 'Larastan package not installed (required for collection call analysis)';
     }
 
@@ -111,23 +102,6 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             sprintf('Found %d inefficient collection operations that should be database queries', count($issues)),
             $issues
         );
-    }
-
-    /**
-     * Check if running in local environment and should skip.
-     */
-    protected function isLocalAndShouldSkip(): bool
-    {
-        if (! function_exists('config') || ! function_exists('app')) {
-            return false;
-        }
-
-        $skipEnvSpecific = config('shieldci.skip_env_specific', false);
-
-        /** @var \Illuminate\Foundation\Application $app */
-        $app = app();
-
-        return $skipEnvSpecific && $app->environment('local');
     }
 
     /**

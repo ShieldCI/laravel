@@ -111,18 +111,40 @@ Run informational analyzers without failing CI:
 ],
 ```
 
-#### Environment Control
-Exclude checks specific to non-local environments when running in local:
-```bash
-SHIELDCI_SKIP_ENV_SPECIFIC=true php artisan shield:analyze
-```
-
 #### Compact Output
 Limit displayed issues per check:
 ```bash
 # Show only 3 issues per check
 SHIELDCI_MAX_ISSUES=3 php artisan shield:analyze
 ```
+
+#### Environment-Aware Analyzers
+Some analyzers are only relevant in specific environments. ShieldCI automatically handles multi-environment setups through environment mapping.
+
+**Standard environments** (no configuration needed):
+- `local` - Local development
+- `development` - Development server
+- `staging` - Staging/pre-production
+- `production` - Production
+- `testing` - Automated testing
+
+**Custom environments** (configure mapping):
+```php
+// config/shieldci.php
+'environment_mapping' => [
+    'production-us' => 'production',
+    'production-eu' => 'production',
+    'staging-preview' => 'staging',
+    'prod-1' => 'production',
+],
+```
+
+How it works:
+- Analyzers declare which environments they're relevant for (e.g., `['production', 'staging']`)
+- Custom environment names are automatically mapped to standard types
+- Analyzers run only in their relevant environments
+
+Example: AutoloaderOptimizationAnalyzer only runs in production/staging environments.
 
 ## Available Analyzers
 

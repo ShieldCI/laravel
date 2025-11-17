@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Performance;
 
+use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -28,7 +29,8 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
     private array $lockUsages = [];
 
     public function __construct(
-        private ParserInterface $parser
+        private ParserInterface $parser,
+        private ConfigRepository $config
     ) {}
 
     protected function metadata(): AnalyzerMetadata
@@ -47,38 +49,30 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
     public function shouldRun(): bool
     {
         // Only run if using Redis cache driver
-        $defaultStore = config('cache.default');
-        if (! is_string($defaultStore)) {
-            return false;
-        }
-
-        $driver = config("cache.stores.{$defaultStore}.driver");
-
-        return $driver === 'redis';
+        return $this->getCacheDriver() === 'redis';
     }
 
     public function getSkipReason(): string
     {
-        $defaultStore = config('cache.default');
-        if (! is_string($defaultStore)) {
+        $driver = $this->getCacheDriver();
+
+        if ($driver === null) {
             return 'Default cache store not configured';
         }
 
-        $driver = config("cache.stores.{$defaultStore}.driver");
-
-        return "Not using Redis cache driver (current: {$driver})";
+        return "Not using Redis cache driver (current: $driver)";
     }
 
     protected function runAnalysis(): ResultInterface
     {
         // Check if lock_connection is configured separately (Laravel 8.20+)
-        $defaultStore = config('cache.default');
-        if (! is_string($defaultStore)) {
+        $defaultStore = $this->getDefaultStore();
+        if ($defaultStore === null) {
             return $this->passed('Default cache store not configured');
         }
 
-        $lockConnection = config("cache.stores.{$defaultStore}.lock_connection");
-        $cacheConnection = config("cache.stores.{$defaultStore}.connection");
+        $lockConnection = $this->config->get("cache.stores.$defaultStore.lock_connection");
+        $cacheConnection = $this->config->get("cache.stores.$defaultStore.connection");
 
         if ($lockConnection !== null && $lockConnection !== $cacheConnection) {
             return $this->passed('Cache locks use a separate connection');
@@ -142,21 +136,46 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
                         ];
                     }
 
-                    // Also check for $cache->lock() method calls
+                    // Also check for $cache->lock() method calls on cache-related variables
                     $methodCalls = $this->parser->findMethodCalls($ast, 'lock');
                     foreach ($methodCalls as $call) {
-                        // Only add if it looks like a cache lock call
+                        // Add method calls (note: may include some false positives for non-cache locks)
                         $this->lockUsages[] = [
                             'file' => $file,
                             'line' => $call->getLine(),
                         ];
                     }
-                } catch (\Exception $e) {
+                } catch (\Throwable) {
                     // Skip files that can't be parsed
                     continue;
                 }
             }
         }
+    }
+
+    /**
+     * Get the default cache store name.
+     */
+    private function getDefaultStore(): ?string
+    {
+        $defaultStore = $this->config->get('cache.default');
+
+        return is_string($defaultStore) ? $defaultStore : null;
+    }
+
+    /**
+     * Get the cache driver for the default store.
+     */
+    private function getCacheDriver(): ?string
+    {
+        $defaultStore = $this->getDefaultStore();
+        if ($defaultStore === null) {
+            return null;
+        }
+
+        $driver = $this->config->get("cache.stores.$defaultStore.driver");
+
+        return is_string($driver) ? $driver : null;
     }
 
     private function getRecommendation(): string

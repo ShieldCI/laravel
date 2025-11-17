@@ -14,10 +14,17 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
 /**
  * Analyzes Composer autoloader optimization for performance.
  *
+ * This analyzer checks for production-specific optimizations and is only
+ * relevant in production and staging environments where performance matters.
+ *
  * Checks for:
  * - Autoloader optimization (composer dump-autoload -o) in production
  * - Authoritative class map (composer dump-autoload --classmap-authoritative)
  * - APCu optimization for better performance
+ *
+ * Environment Relevance:
+ * - Production/Staging: Critical for performance
+ * - Local: Not relevant (unoptimized autoloader is fine for development)
  */
 class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
 {
@@ -25,6 +32,20 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
      * Autoloader optimization checks are not applicable in CI environments.
      */
     public static bool $runInCI = false;
+
+    /**
+     * This analyzer is only relevant in production and staging environments.
+     *
+     * Custom environment names are automatically handled via environment mapping.
+     *
+     * Not relevant in:
+     * - local: Developers don't need optimized autoloader
+     * - development: Same as local
+     * - testing: Test suite doesn't need optimization
+     *
+     * @var array<string>
+     */
+    protected ?array $relevantEnvironments = ['production', 'staging'];
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -41,8 +62,8 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        // Skip if user configured to skip in local environment
-        if ($this->isLocalAndShouldSkip()) {
+        // Check if relevant for current environment first
+        if (! $this->isRelevantForCurrentEnvironment()) {
             return false;
         }
 
@@ -54,9 +75,12 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
 
     public function getSkipReason(): string
     {
-        // If configured to skip in local, use default reason
-        if ($this->isLocalAndShouldSkip()) {
-            return 'Skipped in local environment (configured)';
+        // Check environment relevance first
+        if (! $this->isRelevantForCurrentEnvironment()) {
+            $currentEnv = $this->getEnvironment();
+            $relevantEnvs = implode(', ', $this->relevantEnvironments ?? []);
+
+            return "Not relevant in '{$currentEnv}' environment (only relevant in: {$relevantEnvs})";
         }
 
         // Otherwise, provide specific reason about missing vendor directory
@@ -66,6 +90,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
+        $environment = $this->getEnvironment();
 
         // Check if autoloader is optimized
         $isOptimized = $this->isAutoloaderOptimized();
@@ -73,14 +98,14 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
 
         if (! $isOptimized && ! $isAuthoritative) {
             $issues[] = $this->createIssue(
-                message: 'Composer autoloader is not optimized in production',
+                message: "Composer autoloader is not optimized in {$environment} environment",
                 location: new Location($this->basePath.'/composer.json', 1),
                 severity: Severity::High,
                 recommendation: 'Run "composer dump-autoload -o" or "composer install --optimize-autoloader" in production. This converts PSR-4/PSR-0 rules into classmap rules for improved performance. Add this to your deployment script for best results.',
                 metadata: [
                     'optimized' => false,
                     'authoritative' => false,
-                    'environment' => $this->getEnvironment(),
+                    'environment' => $environment,
                 ]
             );
         }
@@ -95,13 +120,13 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
                 metadata: [
                     'optimized' => true,
                     'authoritative' => false,
-                    'environment' => $this->getEnvironment(),
+                    'environment' => $environment,
                 ]
             );
         }
 
         if (empty($issues)) {
-            return $this->passed('Composer autoloader is properly optimized for production');
+            return $this->passed("Composer autoloader is properly optimized for {$environment} environment");
         }
 
         return $this->failed(

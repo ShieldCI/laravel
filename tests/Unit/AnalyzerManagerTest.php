@@ -165,6 +165,11 @@ class TestAnalyzer implements AnalyzerInterface
         return true;
     }
 
+    public function getSkipReason(): string
+    {
+        return 'Not applicable';
+    }
+
     public function getId(): string
     {
         return 'test-analyzer';
@@ -194,6 +199,11 @@ class AnotherTestAnalyzer implements AnalyzerInterface
         return true;
     }
 
+    public function getSkipReason(): string
+    {
+        return 'Not applicable';
+    }
+
     public function getId(): string
     {
         return 'another-test-analyzer';
@@ -221,6 +231,11 @@ class DisabledTestAnalyzer implements AnalyzerInterface
     public function shouldRun(): bool
     {
         return false;
+    }
+
+    public function getSkipReason(): string
+    {
+        return 'Disabled for testing';
     }
 
     public function getId(): string

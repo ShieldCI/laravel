@@ -4,41 +4,157 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
+use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Http\Middleware\HandleCors;
+use Illuminate\Http\Middleware\TrustHosts;
+use Illuminate\Http\Middleware\TrustProxies;
+use Illuminate\Routing\Router;
+use Mockery;
+use ReflectionClass;
 use ShieldCI\Analyzers\Performance\UnusedGlobalMiddlewareAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    /**
+     * @param  array<int, string>  $globalMiddleware
+     * @param  array<string, mixed>  $configValues
+     */
+    protected function createAnalyzer(
+        array $globalMiddleware = [],
+        array $configValues = []
+    ): AnalyzerInterface {
+        /** @var Application&\Mockery\MockInterface $app */
+        $app = Mockery::mock(Application::class);
+
+        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        $config = Mockery::mock(ConfigRepository::class);
+
+        /** @var Router&\Mockery\MockInterface $router */
+        $router = Mockery::mock(Router::class);
+
+        /** @var Kernel&\Mockery\MockInterface $kernel */
+        $kernel = Mockery::mock(Kernel::class);
+
+        // Mock the kernel to return global middleware via reflection
+        $this->mockKernelMiddleware($kernel, $globalMiddleware);
+
+        // Mock config values
+        foreach ($configValues as $key => $value) {
+            /** @phpstan-ignore-next-line */
+            $config->shouldReceive('get')
+                ->with($key, Mockery::any())
+                ->andReturn($value);
+        }
+
+        // Set default config values if not provided
+        if (! isset($configValues['trustedproxy.proxies'])) {
+            /** @phpstan-ignore-next-line */
+            $config->shouldReceive('get')
+                ->with('trustedproxy.proxies')
+                ->andReturn(null);
+        }
+
+        if (! isset($configValues['cors.paths'])) {
+            /** @phpstan-ignore-next-line */
+            $config->shouldReceive('get')
+                ->with('cors.paths', [])
+                ->andReturn([]);
+        }
+
+        // Mock app->make() for middleware instantiation
+        /** @phpstan-ignore-next-line */
+        $app->shouldReceive('make')
+            ->andReturnUsing(function ($class) {
+                if ($class === TrustProxies::class) {
+                    return new class
+                    {
+                        /** @var mixed */
+                        protected $proxies = null;
+                    };
+                }
+
+                return new $class;
+            });
+
+        return new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
+    }
+
+    /**
+     * @param  array<int, string>  $middleware
+     */
+    private function mockKernelMiddleware(Kernel $kernel, array $middleware): void
     {
-        return new UnusedGlobalMiddlewareAnalyzer;
+        // We need to mock the reflection access to the middleware property
+        // Create a real Kernel object that we can use reflection on
+        $realKernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct()
+            {
+                // Don't call parent constructor to avoid dependencies
+            }
+
+            /** @var array<int, string> */
+            protected $middleware = [];
+
+            /**
+             * @param  array<int, string>  $middleware
+             */
+            public function setMiddleware(array $middleware): void
+            {
+                $this->middleware = $middleware;
+            }
+        };
+
+        $realKernel->setMiddleware($middleware);
+
+        // Copy the middleware property to the mock
+        $reflection = new ReflectionClass($realKernel);
+        $property = $reflection->getProperty('middleware');
+        $property->setAccessible(true);
+
+        $kernelReflection = new ReflectionClass($kernel);
+        try {
+            $kernelProperty = $kernelReflection->getProperty('middleware');
+            $kernelProperty->setAccessible(true);
+            $kernelProperty->setValue($kernel, $middleware);
+        } catch (\ReflectionException $e) {
+            // Property doesn't exist on mock, define it dynamically
+            // This is a limitation of Mockery - we'll work around it differently
+        }
+
+        // Since we can't easily set properties on Mockery mocks via reflection,
+        // we'll just ensure the kernel is set up properly by extending the real kernel
     }
 
     public function test_passes_when_no_unused_middleware(): void
     {
-        $kernelCode = <<<'PHP'
-<?php
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
 
-namespace App\Http;
+        // Create a real Kernel instance with no middleware
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct()
+            {
+                // Don't call parent to avoid dependencies
+            }
 
-use Illuminate\Foundation\Http\Kernel as HttpKernel;
+            /** @var array<int, string> */
+            protected $middleware = [];
+        };
 
-class Kernel extends HttpKernel
-{
-    protected $middleware = [
-        // No unused middleware
-    ];
-}
-PHP;
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
 
-        $tempDir = $this->createTempDirectory([
-            'app/Http/Kernel.php' => $kernelCode,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
+        /** @phpstan-ignore-next-line Mockery mocks passed to constructor */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
@@ -46,43 +162,47 @@ PHP;
 
     public function test_fails_when_trust_proxies_without_configuration(): void
     {
-        $kernelCode = <<<'PHP'
-<?php
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
 
-namespace App\Http;
+        // Create a real Kernel instance with TrustProxies in middleware
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct()
+            {
+                // Don't call parent to avoid dependencies
+            }
 
-use Illuminate\Foundation\Http\Kernel as HttpKernel;
-use Illuminate\Http\Middleware\TrustProxies;
+            /** @var array<int, string> */
+            protected $middleware = [
+                TrustProxies::class,
+            ];
+        };
 
-class Kernel extends HttpKernel
-{
-    protected $middleware = [
-        TrustProxies::class,
-    ];
-}
-PHP;
+        // Mock the TrustProxies middleware with null proxies
+        /** @phpstan-ignore-next-line */
+        $app->shouldReceive('make')
+            ->with(TrustProxies::class)
+            ->andReturn(new class
+            {
+                /** @var mixed */
+                protected $proxies = null;
+            });
 
-        $trustProxiesCode = <<<'PHP'
-<?php
+        // Mock config to return null for trustedproxy.proxies
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('trustedproxy.proxies')
+            ->andReturn(null);
 
-namespace App\Http\Middleware;
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
 
-use Illuminate\Http\Middleware\TrustProxies as Middleware;
-
-class TrustProxies extends Middleware
-{
-    protected $proxies = null;
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Http/Kernel.php' => $kernelCode,
-            'app/Http/Middleware/TrustProxies.php' => $trustProxiesCode,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
+        /** @phpstan-ignore-next-line Mockery mocks passed to constructor */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
@@ -92,43 +212,42 @@ PHP;
 
     public function test_passes_when_trust_proxies_has_configuration(): void
     {
-        $kernelCode = <<<'PHP'
-<?php
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
 
-namespace App\Http;
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
 
-use Illuminate\Foundation\Http\Kernel as HttpKernel;
-use Illuminate\Http\Middleware\TrustProxies;
+            /** @var array<int, string> */
+            protected $middleware = [
+                TrustProxies::class,
+            ];
+        };
 
-class Kernel extends HttpKernel
-{
-    protected $middleware = [
-        TrustProxies::class,
-    ];
-}
-PHP;
+        // Mock TrustProxies with configured proxies
+        /** @phpstan-ignore-next-line */
+        $app->shouldReceive('make')
+            ->with(TrustProxies::class)
+            ->andReturn(new class
+            {
+                /** @var mixed */
+                protected $proxies = '*';
+            });
 
-        $trustProxiesCode = <<<'PHP'
-<?php
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('trustedproxy.proxies')
+            ->andReturn(null);
 
-namespace App\Http\Middleware;
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
 
-use Illuminate\Http\Middleware\TrustProxies as Middleware;
-
-class TrustProxies extends Middleware
-{
-    protected $proxies = '*';
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Http/Kernel.php' => $kernelCode,
-            'app/Http/Middleware/TrustProxies.php' => $trustProxiesCode,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
+        /** @phpstan-ignore-next-line Mockery mocks passed to constructor */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
@@ -136,29 +255,27 @@ PHP;
 
     public function test_fails_when_trust_hosts_without_trust_proxies(): void
     {
-        $kernelCode = <<<'PHP'
-<?php
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
 
-namespace App\Http;
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
 
-use Illuminate\Foundation\Http\Kernel as HttpKernel;
-use Illuminate\Http\Middleware\TrustHosts;
+            /** @var array<int, string> */
+            protected $middleware = [
+                TrustHosts::class,
+            ];
+        };
 
-class Kernel extends HttpKernel
-{
-    protected $middleware = [
-        TrustHosts::class,
-    ];
-}
-PHP;
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
 
-        $tempDir = $this->createTempDirectory([
-            'app/Http/Kernel.php' => $kernelCode,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
+        /** @phpstan-ignore-next-line Mockery mocks passed to constructor */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
@@ -168,29 +285,27 @@ PHP;
 
     public function test_fails_when_cors_without_configuration(): void
     {
-        $kernelCode = <<<'PHP'
-<?php
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
 
-namespace App\Http;
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
 
-use Illuminate\Foundation\Http\Kernel as HttpKernel;
-use Illuminate\Http\Middleware\HandleCors;
+            /** @var array<int, string> */
+            protected $middleware = [
+                HandleCors::class,
+            ];
+        };
 
-class Kernel extends HttpKernel
-{
-    protected $middleware = [
-        HandleCors::class,
-    ];
-}
-PHP;
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
 
-        $tempDir = $this->createTempDirectory([
-            'app/Http/Kernel.php' => $kernelCode,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
+        /** @phpstan-ignore-next-line Mockery mocks passed to constructor */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
@@ -200,56 +315,29 @@ PHP;
 
     public function test_passes_when_cors_has_configuration(): void
     {
-        $kernelCode = <<<'PHP'
-<?php
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
 
-namespace App\Http;
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
 
-use Illuminate\Foundation\Http\Kernel as HttpKernel;
-use Illuminate\Http\Middleware\HandleCors;
+            /** @var array<int, string> */
+            protected $middleware = [
+                HandleCors::class,
+            ];
+        };
 
-class Kernel extends HttpKernel
-{
-    protected $middleware = [
-        HandleCors::class,
-    ];
-}
-PHP;
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn(['api/*', 'sanctum/csrf-cookie']);
 
-        // The pattern looks for "paths" => [ with a quote, so format it correctly
-        $corsConfig = <<<'PHP'
-<?php
-
-return [
-    "paths" => ["api/*", "sanctum/csrf-cookie"],
-    "allowed_methods" => ["*"],
-    "allowed_origins" => ["*"],
-];
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Http/Kernel.php' => $kernelCode,
-            'config/cors.php' => $corsConfig,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
+        /** @phpstan-ignore-next-line Mockery mocks passed to constructor */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
-    }
-
-    public function test_warns_when_kernel_file_not_found(): void
-    {
-        $tempDir = $this->createTempDirectory([]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('Kernel', $result);
     }
 }

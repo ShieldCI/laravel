@@ -4,27 +4,52 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Performance;
 
-use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
+use Fideloper\Proxy\TrustProxies as FideloperTrustProxies;
+use Fruitcake\Cors\HandleCors as FruitcakeHandleCors;
+use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Http\Middleware\HandleCors;
+use Illuminate\Http\Middleware\TrustHosts;
+use Illuminate\Http\Middleware\TrustProxies;
+use Illuminate\Routing\Router;
+use ReflectionClass;
+use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\AnalyzesMiddleware;
 
 /**
  * Detects unused global HTTP middleware in the application.
+ *
+ * Uses runtime analysis to accurately detect middleware registration and configuration.
  *
  * Checks for:
  * - TrustProxies middleware without configured proxies
  * - TrustHosts middleware without TrustProxies (useless)
  * - CORS middleware without configured paths
  */
-class UnusedGlobalMiddlewareAnalyzer extends AbstractFileAnalyzer
+class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
 {
+    use AnalyzesMiddleware;
+
     /**
-     * @var array<int, array{name: string, reason: string, recommendation: string}>
+     * @var array<int, array{name: string, class: string, reason: string, recommendation: string}>
      */
     private array $unusedMiddleware = [];
+
+    public function __construct(
+        private Application $app,
+        private ConfigRepository $config,
+        Router $router,
+        Kernel $kernel
+    ) {
+        $this->router = $router;
+        $this->kernel = $kernel;
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -41,19 +66,7 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $kernelPath = $this->basePath.'/app/Http/Kernel.php';
-
-        if (! file_exists($kernelPath)) {
-            return $this->warning('HTTP Kernel file not found', [
-                $this->createIssue(
-                    message: 'Could not locate app/Http/Kernel.php',
-                    location: new Location($this->basePath.'/app/Http', 0),
-                    severity: Severity::Low,
-                    recommendation: 'Ensure your Laravel application has the standard app/Http/Kernel.php file.',
-                    metadata: ['kernel_path' => $kernelPath]
-                ),
-            ]);
-        }
+        $this->unusedMiddleware = [];
 
         $this->checkTrustProxiesMiddleware();
         $this->checkTrustHostsMiddleware();
@@ -67,11 +80,12 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractFileAnalyzer
         foreach ($this->unusedMiddleware as $middleware) {
             $issues[] = $this->createIssue(
                 message: "Unused global middleware detected: {$middleware['name']}",
-                location: new Location($this->basePath.'/app/Http/Kernel.php', 0),
+                location: new Location(base_path('app/Http/Kernel.php'), 0),
                 severity: Severity::Low,
                 recommendation: $middleware['recommendation'],
                 metadata: [
-                    'middleware' => $middleware['name'],
+                    'middleware_class' => $middleware['class'],
+                    'middleware_name' => $middleware['name'],
                     'reason' => $middleware['reason'],
                 ]
             );
@@ -85,78 +99,77 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractFileAnalyzer
 
     private function checkTrustProxiesMiddleware(): void
     {
-        $kernelContent = $this->getKernelContent();
-        if ($kernelContent === null) {
+        // Check if TrustProxies middleware is registered (Laravel 9+ or Fideloper package)
+        $isFideloper = class_exists(FideloperTrustProxies::class)
+            && $this->appUsesGlobalMiddleware(FideloperTrustProxies::class);
+        $isLaravel = class_exists(TrustProxies::class)
+            && $this->appUsesGlobalMiddleware(TrustProxies::class);
+
+        if (! $isFideloper && ! $isLaravel) {
             return;
         }
 
-        // Check if TrustProxies middleware is registered
-        $hasTrustProxies = str_contains($kernelContent, 'TrustProxies::class')
-            || str_contains($kernelContent, '\\Illuminate\\Http\\Middleware\\TrustProxies')
-            || str_contains($kernelContent, '\\Fideloper\\Proxy\\TrustProxies');
+        // Find the actual middleware class being used
+        $middlewareClass = collect($this->getGlobalMiddleware())->filter(function ($middleware) {
+            return $this->isTrustProxiesMiddleware($middleware);
+        })->first();
 
-        if (! $hasTrustProxies) {
+        if ($middlewareClass === null) {
             return;
         }
 
-        // Check if proxies are configured
-        $trustProxiesPath = $this->basePath.'/app/Http/Middleware/TrustProxies.php';
-        if (! file_exists($trustProxiesPath)) {
-            return;
-        }
+        try {
+            // Instantiate the middleware and check if proxies are configured
+            $middleware = $this->app->make($middlewareClass);
 
-        $trustProxiesContent = file_get_contents($trustProxiesPath);
-        if ($trustProxiesContent === false) {
-            return;
-        }
-
-        // Check if $proxies property is set to something other than null or empty
-        $hasConfiguredProxies = preg_match('/protected\s+\$proxies\s*=\s*["\'\[]/', $trustProxiesContent) === 1
-            || preg_match('/protected\s+\$proxies\s*=\s*\*/', $trustProxiesContent) === 1;
-
-        // Check trustedproxy config (for older Laravel versions)
-        $trustedProxyConfigPath = $this->basePath.'/config/trustedproxy.php';
-        $hasTrustedProxyConfig = false;
-        if (file_exists($trustedProxyConfigPath)) {
-            $configContent = file_get_contents($trustedProxyConfigPath);
-            if ($configContent !== false) {
-                $hasTrustedProxyConfig = preg_match('/"proxies"\s*=>\s*["\'\[]/', $configContent) === 1
-                    || preg_match('/"proxies"\s*=>\s*\*/', $configContent) === 1;
+            if (! is_object($middleware)) {
+                return;
             }
-        }
 
-        if (! $hasConfiguredProxies && ! $hasTrustedProxyConfig) {
-            $this->unusedMiddleware[] = [
-                'name' => 'TrustProxies',
-                'reason' => 'No proxies are configured',
-                'recommendation' => 'Remove TrustProxies middleware from app/Http/Kernel.php $middleware array, as no proxies are configured. This middleware runs on every request unnecessarily. Only add it back if you deploy behind a proxy (like CloudFlare, AWS ALB, nginx).',
-            ];
+            $proxies = $this->getPropertyValue($middleware, 'proxies');
+
+            // Check config for older Fideloper package
+            $configProxies = $this->config->get('trustedproxy.proxies');
+
+            if (empty($proxies) && is_null($configProxies)) {
+                $this->unusedMiddleware[] = [
+                    'name' => class_basename($middlewareClass),
+                    'class' => $middlewareClass,
+                    'reason' => 'No proxies are configured',
+                    'recommendation' => 'Remove TrustProxies middleware from app/Http/Kernel.php $middleware array, as no proxies are configured. This middleware runs on every request unnecessarily. Only add it back if you deploy behind a proxy (like CloudFlare, AWS ALB, nginx).',
+                ];
+
+                // If TrustHosts is also registered, it's useless without TrustProxies
+                if ($this->appUsesGlobalMiddleware(TrustHosts::class)) {
+                    $this->unusedMiddleware[] = [
+                        'name' => class_basename(TrustHosts::class),
+                        'class' => TrustHosts::class,
+                        'reason' => 'TrustHosts is useless without TrustProxies',
+                        'recommendation' => 'Remove TrustHosts middleware from app/Http/Kernel.php $middleware array. TrustHosts only works when used together with TrustProxies middleware, as it validates the Host header from trusted proxies.',
+                    ];
+                }
+            }
+        } catch (\Throwable $e) {
+            // Unable to instantiate middleware, skip check
+            return;
         }
     }
 
     private function checkTrustHostsMiddleware(): void
     {
-        $kernelContent = $this->getKernelContent();
-        if ($kernelContent === null) {
-            return;
-        }
-
-        // Check if TrustHosts middleware is registered
-        $hasTrustHosts = str_contains($kernelContent, 'TrustHosts::class')
-            || str_contains($kernelContent, '\\Illuminate\\Http\\Middleware\\TrustHosts');
-
-        if (! $hasTrustHosts) {
+        // Only check if TrustHosts is registered without TrustProxies
+        if (! $this->appUsesGlobalMiddleware(TrustHosts::class)) {
             return;
         }
 
         // Check if TrustProxies is also registered
-        $hasTrustProxies = str_contains($kernelContent, 'TrustProxies::class')
-            || str_contains($kernelContent, '\\Illuminate\\Http\\Middleware\\TrustProxies')
-            || str_contains($kernelContent, '\\Fideloper\\Proxy\\TrustProxies');
+        $hasTrustProxies = $this->appUsesGlobalMiddleware(TrustProxies::class)
+            || (class_exists(FideloperTrustProxies::class) && $this->appUsesGlobalMiddleware(FideloperTrustProxies::class));
 
         if (! $hasTrustProxies) {
             $this->unusedMiddleware[] = [
-                'name' => 'TrustHosts',
+                'name' => class_basename(TrustHosts::class),
+                'class' => TrustHosts::class,
                 'reason' => 'TrustHosts is useless without TrustProxies',
                 'recommendation' => 'Remove TrustHosts middleware from app/Http/Kernel.php $middleware array. TrustHosts only works when used together with TrustProxies middleware, as it validates the Host header from trusted proxies.',
             ];
@@ -165,59 +178,62 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractFileAnalyzer
 
     private function checkCorsMiddleware(): void
     {
-        $kernelContent = $this->getKernelContent();
-        if ($kernelContent === null) {
-            return;
-        }
-
-        // Check if CORS middleware is registered
-        $hasCors = str_contains($kernelContent, 'HandleCors::class')
-            || str_contains($kernelContent, '\\Illuminate\\Http\\Middleware\\HandleCors')
-            || str_contains($kernelContent, '\\Fruitcake\\Cors\\HandleCors');
+        // Check if CORS middleware is registered (Laravel 9+ or Fruitcake package)
+        $hasCors = (class_exists(HandleCors::class) && $this->appUsesGlobalMiddleware(HandleCors::class))
+            || (class_exists(FruitcakeHandleCors::class) && $this->appUsesGlobalMiddleware(FruitcakeHandleCors::class));
 
         if (! $hasCors) {
             return;
         }
 
         // Check if CORS paths are configured
-        $corsConfigPath = $this->basePath.'/config/cors.php';
-        if (! file_exists($corsConfigPath)) {
-            // No config file means CORS is not configured
+        $corsPaths = $this->config->get('cors.paths', []);
+
+        if (empty($corsPaths)) {
+            /** @phpstan-ignore-next-line Class may not exist (optional dependency) */
+            $middlewareClass = class_exists(HandleCors::class) ? HandleCors::class : FruitcakeHandleCors::class;
+
             $this->unusedMiddleware[] = [
-                'name' => 'HandleCors',
-                'reason' => 'No CORS configuration file exists',
-                'recommendation' => 'Remove HandleCors middleware from app/Http/Kernel.php $middleware array, as no CORS paths are configured. This middleware runs on every request unnecessarily. Only add it back if you need to handle Cross-Origin Resource Sharing.',
-            ];
-
-            return;
-        }
-
-        $configContent = file_get_contents($corsConfigPath);
-        if ($configContent === false) {
-            return;
-        }
-
-        // Check if paths array is empty
-        $hasConfiguredPaths = preg_match('/"paths"\s*=>\s*\[\s*["\']/', $configContent) === 1;
-
-        if (! $hasConfiguredPaths) {
-            $this->unusedMiddleware[] = [
-                'name' => 'HandleCors',
+                'name' => class_basename($middlewareClass),
+                'class' => $middlewareClass,
                 'reason' => 'No CORS paths are configured',
-                'recommendation' => 'Remove HandleCors middleware from app/Http/Kernel.php $middleware array, as the "paths" configuration is empty. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths that require CORS handling.',
+                'recommendation' => 'Remove HandleCors middleware from app/Http/Kernel.php $middleware array, as no CORS paths are configured. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths that require CORS handling in config/cors.php.',
             ];
         }
     }
 
-    private function getKernelContent(): ?string
+    /**
+     * Get property value from an object using reflection.
+     */
+    private function getPropertyValue(object $instance, string $propertyName): mixed
     {
-        $kernelPath = $this->basePath.'/app/Http/Kernel.php';
-        if (! file_exists($kernelPath)) {
+        try {
+            $reflection = new ReflectionClass($instance);
+            $property = $reflection->getProperty($propertyName);
+            $property->setAccessible(true);
+            $value = $property->getValue($instance);
+            $property->setAccessible(false);
+
+            return $value;
+        } catch (\Throwable $e) {
             return null;
         }
+    }
 
-        $content = file_get_contents($kernelPath);
+    /**
+     * Check if middleware is TrustProxies middleware.
+     */
+    private function isTrustProxiesMiddleware(string $middlewareClass): bool
+    {
+        if (! class_exists($middlewareClass)) {
+            return false;
+        }
 
-        return $content === false ? null : $content;
+        return $middlewareClass === TrustProxies::class
+            || is_subclass_of($middlewareClass, TrustProxies::class)
+            || (class_exists(FideloperTrustProxies::class) && (
+                $middlewareClass === FideloperTrustProxies::class
+                || is_subclass_of($middlewareClass, FideloperTrustProxies::class)
+            ));
     }
 }

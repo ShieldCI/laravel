@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -135,7 +136,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                                     'Consider using $guarded or manual assignment for foreign keys.',
                                     $fieldName
                                 ),
-                                code: $this->getCodeSnippet($file, $stmt->getLine())
+                                code: FileParser::getCodeSnippet($file, $stmt->getLine())
                             );
                         }
 
@@ -168,7 +169,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                                     $fieldName,
                                     $fieldName
                                 ),
-                                code: $this->getCodeSnippet($file, $stmt->getLine())
+                                code: FileParser::getCodeSnippet($file, $stmt->getLine())
                             );
                         }
                     }

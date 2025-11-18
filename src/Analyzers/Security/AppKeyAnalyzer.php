@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
@@ -156,7 +157,7 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
      */
     private function checkAppConfig(array &$issues): void
     {
-        $appConfig = $this->basePath.'/config/app.php';
+        $appConfig = ConfigFileHelper::getConfigPath($this->basePath, 'app.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
         if (! file_exists($appConfig)) {
             return;

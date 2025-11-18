@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\InspectsCode;
@@ -86,7 +87,7 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
                 location: new Location($filePath, $line),
                 severity: Severity::High,
                 recommendation: ConfigSuggester::getRecommendation($varNameString),
-                code: $this->getCodeSnippet($filePath, $line),
+                code: FileParser::getCodeSnippet($filePath, $line),
                 metadata: [
                     'function' => $callType === 'static' ? 'Env::get' : 'env',
                     'variable' => $varNameString,

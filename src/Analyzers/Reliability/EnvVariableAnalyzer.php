@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -93,12 +94,11 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
      */
     private function parseEnvFile(string $filePath): array
     {
-        $content = file_get_contents($filePath);
-        if ($content === false) {
+        $lines = FileParser::getLines($filePath);
+
+        if (empty($lines)) {
             return [];
         }
-
-        $lines = explode("\n", $content);
         $variables = [];
 
         foreach ($lines as $line) {

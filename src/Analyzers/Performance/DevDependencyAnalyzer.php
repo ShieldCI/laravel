@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
@@ -291,9 +292,9 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
             return null;
         }
 
-        $contents = file_get_contents($lockPath);
+        $contents = FileParser::readFile($lockPath);
 
-        if ($contents === false) {
+        if ($contents === null) {
             return null;
         }
 
@@ -321,9 +322,9 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
      */
     private function getDevPackagesFromComposerJson(string $composerJsonPath): array
     {
-        $contents = file_get_contents($composerJsonPath);
+        $contents = FileParser::readFile($composerJsonPath);
 
-        if ($contents === false) {
+        if ($contents === null) {
             return [];
         }
 

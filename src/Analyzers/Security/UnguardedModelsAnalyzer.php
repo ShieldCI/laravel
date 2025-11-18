@@ -157,7 +157,7 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
                 ),
                 severity: $this->getSeverityForContext($file),
                 recommendation: 'Remove Model::unguard() and use $fillable or forceFill() instead. Unguarding models opens mass assignment vulnerabilities.',
-                code: $this->getCodeSnippet($file, $lineNumber)
+                code: FileParser::getCodeSnippet($file, $lineNumber)
             );
         }
     }

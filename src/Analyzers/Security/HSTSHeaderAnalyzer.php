@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
@@ -78,7 +79,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
     private function isHttpsOnlyApp(): bool
     {
         // Check session configuration
-        $sessionConfig = $this->basePath.'/config/session.php';
+        $sessionConfig = ConfigFileHelper::getConfigPath($this->basePath, 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
         if (file_exists($sessionConfig)) {
             $content = FileParser::readFile($sessionConfig);
@@ -161,7 +162,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
      */
     private function validateHSTSConfiguration(string $file, string $content, array &$issues): void
     {
-        $lines = explode("\n", $content);
+        $lines = FileParser::getLines($file);
 
         foreach ($lines as $lineNumber => $line) {
             if (str_contains($line, 'Strict-Transport-Security')) {
@@ -206,7 +207,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
      */
     private function checkSessionConfiguration(array &$issues): void
     {
-        $sessionConfig = $this->basePath.'/config/session.php';
+        $sessionConfig = ConfigFileHelper::getConfigPath($this->basePath, 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
         if (! file_exists($sessionConfig)) {
             return;

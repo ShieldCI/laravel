@@ -141,7 +141,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 ),
                 severity: Severity::High,
                 recommendation: 'Add protected $fillable = [...] or protected $guarded = ["*"] to the model',
-                code: $this->getCodeSnippet($file, $class->getLine())
+                code: FileParser::getCodeSnippet($file, $class->getLine())
             );
         }
 
@@ -155,7 +155,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 ),
                 severity: Severity::Critical,
                 recommendation: 'Either specify fillable attributes or use $guarded = ["*"] to protect all',
-                code: $this->getCodeSnippet($file, $class->getLine())
+                code: FileParser::getCodeSnippet($file, $class->getLine())
             );
         }
     }
@@ -231,7 +231,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                         ),
                         severity: Severity::Critical,
                         recommendation: 'Use request()->only([...]) or request()->validated() to specify allowed fields explicitly',
-                        code: $this->getCodeSnippet($file, $call->getLine())
+                        code: FileParser::getCodeSnippet($file, $call->getLine())
                     );
                 }
             }

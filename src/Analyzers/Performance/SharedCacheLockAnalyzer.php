@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -115,7 +116,7 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
     private function findCacheLockUsage(): void
     {
         foreach ($this->getPhpFiles() as $file) {
-            $content = $this->readFile($file);
+            $content = FileParser::readFile($file);
 
             if ($content === null) {
                 continue;

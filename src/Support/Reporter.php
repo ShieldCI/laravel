@@ -6,6 +6,7 @@ namespace ShieldCI\Support;
 
 use DateTimeImmutable;
 use Illuminate\Support\Collection;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\ValueObjects\AnalysisReport;
 
@@ -440,9 +441,12 @@ class Reporter implements ReporterInterface
         $composerPath = __DIR__.'/../../composer.json';
 
         if (file_exists($composerPath)) {
-            $composer = json_decode(file_get_contents($composerPath), true);
+            $content = FileParser::readFile($composerPath);
+            if ($content !== null) {
+                $composer = json_decode($content, true);
 
-            return $composer['version'] ?? 'dev';
+                return is_array($composer) && isset($composer['version']) ? $composer['version'] : 'dev';
+            }
         }
 
         return 'dev';

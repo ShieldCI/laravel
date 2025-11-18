@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -167,7 +168,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
     private function checkMixAssets(string $publicPath, array &$issues): void
     {
         $manifestPath = $publicPath.'/mix-manifest.json';
-        $manifestContent = $this->readFile($manifestPath);
+        $manifestContent = FileParser::readFile($manifestPath);
 
         if ($manifestContent === null) {
             return;
@@ -267,7 +268,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        $content = $this->readFile($filePath);
+        $content = FileParser::readFile($filePath);
 
         if ($content === null) {
             return false;
@@ -278,7 +279,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             return false; // Has source map = likely minified
         }
 
-        $lines = explode("\n", $content);
+        $lines = FileParser::getLines($filePath);
         $lineCount = count($lines);
 
         // Minified files typically have very few lines (usually 1-5 for small files, maybe 10-15 for large ones)

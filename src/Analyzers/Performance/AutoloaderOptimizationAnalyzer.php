@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -142,7 +143,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        $content = $this->readFile($staticLoaderPath);
+        $content = FileParser::readFile($staticLoaderPath);
 
         if (is_null($content)) {
             return false;
@@ -162,7 +163,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        $content = $this->readFile($autoloadRealPath);
+        $content = FileParser::readFile($autoloadRealPath);
 
         if (is_null($content)) {
             return false;

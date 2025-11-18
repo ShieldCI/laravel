@@ -8,6 +8,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzerManager;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\ValueObjects\AnalysisReport;
 
@@ -189,7 +190,8 @@ class AnalyzeCommand extends Command
             $baselineFile = is_string($baselineFileRaw) ? $baselineFileRaw : null;
 
             if ($baselineFile && file_exists($baselineFile)) {
-                $baseline = json_decode(file_get_contents($baselineFile), true);
+                $baselineContent = FileParser::readFile($baselineFile);
+                $baseline = $baselineContent !== null ? json_decode($baselineContent, true) : null;
                 if (is_array($baseline) && isset($baseline['dont_report']) && is_array($baseline['dont_report'])) {
                     $dontReport = array_values(array_unique(array_merge($dontReport, $baseline['dont_report'])));
                 }
@@ -298,7 +300,8 @@ class AnalyzeCommand extends Command
             return $report;
         }
 
-        $baselineRaw = json_decode(file_get_contents($baselineFile), true);
+        $baselineContent = FileParser::readFile($baselineFile);
+        $baselineRaw = $baselineContent !== null ? json_decode($baselineContent, true) : null;
         /** @var array<string, mixed>|null $baseline */
         $baseline = is_array($baselineRaw) ? $baselineRaw : null;
 

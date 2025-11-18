@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -61,7 +62,7 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
                     'Cache storage is not working correctly - values are not being retrieved as expected',
                     [$this->createIssue(
                         message: 'Cache write/read test failed',
-                        location: new Location($this->basePath.'/config/cache.php', 1),
+                        location: new Location(ConfigFileHelper::getConfigPath($this->basePath, 'cache.php', fn ($file) => function_exists('config_path') ? config_path($file) : null), 1),
                         severity: Severity::Critical,
                         recommendation: 'Check your cache configuration in config/cache.php. Ensure the cache driver is properly configured and the cache server (Redis, Memcached, etc.) is running and accessible. Test connection to cache server manually.',
                         metadata: [
@@ -79,7 +80,7 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
                 'Cache is not accessible or not functioning properly',
                 [$this->createIssue(
                     message: 'Cache connection/operation failed',
-                    location: new Location($this->basePath.'/config/cache.php', 1),
+                    location: new Location(ConfigFileHelper::getConfigPath($this->basePath, 'cache.php', fn ($file) => function_exists('config_path') ? config_path($file) : null), 1),
                     severity: Severity::Critical,
                     recommendation: 'Check your cache configuration and ensure the cache server is running. Error: '.$e->getMessage().'. Common issues: 1) Redis/Memcached server not running, 2) Incorrect host/port configuration, 3) Authentication issues, 4) Firewall blocking connection.',
                     metadata: [

@@ -224,7 +224,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                                 ),
                                 severity: Severity::High,
                                 recommendation: 'Add $this->middleware("auth") in constructor or use authorization checks',
-                                code: $this->getCodeSnippet($file, $stmt->getLine())
+                                code: FileParser::getCodeSnippet($file, $stmt->getLine())
                             );
                         }
                     }

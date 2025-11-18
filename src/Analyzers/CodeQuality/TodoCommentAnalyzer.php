@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -67,13 +68,11 @@ class TodoCommentAnalyzer extends AbstractFileAnalyzer
         $issues = [];
 
         foreach ($this->getPhpFiles() as $file) {
-            $content = file_get_contents($file);
+            $lines = FileParser::getLines($file);
 
-            if ($content === false) {
+            if (empty($lines)) {
                 continue;
             }
-
-            $lines = explode("\n", $content);
 
             foreach ($lines as $lineNumber => $line) {
                 foreach ($this->keywords as $keyword => $config) {

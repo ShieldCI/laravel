@@ -7,6 +7,7 @@ namespace ShieldCI;
 use Illuminate\Support\ServiceProvider;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Support\AstParser;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\Commands\AnalyzeCommand;
 use ShieldCI\Commands\BaselineCommand;
 use ShieldCI\Contracts\ReporterInterface;
@@ -105,9 +106,9 @@ class ShieldCIServiceProvider extends ServiceProvider
      */
     protected function getClassFromFile(string $file): ?string
     {
-        $content = file_get_contents($file);
+        $content = FileParser::readFile($file);
 
-        if (! preg_match('/namespace\s+(.+?);/', $content, $namespaceMatch)) {
+        if ($content === null || ! preg_match('/namespace\s+(.+?);/', $content, $namespaceMatch)) {
             return null;
         }
 

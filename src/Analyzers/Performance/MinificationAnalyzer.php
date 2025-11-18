@@ -18,6 +18,11 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - Unminified JavaScript files
  * - Unminified CSS files
  * - Assets that should be minified but aren't
+ *
+ * Environment Relevance:
+ * - Production/Staging: Critical for performance (minification reduces file sizes by 50-70%)
+ * - Local/Development: Not relevant (developers work with unminified assets for debugging)
+ * - Testing: Not relevant (tests don't serve assets to browsers)
  */
 class MinificationAnalyzer extends AbstractFileAnalyzer
 {
@@ -25,6 +30,26 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
      * Asset minification checks require compiled assets, not applicable in CI.
      */
     public static bool $runInCI = false;
+
+    /**
+     * This analyzer is only relevant in production and staging environments.
+     *
+     * Minification is a critical production optimization that reduces asset file sizes
+     * by 50-70% and significantly improves page load times.
+     *
+     * @var array<string>|null
+     */
+    protected ?array $relevantEnvironments = ['production', 'staging'];
+
+    /**
+     * Set relevant environments (for testing).
+     *
+     * @param  array<string>|null  $environments
+     */
+    public function setRelevantEnvironments(?array $environments): void
+    {
+        $this->relevantEnvironments = $environments;
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -41,8 +66,8 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        // Skip if user configured to skip in local environment
-        if ($this->isLocalAndShouldSkip()) {
+        // Check environment relevance first
+        if (! $this->isRelevantForCurrentEnvironment()) {
             return false;
         }
 
@@ -54,8 +79,11 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
 
     public function getSkipReason(): string
     {
-        if ($this->isLocalAndShouldSkip()) {
-            return 'Skipped in local environment (configured)';
+        if (! $this->isRelevantForCurrentEnvironment()) {
+            $currentEnv = $this->getEnvironment();
+            $relevantEnvs = implode(', ', $this->relevantEnvironments ?? []);
+
+            return "Not relevant in '{$currentEnv}' environment (only relevant in: {$relevantEnvs})";
         }
 
         return 'Build directory not found (configure via shieldci.build_path or SHIELDCI_BUILD_PATH)';
@@ -97,8 +125,16 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
     private function checkStandaloneAssets(string $publicPath, array &$issues): void
     {
         // Find JS and CSS files in public directory (excluding vendor)
-        $jsFiles = glob($publicPath.'/js/*.js') ?: [];
-        $cssFiles = glob($publicPath.'/css/*.css') ?: [];
+        $jsFiles = glob($publicPath.'/js/*.js');
+        $cssFiles = glob($publicPath.'/css/*.css');
+
+        // Handle glob() returning false on error
+        if ($jsFiles === false) {
+            $jsFiles = [];
+        }
+        if ($cssFiles === false) {
+            $cssFiles = [];
+        }
 
         $unminifiedFiles = [];
 
@@ -110,7 +146,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
 
             // Check if file looks minified (has very long lines or very few lines)
             if ($this->isUnminified($file)) {
-                $unminifiedFiles[] = str_replace($this->basePath.'/', '', $file);
+                $unminifiedFiles[] = $this->getRelativePath($file);
             }
         }
 
@@ -131,9 +167,21 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
     private function checkMixAssets(string $publicPath, array &$issues): void
     {
         $manifestPath = $publicPath.'/mix-manifest.json';
-        $manifest = json_decode(file_get_contents($manifestPath), true);
+        $manifestContent = $this->readFile($manifestPath);
 
-        if (! is_array($manifest)) {
+        if ($manifestContent === null) {
+            return;
+        }
+
+        $manifest = json_decode($manifestContent, true);
+
+        // Check for JSON decode errors
+        if (json_last_error() !== JSON_ERROR_NONE || ! is_array($manifest)) {
+            return;
+        }
+
+        // Check if manifest is empty
+        if (empty($manifest)) {
             return;
         }
 
@@ -147,9 +195,14 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             $fullPath = $publicPath.$path;
 
             // Remove query string for file check
-            $fullPath = preg_replace('/\?.*$/', '', $fullPath);
+            $cleanedPath = preg_replace('/\?.*$/', '', $fullPath);
 
-            if (is_string($fullPath) && file_exists($fullPath) && $this->isUnminified($fullPath)) {
+            // Validate preg_replace() result
+            if (! is_string($cleanedPath)) {
+                $cleanedPath = $fullPath;
+            }
+
+            if (file_exists($cleanedPath) && $this->isUnminified($cleanedPath)) {
                 $unminifiedAssets[] = $path;
             }
         }
@@ -177,12 +230,20 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         // Vite assets should be minified by default in production builds
         // Check if there are suspiciously large files
         $largeAssets = [];
-        $jsFiles = glob($buildPath.'/assets/*.js') ?: [];
-        $cssFiles = glob($buildPath.'/assets/*.css') ?: [];
+        $jsFiles = glob($buildPath.'/assets/*.js');
+        $cssFiles = glob($buildPath.'/assets/*.css');
+
+        // Handle glob() returning false on error
+        if ($jsFiles === false) {
+            $jsFiles = [];
+        }
+        if ($cssFiles === false) {
+            $cssFiles = [];
+        }
 
         foreach (array_merge($jsFiles, $cssFiles) as $file) {
             if ($this->isUnminified($file)) {
-                $largeAssets[] = str_replace($this->basePath.'/', '', $file);
+                $largeAssets[] = $this->getRelativePath($file);
             }
         }
 
@@ -206,9 +267,9 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        $content = file_get_contents($filePath);
+        $content = $this->readFile($filePath);
 
-        if ($content === false) {
+        if ($content === null) {
             return false;
         }
 
@@ -226,12 +287,79 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             return true;
         }
 
-        // Also check average line length - minified files have very long lines
-        $totalLength = strlen($content);
-        $avgLineLength = $lineCount > 0 ? $totalLength / $lineCount : 0;
+        // Check file size - very small files (< 1KB) might need pattern analysis
+        $fileSize = strlen($content);
+        if ($fileSize < 1024) {
+            // For very small files, check if they have typical minification patterns
+            // (e.g., single line, no whitespace, or very compact)
+            return $this->hasUnminifiedPatterns($content);
+        }
 
-        // If average line length is less than 500 chars, likely not minified
-        return $avgLineLength < 500;
+        // Also check average line length - minified files have very long lines
+        $avgLineLength = $lineCount > 0 ? $fileSize / $lineCount : 0;
+
+        // Minified files typically have average line length > 500 chars
+        // But also check for other indicators
+        if ($avgLineLength < 500) {
+            // Check for patterns that indicate unminified code
+            return $this->hasUnminifiedPatterns($content);
+        }
+
+        // Check for excessive whitespace (unminified files have more whitespace)
+        $whitespaceRatio = substr_count($content, ' ') / max($fileSize, 1);
+        if ($whitespaceRatio > 0.15) {
+            return true; // More than 15% whitespace suggests unminified
+        }
+
+        // Check for newlines in the middle of statements (unminified code)
+        $match = preg_match('/\n\s*[a-zA-Z_$][a-zA-Z0-9_$]*\s*\(/m', $content);
+        if (is_int($match) && $match === 1) {
+            return true; // Function calls on new lines suggest unminified
+        }
+
+        return false;
+    }
+
+    /**
+     * Check for patterns that indicate unminified code.
+     */
+    private function hasUnminifiedPatterns(string $content): bool
+    {
+        // Check for multiple consecutive newlines (unminified code often has blank lines)
+        $match = preg_match('/\n\s*\n\s*\n/', $content);
+        if (is_int($match) && $match === 1) {
+            return true;
+        }
+
+        // Check for comments (unminified code often has comments)
+        $match = preg_match('/\/\/[^\n]*|\/\*[\s\S]*?\*\//', $content);
+        if (is_int($match) && $match === 1) {
+            // But exclude source map comments which are in minified files
+            if (! str_contains($content, 'sourceMappingURL=')) {
+                return true;
+            }
+        }
+
+        // Check for CSS-style formatting (indented properties)
+        // Pattern: newline + spaces + property: value (common in formatted CSS)
+        $match = preg_match('/\n\s{2,}[\w\-]+\s*:\s*[\w\-#]+/', $content);
+        if (is_int($match) && $match === 1) {
+            return true; // Indented CSS properties suggest unminified
+        }
+
+        // Check for readable variable names (unminified code has descriptive names)
+        // Minified code often has single-letter variables
+        $match = preg_match('/\b[a-z]{3,}[a-zA-Z0-9_]*\s*=/i', $content);
+        if (is_int($match) && $match === 1) {
+            // But this is not definitive, so combine with other checks
+            $lines = explode("\n", $content);
+            $lineCount = count($lines);
+            if ($lineCount > 5) {
+                return true; // Multiple lines with readable names suggest unminified
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -240,9 +368,20 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
      */
     private function hasSourceMapReference(string $content): bool
     {
-        return str_contains($content, 'sourceMappingURL=') ||
-               str_contains($content, '//# sourceURL=') ||
-               preg_match('/\/[*\/]#\s*sourceMappingURL=/i', $content) === 1;
+        if (str_contains($content, 'sourceMappingURL=')) {
+            return true;
+        }
+
+        if (str_contains($content, '//# sourceURL=')) {
+            return true;
+        }
+
+        $match = preg_match('/\/[*\/]#\s*sourceMappingURL=/i', $content);
+        if (! is_int($match)) {
+            $match = 0;
+        }
+
+        return $match === 1;
     }
 
     /**
@@ -250,12 +389,15 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
      */
     private function getBuildPath(): string
     {
-        $configPath = config('shieldci.build_path');
+        try {
+            $configPath = config('shieldci.build_path');
 
-        // If config returns a valid path that is within the base path, use it
-        // Otherwise, default to basePath/public for test compatibility
-        if ($configPath && is_string($configPath) && str_starts_with($configPath, $this->basePath)) {
-            return $configPath;
+            // If config returns a valid path that is within the base path, use it
+            if ($configPath && is_string($configPath) && str_starts_with($configPath, $this->basePath)) {
+                return $configPath;
+            }
+        } catch (\Throwable $e) {
+            // Config not available (e.g., in tests), fall through to default
         }
 
         // Default to public directory under base path

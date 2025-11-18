@@ -12,7 +12,10 @@ class MinificationAnalyzerTest extends AnalyzerTestCase
 {
     protected function createAnalyzer(): AnalyzerInterface
     {
-        return new MinificationAnalyzer;
+        $analyzer = new MinificationAnalyzer;
+        $analyzer->setRelevantEnvironments(null);
+
+        return $analyzer;
     }
 
     public function test_passes_with_minified_assets(): void

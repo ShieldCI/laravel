@@ -23,6 +23,9 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $files = new Filesystem;
         $analyzer = new CacheHeaderAnalyzer($files);
 
+        // Allow analyzer to run in test environment
+        $analyzer->setRelevantEnvironments(null);
+
         if (! empty($responses)) {
             $mock = new MockHandler($responses);
             $handlerStack = HandlerStack::create($mock);

@@ -25,6 +25,11 @@ use ShieldCI\Concerns\AnalyzesHeaders;
  * - Identifies specific assets missing headers
  * - Works with both Laravel Mix and Vite
  * - Tests real HTTP responses, not assumptions
+ *
+ * Environment Relevance:
+ * - Production/Staging: Critical for browser caching performance
+ * - Local/Development: Not relevant (dev server doesn't need cache headers)
+ * - Testing: Not relevant (tests don't serve assets via HTTP)
  */
 class CacheHeaderAnalyzer extends AbstractAnalyzer
 {
@@ -34,6 +39,16 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
      * HTTP cache header checks require a live web server, not applicable in CI.
      */
     public static bool $runInCI = false;
+
+    /**
+     * This analyzer is only relevant in production and staging environments.
+     *
+     * Cache headers improve browser caching performance by telling browsers
+     * how long to cache compiled assets.
+     *
+     * @var array<string>
+     */
+    protected ?array $relevantEnvironments = ['production', 'staging'];
 
     /**
      * The list of uncached assets.
@@ -57,6 +72,16 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     public function setPublicPath(string $path): void
     {
         $this->publicPath = $path;
+    }
+
+    /**
+     * Set relevant environments (for testing).
+     *
+     * @param  array<string>|null  $environments
+     */
+    public function setRelevantEnvironments(?array $environments): void
+    {
+        $this->relevantEnvironments = $environments;
     }
 
     /**
@@ -86,8 +111,8 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
 
     public function shouldRun(): bool
     {
-        // Skip if in local environment and configured to skip
-        if ($this->isLocalAndShouldSkip()) {
+        // Check environment relevance first
+        if (! $this->isRelevantForCurrentEnvironment()) {
             return false;
         }
 
@@ -97,8 +122,11 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
 
     public function getSkipReason(): string
     {
-        if ($this->isLocalAndShouldSkip()) {
-            return 'Skipped in local environment (configured)';
+        if (! $this->isRelevantForCurrentEnvironment()) {
+            $currentEnv = $this->getEnvironment();
+            $relevantEnvs = implode(', ', $this->relevantEnvironments ?? []);
+
+            return "Not relevant in '{$currentEnv}' environment (only relevant in: {$relevantEnvs})";
         }
 
         return 'No asset build system detected (Laravel Mix or Vite)';
@@ -107,6 +135,14 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         $this->uncachedAssets = collect();
+
+        // Validate APP_URL configuration before making HTTP requests
+        if (! $this->isAppUrlConfigured()) {
+            return $this->warning(
+                'APP_URL is not properly configured. Cannot verify cache headers via HTTP requests. '.
+                'Please set APP_URL in your .env file to enable cache header verification.'
+            );
+        }
 
         // Check Laravel Mix assets
         if ($this->hasMixManifest()) {
@@ -212,6 +248,18 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
                         }
                     }
                 }
+
+                // Check preloaded imports (Vite feature for code splitting)
+                if (isset($entry['imports']) && is_array($entry['imports'])) {
+                    foreach ($entry['imports'] as $importFile) {
+                        if (is_string($importFile)) {
+                            $url = $this->getViteAssetUrl($importFile);
+                            if (! $this->headerExistsOnUrl($url, 'Cache-Control')) {
+                                $this->uncachedAssets->push('build/'.$importFile);
+                            }
+                        }
+                    }
+                }
             }
         } catch (\Throwable) {
             // Gracefully handle missing or invalid manifest
@@ -230,7 +278,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
 
             $result = mix($path);
 
-            return is_string($result) ? $result : (string) $result;
+            return is_string($result) ? $result : null;
         } catch (\Throwable) {
             return null;
         }
@@ -248,7 +296,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
 
             $result = asset($path);
 
-            return is_string($result) ? $result : (string) $result;
+            return is_string($result) ? $result : null;
         } catch (\Throwable) {
             return null;
         }
@@ -266,7 +314,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
 
             $result = asset('build/'.$file);
 
-            return is_string($result) ? $result : (string) $result;
+            return is_string($result) ? $result : null;
         } catch (\Throwable) {
             return null;
         }
@@ -300,5 +348,24 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
         return $this->uncachedAssets->map(function ($file) {
             return "[{$file}]";
         })->join(', ', ' and ');
+    }
+
+    /**
+     * Check if APP_URL is properly configured for HTTP requests.
+     */
+    private function isAppUrlConfigured(): bool
+    {
+        // Check if config helper is available
+        if (! function_exists('config')) {
+            return false;
+        }
+
+        $appUrl = config('app.url');
+        if (! is_string($appUrl) || $appUrl === '') {
+            return false;
+        }
+
+        // Validate that it's a valid URL format
+        return filter_var($appUrl, FILTER_VALIDATE_URL) !== false;
     }
 }

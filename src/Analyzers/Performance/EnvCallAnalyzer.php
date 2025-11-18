@@ -4,17 +4,15 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Performance;
 
-use PhpParser\Node;
-use PhpParser\Node\Expr\FuncCall;
-use PhpParser\Node\Name;
-use PhpParser\NodeFinder;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\InspectsCode;
+use ShieldCI\Support\ConfigSuggester;
+use ShieldCI\Support\FileTypeDetector;
 
 /**
  * Detects env() calls outside of configuration files.
@@ -23,15 +21,12 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - env() function calls in controllers, models, services
  * - env() calls that will break when config is cached
  * - Recommends using config() instead of env()
+ *
+ * Uses the InspectsCode trait for AST parsing abstraction.
  */
 class EnvCallAnalyzer extends AbstractFileAnalyzer
 {
-    private AstParser $parser;
-
-    public function __construct()
-    {
-        $this->parser = new AstParser;
-    }
+    use InspectsCode;
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -48,138 +43,45 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $issues = [];
+        // Find all env() function calls, excluding config directory
+        $envCalls = $this->findFunctionCalls(
+            functionName: 'env',
+            paths: ['app', 'routes', 'database', 'resources/views'],
+            excludePaths: ['/config/']
+        );
 
-        // Set paths to analyze (exclude config directory)
-        $this->setPaths(['app', 'routes', 'database', 'resources/views']);
-
-        foreach ($this->getPhpFiles() as $file) {
-            $filePath = $file instanceof \SplFileInfo ? $file->getPathname() : (string) $file;
-
-            // Skip config files
-            if (str_contains($filePath, '/config/')) {
-                continue;
-            }
-
-            try {
-                $ast = $this->parser->parseFile($filePath);
-                $this->analyzeFile($filePath, $ast, $issues);
-            } catch (\Throwable $e) {
-                // Skip files that can't be parsed
-                continue;
-            }
+        if (empty($envCalls)) {
+            return $this->passed('No env() calls detected outside configuration files');
         }
 
-        if (empty($issues)) {
-            return $this->passed('No env() calls detected outside configuration files');
+        // Create issues for each env() call found
+        $issues = [];
+
+        foreach ($envCalls as $call) {
+            $varName = $call['args'][0] ?? null;
+            $filePath = $call['file'];
+            $line = $call['node']->getLine();
+
+            // Ensure varName is string|null for ConfigSuggester
+            $varNameString = is_string($varName) ? $varName : null;
+
+            $issues[] = $this->createIssue(
+                message: 'env() call detected outside configuration files',
+                location: new Location($filePath, $line),
+                severity: Severity::High,
+                recommendation: ConfigSuggester::getRecommendation($varNameString),
+                code: $this->getCodeSnippet($filePath, $line),
+                metadata: [
+                    'function' => 'env',
+                    'variable' => $varNameString,
+                    'file_type' => FileTypeDetector::detect($filePath),
+                ]
+            );
         }
 
         return $this->failed(
             sprintf('Found %d env() calls outside configuration files', count($issues)),
             $issues
         );
-    }
-
-    private function analyzeFile(string $filePath, array $ast, array &$issues): void
-    {
-        $nodeFinder = new NodeFinder;
-
-        // Find all function calls
-        $functionCalls = $nodeFinder->findInstanceOf($ast, FuncCall::class);
-
-        foreach ($functionCalls as $funcCall) {
-            if ($funcCall->name instanceof Name && $funcCall->name->toString() === 'env') {
-                // Get the env variable name if it's a string literal
-                $varName = null;
-
-                if (isset($funcCall->args[0]) && $funcCall->args[0]->value instanceof Node\Scalar\String_) {
-                    $varName = $funcCall->args[0]->value->value;
-                }
-
-                $issues[] = $this->createIssue(
-                    message: 'env() call detected outside configuration files',
-                    location: new Location($filePath, $funcCall->getLine()),
-                    severity: Severity::High,
-                    recommendation: $this->getRecommendation($varName),
-                    code: $this->getCodeSnippet($filePath, $funcCall->getLine()),
-                    metadata: [
-                        'function' => 'env',
-                        'variable' => $varName,
-                        'file_type' => $this->getFileType($filePath),
-                    ]
-                );
-            }
-        }
-    }
-
-    private function getRecommendation(?string $varName): string
-    {
-        $base = 'Do not call env() outside of configuration files. Once config is cached (php artisan config:cache), the .env file is not loaded and env() returns null. ';
-
-        if ($varName) {
-            $configKey = $this->suggestConfigKey($varName);
-
-            return $base."Add '{$varName}' to a config file (e.g., config/{$configKey[0]}.php) and use config('{$configKey[1]}') instead of env('{$varName}').";
-        }
-
-        return $base.'Move this env() call to a configuration file and use config() to retrieve the value instead.';
-    }
-
-    private function suggestConfigKey(string $varName): array
-    {
-        // Suggest appropriate config file and key based on env variable name
-        $varLower = strtolower($varName);
-
-        if (str_starts_with($varLower, 'app_')) {
-            return ['app', 'app.'.strtolower(substr($varName, 4))];
-        }
-
-        if (str_starts_with($varLower, 'db_') || str_starts_with($varLower, 'database_')) {
-            return ['database', 'database.'.strtolower(str_replace(['DB_', 'DATABASE_'], '', $varName))];
-        }
-
-        if (str_starts_with($varLower, 'cache_')) {
-            return ['cache', 'cache.'.strtolower(substr($varName, 6))];
-        }
-
-        if (str_starts_with($varLower, 'mail_')) {
-            return ['mail', 'mail.'.strtolower(substr($varName, 5))];
-        }
-
-        if (str_starts_with($varLower, 'queue_')) {
-            return ['queue', 'queue.'.strtolower(substr($varName, 6))];
-        }
-
-        if (str_starts_with($varLower, 'session_')) {
-            return ['session', 'session.'.strtolower(substr($varName, 8))];
-        }
-
-        // Default to custom config file
-        return ['custom', 'custom.'.strtolower($varName)];
-    }
-
-    private function getFileType(string $filePath): string
-    {
-        if (str_contains($filePath, '/app/Http/Controllers/')) {
-            return 'controller';
-        }
-
-        if (str_contains($filePath, '/app/Models/')) {
-            return 'model';
-        }
-
-        if (str_contains($filePath, '/app/Services/')) {
-            return 'service';
-        }
-
-        if (str_contains($filePath, '/routes/')) {
-            return 'route';
-        }
-
-        if (str_contains($filePath, '/resources/views/')) {
-            return 'view';
-        }
-
-        return 'application';
     }
 }

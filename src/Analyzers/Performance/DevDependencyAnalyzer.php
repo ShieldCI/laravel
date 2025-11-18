@@ -20,6 +20,11 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * 2. File system check (fallback when Composer unavailable)
  *
  * Also checks for missing composer.lock file.
+ *
+ * Environment Relevance:
+ * - Production/Staging: Critical (dev packages cause memory leaks and security issues)
+ * - Local/Development: Not relevant (dev dependencies are necessary for development)
+ * - Testing: Not relevant (tests need dev dependencies like PHPUnit)
  */
 class DevDependencyAnalyzer extends AbstractFileAnalyzer
 {
@@ -27,6 +32,21 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
      * Dev dependency checks are not applicable in CI environments.
      */
     public static bool $runInCI = false;
+
+    /**
+     * This analyzer is only relevant in production and staging environments.
+     *
+     * Dev dependencies like Debugbar, Ignition, and Telescope can cause memory leaks,
+     * performance degradation, and security issues in production.
+     *
+     * @var array<string>
+     */
+    protected ?array $relevantEnvironments = ['production', 'staging'];
+
+    /**
+     * Cached Composer availability check result.
+     */
+    private ?bool $composerAvailable = null;
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -43,8 +63,8 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        // Skip if user configured to skip in local environment
-        if ($this->isLocalAndShouldSkip()) {
+        // Check environment relevance first
+        if (! $this->isRelevantForCurrentEnvironment()) {
             return false;
         }
 
@@ -54,8 +74,11 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
 
     public function getSkipReason(): string
     {
-        if ($this->isLocalAndShouldSkip()) {
-            return 'Skipped in local environment (configured)';
+        if (! $this->isRelevantForCurrentEnvironment()) {
+            $currentEnv = $this->getEnvironment();
+            $relevantEnvs = implode(', ', $this->relevantEnvironments ?? []);
+
+            return "Not relevant in '{$currentEnv}' environment (only relevant in: {$relevantEnvs})";
         }
 
         return 'Composer configuration file (composer.json) not found';
@@ -105,37 +128,60 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if Composer binary is available.
+     * Result is cached to avoid repeated shell executions.
      */
     private function isComposerAvailable(): bool
     {
-        // Check if composer command exists
-        $output = shell_exec('command -v composer 2>&1');
+        // Return cached result if already checked
+        if ($this->composerAvailable !== null) {
+            return $this->composerAvailable;
+        }
 
-        return ! empty($output);
+        if (PHP_OS_FAMILY === 'Windows') {
+            $output = shell_exec('where composer 2>nul');
+            $this->composerAvailable = ! empty($output);
+        } else {
+            $output = shell_exec('command -v composer 2>&1');
+            $this->composerAvailable = ! empty($output);
+        }
+
+        return $this->composerAvailable;
     }
 
     /**
      * Check for dev dependencies using Composer dry-run
      * This is the most accurate method as it uses Composer's own logic.
+     * Uses --working-dir for better portability and includes command timeout.
      */
     private function checkViaComposerDryRun(string $composerJsonPath): ?Issue
     {
-        // Run: composer install --dry-run --no-dev
-        // If output contains "Removing", dev dependencies are installed
+        // Use --working-dir instead of cd for better portability
         $command = sprintf(
-            'cd %s && composer install --dry-run --no-dev 2>&1',
+            'composer install --working-dir=%s --dry-run --no-dev --no-interaction 2>&1',
             escapeshellarg($this->basePath)
         );
 
-        $output = shell_exec($command);
+        $outputLines = [];
+        $exitCode = 0;
 
-        if ($output === null || $output === false) {
-            // Command failed, fall back to file system check
+        // Execute with timeout (30 seconds)
+        $result = $this->executeWithTimeout($command, 30, $outputLines, $exitCode);
+
+        if (! $result || $exitCode !== 0) {
+            // Fall back to file system check if composer command fails
             return $this->checkViaFileSystem($composerJsonPath);
         }
 
-        // Check if output contains "Removing" which indicates dev packages would be removed
-        if (stripos((string) $output, 'Removing') !== false) {
+        $output = implode("\n", $outputLines);
+
+        // More robust pattern matching for different Composer versions
+        // Matches: "- Removing", "- would remove", "Removing package/name"
+        if (preg_match('/(-\s+)?(Removing|would\s+remove)\s+[\w\-\/]+/i', $output)) {
+            // Extract package names for better reporting
+            preg_match_all('/(-\s+)?(Removing|would\s+remove)\s+([\w\-\/]+)/i', $output, $allMatches);
+            $packageNames = $allMatches[3];
+            $removedPackages = array_slice($packageNames, 0, 10);
+
             return $this->createIssue(
                 message: 'Dev dependencies are installed in production environment',
                 location: new Location($composerJsonPath, 1),
@@ -144,11 +190,44 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
                 metadata: [
                     'detection_method' => 'composer_dry_run',
                     'environment' => $this->getEnvironment(),
+                    'packages_to_remove' => $removedPackages,
+                    'total_packages' => count($packageNames),
                 ]
             );
         }
 
-        return null; // No dev dependencies detected
+        return null;
+    }
+
+    /**
+     * Execute command with timeout.
+     *
+     * @param  array<int, string>  $outputLines
+     */
+    private function executeWithTimeout(string $command, int $timeoutSeconds, array &$outputLines, int &$exitCode): bool
+    {
+        // For Windows, timeout is less reliable, fall back to regular exec
+        if (PHP_OS_FAMILY === 'Windows') {
+            exec($command, $outputLines, $exitCode);
+
+            return true;
+        }
+
+        // On Unix systems, use timeout command if available
+        $hasTimeout = ! empty(shell_exec('command -v timeout 2>&1'));
+
+        if ($hasTimeout) {
+            $command = sprintf('timeout %d %s', $timeoutSeconds, $command);
+        }
+
+        exec($command, $outputLines, $exitCode);
+
+        // Exit code 124 means timeout was triggered
+        if ($exitCode === 124) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -157,28 +236,24 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
      */
     private function checkViaFileSystem(string $composerJsonPath): ?Issue
     {
-        // Parse composer.json to get dev dependencies
-        $composerJson = json_decode(file_get_contents($composerJsonPath), true);
-
-        if (! is_array($composerJson)) {
-            return null; // Invalid composer.json
+        // Check if vendor directory exists first
+        $vendorPath = $this->basePath.'/vendor';
+        if (! file_exists($vendorPath) || ! is_dir($vendorPath)) {
+            // No vendor directory means no packages installed at all
+            return null;
         }
 
-        $devDependencies = $composerJson['require-dev'] ?? [];
+        $devDependencies = $this->getDevPackagesFromLock() ?? $this->getDevPackagesFromComposerJson($composerJsonPath);
 
-        if (! is_array($devDependencies) || empty($devDependencies)) {
-            return null; // No dev dependencies defined
+        if (empty($devDependencies)) {
+            return null;
         }
 
-        // Check which require-dev packages are actually installed in vendor/
         $installedDevPackages = [];
 
-        foreach (array_keys($devDependencies) as $package) {
-            if (! is_string($package)) {
-                continue;
-            }
-
-            $packagePath = $this->basePath.'/vendor/'.$package;
+        foreach ($devDependencies as $package) {
+            $normalizedPath = str_replace('/', DIRECTORY_SEPARATOR, $package);
+            $packagePath = $vendorPath.DIRECTORY_SEPARATOR.$normalizedPath;
 
             if (file_exists($packagePath) && is_dir($packagePath)) {
                 $installedDevPackages[] = $package;
@@ -186,7 +261,7 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         if (empty($installedDevPackages)) {
-            return null; // No dev dependencies installed
+            return null;
         }
 
         return $this->createIssue(
@@ -201,5 +276,69 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
                 'environment' => $this->getEnvironment(),
             ]
         );
+    }
+
+    /**
+     * Get dev packages from composer.lock.
+     *
+     * @return array<int, string>|null
+     */
+    private function getDevPackagesFromLock(): ?array
+    {
+        $lockPath = $this->basePath.'/composer.lock';
+
+        if (! file_exists($lockPath)) {
+            return null;
+        }
+
+        $contents = file_get_contents($lockPath);
+
+        if ($contents === false) {
+            return null;
+        }
+
+        $lockData = json_decode($contents, true);
+
+        if (! is_array($lockData) || ! isset($lockData['packages-dev']) || ! is_array($lockData['packages-dev'])) {
+            return [];
+        }
+
+        $packages = [];
+
+        foreach ($lockData['packages-dev'] as $package) {
+            if (is_array($package) && isset($package['name']) && is_string($package['name'])) {
+                $packages[] = $package['name'];
+            }
+        }
+
+        return $packages;
+    }
+
+    /**
+     * Get dev packages from composer.json.
+     *
+     * @return array<int, string>
+     */
+    private function getDevPackagesFromComposerJson(string $composerJsonPath): array
+    {
+        $contents = file_get_contents($composerJsonPath);
+
+        if ($contents === false) {
+            return [];
+        }
+
+        $composerJson = json_decode($contents, true);
+
+        if (! is_array($composerJson)) {
+            return [];
+        }
+
+        $devDependencies = $composerJson['require-dev'] ?? [];
+
+        if (! is_array($devDependencies) || empty($devDependencies)) {
+            return [];
+        }
+
+        return array_values(array_filter(array_keys($devDependencies), fn ($key) => is_string($key)));
     }
 }

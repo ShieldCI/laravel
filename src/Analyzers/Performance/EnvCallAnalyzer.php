@@ -164,11 +164,11 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
             // Also handles use statements (e.g., use Illuminate\Support\Facades\Env; Env::get())
             if ($staticCall->class instanceof \PhpParser\Node\Name) {
                 $className = $staticCall->class->toString();
-                
+
                 // Check for Env facade (handles both short name and fully qualified)
                 // Matches: Env, \Env, Illuminate\Support\Facades\Env, \Illuminate\Support\Facades\Env
                 // Note: PhpParser doesn't resolve use statements automatically, so we check both
-                $isEnv = $className === 'Env' 
+                $isEnv = $className === 'Env'
                     || $className === 'Illuminate\Support\Facades\Env'
                     || $className === '\Illuminate\Support\Facades\Env';
 

@@ -20,7 +20,6 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * Checks for:
  * - Autoloader optimization (composer dump-autoload -o) in production
  * - Authoritative class map (composer dump-autoload --classmap-authoritative)
- * - APCu optimization for better performance
  *
  * Environment Relevance:
  * - Production/Staging: Critical for performance
@@ -143,9 +142,9 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        $content = file_get_contents($staticLoaderPath);
+        $content = $this->readFile($staticLoaderPath);
 
-        if ($content === false) {
+        if (is_null($content)) {
             return false;
         }
 
@@ -163,9 +162,9 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        $content = file_get_contents($autoloadRealPath);
+        $content = $this->readFile($autoloadRealPath);
 
-        if ($content === false) {
+        if (is_null($content)) {
             return false;
         }
 

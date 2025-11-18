@@ -66,7 +66,7 @@ class CacheDriverAnalyzer extends AbstractFileAnalyzer
             return $this->error('Cache default store is not configured properly');
         }
 
-        $environment = $this->getEnvironment();
+        $environment = $this->config->get('app.env', 'production');
 
         // Validate that the store exists in configuration
         $driver = $this->config->get("cache.stores.{$defaultStore}.driver");

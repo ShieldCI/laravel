@@ -30,7 +30,9 @@ class ConfigSuggester
 
         // Database configuration
         if (str_starts_with($varLower, 'db_') || str_starts_with($varLower, 'database_')) {
-            $key = strtolower(str_replace(['DB_', 'DATABASE_'], '', $envVarName));
+            // Remove prefix using lowercase version for consistency
+            $prefixLength = str_starts_with($varLower, 'database_') ? 9 : 3;
+            $key = strtolower(substr($envVarName, $prefixLength));
 
             return ['database', "database.{$key}"];
         }
@@ -79,10 +81,11 @@ class ConfigSuggester
 
         // Filesystem configuration
         if (str_starts_with($varLower, 'filesystem_') || str_starts_with($varLower, 'aws_')) {
-            $key = strtolower(str_replace(['FILESYSTEM_', 'AWS_'], '', $envVarName));
-            $configFile = str_starts_with($varLower, 'aws_') ? 'filesystems' : 'filesystems';
+            // Remove prefix using lowercase version for consistency
+            $prefixLength = str_starts_with($varLower, 'filesystem_') ? 11 : 4;
+            $key = strtolower(substr($envVarName, $prefixLength));
 
-            return [$configFile, "filesystems.{$key}"];
+            return ['filesystems', "filesystems.{$key}"];
         }
 
         // Default to custom config file

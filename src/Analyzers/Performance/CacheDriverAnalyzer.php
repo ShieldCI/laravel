@@ -196,7 +196,7 @@ class CacheDriverAnalyzer extends AbstractFileAnalyzer
                 // Search forward from this line for the driver definition
                 for ($i = $lineNumber + 1; $i < count($lines) && $i < $lineNumber + 20; $i++) {
                     $storeLine = $lines[$i];
-                    
+
                     // Stop if we hit the next store definition or closing bracket
                     if (preg_match('/[\'"][a-zA-Z_][a-zA-Z0-9_]*[\'"]\s*=>\s*\[/', $storeLine) ||
                         preg_match('/^\s*\]/', $storeLine)) {

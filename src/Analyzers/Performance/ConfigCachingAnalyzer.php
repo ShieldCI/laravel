@@ -49,6 +49,33 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
         );
     }
 
+    public function shouldRun(): bool
+    {
+        // Skip if application does not implement CachesConfiguration interface
+        if (! interface_exists(CachesConfiguration::class)) {
+            return false;
+        }
+
+        if (! ($this->app instanceof CachesConfiguration)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    public function getSkipReason(): string
+    {
+        if (! interface_exists(CachesConfiguration::class)) {
+            return 'CachesConfiguration interface not available (requires Laravel 7+)';
+        }
+
+        if (! ($this->app instanceof CachesConfiguration)) {
+            return 'Application does not implement CachesConfiguration interface';
+        }
+
+        return 'Analyzer is not applicable in current context';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $environment = $this->config->get('app.env', 'production');

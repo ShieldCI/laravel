@@ -66,7 +66,7 @@ class CacheDriverAnalyzer extends AbstractFileAnalyzer
             return $this->error('Cache default store is not configured properly');
         }
 
-        $environment = $this->config->get('app.env', 'production');
+        $environment = $this->getEnvironment();
 
         // Validate that the store exists in configuration
         $driver = $this->config->get("cache.stores.{$defaultStore}.driver");
@@ -102,7 +102,7 @@ class CacheDriverAnalyzer extends AbstractFileAnalyzer
         } elseif ($driver === 'file' && $environment !== 'local') {
             $issues[] = $this->createIssue(
                 message: "File cache driver in {$environment} environment",
-                location: new Location($this->getConfigPath('cache.php'), $this->findLineInConfig('cache', 'default')),
+                location: new Location($this->getConfigPath('cache.php'), $this->findDriverLineInConfig($defaultStore)),
                 severity: Severity::Medium,
                 recommendation: 'File cache is only suitable for single-server setups. For better performance, use Redis or Memcached with unix sockets. They provide faster access and more efficient eviction of expired cache items.',
                 metadata: ['driver' => 'file', 'store' => $defaultStore, 'environment' => $environment]
@@ -110,7 +110,7 @@ class CacheDriverAnalyzer extends AbstractFileAnalyzer
         } elseif ($driver === 'database' && $environment !== 'local') {
             $issues[] = $this->createIssue(
                 message: "Database cache driver in {$environment} environment",
-                location: new Location($this->getConfigPath('cache.php'), $this->findLineInConfig('cache', 'default')),
+                location: new Location($this->getConfigPath('cache.php'), $this->findDriverLineInConfig($defaultStore)),
                 severity: Severity::Medium,
                 recommendation: 'Database cache driver is not recommended for production. Use Redis or Memcached for better performance and robustness.',
                 metadata: ['driver' => 'database', 'store' => $defaultStore, 'environment' => $environment]
@@ -134,22 +134,30 @@ class CacheDriverAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Find the line number where a specific key is defined in a config file.
+     * Uses precise patterns to avoid matches in comments.
      */
     private function findLineInConfig(string $file, string $key): int
     {
         $configFile = $this->getConfigPath($file.'.php');
 
-        if (! file_exists($configFile)) {
+        $content = $this->readFile($configFile);
+        if ($content === null) {
             return 1;
         }
 
-        $lines = file($configFile);
-        if ($lines === false) {
-            return 1;
-        }
+        $lines = explode("\n", $content);
 
         foreach ($lines as $lineNumber => $line) {
-            if (str_contains($line, "'{$key}'") || str_contains($line, "\"{$key}\"")) {
+            // Strip single-line comments (// and #)
+            $lineWithoutComments = preg_replace('/\/\/.*$|#.*$/', '', $line);
+            if (! is_string($lineWithoutComments)) {
+                $lineWithoutComments = $line;
+            }
+
+            // Look for array key pattern: 'key' => or "key" => or 'key'=> (with optional spaces)
+            // This ensures we match actual array keys, not strings in comments
+            $pattern = '/[\'"](?:'.preg_quote($key, '/').')[\'"]\s*=>/';
+            if (preg_match($pattern, $lineWithoutComments)) {
                 return $lineNumber + 1;
             }
         }
@@ -159,24 +167,55 @@ class CacheDriverAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Find the line number where a specific cache store's driver is defined.
-     * This searches for the store name in the 'stores' array.
+     * This searches for the store name in the 'stores' array using precise patterns
+     * to avoid matches in comments.
      */
     private function findDriverLineInConfig(string $storeName): int
     {
         $configFile = $this->getConfigPath('cache.php');
 
-        if (! file_exists($configFile)) {
+        $content = $this->readFile($configFile);
+        if ($content === null) {
             return 1;
         }
 
-        $lines = file($configFile);
-        if ($lines === false) {
-            return 1;
-        }
+        $lines = explode("\n", $content);
 
-        // Look for the store name in the stores array
         foreach ($lines as $lineNumber => $line) {
-            if (str_contains($line, "'{$storeName}'") || str_contains($line, "\"{$storeName}\"")) {
+            // Strip single-line comments (// and #)
+            $lineWithoutComments = preg_replace('/\/\/.*$|#.*$/', '', $line);
+            if (! is_string($lineWithoutComments)) {
+                $lineWithoutComments = $line;
+            }
+
+            // Look for store name as array key: 'storeName' => [ or "storeName" => [
+            // This ensures we match actual store definitions, not strings in comments
+            $pattern = '/[\'"](?:'.preg_quote($storeName, '/').')[\'"]\s*=>\s*\[/';
+            if (preg_match($pattern, $lineWithoutComments)) {
+                // Found the store definition, now look for 'driver' key within this store
+                // Search forward from this line for the driver definition
+                for ($i = $lineNumber + 1; $i < count($lines) && $i < $lineNumber + 20; $i++) {
+                    $storeLine = $lines[$i];
+                    
+                    // Stop if we hit the next store definition or closing bracket
+                    if (preg_match('/[\'"][a-zA-Z_][a-zA-Z0-9_]*[\'"]\s*=>\s*\[/', $storeLine) ||
+                        preg_match('/^\s*\]/', $storeLine)) {
+                        break;
+                    }
+
+                    // Strip comments
+                    $storeLineWithoutComments = preg_replace('/\/\/.*$|#.*$/', '', $storeLine);
+                    if (! is_string($storeLineWithoutComments)) {
+                        $storeLineWithoutComments = $storeLine;
+                    }
+
+                    // Look for 'driver' => 'value' pattern
+                    if (preg_match('/[\'"]driver[\'"]\s*=>/', $storeLineWithoutComments)) {
+                        return $i + 1;
+                    }
+                }
+
+                // If driver not found within store definition, return store definition line
                 return $lineNumber + 1;
             }
         }

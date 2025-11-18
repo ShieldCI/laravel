@@ -9,6 +9,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -21,6 +22,11 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - Single-server optimization recommendations
  *
  * Uses Laravel's ConfigRepository for proper configuration access.
+ *
+ * Environment Relevance:
+ * - Production/Staging: Important (Unix sockets provide up to 50% performance improvement)
+ * - Local/Development: Not relevant (TCP is acceptable for local development)
+ * - Testing: Not relevant (tests typically use SQLite or don't need socket optimization)
  */
 class MysqlSingleServerAnalyzer extends AbstractAnalyzer
 {
@@ -29,9 +35,47 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
      */
     public static bool $runInCI = false;
 
+    /**
+     * This analyzer is only relevant in production and staging environments.
+     *
+     * Unix socket optimization provides significant performance benefits
+     * (up to 50% faster according to Percona benchmarks) when MySQL runs
+     * on the same server as the application.
+     *
+     * @var array<string>|null
+     */
+    protected ?array $relevantEnvironments = ['production', 'staging'];
+
+    /**
+     * Base path for file operations (set by AnalyzerManager).
+     */
+    protected string $basePath = '';
+
     public function __construct(
         private ConfigRepository $config
     ) {}
+
+    /**
+     * Set the base path for file operations (for testing and file reading).
+     *
+     * @return $this
+     */
+    public function setBasePath(string $path): self
+    {
+        $this->basePath = rtrim($path, '/');
+
+        return $this;
+    }
+
+    /**
+     * Set relevant environments (for testing).
+     *
+     * @param  array<string>|null  $environments
+     */
+    public function setRelevantEnvironments(?array $environments): void
+    {
+        $this->relevantEnvironments = $environments;
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -48,25 +92,38 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
 
     public function shouldRun(): bool
     {
-        // Skip if user configured to skip in local environment
-        if ($this->isLocalAndShouldSkip()) {
+        // Check environment relevance first
+        if (! $this->isRelevantForCurrentEnvironment()) {
             return false;
         }
 
         $defaultConnection = $this->config->get('database.default');
+
+        // Validate default connection is a string
+        if (! is_string($defaultConnection) || $defaultConnection === '') {
+            return false;
+        }
+
         $driver = $this->config->get("database.connections.{$defaultConnection}.driver");
 
-        return $driver === 'mysql';
+        return is_string($driver) && $driver === 'mysql';
     }
 
     public function getSkipReason(): string
     {
-        if ($this->isLocalAndShouldSkip()) {
-            return 'Skipped in local environment (configured)';
+        if (! $this->isRelevantForCurrentEnvironment()) {
+            $currentEnv = $this->getEnvironment();
+            $relevantEnvs = implode(', ', $this->relevantEnvironments ?? []);
+
+            return "Not relevant in '{$currentEnv}' environment (only relevant in: {$relevantEnvs})";
         }
 
         $defaultConnection = $this->config->get('database.default', 'unknown');
         $driver = $this->config->get("database.connections.{$defaultConnection}.driver", 'unknown');
+
+        if (! is_string($driver)) {
+            $driver = 'unknown';
+        }
 
         return "Not using MySQL database driver (current: {$driver})";
     }
@@ -78,36 +135,36 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
         $defaultConnection = $this->config->get('database.default', 'mysql');
         $connections = $this->config->get('database.connections', []);
 
+        // Validate connections is an array
+        if (! is_array($connections)) {
+            return $this->error('Database connections configuration is invalid');
+        }
+
+        // Validate default connection is a string
+        if (! is_string($defaultConnection)) {
+            $defaultConnection = 'mysql';
+        }
+
         foreach ($connections as $name => $connection) {
-            // Ensure $name is a string
+            // Validate connection name is a string
             if (! is_string($name)) {
                 continue;
             }
 
-            if (! isset($connection['driver']) || $connection['driver'] !== 'mysql') {
+            // Validate connection is an array
+            if (! is_array($connection)) {
                 continue;
             }
 
-            $host = $connection['host'] ?? '';
-            $unixSocket = $connection['unix_socket'] ?? '';
+            // Check if this is a MySQL connection
+            if (! $this->isMysqlConnection($connection)) {
+                continue;
+            }
 
-            // Check if using localhost/127.0.0.1 without unix_socket
-            // Both localhost and 127.0.0.1 indicate local connections
-            if (($host === 'localhost' || $host === '127.0.0.1') && empty($unixSocket)) {
-                $severity = $name === $defaultConnection ? Severity::Medium : Severity::Low;
-
-                $issues[] = $this->createIssue(
-                    message: "MySQL connection '{$name}' uses TCP on localhost instead of Unix socket",
-                    location: new Location('config/database.php', 1),
-                    severity: $severity,
-                    recommendation: $this->getRecommendation($name),
-                    metadata: [
-                        'connection_name' => $name,
-                        'host' => $host,
-                        'unix_socket' => $unixSocket,
-                        'is_default' => $name === $defaultConnection,
-                    ]
-                );
+            // Check if connection needs optimization
+            $issue = $this->checkConnectionOptimization($name, $connection, $defaultConnection);
+            if ($issue !== null) {
+                $issues[] = $issue;
             }
         }
 
@@ -121,6 +178,115 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
         );
     }
 
+    /**
+     * Check if a connection array represents a MySQL connection.
+     *
+     * @param  array<string, mixed>  $connection
+     */
+    private function isMysqlConnection(array $connection): bool
+    {
+        if (! isset($connection['driver'])) {
+            return false;
+        }
+
+        $driver = $connection['driver'];
+
+        return is_string($driver) && $driver === 'mysql';
+    }
+
+    /**
+     * Check if a MySQL connection needs optimization (using TCP instead of Unix socket).
+     *
+     * @param  array<string, mixed>  $connection
+     */
+    private function checkConnectionOptimization(string $connectionName, array $connection, string $defaultConnection): ?\ShieldCI\AnalyzersCore\ValueObjects\Issue
+    {
+        $host = $this->getConnectionHost($connection);
+        $unixSocket = $this->getConnectionUnixSocket($connection);
+
+        // Check if using localhost/127.0.0.1/::1 without unix_socket
+        // All of these indicate local connections that could use Unix sockets
+        if ($this->isLocalhostConnection($host) && $this->isEmptySocket($unixSocket)) {
+            $severity = $connectionName === $defaultConnection ? Severity::Medium : Severity::Low;
+            $configFile = ConfigFileHelper::getConfigPath($this->basePath, 'database.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+            $lineNumber = ConfigFileHelper::findKeyLine($configFile, $connectionName, 'connections');
+
+            return $this->createIssue(
+                message: "MySQL connection '{$connectionName}' uses TCP on localhost instead of Unix socket",
+                location: new Location($configFile, $lineNumber),
+                severity: $severity,
+                recommendation: $this->getRecommendation($connectionName),
+                metadata: [
+                    'connection_name' => $connectionName,
+                    'host' => $host,
+                    'unix_socket' => $unixSocket,
+                    'is_default' => $connectionName === $defaultConnection,
+                ]
+            );
+        }
+
+        return null;
+    }
+
+    /**
+     * Get the host value from a connection array.
+     *
+     * @param  array<string, mixed>  $connection
+     */
+    private function getConnectionHost(array $connection): string
+    {
+        $host = $connection['host'] ?? null;
+
+        // Handle both string and null values
+        if (! is_string($host)) {
+            return '';
+        }
+
+        return trim($host);
+    }
+
+    /**
+     * Get the unix_socket value from a connection array.
+     *
+     * @param  array<string, mixed>  $connection
+     */
+    private function getConnectionUnixSocket(array $connection): string
+    {
+        $socket = $connection['unix_socket'] ?? null;
+
+        // Handle both string and null values
+        if (! is_string($socket)) {
+            return '';
+        }
+
+        return trim($socket);
+    }
+
+    /**
+     * Check if a host value indicates a localhost connection.
+     */
+    private function isLocalhostConnection(string $host): bool
+    {
+        // Empty host defaults to localhost in Laravel
+        if ($host === '') {
+            return true;
+        }
+
+        // Check for common localhost values (IPv4, IPv6, and hostname)
+        return in_array(strtolower($host), ['localhost', '127.0.0.1', '::1'], true);
+    }
+
+    /**
+     * Check if a socket value is empty (null, empty string, or whitespace).
+     */
+    private function isEmptySocket(string $socket): bool
+    {
+        return $socket === '';
+    }
+
+    /**
+     * Get the recommendation message for a connection.
+     */
     private function getRecommendation(string $connectionName): string
     {
         return 'When MySQL runs on the same server as your application, use Unix sockets instead of TCP for up to 50% performance improvement (Percona benchmark). '.
@@ -142,25 +308,5 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
         $env = $this->config->get('app.env');
 
         return is_string($env) && $env !== '' ? $env : 'production';
-    }
-
-    /**
-     * Override isLocalAndShouldSkip to use ConfigRepository.
-     *
-     * ConfigRepository-based analyzers need to use their injected config
-     * for both environment and skip_env_specific checks.
-     *
-     * @return bool True if analyzer should be skipped in local environment
-     */
-    protected function isLocalAndShouldSkip(): bool
-    {
-        // Check if environment is local
-        $isLocal = $this->getEnvironment() === 'local';
-
-        // Check if user has enabled skipping (default: false = don't skip)
-        $skipEnabled = $this->config->get('shieldci.skip_env_specific', false);
-        $skipEnabled = is_bool($skipEnabled) ? $skipEnabled : false;
-
-        return $isLocal && $skipEnabled;
     }
 }

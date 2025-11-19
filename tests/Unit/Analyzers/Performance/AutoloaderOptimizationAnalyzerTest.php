@@ -109,6 +109,38 @@ class AutoloaderOptimizationAnalyzerTest extends AnalyzerTestCase
         $this->assertHasIssueContaining('not optimized', $result);
     }
 
+    public function test_fails_when_generated_classmap_is_empty_even_if_static_contains_laravel_classes(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $staticContent = <<<'PHP'
+<?php
+class ComposerAutoloaderInit {
+    public static $classMap = [
+        'Illuminate\\Foundation\\Application' => __DIR__.'/../../vendor/laravel/framework/src/Illuminate/Foundation/Application.php',
+    ];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_static.php' => $staticContent,
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [];
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('not optimized', $result);
+    }
+
     public function test_recommends_authoritative_when_optimized_but_not_authoritative(): void
     {
         $envContent = 'APP_ENV=production';
@@ -127,6 +159,12 @@ PHP;
             '.env' => $envContent,
             'vendor/autoload.php' => '<?php // Autoloader',
             'vendor/composer/autoload_static.php' => $optimizedContent,
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [
+    'App\\Providers\\AppServiceProvider' => __DIR__.'/../../app/Providers/AppServiceProvider.php',
+];
+PHP,
             'vendor/composer/autoload_real.php' => '<?php // No authoritative',
         ]);
 
@@ -162,6 +200,12 @@ PHP;
             '.env' => $envContent,
             'vendor/autoload.php' => '<?php // Autoloader',
             'vendor/composer/autoload_static.php' => $optimizedContent,
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [
+    'App\\Providers\\AppServiceProvider' => __DIR__.'/../../app/Providers/AppServiceProvider.php',
+];
+PHP,
             'vendor/composer/autoload_real.php' => $authoritativeContent,
         ]);
 

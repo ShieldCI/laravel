@@ -128,6 +128,31 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
         return "Not using MySQL database driver (current: {$driver})";
     }
 
+    /**
+     * Override getEnvironment to use the injected ConfigRepository while preserving environment mapping.
+     * This allows tests to properly mock the environment via ConfigRepository, while still
+     * supporting custom environment mapping (e.g., 'production-us' -> 'production').
+     */
+    protected function getEnvironment(): string
+    {
+        // Get raw environment from injected ConfigRepository (testable via mocks)
+        $rawEnv = $this->config->get('app.env', 'production');
+
+        if (! is_string($rawEnv) || $rawEnv === '') {
+            $rawEnv = 'production';
+        }
+
+        // Apply environment mapping if configured (uses global config() helper for mapping config)
+        if (function_exists('config')) {
+            $mapping = config('shieldci.environment_mapping', []);
+            if (is_array($mapping) && isset($mapping[$rawEnv])) {
+                return $mapping[$rawEnv];
+            }
+        }
+
+        return $rawEnv;
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
@@ -293,20 +318,5 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
                "Add 'unix_socket' => env('DB_SOCKET', '/var/run/mysqld/mysqld.sock') to the '{$connectionName}' connection config, ".
                'then set DB_SOCKET in your .env file with the path to your MySQL socket file. Common paths: '.
                '/var/run/mysqld/mysqld.sock (Ubuntu/Debian), /tmp/mysql.sock (macOS), /var/lib/mysql/mysql.sock (RHEL/CentOS).';
-    }
-
-    /**
-     * Override getEnvironment to use ConfigRepository.
-     *
-     * ConfigRepository-based analyzers get environment directly from
-     * injected config instead of using the config() helper.
-     *
-     * @return string The environment name (e.g., 'local', 'production', 'staging')
-     */
-    protected function getEnvironment(): string
-    {
-        $env = $this->config->get('app.env');
-
-        return is_string($env) && $env !== '' ? $env : 'production';
     }
 }

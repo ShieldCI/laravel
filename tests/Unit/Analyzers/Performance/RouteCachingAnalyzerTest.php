@@ -16,7 +16,6 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
 {
     /**
      * @param  array<string, mixed>  $configValues
-     * @param  bool  $routesAreCached
      */
     protected function createAnalyzer(
         array $configValues = [],

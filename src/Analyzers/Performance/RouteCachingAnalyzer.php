@@ -61,11 +61,36 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
         return 'Application does not implement CachesRoutes interface';
     }
 
+    /**
+     * Override getEnvironment to use the injected ConfigRepository while preserving environment mapping.
+     * This allows tests to properly mock the environment via ConfigRepository, while still
+     * supporting custom environment mapping (e.g., 'production-us' -> 'production').
+     */
+    protected function getEnvironment(): string
+    {
+        // Get raw environment from injected ConfigRepository (testable via mocks)
+        $rawEnv = $this->config->get('app.env', 'production');
+
+        if (! is_string($rawEnv) || $rawEnv === '') {
+            $rawEnv = 'production';
+        }
+
+        // Apply environment mapping if configured (uses global config() helper for mapping config)
+        if (function_exists('config')) {
+            $mapping = config('shieldci.environment_mapping', []);
+            if (is_array($mapping) && isset($mapping[$rawEnv])) {
+                return $mapping[$rawEnv];
+            }
+        }
+
+        return $rawEnv;
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
 
-        $environment = $this->config->get('app.env', 'production');
+        $environment = $this->getEnvironment();
 
         /** @var Application&CachesRoutes $app */
         $app = $this->app;

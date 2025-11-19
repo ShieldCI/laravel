@@ -14,23 +14,48 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class RouteCachingAnalyzerTest extends AnalyzerTestCase
 {
+    /**
+     * @param  array<string, mixed>  $configValues
+     * @param  bool  $routesAreCached
+     */
     protected function createAnalyzer(
-        string $environment = 'production',
+        array $configValues = [],
         bool $routesAreCached = false
     ): AnalyzerInterface {
-        /** @var Application&CachesRoutes&\Mockery\MockInterface $app */
-        $app = Mockery::mock(Application::class.', '.CachesRoutes::class);
-
         /** @var ConfigRepository&\Mockery\MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
-        // Mock config repository
+        // Set up default config values
+        $defaults = [
+            'app' => [
+                'env' => 'production', // Default to production so tests actually run
+            ],
+        ];
+
+        $configMap = array_replace_recursive($defaults, $configValues);
+
         /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $config->shouldReceive('get')
-            ->with('app.env', 'production')
-            ->andReturn($environment);
+            ->andReturnUsing(function ($key, $default = null) use ($configMap) {
+                // Handle dotted key access (e.g., 'app.env')
+                $keys = explode('.', $key);
+                $value = $configMap;
 
-        // Mock app route caching status
+                foreach ($keys as $segment) {
+                    if (is_array($value) && array_key_exists($segment, $value)) {
+                        $value = $value[$segment];
+                    } else {
+                        return $default;
+                    }
+                }
+
+                return $value ?? $default;
+            });
+
+        // Mock Application with CachesRoutes interface
+        /** @var Application&CachesRoutes&\Mockery\MockInterface $app */
+        $app = Mockery::mock(Application::class.', '.CachesRoutes::class);
+
         /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $app->shouldReceive('routesAreCached')
             ->andReturn($routesAreCached);
@@ -41,7 +66,11 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
     public function test_warns_when_routes_cached_in_local(): void
     {
         $analyzer = $this->createAnalyzer(
-            environment: 'local',
+            [
+                'app' => [
+                    'env' => 'local',
+                ],
+            ],
             routesAreCached: true
         );
 
@@ -58,7 +87,11 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
     public function test_fails_when_routes_not_cached_in_production(): void
     {
         $analyzer = $this->createAnalyzer(
-            environment: 'production',
+            [
+                'app' => [
+                    'env' => 'production',
+                ],
+            ],
             routesAreCached: false
         );
 
@@ -76,7 +109,11 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
     public function test_passes_with_routes_cached_in_production(): void
     {
         $analyzer = $this->createAnalyzer(
-            environment: 'production',
+            [
+                'app' => [
+                    'env' => 'production',
+                ],
+            ],
             routesAreCached: true
         );
 
@@ -88,7 +125,11 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
     public function test_passes_with_routes_not_cached_in_local(): void
     {
         $analyzer = $this->createAnalyzer(
-            environment: 'local',
+            [
+                'app' => [
+                    'env' => 'local',
+                ],
+            ],
             routesAreCached: false
         );
 
@@ -100,7 +141,11 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
     public function test_fails_when_routes_not_cached_in_staging(): void
     {
         $analyzer = $this->createAnalyzer(
-            environment: 'staging',
+            [
+                'app' => [
+                    'env' => 'staging',
+                ],
+            ],
             routesAreCached: false
         );
 
@@ -108,5 +153,11 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('not cached in staging', $result);
+    }
+
+    protected function tearDown(): void
+    {
+        Mockery::close();
+        parent::tearDown();
     }
 }

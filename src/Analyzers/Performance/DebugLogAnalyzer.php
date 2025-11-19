@@ -155,7 +155,7 @@ class DebugLogAnalyzer extends AbstractAnalyzer
         $level = $this->config->get("logging.channels.{$channel}.level");
 
         if ($level === 'debug') {
-            $environment = $this->config->get('app.env', 'production');
+            $environment = $this->getEnvironment();
 
             $issues[] = $this->createIssue(
                 message: "Log channel '{$channel}' is set to debug level in {$environment} environment",

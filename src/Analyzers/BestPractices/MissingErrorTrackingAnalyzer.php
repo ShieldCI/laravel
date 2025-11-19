@@ -47,7 +47,7 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
     public function shouldRun(): bool
     {
         // Check if relevant for current environment first
-        return ! $this->isRelevantForCurrentEnvironment();
+        return $this->isRelevantForCurrentEnvironment();
     }
 
     protected function runAnalysis(): ResultInterface

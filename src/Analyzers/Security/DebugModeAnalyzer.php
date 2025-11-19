@@ -144,7 +144,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
         }
 
         // Check logging.php for debug channels
-        $loggingConfig = $configPath.'/logging.php';
+        $loggingConfig = ConfigFileHelper::getConfigPath($this->basePath, 'logging.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
         if (file_exists($loggingConfig)) {
             $content = FileParser::readFile($loggingConfig);
 

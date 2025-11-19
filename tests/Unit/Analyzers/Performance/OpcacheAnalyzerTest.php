@@ -17,8 +17,6 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
     public function test_checks_opcache_status(): void
     {
-        $tempDir = $this->createTempDirectory([]);
-
         $analyzer = $this->createAnalyzer();
 
         $result = $analyzer->analyze();

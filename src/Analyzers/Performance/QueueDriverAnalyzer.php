@@ -28,7 +28,9 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
 {
     public function __construct(
         private ConfigRepository $config
-    ) {}
+    ) {
+        $this->configRepository = $config;
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -53,31 +55,6 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
     public function getSkipReason(): string
     {
         return 'Queue configuration not found (queue.default is not set)';
-    }
-
-    /**
-     * Override getEnvironment to use the injected ConfigRepository while preserving environment mapping.
-     * This allows tests to properly mock the environment via ConfigRepository, while still
-     * supporting custom environment mapping (e.g., 'production-us' -> 'production').
-     */
-    protected function getEnvironment(): string
-    {
-        // Get raw environment from injected ConfigRepository (testable via mocks)
-        $rawEnv = $this->config->get('app.env', 'production');
-
-        if (! is_string($rawEnv) || $rawEnv === '') {
-            $rawEnv = 'production';
-        }
-
-        // Apply environment mapping if configured (uses global config() helper for mapping config)
-        if (function_exists('config')) {
-            $mapping = config('shieldci.environment_mapping', []);
-            if (is_array($mapping) && isset($mapping[$rawEnv])) {
-                return $mapping[$rawEnv];
-            }
-        }
-
-        return $rawEnv;
     }
 
     protected function runAnalysis(): ResultInterface

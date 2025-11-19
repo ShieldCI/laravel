@@ -141,6 +141,33 @@ PHP,
         $this->assertHasIssueContaining('not optimized', $result);
     }
 
+    public function test_fails_when_classmap_contains_only_vendor_entries(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $vendorOnlyClassmap = <<<'PHP'
+<?php
+return [
+    'Composer\\Autoload\\ClassLoader' => __DIR__.'/../../vendor/composer/ClassLoader.php',
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => $vendorOnlyClassmap,
+            'vendor/composer/autoload_static.php' => '<?php class ComposerAutoloaderInit {}',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('not optimized', $result);
+    }
+
     public function test_recommends_authoritative_when_optimized_but_not_authoritative(): void
     {
         $envContent = 'APP_ENV=production';

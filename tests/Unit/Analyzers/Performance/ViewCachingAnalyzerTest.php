@@ -102,6 +102,10 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
             ->andReturn($finder);
 
         // Mock app('view') to return our mock view factory
+        if ($this->app === null) {
+            throw new \RuntimeException('Application not available in test');
+        }
+
         $this->app->instance('view', $viewFactory);
     }
 

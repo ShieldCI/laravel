@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\Performance;
 
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
-use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
+use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -25,7 +25,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * This analyzer uses Laravel's config repository to get runtime values,
  * which respects environment variables and config caching.
  */
-class CacheDriverAnalyzer extends AbstractFileAnalyzer
+class CacheDriverAnalyzer extends AbstractAnalyzer
 {
     public function __construct(
         private ConfigRepository $config
@@ -57,6 +57,31 @@ class CacheDriverAnalyzer extends AbstractFileAnalyzer
         return 'Cache default store not configured';
     }
 
+    /**
+     * Override getEnvironment to use the injected ConfigRepository while preserving environment mapping.
+     * This allows tests to properly mock the environment via ConfigRepository, while still
+     * supporting custom environment mapping (e.g., 'production-us' -> 'production').
+     */
+    protected function getEnvironment(): string
+    {
+        // Get raw environment from injected ConfigRepository (testable via mocks)
+        $rawEnv = $this->config->get('app.env', 'production');
+
+        if (! is_string($rawEnv) || $rawEnv === '') {
+            $rawEnv = 'production';
+        }
+
+        // Apply environment mapping if configured (uses global config() helper for mapping config)
+        if (function_exists('config')) {
+            $mapping = config('shieldci.environment_mapping', []);
+            if (is_array($mapping) && isset($mapping[$rawEnv])) {
+                return $mapping[$rawEnv];
+            }
+        }
+
+        return $rawEnv;
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
@@ -67,12 +92,15 @@ class CacheDriverAnalyzer extends AbstractFileAnalyzer
             return $this->error('Cache default store is not configured properly');
         }
 
-        $environment = $this->config->get('app.env', 'production');
+        $environment = $this->getEnvironment();
 
         // Validate that the store exists in configuration
         $driver = $this->config->get("cache.stores.{$defaultStore}.driver");
+
+        $basePath = $this->getBasePath();
+        $configFile = ConfigFileHelper::getConfigPath($basePath, 'cache.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+
         if ($driver === null) {
-            $configFile = ConfigFileHelper::getConfigPath($this->basePath, 'cache.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
             $issues[] = $this->createIssue(
                 message: "Cache store '{$defaultStore}' is not defined in cache configuration",
                 location: new Location($configFile, ConfigFileHelper::findKeyLine($configFile, 'default')),
@@ -84,46 +112,22 @@ class CacheDriverAnalyzer extends AbstractFileAnalyzer
             return $this->failed('Cache configuration is invalid', $issues);
         }
 
-        $configFile = ConfigFileHelper::getConfigPath($this->basePath, 'cache.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
-
-        // Check for problematic drivers
-        if ($driver === 'null') {
-            $lineNumber = ConfigFileHelper::findNestedKeyLine($configFile, 'stores', 'driver', $defaultStore);
-            $issues[] = $this->createIssue(
-                message: 'Cache driver is set to null - caching is disabled',
-                location: new Location($configFile, $lineNumber),
-                severity: Severity::Critical,
-                recommendation: 'Set CACHE_STORE to redis, memcached, or dynamodb in your .env file for production. Null driver means all cache operations will be no-ops.',
-                metadata: ['driver' => 'null', 'store' => $defaultStore, 'environment' => $environment]
-            );
-        } elseif ($driver === 'array') {
-            $lineNumber = ConfigFileHelper::findNestedKeyLine($configFile, 'stores', 'driver', $defaultStore);
-            $issues[] = $this->createIssue(
-                message: 'Cache driver is set to array - cache not persisted',
-                location: new Location($configFile, $lineNumber),
-                severity: Severity::Critical,
-                recommendation: 'Array driver only caches within a single request and is only suitable for testing. Use redis, memcached, or dynamodb for production.',
-                metadata: ['driver' => 'array', 'store' => $defaultStore, 'environment' => $environment]
-            );
-        } elseif ($driver === 'file' && $environment !== 'local') {
-            $lineNumber = ConfigFileHelper::findNestedKeyLine($configFile, 'stores', 'driver', $defaultStore);
-            $issues[] = $this->createIssue(
-                message: "File cache driver in {$environment} environment",
-                location: new Location($configFile, $lineNumber),
-                severity: Severity::Medium,
-                recommendation: 'File cache is only suitable for single-server setups. For better performance, use Redis or Memcached with unix sockets. They provide faster access and more efficient eviction of expired cache items.',
-                metadata: ['driver' => 'file', 'store' => $defaultStore, 'environment' => $environment]
-            );
-        } elseif ($driver === 'database' && $environment !== 'local') {
-            $lineNumber = ConfigFileHelper::findNestedKeyLine($configFile, 'stores', 'driver', $defaultStore);
-            $issues[] = $this->createIssue(
-                message: "Database cache driver in {$environment} environment",
-                location: new Location($configFile, $lineNumber),
-                severity: Severity::Medium,
-                recommendation: 'Database cache driver is not recommended for production. Use Redis or Memcached for better performance and robustness.',
-                metadata: ['driver' => 'database', 'store' => $defaultStore, 'environment' => $environment]
-            );
+        // Ensure driver is a string for PHPStan
+        if (! is_string($driver)) {
+            return $this->error('Cache driver configuration is invalid (driver is not a string)');
         }
+
+        // Calculate line number once for all driver checks
+        $lineNumber = ConfigFileHelper::findNestedKeyLine($configFile, 'stores', 'driver', $defaultStore);
+
+        // Use match expression for better type safety and clarity
+        match ($driver) {
+            'null' => $this->assessNullDriver($driver, $issues, $configFile, $lineNumber, $defaultStore, $environment),
+            'array' => $this->assessArrayDriver($driver, $issues, $configFile, $lineNumber, $defaultStore, $environment),
+            'file' => $this->assessFileDriver($driver, $issues, $configFile, $lineNumber, $defaultStore, $environment),
+            'database' => $this->assessDatabaseDriver($driver, $issues, $configFile, $lineNumber, $defaultStore, $environment),
+            default => $this->assessOtherDriver($driver, $issues, $configFile, $lineNumber, $defaultStore, $environment),
+        };
 
         if (empty($issues)) {
             return $this->passed("Cache driver '{$driver}' is properly configured for {$environment} environment");
@@ -133,5 +137,85 @@ class CacheDriverAnalyzer extends AbstractFileAnalyzer
             sprintf('Found %d cache driver configuration issues', count($issues)),
             $issues
         );
+    }
+
+    /**
+     * Assess the 'null' cache driver.
+     * The null driver disables caching completely.
+     */
+    private function assessNullDriver(string $driver, array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
+    {
+        $issues[] = $this->createIssue(
+            message: 'Cache driver is set to null - caching is disabled',
+            location: new Location($configFile, $lineNumber),
+            severity: Severity::Critical,
+            recommendation: 'Set CACHE_STORE to redis, memcached, or dynamodb in your .env file for production. Null driver means all cache operations will be no-ops.',
+            metadata: ['driver' => 'null', 'store' => $defaultStore, 'environment' => $environment]
+        );
+    }
+
+    /**
+     * Assess the 'array' cache driver.
+     * The array driver only caches within a single request.
+     */
+    private function assessArrayDriver(string $driver, array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
+    {
+        $issues[] = $this->createIssue(
+            message: 'Cache driver is set to array - cache not persisted',
+            location: new Location($configFile, $lineNumber),
+            severity: Severity::Critical,
+            recommendation: 'Array driver only caches within a single request and is only suitable for testing. Use redis, memcached, or dynamodb for production.',
+            metadata: ['driver' => 'array', 'store' => $defaultStore, 'environment' => $environment]
+        );
+    }
+
+    /**
+     * Assess the 'file' cache driver.
+     * The file driver is only suitable for single-server setups.
+     */
+    private function assessFileDriver(string $driver, array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
+    {
+        // File driver is acceptable in local development
+        if ($environment === 'local') {
+            return;
+        }
+
+        $issues[] = $this->createIssue(
+            message: "File cache driver in {$environment} environment",
+            location: new Location($configFile, $lineNumber),
+            severity: Severity::Medium,
+            recommendation: 'File cache is only suitable for single-server setups. For better performance, use Redis or Memcached with unix sockets. They provide faster access and more efficient eviction of expired cache items.',
+            metadata: ['driver' => 'file', 'store' => $defaultStore, 'environment' => $environment]
+        );
+    }
+
+    /**
+     * Assess the 'database' cache driver.
+     * The database driver works but has performance issues in production.
+     */
+    private function assessDatabaseDriver(string $driver, array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
+    {
+        // Database cache driver is acceptable for local development
+        if ($environment === 'local') {
+            return;
+        }
+
+        $issues[] = $this->createIssue(
+            message: "Database cache driver in {$environment} environment",
+            location: new Location($configFile, $lineNumber),
+            severity: Severity::Medium,
+            recommendation: 'Database cache driver is not recommended for production. Use Redis or Memcached for better performance and robustness.',
+            metadata: ['driver' => 'database', 'store' => $defaultStore, 'environment' => $environment]
+        );
+    }
+
+    /**
+     * Assess other cache drivers (redis, memcached, dynamodb, etc.).
+     * These are generally acceptable.
+     */
+    private function assessOtherDriver(string $driver, array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
+    {
+        // Other drivers (redis, memcached, dynamodb, etc.) are generally acceptable
+        // No issues to report for these drivers
     }
 }

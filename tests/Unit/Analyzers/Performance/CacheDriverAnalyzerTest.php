@@ -12,47 +12,64 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class CacheDriverAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(
-        string $environment = 'production',
-        ?string $defaultStore = 'redis',
-        ?string $driver = 'redis'
-    ): AnalyzerInterface {
+    /**
+     * @param  array<string, mixed>  $configValues
+     */
+    protected function createAnalyzer(array $configValues = []): AnalyzerInterface
+    {
         /** @var ConfigRepository&\Mockery\MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
-        // Mock config repository
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
-        $config->shouldReceive('get')
-            ->with('cache.default')
-            ->andReturn($defaultStore);
+        // Set up default config values
+        $defaults = [
+            'app' => [
+                'env' => 'production', // Default to production so tests actually run
+            ],
+            'cache' => [
+                'default' => 'redis',
+                'stores' => [
+                    'redis' => [
+                        'driver' => 'redis',
+                    ],
+                ],
+            ],
+        ];
+
+        $configMap = array_replace_recursive($defaults, $configValues);
 
         /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $config->shouldReceive('get')
-            ->with('app.env', 'production')
-            ->andReturn($environment);
+            ->andReturnUsing(function ($key, $default = null) use ($configMap) {
+                // Handle dotted key access (e.g., 'cache.stores.redis.driver')
+                $keys = explode('.', $key);
+                $value = $configMap;
 
-        if ($defaultStore !== null && $driver !== null) {
-            /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
-            $config->shouldReceive('get')
-                ->with("cache.stores.{$defaultStore}.driver")
-                ->andReturn($driver);
-        }
+                foreach ($keys as $segment) {
+                    if (is_array($value) && array_key_exists($segment, $value)) {
+                        $value = $value[$segment];
+                    } else {
+                        return $default;
+                    }
+                }
 
-        $analyzer = new CacheDriverAnalyzer($config);
+                return $value ?? $default;
+            });
 
-        // Set a dummy basePath for location reporting
-        $analyzer->setBasePath('/app');
-
-        return $analyzer;
+        return new CacheDriverAnalyzer($config);
     }
 
     public function test_passes_with_redis_driver(): void
     {
-        $analyzer = $this->createAnalyzer(
-            environment: 'production',
-            defaultStore: 'redis',
-            driver: 'redis'
-        );
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => 'redis',
+                'stores' => [
+                    'redis' => [
+                        'driver' => 'redis',
+                    ],
+                ],
+            ],
+        ]);
 
         $result = $analyzer->analyze();
 
@@ -61,11 +78,16 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
 
     public function test_fails_with_null_driver(): void
     {
-        $analyzer = $this->createAnalyzer(
-            environment: 'production',
-            defaultStore: 'null',
-            driver: 'null'
-        );
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => 'null',
+                'stores' => [
+                    'null' => [
+                        'driver' => 'null',
+                    ],
+                ],
+            ],
+        ]);
 
         $result = $analyzer->analyze();
 
@@ -75,11 +97,16 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
 
     public function test_fails_with_file_driver_in_production(): void
     {
-        $analyzer = $this->createAnalyzer(
-            environment: 'production',
-            defaultStore: 'file',
-            driver: 'file'
-        );
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => 'file',
+                'stores' => [
+                    'file' => [
+                        'driver' => 'file',
+                    ],
+                ],
+            ],
+        ]);
 
         $result = $analyzer->analyze();
 
@@ -89,11 +116,19 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
 
     public function test_passes_with_file_driver_in_local(): void
     {
-        $analyzer = $this->createAnalyzer(
-            environment: 'local',
-            defaultStore: 'file',
-            driver: 'file'
-        );
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'local',
+            ],
+            'cache' => [
+                'default' => 'file',
+                'stores' => [
+                    'file' => [
+                        'driver' => 'file',
+                    ],
+                ],
+            ],
+        ]);
 
         $result = $analyzer->analyze();
 
@@ -102,11 +137,16 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
 
     public function test_fails_with_array_driver(): void
     {
-        $analyzer = $this->createAnalyzer(
-            environment: 'production',
-            defaultStore: 'array',
-            driver: 'array'
-        );
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => 'array',
+                'stores' => [
+                    'array' => [
+                        'driver' => 'array',
+                    ],
+                ],
+            ],
+        ]);
 
         $result = $analyzer->analyze();
 
@@ -116,14 +156,25 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
 
     public function test_passes_with_memcached_driver(): void
     {
-        $analyzer = $this->createAnalyzer(
-            environment: 'production',
-            defaultStore: 'memcached',
-            driver: 'memcached'
-        );
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => 'memcached',
+                'stores' => [
+                    'memcached' => [
+                        'driver' => 'memcached',
+                    ],
+                ],
+            ],
+        ]);
 
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    protected function tearDown(): void
+    {
+        Mockery::close();
+        parent::tearDown();
     }
 }

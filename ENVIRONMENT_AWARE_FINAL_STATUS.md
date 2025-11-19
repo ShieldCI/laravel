@@ -1,0 +1,1 @@
+- 📁 `src/Analyzers/Performance/OpcacheAnalyzer.php`

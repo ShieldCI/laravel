@@ -46,26 +46,9 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
      */
     protected ?array $relevantEnvironments = ['production', 'staging'];
 
-    /**
-     * Base path for file operations (set by AnalyzerManager).
-     */
-    protected string $basePath = '';
-
     public function __construct(
         private ConfigRepository $config
     ) {}
-
-    /**
-     * Set the base path for file operations (for testing and file reading).
-     *
-     * @return $this
-     */
-    public function setBasePath(string $path): self
-    {
-        $this->basePath = rtrim($path, '/');
-
-        return $this;
-    }
 
     /**
      * Set relevant environments (for testing).
@@ -233,7 +216,8 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
         // All of these indicate local connections that could use Unix sockets
         if ($this->isLocalhostConnection($host) && $this->isEmptySocket($unixSocket)) {
             $severity = $connectionName === $defaultConnection ? Severity::Medium : Severity::Low;
-            $configFile = ConfigFileHelper::getConfigPath($this->basePath, 'database.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+            $basePath = $this->getBasePath();
+            $configFile = ConfigFileHelper::getConfigPath($basePath, 'database.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
             $lineNumber = ConfigFileHelper::findKeyLine($configFile, $connectionName, 'connections');
 
             return $this->createIssue(

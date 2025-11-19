@@ -20,7 +20,6 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $tempDir = $this->createTempDirectory([]);
 
         $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
 
         $result = $analyzer->analyze();
 

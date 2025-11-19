@@ -15,30 +15,51 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class SessionDriverAnalyzerTest extends AnalyzerTestCase
 {
+    /**
+     * @param  array<string, mixed>  $configValues
+     */
     protected function createAnalyzer(
-        string $environment = 'production',
-        string $driver = 'redis',
+        array $configValues = [],
         bool $usesSession = true
     ): AnalyzerInterface {
         /** @var ConfigRepository&\Mockery\MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
+
+        // Set up default config values
+        $defaults = [
+            'app' => [
+                'env' => 'production', // Default to production so tests actually run
+            ],
+            'session' => [
+                'driver' => 'redis',
+            ],
+        ];
+
+        $configMap = array_replace_recursive($defaults, $configValues);
+
+        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
+        $config->shouldReceive('get')
+            ->andReturnUsing(function ($key, $default = null) use ($configMap) {
+                // Handle dotted key access (e.g., 'session.driver', 'app.env')
+                $keys = explode('.', $key);
+                $value = $configMap;
+
+                foreach ($keys as $segment) {
+                    if (is_array($value) && array_key_exists($segment, $value)) {
+                        $value = $value[$segment];
+                    } else {
+                        return $default;
+                    }
+                }
+
+                return $value ?? $default;
+            });
 
         /** @var Router&\Mockery\MockInterface $router */
         $router = Mockery::mock(Router::class);
 
         /** @var Kernel&\Mockery\MockInterface $kernel */
         $kernel = Mockery::mock(Kernel::class);
-
-        // Mock config repository
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
-        $config->shouldReceive('get')
-            ->with('session.driver', 'file')
-            ->andReturn($driver);
-
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
-        $config->shouldReceive('get')
-            ->with('app.env', 'production')
-            ->andReturn($environment);
 
         // Mock router - directly mock getRoutes() to avoid RouteCollection complexities
         $mockRoutes = [];
@@ -64,11 +85,11 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
     public function test_passes_with_redis_driver(): void
     {
-        $analyzer = $this->createAnalyzer(
-            environment: 'production',
-            driver: 'redis',
-            usesSession: true
-        );
+        $analyzer = $this->createAnalyzer([
+            'session' => [
+                'driver' => 'redis',
+            ],
+        ]);
 
         $result = $analyzer->analyze();
 
@@ -77,11 +98,11 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
     public function test_passes_with_database_driver(): void
     {
-        $analyzer = $this->createAnalyzer(
-            environment: 'production',
-            driver: 'database',
-            usesSession: true
-        );
+        $analyzer = $this->createAnalyzer([
+            'session' => [
+                'driver' => 'database',
+            ],
+        ]);
 
         $result = $analyzer->analyze();
 
@@ -90,11 +111,11 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
     public function test_fails_with_null_driver(): void
     {
-        $analyzer = $this->createAnalyzer(
-            environment: 'production',
-            driver: 'null',
-            usesSession: true
-        );
+        $analyzer = $this->createAnalyzer([
+            'session' => [
+                'driver' => 'null',
+            ],
+        ]);
 
         $result = $analyzer->analyze();
 
@@ -108,11 +129,11 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
     public function test_warns_about_file_driver_in_production(): void
     {
-        $analyzer = $this->createAnalyzer(
-            environment: 'production',
-            driver: 'file',
-            usesSession: true
-        );
+        $analyzer = $this->createAnalyzer([
+            'session' => [
+                'driver' => 'file',
+            ],
+        ]);
 
         $result = $analyzer->analyze();
 
@@ -127,11 +148,14 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
     public function test_passes_with_file_driver_in_local(): void
     {
-        $analyzer = $this->createAnalyzer(
-            environment: 'local',
-            driver: 'file',
-            usesSession: true
-        );
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'local',
+            ],
+            'session' => [
+                'driver' => 'file',
+            ],
+        ]);
 
         $result = $analyzer->analyze();
 
@@ -140,11 +164,11 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
     public function test_fails_with_array_driver_in_production(): void
     {
-        $analyzer = $this->createAnalyzer(
-            environment: 'production',
-            driver: 'array',
-            usesSession: true
-        );
+        $analyzer = $this->createAnalyzer([
+            'session' => [
+                'driver' => 'array',
+            ],
+        ]);
 
         $result = $analyzer->analyze();
 
@@ -158,11 +182,14 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
     public function test_passes_with_array_driver_in_local(): void
     {
-        $analyzer = $this->createAnalyzer(
-            environment: 'local',
-            driver: 'array',
-            usesSession: true
-        );
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'local',
+            ],
+            'session' => [
+                'driver' => 'array',
+            ],
+        ]);
 
         $result = $analyzer->analyze();
 
@@ -171,11 +198,11 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
     public function test_warns_about_cookie_driver_in_production(): void
     {
-        $analyzer = $this->createAnalyzer(
-            environment: 'production',
-            driver: 'cookie',
-            usesSession: true
-        );
+        $analyzer = $this->createAnalyzer([
+            'session' => [
+                'driver' => 'cookie',
+            ],
+        ]);
 
         $result = $analyzer->analyze();
 
@@ -189,11 +216,14 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
     public function test_passes_with_cookie_driver_in_local(): void
     {
-        $analyzer = $this->createAnalyzer(
-            environment: 'local',
-            driver: 'cookie',
-            usesSession: true
-        );
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'local',
+            ],
+            'session' => [
+                'driver' => 'cookie',
+            ],
+        ]);
 
         $result = $analyzer->analyze();
 
@@ -203,8 +233,11 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
     public function test_skips_when_app_is_stateless(): void
     {
         $analyzer = $this->createAnalyzer(
-            environment: 'production',
-            driver: 'null',
+            [
+                'session' => [
+                    'driver' => 'null',
+                ],
+            ],
             usesSession: false
         );
 
@@ -215,15 +248,24 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
     public function test_warns_about_file_driver_in_staging(): void
     {
-        $analyzer = $this->createAnalyzer(
-            environment: 'staging',
-            driver: 'file',
-            usesSession: true
-        );
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'staging',
+            ],
+            'session' => [
+                'driver' => 'file',
+            ],
+        ]);
 
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('file', $result);
+    }
+
+    protected function tearDown(): void
+    {
+        Mockery::close();
+        parent::tearDown();
     }
 }

@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
@@ -60,10 +61,35 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
         return 'Application does not use sessions (stateless)';
     }
 
+    /**
+     * Override getEnvironment to use the injected ConfigRepository while preserving environment mapping.
+     * This allows tests to properly mock the environment via ConfigRepository, while still
+     * supporting custom environment mapping (e.g., 'production-us' -> 'production').
+     */
+    protected function getEnvironment(): string
+    {
+        // Get raw environment from injected ConfigRepository (testable via mocks)
+        $rawEnv = $this->config->get('app.env', 'production');
+
+        if (! is_string($rawEnv) || $rawEnv === '') {
+            $rawEnv = 'production';
+        }
+
+        // Apply environment mapping if configured (uses global config() helper for mapping config)
+        if (function_exists('config')) {
+            $mapping = config('shieldci.environment_mapping', []);
+            if (is_array($mapping) && isset($mapping[$rawEnv])) {
+                return $mapping[$rawEnv];
+            }
+        }
+
+        return $rawEnv;
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $driver = $this->config->get('session.driver', 'file');
-        $environment = $this->config->get('app.env', 'production');
+        $environment = $this->getEnvironment();
 
         if (! is_string($driver) || ! is_string($environment)) {
             return $this->error('Invalid session driver or environment configuration');
@@ -225,8 +251,8 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
      */
     private function getConfigLocation(): Location
     {
-        $basePath = function_exists('base_path') ? base_path() : getcwd();
-        $configPath = $basePath.'/config/session.php';
+        $basePath = $this->getBasePath();
+        $configPath = ConfigFileHelper::getConfigPath($basePath, 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
         // Try to find the exact line with 'driver' key
         if (file_exists($configPath)) {

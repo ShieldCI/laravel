@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
@@ -118,14 +119,8 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
      */
     private function checkConfigFiles(array &$issues): void
     {
-        $configPath = $this->basePath.'/config';
-
-        if (! is_dir($configPath)) {
-            return;
-        }
-
         // Check app.php for hardcoded debug=true
-        $appConfig = $configPath.'/app.php';
+        $appConfig = ConfigFileHelper::getConfigPath($this->basePath, 'app.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
         if (file_exists($appConfig)) {
             $lines = FileParser::getLines($appConfig);
 

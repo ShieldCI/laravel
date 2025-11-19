@@ -29,6 +29,16 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
      */
     public static bool $runInCI = false;
 
+    /**
+     * This analyzer is only relevant in production and staging environments.
+     *
+     * In local/development, developers may have different PHP ini settings
+     * for debugging purposes, which is acceptable.
+     *
+     * @var array<string>
+     */
+    protected ?array $relevantEnvironments = ['production', 'staging'];
+
     private array $secureSettings = [
         'allow_url_fopen' => false,
         'allow_url_include' => false,
@@ -54,13 +64,19 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        // Skip if user configured to skip in local environment
-        return ! $this->isLocalAndShouldSkip();
+        return $this->isRelevantForCurrentEnvironment();
     }
 
     public function getSkipReason(): string
     {
-        return 'Skipped in local environment (configured)';
+        if (! $this->isRelevantForCurrentEnvironment()) {
+            $currentEnv = $this->getEnvironment();
+            $relevantEnvs = implode(', ', $this->relevantEnvironments ?? []);
+
+            return "Not relevant in '{$currentEnv}' environment (only relevant in: {$relevantEnvs})";
+        }
+
+        return 'Analyzer is not applicable in current context';
     }
 
     protected function runAnalysis(): ResultInterface

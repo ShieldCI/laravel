@@ -124,13 +124,21 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
     }
 
     /**
+     * Check if the environment is production or staging.
+     */
+    private function isProductionOrStaging(string $environment): bool
+    {
+        return in_array($environment, ['staging', 'production'], true);
+    }
+
+    /**
      * Assess the 'null' cache driver.
      * The null driver disables caching completely.
      */
     private function assessNullDriver(string $driver, array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
     {
         // Null driver is acceptable outside staging/production (e.g., local/testing)
-        if (! in_array($environment, ['staging', 'production'], true)) {
+        if (! $this->isProductionOrStaging($environment)) {
             return;
         }
 
@@ -150,7 +158,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
     private function assessArrayDriver(string $driver, array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
     {
         // Array driver is expected for testing/local contexts; only warn in staging/production
-        if (! in_array($environment, ['staging', 'production'], true)) {
+        if (! $this->isProductionOrStaging($environment)) {
             return;
         }
 
@@ -170,7 +178,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
     private function assessFileDriver(string $driver, array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
     {
         // File driver is acceptable anywhere except staging/production
-        if (! in_array($environment, ['staging', 'production'], true)) {
+        if (! $this->isProductionOrStaging($environment)) {
             return;
         }
 
@@ -190,7 +198,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
     private function assessDatabaseDriver(string $driver, array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
     {
         // Database cache driver is acceptable anywhere except staging/production
-        if (! in_array($environment, ['staging', 'production'], true)) {
+        if (! $this->isProductionOrStaging($environment)) {
             return;
         }
 

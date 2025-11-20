@@ -17,10 +17,10 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * Analyzes cache driver configuration for performance best practices.
  *
  * Checks for:
- * - Null or array cache drivers in production
- * - File cache driver in non-local environments
- * - Database cache driver in production
- * - Recommends Redis/Memcached for production
+ * - Null or array cache drivers when the environment maps to production/staging
+ * - File cache driver in production/staging (allowed elsewhere)
+ * - Database cache driver in production/staging (allowed elsewhere)
+ * - Recommends Redis/Memcached for production-ready deployments
  *
  * This analyzer uses Laravel's config repository to get runtime values,
  * which respects environment variables and config caching.
@@ -78,12 +78,18 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
         $basePath = $this->getBasePath();
         $configFile = ConfigFileHelper::getConfigPath($basePath, 'cache.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
+        if (! is_string($configFile) || ! file_exists($configFile)) {
+            return $this->error('Laravel cache configuration file could not be located', [
+                'expected_path' => $configFile,
+            ]);
+        }
+
         if ($driver === null) {
             $issues[] = $this->createIssue(
                 message: "Cache store '{$defaultStore}' is not defined in cache configuration",
                 location: new Location($configFile, ConfigFileHelper::findKeyLine($configFile, 'default')),
                 severity: Severity::Critical,
-                recommendation: 'Define the cache store in config/cache.php or change the default store in your .env file (CACHE_STORE)',
+                recommendation: 'Define the cache store in config/cache.php or change the default store in your .env file (CACHE_DRIVER)',
                 metadata: ['store' => $defaultStore, 'environment' => $environment]
             );
 
@@ -123,11 +129,16 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
      */
     private function assessNullDriver(string $driver, array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
     {
+        // Null driver is acceptable outside staging/production (e.g., local/testing)
+        if (! in_array($environment, ['staging', 'production'], true)) {
+            return;
+        }
+
         $issues[] = $this->createIssue(
             message: 'Cache driver is set to null - caching is disabled',
             location: new Location($configFile, $lineNumber),
             severity: Severity::Critical,
-            recommendation: 'Set CACHE_STORE to redis, memcached, or dynamodb in your .env file for production. Null driver means all cache operations will be no-ops.',
+            recommendation: 'Set CACHE_DRIVER to redis, memcached, or dynamodb in your .env file for production. Null driver means all cache operations will be no-ops.',
             metadata: ['driver' => 'null', 'store' => $defaultStore, 'environment' => $environment]
         );
     }
@@ -138,6 +149,11 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
      */
     private function assessArrayDriver(string $driver, array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
     {
+        // Array driver is expected for testing/local contexts; only warn in staging/production
+        if (! in_array($environment, ['staging', 'production'], true)) {
+            return;
+        }
+
         $issues[] = $this->createIssue(
             message: 'Cache driver is set to array - cache not persisted',
             location: new Location($configFile, $lineNumber),
@@ -153,8 +169,8 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
      */
     private function assessFileDriver(string $driver, array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
     {
-        // File driver is acceptable in local development
-        if ($environment === 'local') {
+        // File driver is acceptable anywhere except staging/production
+        if (! in_array($environment, ['staging', 'production'], true)) {
             return;
         }
 
@@ -173,8 +189,8 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
      */
     private function assessDatabaseDriver(string $driver, array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
     {
-        // Database cache driver is acceptable for local development
-        if ($environment === 'local') {
+        // Database cache driver is acceptable anywhere except staging/production
+        if (! in_array($environment, ['staging', 'production'], true)) {
             return;
         }
 

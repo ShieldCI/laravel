@@ -76,7 +76,7 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
-    public function test_fails_with_null_driver(): void
+    public function test_fails_with_null_driver_in_production(): void
     {
         $analyzer = $this->createAnalyzer([
             'cache' => [
@@ -93,6 +93,27 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('null', $result);
+    }
+
+    public function test_passes_with_null_driver_in_local(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'local',
+            ],
+            'cache' => [
+                'default' => 'null',
+                'stores' => [
+                    'null' => [
+                        'driver' => 'null',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
     }
 
     public function test_fails_with_file_driver_in_production(): void
@@ -135,7 +156,7 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
-    public function test_fails_with_array_driver(): void
+    public function test_fails_with_array_driver_in_production(): void
     {
         $analyzer = $this->createAnalyzer([
             'cache' => [
@@ -152,6 +173,27 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('array', $result);
+    }
+
+    public function test_passes_with_array_driver_in_testing(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'testing',
+            ],
+            'cache' => [
+                'default' => 'array',
+                'stores' => [
+                    'array' => [
+                        'driver' => 'array',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
     }
 
     public function test_passes_with_memcached_driver(): void

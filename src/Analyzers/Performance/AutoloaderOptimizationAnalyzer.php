@@ -247,7 +247,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
             }
 
             if ($segment === '..') {
-                if (!empty($normalized)) {
+                if (! empty($normalized)) {
                     array_pop($normalized);
                 }
 

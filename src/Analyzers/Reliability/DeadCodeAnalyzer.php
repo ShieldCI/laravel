@@ -54,7 +54,7 @@ class DeadCodeAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::Medium,
             tags: ['phpstan', 'static-analysis', 'dead-code', 'code-quality'],
-            docsUrl: 'https://phpstan.org/user-guide/getting-started'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/dead-code'
         );
     }
 

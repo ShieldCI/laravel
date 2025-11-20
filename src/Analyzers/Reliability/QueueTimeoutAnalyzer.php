@@ -31,7 +31,7 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::Critical,
             tags: ['queue', 'configuration', 'reliability', 'jobs'],
-            docsUrl: 'https://laravel.com/docs/queues#timeout'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/queue-timeout-configuration'
         );
     }
 

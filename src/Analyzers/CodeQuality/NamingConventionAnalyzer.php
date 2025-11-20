@@ -40,7 +40,7 @@ class NamingConventionAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Low,
             tags: ['conventions', 'psr', 'code-quality', 'readability'],
-            docsUrl: 'https://www.php-fig.org/psr/psr-12/'
+            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/naming-convention'
         );
     }
 

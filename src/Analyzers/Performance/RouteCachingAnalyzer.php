@@ -48,7 +48,7 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
             category: Category::Performance,
             severity: Severity::High,
             tags: ['cache', 'routes', 'performance', 'optimization'],
-            docsUrl: 'https://laravel.com/docs/routing#route-caching'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/route-caching'
         );
     }
 

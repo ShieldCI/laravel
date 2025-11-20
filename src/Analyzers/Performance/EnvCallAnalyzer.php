@@ -43,7 +43,7 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
             category: Category::Performance,
             severity: Severity::High,
             tags: ['configuration', 'cache', 'performance', 'env'],
-            docsUrl: 'https://laravel.com/docs/configuration#configuration-caching'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/env-call-outside-config'
         );
     }
 

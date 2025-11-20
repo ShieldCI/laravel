@@ -51,7 +51,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['permissions', 'file-security', 'security', 'access-control'],
-            docsUrl: 'https://laravel.com/docs/deployment#server-configuration'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/file-permissions'
         );
     }
 

@@ -54,7 +54,7 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
             category: Category::Reliability,
             severity: Severity::Medium,
             tags: ['errors', 'ux', 'reliability', 'security', 'fingerprinting'],
-            docsUrl: 'https://laravel.com/docs/errors#custom-http-error-pages'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/custom-error-pages'
         );
     }
 

@@ -58,7 +58,7 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::High,
             tags: ['php', 'configuration', 'ini', 'security', 'server'],
-            docsUrl: 'https://www.php.net/manual/en/ini.list.php'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/php-ini-security'
         );
     }
 

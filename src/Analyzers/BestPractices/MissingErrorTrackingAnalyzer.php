@@ -40,7 +40,7 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Medium,
             tags: ['laravel', 'monitoring', 'production', 'error-tracking'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/missing-error-tracking',
+            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/missing-error-tracking',
         );
     }
 

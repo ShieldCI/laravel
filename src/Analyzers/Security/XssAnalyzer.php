@@ -52,7 +52,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::High,
             tags: ['xss', 'cross-site-scripting', 'security', 'blade', 'csp', 'headers'],
-            docsUrl: 'https://laravel.com/docs/blade#displaying-data'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/xss-detection'
         );
     }
 

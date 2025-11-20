@@ -46,7 +46,7 @@ class ComplexConditionalAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Medium,
             tags: ['complexity', 'readability', 'maintainability', 'code-quality', 'refactoring'],
-            docsUrl: 'https://refactoring.guru/decompose-conditional'
+            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/complex-conditional'
         );
     }
 

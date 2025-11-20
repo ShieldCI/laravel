@@ -41,7 +41,7 @@ class ForeachIterableAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['phpstan', 'static-analysis', 'foreach', 'type-safety'],
-            docsUrl: 'https://phpstan.org/user-guide/getting-started'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/foreach-iterable'
         );
     }
 

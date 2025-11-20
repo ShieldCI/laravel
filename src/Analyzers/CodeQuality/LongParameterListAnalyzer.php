@@ -45,7 +45,7 @@ class LongParameterListAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Low,
             tags: ['maintainability', 'code-quality', 'refactoring', 'dto', 'parameters'],
-            docsUrl: 'https://refactoring.guru/smells/long-parameter-list'
+            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/long-parameter-list'
         );
     }
 

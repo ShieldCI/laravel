@@ -40,7 +40,7 @@ class InconsistentNamingAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Low,
             tags: ['naming', 'consistency', 'code-quality', 'maintainability', 'conventions'],
-            docsUrl: 'https://www.php-fig.org/psr/psr-12/'
+            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/inconsistent-naming'
         );
     }
 

@@ -33,7 +33,7 @@ class SelectAsteriskAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Low,
             tags: ['laravel', 'performance', 'database', 'optimization'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/select-asterisk',
+            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/select-asterisk',
         );
     }
 

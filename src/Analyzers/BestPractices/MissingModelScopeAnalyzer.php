@@ -35,7 +35,7 @@ class MissingModelScopeAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Low,
             tags: ['laravel', 'eloquent', 'reusability', 'dry'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/missing-model-scope',
+            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/missing-model-scope',
         );
     }
 

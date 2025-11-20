@@ -37,7 +37,7 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::Critical,
             tags: ['database', 'infrastructure', 'reliability', 'availability'],
-            docsUrl: 'https://laravel.com/docs/database'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/database-status'
         );
     }
 

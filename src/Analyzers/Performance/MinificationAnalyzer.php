@@ -61,7 +61,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             category: Category::Performance,
             severity: Severity::Medium,
             tags: ['assets', 'minification', 'performance', 'javascript', 'css'],
-            docsUrl: 'https://laravel.com/docs/vite#production-builds'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/asset-minification'
         );
     }
 

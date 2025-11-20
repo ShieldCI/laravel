@@ -31,7 +31,7 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['environment', 'configuration', 'reliability', 'deployment'],
-            docsUrl: 'https://laravel.com/docs/configuration#environment-configuration'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/env-variables-complete'
         );
     }
 

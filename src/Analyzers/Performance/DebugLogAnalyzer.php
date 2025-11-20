@@ -45,7 +45,7 @@ class DebugLogAnalyzer extends AbstractAnalyzer
             category: Category::Performance,
             severity: Severity::Medium,
             tags: ['logging', 'performance', 'configuration'],
-            docsUrl: 'https://laravel.com/docs/logging#log-levels'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/debug-log-level'
         );
     }
 

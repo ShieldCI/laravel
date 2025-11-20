@@ -48,7 +48,7 @@ class MagicNumberAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Low,
             tags: ['maintainability', 'code-quality', 'readability', 'constants'],
-            docsUrl: 'https://refactoring.guru/replace-magic-number-with-symbolic-constant'
+            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/magic-number'
         );
     }
 

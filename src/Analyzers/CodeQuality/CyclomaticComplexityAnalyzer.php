@@ -45,7 +45,7 @@ class CyclomaticComplexityAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Medium,
             tags: ['complexity', 'maintainability', 'code-quality', 'metrics'],
-            docsUrl: 'https://en.wikipedia.org/wiki/Cyclomatic_complexity'
+            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/cyclomatic-complexity'
         );
     }
 

@@ -62,7 +62,7 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
             category: Category::Performance,
             severity: Severity::Medium,
             tags: ['cache', 'views', 'blade', 'performance', 'optimization'],
-            docsUrl: 'https://laravel.com/docs/views#optimizing-views'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/view-caching'
         );
     }
 

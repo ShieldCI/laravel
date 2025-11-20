@@ -33,7 +33,7 @@ class SilentFailureAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Medium,
             tags: ['laravel', 'exceptions', 'error-handling', 'debugging', 'monitoring'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/silent-failure',
+            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/silent-failure',
         );
     }
 

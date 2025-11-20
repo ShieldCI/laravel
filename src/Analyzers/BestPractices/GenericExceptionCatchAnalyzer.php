@@ -33,7 +33,7 @@ class GenericExceptionCatchAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Low,
             tags: ['laravel', 'exceptions', 'error-handling', 'specificity'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/generic-exception-catch',
+            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/generic-exception-catch',
         );
     }
 

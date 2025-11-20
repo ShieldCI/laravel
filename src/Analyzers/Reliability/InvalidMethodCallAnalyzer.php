@@ -59,7 +59,7 @@ class InvalidMethodCallAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::Critical,
             tags: ['phpstan', 'static-analysis', 'methods', 'type-safety'],
-            docsUrl: 'https://phpstan.org/user-guide/getting-started'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/invalid-method-calls'
         );
     }
 

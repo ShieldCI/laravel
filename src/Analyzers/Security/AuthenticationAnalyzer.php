@@ -59,7 +59,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::High,
             tags: ['authentication', 'authorization', 'security', 'middleware'],
-            docsUrl: 'https://laravel.com/docs/authentication'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/authentication-protection'
         );
     }
 

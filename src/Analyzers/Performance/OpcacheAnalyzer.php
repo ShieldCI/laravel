@@ -50,7 +50,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
             category: Category::Performance,
             severity: Severity::High,
             tags: ['php', 'opcache', 'performance', 'optimization', 'bytecode'],
-            docsUrl: 'https://www.php.net/manual/en/opcache.installation.php'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/opcache-enabled'
         );
     }
 

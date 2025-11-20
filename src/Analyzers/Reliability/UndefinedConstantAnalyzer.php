@@ -42,7 +42,7 @@ class UndefinedConstantAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['phpstan', 'static-analysis', 'constants', 'type-safety'],
-            docsUrl: 'https://phpstan.org/user-guide/getting-started'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/undefined-constant'
         );
     }
 

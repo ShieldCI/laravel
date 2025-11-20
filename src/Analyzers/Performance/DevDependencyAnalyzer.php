@@ -58,7 +58,7 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
             category: Category::Performance,
             severity: Severity::High,
             tags: ['composer', 'dependencies', 'performance', 'memory', 'production'],
-            docsUrl: 'https://getcomposer.org/doc/03-cli.md#install-i'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/dev-dependencies-production'
         );
     }
 

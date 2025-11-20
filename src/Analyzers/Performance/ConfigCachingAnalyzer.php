@@ -47,7 +47,7 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
             category: Category::Performance,
             severity: Severity::Medium,
             tags: ['cache', 'configuration', 'performance', 'optimization'],
-            docsUrl: 'https://laravel.com/docs/configuration#configuration-caching'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/config-caching',
         );
     }
 

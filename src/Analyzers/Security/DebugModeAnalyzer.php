@@ -44,7 +44,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::High,
             tags: ['debug', 'information-disclosure', 'security', 'configuration'],
-            docsUrl: 'https://laravel.com/docs/configuration#debug-mode'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/debug-mode'
         );
     }
 

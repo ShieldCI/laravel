@@ -41,7 +41,7 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['cache', 'configuration', 'reliability', 'multi-tenant'],
-            docsUrl: 'https://laravel.com/docs/cache#configuration'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/cache-prefix-configuration'
         );
     }
 

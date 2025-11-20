@@ -38,7 +38,7 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['hashing', 'passwords', 'bcrypt', 'argon2', 'security'],
-            docsUrl: 'https://laravel.com/docs/hashing'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/hashing-strength'
         );
     }
 

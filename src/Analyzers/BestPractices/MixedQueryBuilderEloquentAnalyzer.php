@@ -38,7 +38,7 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Medium,
             tags: ['laravel', 'eloquent', 'query-builder', 'consistency'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/mixed-query-builder-eloquent',
+            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/mixed-query-builder-eloquent',
         );
     }
 

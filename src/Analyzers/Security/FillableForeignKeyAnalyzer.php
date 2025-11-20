@@ -37,7 +37,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::High,
             tags: ['mass-assignment', 'foreign-keys', 'eloquent', 'security', 'relationships'],
-            docsUrl: 'https://laravel.com/docs/eloquent#mass-assignment'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/fillable-foreign-key'
         );
     }
 

@@ -58,7 +58,7 @@ class QueryBuilderInControllerAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Medium,
             tags: ['architecture', 'separation-of-concerns', 'maintainability', 'repository-pattern'],
-            docsUrl: 'https://laravel.com/docs/repositories'
+            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/query-builder-in-controller'
         );
     }
 

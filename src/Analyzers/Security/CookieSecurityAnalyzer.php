@@ -33,7 +33,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['cookies', 'encryption', 'xss', 'security', 'configuration'],
-            docsUrl: 'https://laravel.com/docs/requests#cookies'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/cookie-security'
         );
     }
 

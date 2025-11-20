@@ -42,7 +42,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Medium,
             tags: ['dependency-injection', 'architecture', 'testability', 'laravel', 'ioc'],
-            docsUrl: 'https://laravel.com/docs/container'
+            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/service-container-resolution'
         );
     }
 

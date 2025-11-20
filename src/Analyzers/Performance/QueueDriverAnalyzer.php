@@ -41,7 +41,7 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
             category: Category::Performance,
             severity: Severity::Medium,
             tags: ['queue', 'performance', 'configuration', 'redis', 'sqs'],
-            docsUrl: 'https://laravel.com/docs/queues#driver-prerequisites'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/queue-driver'
         );
     }
 

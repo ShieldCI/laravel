@@ -57,7 +57,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['sql', 'injection', 'database', 'security'],
-            docsUrl: 'https://laravel.com/docs/queries#raw-expressions'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/sql-injection'
         );
     }
 

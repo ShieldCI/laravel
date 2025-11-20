@@ -60,7 +60,7 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
             category: Category::Performance,
             severity: Severity::Low,
             tags: ['performance', 'middleware', 'optimization', 'http'],
-            docsUrl: 'https://laravel.com/docs/middleware#global-middleware'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/unused-global-middleware'
         );
     }
 

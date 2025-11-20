@@ -38,7 +38,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::High,
             tags: ['hsts', 'https', 'headers', 'security', 'ssl', 'tls'],
-            docsUrl: 'https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/hsts-header'
         );
     }
 

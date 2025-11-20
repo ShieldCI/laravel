@@ -44,7 +44,7 @@ class NestingDepthAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Medium,
             tags: ['complexity', 'maintainability', 'code-quality', 'readability'],
-            docsUrl: 'https://refactoring.guru/replace-nested-conditional-with-guard-clauses'
+            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/nesting-depth'
         );
     }
 

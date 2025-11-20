@@ -32,7 +32,8 @@ class DeprecatedCodeAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['phpstan', 'static-analysis', 'deprecated', 'compatibility'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/deprecated-code'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/deprecated-code',
+            timeToFix: 15
         );
     }
 

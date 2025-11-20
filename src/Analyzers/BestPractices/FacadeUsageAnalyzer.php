@@ -59,7 +59,8 @@ class FacadeUsageAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Medium,
             tags: ['architecture', 'testability', 'dependency-injection', 'facades', 'coupling'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/facade-usage'
+            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/facade-usage',
+            timeToFix: 25
         );
     }
 

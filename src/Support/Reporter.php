@@ -67,7 +67,15 @@ class Reporter implements ReporterInterface
                 // Get name from metadata
                 $name = $metadata['name'] ?? $result->getAnalyzerId();
 
-                $output[] = $this->color("Check {$current}/{$total}: ", 'yellow')."{$name}. {$status}";
+                // Build status line with optional timeToFix
+                $statusLine = "{$name}. {$status}";
+                $timeToFix = $metadata['timeToFix'] ?? null;
+                if ($timeToFix !== null && is_int($timeToFix) && ($result->getStatus()->value === 'failed' || $result->getStatus()->value === 'warning')) {
+                    $timeLabel = $timeToFix === 1 ? '1 min' : "{$timeToFix} mins";
+                    $statusLine .= ' '.$this->color("({$timeLabel} to fix)", 'gray');
+                }
+
+                $output[] = $this->color("Check {$current}/{$total}: ", 'yellow').$statusLine;
 
                 // Show skip reason for skipped analyzers
                 if ($result->getStatus()->value === 'skipped') {

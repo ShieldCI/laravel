@@ -40,7 +40,8 @@ class MissingReturnStatementAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['phpstan', 'static-analysis', 'return-types', 'type-safety'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/missing-return-statement'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/missing-return-statement',
+            timeToFix: 10
         );
     }
 

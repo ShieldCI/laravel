@@ -49,7 +49,8 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             category: Category::Performance,
             severity: Severity::High,
             tags: ['database', 'collection', 'performance', 'n+1', 'optimization', 'phpstan'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/performance/collection-call-optimization'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/collection-call-optimization',
+            timeToFix: 45
         );
     }
 

@@ -30,7 +30,8 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['dependencies', 'npm', 'yarn', 'vulnerabilities', 'frontend', 'javascript'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/frontend-vulnerable-dependencies'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/frontend-vulnerable-dependencies',
+            timeToFix: 60
         );
     }
 

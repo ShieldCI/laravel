@@ -38,7 +38,8 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['encryption', 'app-key', 'security', 'configuration'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/app-key-security'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/app-key-security',
+            timeToFix: 5
         );
     }
 

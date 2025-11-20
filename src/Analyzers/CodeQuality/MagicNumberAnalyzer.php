@@ -48,7 +48,8 @@ class MagicNumberAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Low,
             tags: ['maintainability', 'code-quality', 'readability', 'constants'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/magic-number'
+            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/magic-number',
+            timeToFix: 10
         );
     }
 

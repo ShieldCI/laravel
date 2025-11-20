@@ -38,7 +38,8 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['hashing', 'passwords', 'bcrypt', 'argon2', 'security'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/hashing-strength'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/hashing-strength',
+            timeToFix: 15
         );
     }
 

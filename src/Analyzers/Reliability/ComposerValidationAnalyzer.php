@@ -31,7 +31,8 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::Critical,
             tags: ['composer', 'dependencies', 'reliability', 'configuration'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/composer-validation'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/composer-validation',
+            timeToFix: 10
         );
     }
 

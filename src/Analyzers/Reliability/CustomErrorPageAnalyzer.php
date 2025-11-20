@@ -54,7 +54,8 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
             category: Category::Reliability,
             severity: Severity::Medium,
             tags: ['errors', 'ux', 'reliability', 'security', 'fingerprinting'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/custom-error-pages'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/custom-error-pages',
+            timeToFix: 30
         );
     }
 

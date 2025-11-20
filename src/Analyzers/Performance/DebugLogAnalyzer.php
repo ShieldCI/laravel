@@ -45,7 +45,8 @@ class DebugLogAnalyzer extends AbstractAnalyzer
             category: Category::Performance,
             severity: Severity::Medium,
             tags: ['logging', 'performance', 'configuration'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/performance/debug-log-level'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/debug-log-level',
+            timeToFix: 5
         );
     }
 

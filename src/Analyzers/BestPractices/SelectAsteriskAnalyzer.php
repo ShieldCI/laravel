@@ -34,6 +34,7 @@ class SelectAsteriskAnalyzer extends AbstractFileAnalyzer
             severity: Severity::Low,
             tags: ['laravel', 'performance', 'database', 'optimization'],
             docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/select-asterisk',
+            timeToFix: 15
         );
     }
 

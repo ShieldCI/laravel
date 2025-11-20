@@ -60,7 +60,8 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Low,
             tags: ['testability', 'dependency-injection', 'laravel', 'helpers', 'code-quality'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/helper-function-abuse'
+            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/helper-function-abuse',
+            timeToFix: 25
         );
     }
 

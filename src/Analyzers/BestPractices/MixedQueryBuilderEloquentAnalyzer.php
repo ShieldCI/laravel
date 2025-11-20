@@ -39,6 +39,7 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
             severity: Severity::Medium,
             tags: ['laravel', 'eloquent', 'query-builder', 'consistency'],
             docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/mixed-query-builder-eloquent',
+            timeToFix: 30
         );
     }
 

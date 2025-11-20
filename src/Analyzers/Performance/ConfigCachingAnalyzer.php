@@ -48,6 +48,7 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
             severity: Severity::Medium,
             tags: ['cache', 'configuration', 'performance', 'optimization'],
             docsUrl: 'https://docs.shieldci.com/analyzers/performance/config-caching',
+            timeToFix: 5
         );
     }
 

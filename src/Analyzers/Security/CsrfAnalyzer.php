@@ -32,7 +32,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::High,
             tags: ['csrf', 'cross-site-request-forgery', 'security', 'forms'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/csrf-protection'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/csrf-protection',
+            timeToFix: 20
         );
     }
 

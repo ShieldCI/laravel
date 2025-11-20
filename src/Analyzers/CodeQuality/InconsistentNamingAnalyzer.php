@@ -40,7 +40,8 @@ class InconsistentNamingAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Low,
             tags: ['naming', 'consistency', 'code-quality', 'maintainability', 'conventions'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/inconsistent-naming'
+            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/inconsistent-naming',
+            timeToFix: 20
         );
     }
 

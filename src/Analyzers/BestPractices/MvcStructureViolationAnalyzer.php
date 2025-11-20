@@ -42,6 +42,7 @@ class MvcStructureViolationAnalyzer extends AbstractFileAnalyzer
             severity: Severity::High,
             tags: ['laravel', 'mvc', 'architecture', 'separation-of-concerns'],
             docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/mvc-structure-violation',
+            timeToFix: 30
         );
     }
 

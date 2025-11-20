@@ -44,7 +44,8 @@ class InvalidImportAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::Critical,
             tags: ['phpstan', 'static-analysis', 'imports', 'autoloading'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/invalid-imports'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/invalid-imports',
+            timeToFix: 10
         );
     }
 

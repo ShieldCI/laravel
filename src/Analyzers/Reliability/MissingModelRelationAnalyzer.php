@@ -40,7 +40,8 @@ class MissingModelRelationAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['phpstan', 'static-analysis', 'eloquent', 'relations', 'models'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/missing-model-relation'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/missing-model-relation',
+            timeToFix: 20
         );
     }
 

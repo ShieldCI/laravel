@@ -43,6 +43,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
             severity: Severity::High,
             tags: ['cache', 'performance', 'configuration', 'redis', 'memcached'],
             docsUrl: 'https://docs.shieldci.com/analyzers/performance/cache-driver',
+            timeToFix: 60
         );
     }
 

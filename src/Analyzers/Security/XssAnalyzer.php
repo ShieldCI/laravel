@@ -52,7 +52,8 @@ class XssAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::High,
             tags: ['xss', 'cross-site-scripting', 'security', 'blade', 'csp', 'headers'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/xss-detection'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/xss-detection',
+            timeToFix: 30
         );
     }
 

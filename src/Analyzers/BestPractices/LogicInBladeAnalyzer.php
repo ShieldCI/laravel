@@ -35,6 +35,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
             severity: Severity::Medium,
             tags: ['laravel', 'blade', 'mvc', 'views', 'architecture'],
             docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/logic-in-blade',
+            timeToFix: 30
         );
     }
 

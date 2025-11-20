@@ -61,7 +61,8 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             category: Category::Performance,
             severity: Severity::Medium,
             tags: ['assets', 'minification', 'performance', 'javascript', 'css'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/performance/asset-minification'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/asset-minification',
+            timeToFix: 15
         );
     }
 

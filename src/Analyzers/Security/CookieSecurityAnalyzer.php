@@ -33,7 +33,8 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['cookies', 'encryption', 'xss', 'security', 'configuration'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/cookie-security'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/cookie-security',
+            timeToFix: 15
         );
     }
 

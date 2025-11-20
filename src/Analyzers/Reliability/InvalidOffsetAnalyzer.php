@@ -46,7 +46,8 @@ class InvalidOffsetAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['phpstan', 'static-analysis', 'arrays', 'type-safety'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/invalid-offset-access'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/invalid-offset-access',
+            timeToFix: 15
         );
     }
 

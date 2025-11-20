@@ -40,7 +40,8 @@ class UndefinedVariableAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['phpstan', 'static-analysis', 'variables', 'type-safety'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/undefined-variable'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/undefined-variable',
+            timeToFix: 10
         );
     }
 

@@ -37,7 +37,8 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::Critical,
             tags: ['database', 'infrastructure', 'reliability', 'availability'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/database-status'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/database-status',
+            timeToFix: 15
         );
     }
 

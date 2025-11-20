@@ -46,7 +46,8 @@ class ComplexConditionalAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Medium,
             tags: ['complexity', 'readability', 'maintainability', 'code-quality', 'refactoring'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/complex-conditional'
+            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/complex-conditional',
+            timeToFix: 20
         );
     }
 

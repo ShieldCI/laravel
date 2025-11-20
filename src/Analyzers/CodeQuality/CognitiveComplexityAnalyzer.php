@@ -48,7 +48,8 @@ class CognitiveComplexityAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Medium,
             tags: ['complexity', 'maintainability', 'code-quality', 'readability', 'cognitive-load'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/cognitive-complexity'
+            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/cognitive-complexity',
+            timeToFix: 30
         );
     }
 

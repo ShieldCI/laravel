@@ -57,6 +57,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
             severity: Severity::High,
             tags: ['composer', 'autoloader', 'performance', 'optimization'],
             docsUrl: 'https://docs.shieldci.com/analyzers/performance/autoloader-optimization',
+            timeToFix: 5
         );
     }
 

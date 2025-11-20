@@ -38,7 +38,8 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::High,
             tags: ['mass-assignment', 'eloquent', 'security', 'models'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/mass-assignment'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/mass-assignment',
+            timeToFix: 25
         );
     }
 

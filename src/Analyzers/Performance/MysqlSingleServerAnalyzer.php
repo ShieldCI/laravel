@@ -72,6 +72,7 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
             severity: Severity::Medium,
             tags: ['mysql', 'database', 'performance', 'sockets', 'optimization'],
             docsUrl: 'https://docs.shieldci.com/analyzers/performance/mysql-single-server-optimization',
+            timeToFix: 30
         );
     }
 

@@ -59,7 +59,8 @@ class TodoCommentAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Low,
             tags: ['maintainability', 'code-quality', 'technical-debt', 'comments'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/todo-comment'
+            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/todo-comment',
+            timeToFix: 5
         );
     }
 

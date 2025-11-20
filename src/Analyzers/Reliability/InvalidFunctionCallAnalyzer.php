@@ -46,7 +46,8 @@ class InvalidFunctionCallAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['phpstan', 'static-analysis', 'functions', 'type-safety'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/invalid-function-calls'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/invalid-function-calls',
+            timeToFix: 20
         );
     }
 

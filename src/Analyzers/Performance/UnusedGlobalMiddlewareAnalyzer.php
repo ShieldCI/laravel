@@ -60,7 +60,8 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
             category: Category::Performance,
             severity: Severity::Low,
             tags: ['performance', 'middleware', 'optimization', 'http'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/performance/unused-global-middleware'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/unused-global-middleware',
+            timeToFix: 10
         );
     }
 

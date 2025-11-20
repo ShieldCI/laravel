@@ -40,7 +40,8 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
             category: Category::Security,
             severity: Severity::Low,
             tags: ['dependencies', 'composer', 'updates', 'maintenance', 'security-patches'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/up-to-date-dependencies'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/up-to-date-dependencies',
+            timeToFix: 60
         );
     }
 

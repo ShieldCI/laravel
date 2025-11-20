@@ -48,7 +48,8 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
             category: Category::Performance,
             severity: Severity::High,
             tags: ['cache', 'routes', 'performance', 'optimization'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/performance/route-caching'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/route-caching',
+            timeToFix: 5
         );
     }
 

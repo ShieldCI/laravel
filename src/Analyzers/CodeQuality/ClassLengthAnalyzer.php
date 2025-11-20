@@ -55,7 +55,8 @@ class ClassLengthAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Medium,
             tags: ['complexity', 'maintainability', 'code-quality', 'srp', 'god-object'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/class-length'
+            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/class-length',
+            timeToFix: 45
         );
     }
 

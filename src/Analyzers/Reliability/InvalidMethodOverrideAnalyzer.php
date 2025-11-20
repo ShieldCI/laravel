@@ -48,7 +48,8 @@ class InvalidMethodOverrideAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['phpstan', 'static-analysis', 'inheritance', 'type-safety'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/invalid-method-overrides'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/invalid-method-overrides',
+            timeToFix: 20
         );
     }
 

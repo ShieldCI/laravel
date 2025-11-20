@@ -58,7 +58,8 @@ class QueryBuilderInControllerAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Medium,
             tags: ['architecture', 'separation-of-concerns', 'maintainability', 'repository-pattern'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/query-builder-in-controller'
+            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/query-builder-in-controller',
+            timeToFix: 30
         );
     }
 

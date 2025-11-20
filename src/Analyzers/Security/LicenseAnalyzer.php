@@ -68,7 +68,8 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['licenses', 'legal', 'compliance', 'dependencies', 'gpl', 'commercial'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/license-compliance'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/license-compliance',
+            timeToFix: 120
         );
     }
 

@@ -34,6 +34,7 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
             severity: Severity::High,
             tags: ['laravel', 'framework', 'upgradability', 'maintenance'],
             docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/framework-override',
+            timeToFix: 30
         );
     }
 

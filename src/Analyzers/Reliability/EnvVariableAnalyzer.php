@@ -31,7 +31,8 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['environment', 'configuration', 'reliability', 'deployment'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/env-variables-complete'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/env-variables-complete',
+            timeToFix: 20
         );
     }
 

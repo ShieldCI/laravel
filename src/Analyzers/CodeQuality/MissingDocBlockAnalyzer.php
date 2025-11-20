@@ -45,7 +45,8 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Low,
             tags: ['documentation', 'maintainability', 'code-quality', 'readability'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/missing-docblock'
+            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/missing-docblock',
+            timeToFix: 15
         );
     }
 

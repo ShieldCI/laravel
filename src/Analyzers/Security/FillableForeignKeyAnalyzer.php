@@ -37,7 +37,8 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::High,
             tags: ['mass-assignment', 'foreign-keys', 'eloquent', 'security', 'relationships'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/fillable-foreign-key'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/fillable-foreign-key',
+            timeToFix: 15
         );
     }
 

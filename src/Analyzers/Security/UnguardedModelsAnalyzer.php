@@ -38,7 +38,8 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::High,
             tags: ['eloquent', 'mass-assignment', 'models', 'security', 'unguard'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/unguarded-models'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/unguarded-models',
+            timeToFix: 20
         );
     }
 

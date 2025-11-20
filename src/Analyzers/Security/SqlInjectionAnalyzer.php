@@ -57,7 +57,8 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['sql', 'injection', 'database', 'security'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/sql-injection'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/sql-injection',
+            timeToFix: 30
         );
     }
 

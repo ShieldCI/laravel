@@ -58,7 +58,8 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
             category: Category::Performance,
             severity: Severity::High,
             tags: ['composer', 'dependencies', 'performance', 'memory', 'production'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/performance/dev-dependencies-production'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/dev-dependencies-production',
+            timeToFix: 10
         );
     }
 

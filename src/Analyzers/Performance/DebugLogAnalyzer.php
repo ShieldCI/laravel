@@ -9,6 +9,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -54,32 +55,17 @@ class DebugLogAnalyzer extends AbstractAnalyzer
     {
         $environment = $this->getEnvironment();
 
-        // Check if debug logging is detected
-        $hasDebugLogging = $this->hasDebugLogging();
-
         // Debug logging is acceptable in local, development, and testing environments
-        if ($hasDebugLogging && in_array($environment, ['local', 'development', 'testing'])) {
+        if (in_array($environment, ['local', 'development', 'testing'], true)) {
             return $this->passed("Debug logging is acceptable in {$environment} environment");
         }
 
         // For production/staging, check for issues
         $issues = [];
+        $channels = $this->getChannelsToCheck();
 
-        // Check default log channel
-        $defaultChannel = $this->config->get('logging.default');
-        if ($defaultChannel && is_string($defaultChannel)) {
-            $this->checkChannelLogLevel($defaultChannel, $issues);
-        }
-
-        // Check if using stack driver with multiple channels
-        if ($defaultChannel === 'stack') {
-            /** @var array<int, mixed> $stackChannels */
-            $stackChannels = $this->config->get('logging.channels.stack.channels', []);
-            foreach ($stackChannels as $channel) {
-                if (is_string($channel)) {
-                    $this->checkChannelLogLevel($channel, $issues);
-                }
-            }
+        foreach ($channels as $channel) {
+            $this->checkChannelLogLevel($channel, $issues);
         }
 
         if (! empty($issues)) {
@@ -93,34 +79,31 @@ class DebugLogAnalyzer extends AbstractAnalyzer
     }
 
     /**
-     * Check if any log channel has debug level configured.
+     * Get all channels to check (default channel + stack channels if applicable).
+     *
+     * @return array<string>
      */
-    private function hasDebugLogging(): bool
+    private function getChannelsToCheck(): array
     {
+        $channels = [];
         $defaultChannel = $this->config->get('logging.default');
 
         if ($defaultChannel && is_string($defaultChannel)) {
-            $level = $this->config->get("logging.channels.{$defaultChannel}.level");
-            if ($level === 'debug') {
-                return true;
-            }
-        }
+            $channels[] = $defaultChannel;
 
-        // Check stack channels
-        if ($defaultChannel === 'stack') {
-            /** @var array<int, mixed> $stackChannels */
-            $stackChannels = $this->config->get('logging.channels.stack.channels', []);
-            foreach ($stackChannels as $channel) {
-                if (is_string($channel)) {
-                    $level = $this->config->get("logging.channels.{$channel}.level");
-                    if ($level === 'debug') {
-                        return true;
+            // If using stack, add all stack channels
+            if ($defaultChannel === 'stack') {
+                /** @var array<int, mixed> $stackChannels */
+                $stackChannels = $this->config->get('logging.channels.stack.channels', []);
+                foreach ($stackChannels as $channel) {
+                    if (is_string($channel)) {
+                        $channels[] = $channel;
                     }
                 }
             }
         }
 
-        return false;
+        return $channels;
     }
 
     /**
@@ -131,13 +114,21 @@ class DebugLogAnalyzer extends AbstractAnalyzer
     private function checkChannelLogLevel(string $channel, array &$issues): void
     {
         $level = $this->config->get("logging.channels.{$channel}.level");
+        $normalizedLevel = is_string($level) ? strtolower($level) : null;
 
-        if ($level === 'debug') {
+        if ($normalizedLevel === 'debug') {
             $environment = $this->getEnvironment();
+            $basePath = $this->getBasePath();
+            $configPath = ConfigFileHelper::getConfigPath(
+                $basePath,
+                'logging.php',
+                fn ($file) => function_exists('config_path') ? config_path($file) : null
+            );
+            $lineNumber = ConfigFileHelper::findNestedKeyLine($configPath, 'channels', 'level', $channel);
 
             $issues[] = $this->createIssue(
                 message: "Log channel '{$channel}' is set to debug level in {$environment} environment",
-                location: new Location('config/logging.php', 1),
+                location: new Location($configPath, $lineNumber),
                 severity: Severity::Medium,
                 recommendation: "Change the log level to 'info' or higher in production. Debug logging can significantly impact performance and generate excessive log files. Update your logging configuration or set LOG_LEVEL environment variable to 'info', 'warning', or 'error'.",
                 metadata: [

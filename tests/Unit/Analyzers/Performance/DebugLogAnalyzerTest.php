@@ -114,6 +114,22 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
         $this->assertEquals('debug', $issues[0]->metadata['level'] ?? '');
     }
 
+    public function test_detects_uppercase_debug_level(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'app.env' => 'production',
+            'logging.default' => 'single',
+            'logging.channels.single.level' => 'DEBUG',
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertEquals('DEBUG', $issues[0]->metadata['level'] ?? '');
+    }
+
     public function test_fails_when_debug_level_in_staging(): void
     {
         $analyzer = $this->createAnalyzer([

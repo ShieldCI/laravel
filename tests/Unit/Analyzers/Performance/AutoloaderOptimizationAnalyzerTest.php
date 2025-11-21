@@ -455,4 +455,549 @@ PHP,
         $this->assertSkipped($result);
         $this->assertStringContainsString('demo', $result->getMessage());
     }
+
+    public function test_fails_when_classmap_file_missing_in_production(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            // No autoload_classmap.php file
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('not optimized', $result);
+    }
+
+    public function test_fails_when_classmap_returns_non_array(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => '<?php return "not an array";',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('not optimized', $result);
+    }
+
+    public function test_handles_non_string_paths_in_classmap(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        // Setup optimized autoloader with static classmap
+        $optimizedContent = <<<'PHP'
+<?php
+class ComposerAutoloaderInit {
+    public static $classMap = [
+        'Illuminate\\Foundation\\Application' => '/path/to/file.php',
+    ];
+}
+PHP;
+
+        $authoritativeContent = <<<'PHP'
+<?php
+$loader->setClassMapAuthoritative(true);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_static.php' => $optimizedContent,
+            'vendor/composer/autoload_real.php' => $authoritativeContent,
+            'app/ValidClass.php' => '<?php namespace App; class ValidClass {}',
+        ]);
+
+        // Create classmap with non-string values (should be skipped gracefully)
+        $classmap = <<<PHP
+<?php
+return [
+    'App\\\\ValidClass' => '{$tempDir}/app/ValidClass.php',
+    'InvalidClass' => null,
+    'EmptyClass' => '',
+    'ArrayClass' => [],
+];
+PHP;
+
+        file_put_contents($tempDir.'/vendor/composer/autoload_classmap.php', $classmap);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because ValidClass is a project class (non-string values are skipped)
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_windows_paths_with_drive_letters(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        // Setup optimized autoloader
+        $optimizedContent = <<<'PHP'
+<?php
+class ComposerAutoloaderInit {
+    public static $classMap = [
+        'Illuminate\\Foundation\\Application' => '/path/to/file.php',
+    ];
+}
+PHP;
+
+        $authoritativeContent = <<<'PHP'
+<?php
+$loader->setClassMapAuthoritative(true);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_static.php' => $optimizedContent,
+            'vendor/composer/autoload_real.php' => $authoritativeContent,
+            'app/MyClass.php' => '<?php namespace App; class MyClass {}',
+        ]);
+
+        // Create Windows-style path with backslashes
+        $windowsPath = str_replace('/', '\\', $tempDir.'\\app\\MyClass.php');
+
+        $classmap = <<<PHP
+<?php
+return [
+    'App\\\\MyClass' => '{$windowsPath}',
+];
+PHP;
+
+        file_put_contents($tempDir.'/vendor/composer/autoload_classmap.php', $classmap);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass (Windows-style backslashes are normalized)
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_paths_with_parent_directory_references(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        // Setup optimized autoloader
+        $optimizedContent = <<<'PHP'
+<?php
+class ComposerAutoloaderInit {
+    public static $classMap = [
+        'Illuminate\\Foundation\\Application' => '/path/to/file.php',
+    ];
+}
+PHP;
+
+        $authoritativeContent = <<<'PHP'
+<?php
+$loader->setClassMapAuthoritative(true);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_static.php' => $optimizedContent,
+            'vendor/composer/autoload_real.php' => $authoritativeContent,
+            'app/MyClass.php' => '<?php namespace App; class MyClass {}',
+        ]);
+
+        // Use path with .. references that resolves back to app/MyClass.php
+        $classmap = <<<PHP
+<?php
+return [
+    'App\\\\MyClass' => '{$tempDir}/vendor/../app/MyClass.php',
+];
+PHP;
+
+        file_put_contents($tempDir.'/vendor/composer/autoload_classmap.php', $classmap);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass (path normalization handles .. and resolves to existing file)
+        $this->assertPassed($result);
+    }
+
+    public function test_recommends_authoritative_when_real_file_missing(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [
+    'App\\MyClass' => __DIR__.'/../../app/MyClass.php',
+];
+PHP,
+            // No autoload_real.php
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should recommend authoritative (optimized but not authoritative)
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('authoritative', $result);
+
+        $issues = $result->getIssues();
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
+    }
+
+    public function test_handles_invalid_composer_json(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'composer.json' => '{invalid json',
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [];
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should fail (not optimized, but won't crash on invalid JSON)
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('not optimized', $result);
+    }
+
+    public function test_handles_non_array_config_in_composer_json(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $composerJson = json_encode([
+            'config' => 'invalid',
+        ], JSON_PRETTY_PRINT);
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'composer.json' => $composerJson,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [];
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should fail gracefully (treats as no config)
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('not optimized', $result);
+
+        $issues = $result->getIssues();
+        $this->assertFalse($issues[0]->metadata['configured_optimize']);
+    }
+
+    public function test_handles_invalid_script_command_types(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $composerJson = json_encode([
+            'scripts' => [
+                'post-install-cmd' => 123,
+                'post-update-cmd' => null,
+                'pre-install-cmd' => false,
+            ],
+        ], JSON_PRETTY_PRINT);
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'composer.json' => $composerJson,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [];
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should handle gracefully (invalid script types are ignored)
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertFalse($issues[0]->metadata['configured_via_scripts']);
+    }
+
+    public function test_detects_composer_update_with_optimization(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $composerJson = json_encode([
+            'scripts' => [
+                'post-update-cmd' => 'composer update --optimize-autoloader',
+            ],
+        ], JSON_PRETTY_PRINT);
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'composer.json' => $composerJson,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [];
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertTrue($issues[0]->metadata['configured_via_scripts']);
+    }
+
+    public function test_handles_authoritative_config_without_optimize(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $composerJson = json_encode([
+            'config' => [
+                'classmap-authoritative' => true,
+            ],
+        ], JSON_PRETTY_PRINT);
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'composer.json' => $composerJson,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [];
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should fail (authoritative config but not actually optimized)
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertFalse($issues[0]->metadata['configured_optimize']);
+        $this->assertTrue($issues[0]->metadata['configured_authoritative']);
+    }
+
+    public function test_detects_multiple_optimization_flags_in_script(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $composerJson = json_encode([
+            'scripts' => [
+                'post-install-cmd' => 'composer dump-autoload -o --classmap-authoritative',
+            ],
+        ], JSON_PRETTY_PRINT);
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'composer.json' => $composerJson,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [];
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertTrue($issues[0]->metadata['configured_via_scripts']);
+    }
+
+    public function test_detects_short_flag_optimization_in_scripts(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $composerJson = json_encode([
+            'scripts' => [
+                'post-install-cmd' => 'composer dump-autoload -o',
+            ],
+        ], JSON_PRETTY_PRINT);
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'composer.json' => $composerJson,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [];
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertTrue($issues[0]->metadata['configured_via_scripts']);
+    }
+
+    public function test_handles_mixed_slash_paths_in_classmap(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        // Setup optimized autoloader
+        $optimizedContent = <<<'PHP'
+<?php
+class ComposerAutoloaderInit {
+    public static $classMap = [
+        'Illuminate\\Foundation\\Application' => '/path/to/file.php',
+    ];
+}
+PHP;
+
+        $authoritativeContent = <<<'PHP'
+<?php
+$loader->setClassMapAuthoritative(true);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_static.php' => $optimizedContent,
+            'vendor/composer/autoload_real.php' => $authoritativeContent,
+            'app/MyClass.php' => '<?php namespace App; class MyClass {}',
+        ]);
+
+        // Create path with mixed slashes (backslashes and forward slashes)
+        $mixedPath = str_replace('/', '\\', $tempDir).'\\app/MyClass.php';
+
+        $classmap = <<<PHP
+<?php
+return [
+    'App\\\\MyClass' => '{$mixedPath}',
+];
+PHP;
+
+        file_put_contents($tempDir.'/vendor/composer/autoload_classmap.php', $classmap);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass (path normalization handles mixed slashes and file exists)
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_paths_with_dot_segments(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        // Setup optimized autoloader
+        $optimizedContent = <<<'PHP'
+<?php
+class ComposerAutoloaderInit {
+    public static $classMap = [
+        'Illuminate\\Foundation\\Application' => '/path/to/file.php',
+    ];
+}
+PHP;
+
+        $authoritativeContent = <<<'PHP'
+<?php
+$loader->setClassMapAuthoritative(true);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_static.php' => $optimizedContent,
+            'vendor/composer/autoload_real.php' => $authoritativeContent,
+            'app/MyClass.php' => '<?php namespace App; class MyClass {}',
+        ]);
+
+        // Use path with . segments (current directory references)
+        $classmap = <<<PHP
+<?php
+return [
+    'App\\\\MyClass' => '{$tempDir}/./app/./MyClass.php',
+];
+PHP;
+
+        file_put_contents($tempDir.'/vendor/composer/autoload_classmap.php', $classmap);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass (path normalization handles . segments and file exists)
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_scripts_config_is_non_array(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $composerJson = json_encode([
+            'scripts' => 'not an array',
+        ], JSON_PRETTY_PRINT);
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'composer.json' => $composerJson,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [];
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should fail gracefully (non-array scripts treated as empty)
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertFalse($issues[0]->metadata['configured_via_scripts']);
+    }
 }

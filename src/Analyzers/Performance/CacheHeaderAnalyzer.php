@@ -255,7 +255,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
                     continue;
                 }
 
-                $this->checkViteManifestEntry($entry, $manifest, $visited, is_string($key) ? $key : null);
+                $this->checkViteManifestEntry($entry, $manifest, $visited, is_string($key) ? $key : null, 0);
             }
         } catch (\Throwable) {
             // Gracefully handle missing or invalid manifest
@@ -269,8 +269,13 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
      * @param  array<string, mixed>  $manifest
      * @param  array<string, bool>  $visited
      */
-    private function checkViteManifestEntry(array $entry, array $manifest, array &$visited, ?string $entryKey = null): void
+    private function checkViteManifestEntry(array $entry, array $manifest, array &$visited, ?string $entryKey = null, int $depth = 0): void
     {
+        // Prevent infinite recursion in pathological cases
+        if ($depth > 100) {
+            return;
+        }
+
         if ($entryKey !== null) {
             if (isset($visited[$entryKey])) {
                 return;
@@ -294,11 +299,11 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
 
         // Check preloaded imports (Vite feature for code splitting)
         if (isset($entry['imports']) && is_array($entry['imports'])) {
-            $this->checkViteImports($entry['imports'], $manifest, $visited);
+            $this->checkViteImports($entry['imports'], $manifest, $visited, $depth);
         }
 
         if (isset($entry['dynamicImports']) && is_array($entry['dynamicImports'])) {
-            $this->checkViteImports($entry['dynamicImports'], $manifest, $visited);
+            $this->checkViteImports($entry['dynamicImports'], $manifest, $visited, $depth);
         }
 
         if (isset($entry['assets']) && is_array($entry['assets'])) {
@@ -334,7 +339,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
      * @param  array<string, mixed>  $manifest
      * @param  array<string, bool>  $visited
      */
-    private function checkViteImports(array $imports, array $manifest, array &$visited): void
+    private function checkViteImports(array $imports, array $manifest, array &$visited, int $depth = 0): void
     {
         foreach ($imports as $importKey) {
             if (! is_string($importKey)) {
@@ -342,7 +347,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             }
 
             if (isset($manifest[$importKey]) && is_array($manifest[$importKey])) {
-                $this->checkViteManifestEntry($manifest[$importKey], $manifest, $visited, $importKey);
+                $this->checkViteManifestEntry($manifest[$importKey], $manifest, $visited, $importKey, $depth + 1);
 
                 continue;
             }

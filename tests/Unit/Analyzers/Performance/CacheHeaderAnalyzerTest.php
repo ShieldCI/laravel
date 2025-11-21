@@ -18,13 +18,20 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
     /**
      * @param  array<\Psr\Http\Message\ResponseInterface|\Exception>  $responses
      */
-    protected function createAnalyzer(array $responses = []): AnalyzerInterface
+    protected function createAnalyzer(array $responses = [], bool $setAppUrl = true): AnalyzerInterface
     {
         $files = new Filesystem;
         $analyzer = new CacheHeaderAnalyzer($files);
 
         // Allow analyzer to run in test environment
         $analyzer->setRelevantEnvironments(null);
+
+        if ($setAppUrl) {
+            $analyzer->setAppUrl('https://example.test');
+        } else {
+            // Explicitly set to null to prevent fallback to config('app.url')
+            $analyzer->setAppUrl(null);
+        }
 
         if (! empty($responses)) {
             $mock = new MockHandler($responses);
@@ -61,8 +68,8 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
 
         // Mock HTTP responses with Cache-Control headers
         $responses = [
-            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),  // mix()
-            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),  // mix()
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),
         ];
 
         /** @var CacheHeaderAnalyzer $analyzer */
@@ -87,10 +94,10 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
 
         // Mock HTTP responses WITHOUT Cache-Control headers
         $responses = [
-            new Response(200),  // No Cache-Control
-            new Response(200),  // No Cache-Control (fallback to asset())
-            new Response(200),  // No Cache-Control
-            new Response(200),  // No Cache-Control (fallback to asset())
+            new Response(200),
+            new Response(200),
+            new Response(200),
+            new Response(200),
         ];
 
         /** @var CacheHeaderAnalyzer $analyzer */
@@ -99,12 +106,15 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('missing Cache-Control headers', $result);
+        $this->assertHasIssueContaining('Cache-Control headers', $result);
 
         // Verify uncached assets are listed
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
         $this->assertArrayHasKey('uncached_assets', $issues[0]->metadata);
+        $firstAsset = $issues[0]->metadata['uncached_assets'][0];
+        $this->assertEquals('/css/app.css', $firstAsset['path']);
+        $this->assertEquals('mix', $firstAsset['source']);
     }
 
     public function test_passes_when_vite_assets_have_cache_headers(): void
@@ -125,8 +135,8 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
 
         // Mock HTTP responses with Cache-Control headers
         $responses = [
-            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),  // JS file
-            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),  // CSS file
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),
         ];
 
         /** @var CacheHeaderAnalyzer $analyzer */
@@ -165,7 +175,7 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('missing Cache-Control headers', $result);
+        $this->assertHasIssueContaining('Cache-Control headers', $result);
 
         // Verify both files are listed as uncached
         $issues = $result->getIssues();
@@ -173,6 +183,70 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         /** @var array<int, string> $uncachedAssets */
         $uncachedAssets = $issues[0]->metadata['uncached_assets'] ?? [];
         $this->assertCount(2, $uncachedAssets);
+    }
+
+    public function test_vite_imports_reference_manifest_entries(): void
+    {
+        $manifest = json_encode([
+            'resources/js/app.js' => [
+                'file' => 'assets/app.abc123.js',
+                'imports' => ['resources/js/chunk.js'],
+            ],
+            'resources/js/chunk.js' => [
+                'file' => 'assets/chunk.def456.js',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/build/manifest.json' => $manifest,
+        ]);
+
+        $responses = [
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_vite_import_without_cache_headers_is_reported(): void
+    {
+        $manifest = json_encode([
+            'resources/js/app.js' => [
+                'file' => 'assets/app.abc123.js',
+                'imports' => ['resources/js/chunk.js'],
+            ],
+            'resources/js/chunk.js' => [
+                'file' => 'assets/chunk.def456.js',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/build/manifest.json' => $manifest,
+        ]);
+
+        $responses = [
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),
+            new Response(200),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $firstIssue = $issues[0];
+        $this->assertArrayHasKey('uncached_assets', $firstIssue->metadata);
+        $this->assertSame('build/assets/chunk.def456.js', $firstIssue->metadata['uncached_assets'][0]['path']);
     }
 
     public function test_supports_both_mix_and_vite(): void
@@ -195,8 +269,8 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
 
         // Mock responses for both
         $responses = [
-            new Response(200, ['Cache-Control' => 'public']),  // Mix asset
-            new Response(200, ['Cache-Control' => 'public']),  // Vite asset
+            new Response(200, ['Cache-Control' => 'public, max-age=3600']),
+            new Response(200, ['Cache-Control' => 'public, max-age=3600']),
         ];
 
         /** @var CacheHeaderAnalyzer $analyzer */
@@ -221,5 +295,49 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
     public function test_run_in_ci_property_is_false(): void
     {
         $this->assertFalse(CacheHeaderAnalyzer::$runInCI);
+    }
+
+    public function test_warns_when_app_url_missing(): void
+    {
+        $manifest = json_encode([
+            '/js/app.js' => '/js/app.js?id=123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer([], false);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertStringContainsString('APP_URL is not properly configured', $result->getMessage());
+    }
+
+    public function test_detects_non_cacheable_directives(): void
+    {
+        $manifest = json_encode([
+            '/js/app.js' => '/js/app.js?id=123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        // Response includes Cache-Control but with no-store
+        $responses = [
+            new Response(200, ['Cache-Control' => 'no-store, max-age=0']),
+            new Response(200, ['Cache-Control' => 'no-cache']),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Cache-Control headers', $result);
     }
 }

@@ -51,9 +51,9 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     protected ?array $relevantEnvironments = ['production', 'staging'];
 
     /**
-     * The list of uncached assets.
+     * The list of uncached assets and their sources.
      *
-     * @var \Illuminate\Support\Collection<int, string>
+     * @var \Illuminate\Support\Collection<int, array{path: string, source: string}>
      */
     protected $uncachedAssets;
 
@@ -61,6 +61,16 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
      * The public path (for testing).
      */
     private ?string $publicPath = null;
+
+    /**
+     * Optional override for the application URL (used in testing).
+     */
+    private ?string $appUrlOverride = null;
+
+    /**
+     * Track whether the app URL was explicitly set (even if set to null).
+     */
+    private bool $appUrlExplicitlySet = false;
 
     public function __construct(
         private Filesystem $files
@@ -72,6 +82,15 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     public function setPublicPath(string $path): void
     {
         $this->publicPath = $path;
+    }
+
+    /**
+     * Override the application URL (used in testing).
+     */
+    public function setAppUrl(?string $url): void
+    {
+        $this->appUrlOverride = $url ? rtrim($url, '/') : null;
+        $this->appUrlExplicitlySet = true;
     }
 
     /**
@@ -90,7 +109,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     private function getPublicPath(string $path = ''): string
     {
         if ($this->publicPath !== null) {
-            return $this->publicPath.($path ? '/'.$path : $path);
+            return $this->publicPath.($path ? DIRECTORY_SEPARATOR.$path : $path);
         }
 
         return function_exists('public_path') ? public_path($path) : '';
@@ -159,11 +178,14 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             return $this->passed('All compiled assets have appropriate cache headers');
         }
 
+        $firstSource = $this->uncachedAssets->first()['source'] ?? 'mix';
+        $issueLocation = $firstSource === 'vite' ? 'public/build/manifest.json' : 'public/mix-manifest.json';
+
         return $this->failed(
             sprintf('Found %d asset(s) without proper cache headers', $this->uncachedAssets->count()),
             [$this->createIssue(
-                message: 'Compiled assets are missing Cache-Control headers',
-                location: new Location('public', 1),
+                message: 'Compiled assets are missing Cache-Control headers or use non-cacheable directives',
+                location: new Location($issueLocation, 1),
                 severity: Severity::High,
                 recommendation: sprintf(
                     'Your application does not set appropriate cache headers on compiled assets. '.
@@ -190,20 +212,21 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             $manifestPath = $this->getPublicPath('mix-manifest.json');
             $manifest = json_decode($this->files->get($manifestPath), true);
 
-            if (! is_array($manifest)) {
+            if (json_last_error() !== JSON_ERROR_NONE || ! is_array($manifest)) {
                 return;
             }
 
             foreach ($manifest as $key => $value) {
                 // Only check versioned (cache-busted) files
                 if (is_string($value) && Str::contains($value, '?id=')) {
-                    // Try both mix() and asset() URLs
-                    $mixUrl = $this->getMixUrl($key);
-                    $assetUrl = $this->getAssetUrl($key);
+                    $compiledUrl = $this->getMixUrl($value);
+                    $sourceUrl = $this->getAssetUrl($key);
 
-                    if (! $this->headerExistsOnUrl($mixUrl, 'Cache-Control')
-                        && ! $this->headerExistsOnUrl($assetUrl, 'Cache-Control')) {
-                        $this->uncachedAssets->push($key);
+                    if (! $this->assetHasCacheHeaders($compiledUrl) && ! $this->assetHasCacheHeaders($sourceUrl)) {
+                        $this->uncachedAssets->push([
+                            'path' => $key,
+                            'source' => 'mix',
+                        ]);
                     }
                 }
             }
@@ -221,49 +244,88 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             $manifestPath = $this->getPublicPath('build/manifest.json');
             $manifest = json_decode($this->files->get($manifestPath), true);
 
-            if (! is_array($manifest)) {
+            if (json_last_error() !== JSON_ERROR_NONE || ! is_array($manifest)) {
                 return;
             }
+
+            $visited = [];
 
             foreach ($manifest as $key => $entry) {
                 if (! is_array($entry)) {
                     continue;
                 }
 
-                // Check the main file
-                if (isset($entry['file']) && is_string($entry['file'])) {
-                    $url = $this->getViteAssetUrl($entry['file']);
-                    if (! $this->headerExistsOnUrl($url, 'Cache-Control')) {
-                        $this->uncachedAssets->push('build/'.$entry['file']);
-                    }
-                }
-
-                // Check CSS files
-                if (isset($entry['css']) && is_array($entry['css'])) {
-                    foreach ($entry['css'] as $cssFile) {
-                        if (is_string($cssFile)) {
-                            $url = $this->getViteAssetUrl($cssFile);
-                            if (! $this->headerExistsOnUrl($url, 'Cache-Control')) {
-                                $this->uncachedAssets->push('build/'.$cssFile);
-                            }
-                        }
-                    }
-                }
-
-                // Check preloaded imports (Vite feature for code splitting)
-                if (isset($entry['imports']) && is_array($entry['imports'])) {
-                    foreach ($entry['imports'] as $importFile) {
-                        if (is_string($importFile)) {
-                            $url = $this->getViteAssetUrl($importFile);
-                            if (! $this->headerExistsOnUrl($url, 'Cache-Control')) {
-                                $this->uncachedAssets->push('build/'.$importFile);
-                            }
-                        }
-                    }
-                }
+                $this->checkViteManifestEntry($entry, $manifest, $visited, is_string($key) ? $key : null);
             }
         } catch (\Throwable) {
             // Gracefully handle missing or invalid manifest
+        }
+    }
+
+    /**
+     * Inspect a Vite manifest entry (and any nested imports) for cache headers.
+     *
+     * @param  array<string, mixed>  $entry
+     * @param  array<string, mixed>  $manifest
+     * @param  array<string, bool>  $visited
+     */
+    private function checkViteManifestEntry(array $entry, array $manifest, array &$visited, ?string $entryKey = null): void
+    {
+        if ($entryKey !== null) {
+            if (isset($visited[$entryKey])) {
+                return;
+            }
+
+            $visited[$entryKey] = true;
+        }
+
+        // Check the main file
+        if (isset($entry['file']) && is_string($entry['file'])) {
+            $url = $this->getViteAssetUrl($entry['file']);
+            if (! $this->assetHasCacheHeaders($url)) {
+                $this->uncachedAssets->push([
+                    'path' => 'build/'.$entry['file'],
+                    'source' => 'vite',
+                ]);
+            }
+        }
+
+        // Check CSS files
+        if (isset($entry['css']) && is_array($entry['css'])) {
+            foreach ($entry['css'] as $cssFile) {
+                if (is_string($cssFile)) {
+                    $url = $this->getViteAssetUrl($cssFile);
+                    if (! $this->assetHasCacheHeaders($url)) {
+                        $this->uncachedAssets->push([
+                            'path' => 'build/'.$cssFile,
+                            'source' => 'vite',
+                        ]);
+                    }
+                }
+            }
+        }
+
+        // Check preloaded imports (Vite feature for code splitting)
+        if (isset($entry['imports']) && is_array($entry['imports'])) {
+            foreach ($entry['imports'] as $importKey) {
+                if (! is_string($importKey)) {
+                    continue;
+                }
+
+                if (isset($manifest[$importKey]) && is_array($manifest[$importKey])) {
+                    $this->checkViteManifestEntry($manifest[$importKey], $manifest, $visited, $importKey);
+
+                    continue;
+                }
+
+                $url = $this->getViteAssetUrl($importKey);
+                if (! $this->assetHasCacheHeaders($url)) {
+                    $this->uncachedAssets->push([
+                        'path' => 'build/'.$importKey,
+                        'source' => 'vite',
+                    ]);
+                }
+            }
         }
     }
 
@@ -273,13 +335,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     private function getMixUrl(string $path): ?string
     {
         try {
-            if (! function_exists('mix')) {
-                return null;
-            }
-
-            $result = mix($path);
-
-            return is_string($result) ? $result : null;
+            return $this->buildAbsoluteUrl($path);
         } catch (\Throwable) {
             return null;
         }
@@ -291,13 +347,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     private function getAssetUrl(string $path): ?string
     {
         try {
-            if (! function_exists('asset')) {
-                return null;
-            }
-
-            $result = asset($path);
-
-            return is_string($result) ? $result : null;
+            return $this->buildAbsoluteUrl($path);
         } catch (\Throwable) {
             return null;
         }
@@ -309,13 +359,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     private function getViteAssetUrl(string $file): ?string
     {
         try {
-            if (! function_exists('asset')) {
-                return null;
-            }
-
-            $result = asset('build/'.$file);
-
-            return is_string($result) ? $result : null;
+            return $this->buildAbsoluteUrl('build/'.$file);
         } catch (\Throwable) {
             return null;
         }
@@ -346,9 +390,21 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
      */
     private function formatUncachedAssets(): string
     {
-        return $this->uncachedAssets->map(function ($file) {
-            return "[{$file}]";
-        })->join(', ', ' and ');
+        $items = $this->uncachedAssets->map(function (array $asset) {
+            return sprintf('[%s via %s]', $asset['path'], $asset['source']);
+        })->all();
+
+        if (count($items) === 0) {
+            return '';
+        }
+
+        if (count($items) === 1) {
+            return $items[0];
+        }
+
+        $last = array_pop($items);
+
+        return implode(', ', $items).' and '.$last;
     }
 
     /**
@@ -356,17 +412,75 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
      */
     private function isAppUrlConfigured(): bool
     {
-        // Check if config helper is available
+        return $this->getAppUrl() !== null;
+    }
+
+    private function getAppUrl(): ?string
+    {
+        // If explicitly set (even to null), return the override value
+        if ($this->appUrlExplicitlySet) {
+            return $this->appUrlOverride;
+        }
+
+        // Otherwise, fall back to config
         if (! function_exists('config')) {
-            return false;
+            return null;
         }
 
         $appUrl = config('app.url');
         if (! is_string($appUrl) || $appUrl === '') {
+            return null;
+        }
+
+        $normalized = rtrim($appUrl, '/');
+
+        return filter_var($normalized, FILTER_VALIDATE_URL) !== false ? $normalized : null;
+    }
+
+    private function buildAbsoluteUrl(string $path): ?string
+    {
+        $base = $this->getAppUrl();
+
+        if ($base === null) {
+            return null;
+        }
+
+        $trimmed = ltrim($path, '/');
+
+        return $trimmed === ''
+            ? $base
+            : $base.'/'.$trimmed;
+    }
+
+    private function assetHasCacheHeaders(?string $url): bool
+    {
+        if ($url === null) {
             return false;
         }
 
-        // Validate that it's a valid URL format
-        return filter_var($appUrl, FILTER_VALIDATE_URL) !== false;
+        $headers = $this->getHeadersOnUrl($url, 'Cache-Control');
+
+        if (empty($headers)) {
+            return false;
+        }
+
+        foreach ($headers as $header) {
+            if ($this->isCacheHeaderOptimized($header)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isCacheHeaderOptimized(string $headerValue): bool
+    {
+        $value = strtolower($headerValue);
+
+        if (str_contains($value, 'no-store') || str_contains($value, 'no-cache')) {
+            return false;
+        }
+
+        return str_contains($value, 'max-age=');
     }
 }

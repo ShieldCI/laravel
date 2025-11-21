@@ -77,6 +77,18 @@ abstract class AnalyzerTestCase extends TestCase
     }
 
     /**
+     * Assert that analysis produces an error.
+     */
+    protected function assertError(ResultInterface $result): void
+    {
+        $this->assertEquals(
+            Status::Error,
+            $result->getStatus(),
+            "Expected analysis to error, but got: {$result->getStatus()->value}"
+        );
+    }
+
+    /**
      * Assert that the result has a specific number of issues.
      */
     protected function assertIssueCount(int $expected, ResultInterface $result): void

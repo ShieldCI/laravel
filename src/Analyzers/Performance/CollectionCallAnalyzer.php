@@ -33,6 +33,11 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
      */
     public static bool $runInCI = false;
 
+    /**
+     * The search pattern used to identify collection call issues in PHPStan output.
+     */
+    private const COLLECTION_CALL_PATTERN = 'could have been retrieved as a query';
+
     private PHPStan $phpStan;
 
     public function __construct(PHPStan $phpStan)
@@ -70,12 +75,16 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
         $issues = [];
 
         // Set root path for PHPStan
-        if (function_exists('base_path')) {
-            $this->phpStan->setRootPath(base_path());
+        $basePath = $this->getBasePath();
+        if ($basePath !== '') {
+            $this->phpStan->setRootPath($basePath);
         }
 
         // Run PHPStan on configured paths
-        $paths = $this->paths ?? ['app'];
+        $paths = $this->paths;
+        if (empty($paths)) {
+            $paths = ['app'];
+        }
 
         try {
             $this->phpStan->start($paths);
@@ -84,13 +93,16 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             // Larastan reports these with "could have been retrieved as a query"
             $this->parsePHPStanAnalysis(
                 $this->phpStan,
-                'could have been retrieved as a query',
+                self::COLLECTION_CALL_PATTERN,
                 $issues
             );
         } catch (\Throwable $e) {
             // If PHPStan fails, return error but don't crash
-            return $this->failed(
-                'PHPStan analysis failed: '.$e->getMessage(),
+            return $this->error(
+                sprintf(
+                    'PHPStan analysis failed: %s. Ensure PHPStan and Larastan are properly configured.',
+                    $e->getMessage()
+                ),
                 []
             );
         }
@@ -110,19 +122,43 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
      */
     protected function hasLarastan(): bool
     {
-        // For testing: check if we're in a test environment with mocked PHPStan
-        if (get_class($this->phpStan) === 'Mockery\Mock') {
+        // For testing: check if PHPStan is mocked
+        if ($this->isMockedPHPStan()) {
             return true; // Assume Larastan is available when using mocked PHPStan
         }
 
-        // Check if it's a Mockery mock by checking class name
-        $className = get_class($this->phpStan);
-        if (str_contains($className, 'Mockery') || str_contains($className, 'Mock')) {
+        // Check actual Larastan installation
+        $basePath = $this->getBasePath();
+        if ($basePath === '') {
+            $basePath = function_exists('base_path') ? base_path() : getcwd();
+        }
+
+        if (! is_string($basePath) || $basePath === '') {
+            return false;
+        }
+
+        $larastanPath = $basePath.DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR.'larastan'.DIRECTORY_SEPARATOR.'larastan'.DIRECTORY_SEPARATOR.'extension.neon';
+
+        return file_exists($larastanPath);
+    }
+
+    /**
+     * Check if PHPStan instance is a mock (for testing).
+     */
+    private function isMockedPHPStan(): bool
+    {
+        // Check for Mockery mock
+        if (interface_exists('Mockery\MockInterface') && $this->phpStan instanceof \Mockery\MockInterface) {
             return true;
         }
 
-        $basePath = function_exists('base_path') ? base_path() : getcwd();
+        // Check for PHPUnit mock (starts with "Mock_")
+        $className = get_class($this->phpStan);
+        if (str_starts_with($className, 'Mock_')) {
+            return true;
+        }
 
-        return file_exists($basePath.'/vendor/larastan/larastan/extension.neon');
+        // Fallback: check class name for common mock patterns
+        return str_contains($className, 'Mockery') || str_contains($className, 'Mock');
     }
 }

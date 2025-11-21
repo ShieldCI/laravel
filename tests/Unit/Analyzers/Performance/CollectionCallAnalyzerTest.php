@@ -120,8 +120,9 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertError($result);
         $this->assertStringContainsString('PHPStan analysis failed', $result->getMessage());
+        $this->assertStringContainsString('Ensure PHPStan and Larastan are properly configured', $result->getMessage());
     }
 
     public function test_metadata(): void

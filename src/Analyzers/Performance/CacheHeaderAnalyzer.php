@@ -220,9 +220,9 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
                 // Only check versioned (cache-busted) files
                 if (is_string($value) && Str::contains($value, '?id=')) {
                     $compiledUrl = $this->getMixUrl($value);
-                    $sourceUrl = $this->getAssetUrl($key);
 
-                    if (! $this->assetHasCacheHeaders($compiledUrl) && ! $this->assetHasCacheHeaders($sourceUrl)) {
+                    // Check the compiled URL (the actual asset served to users)
+                    if (! $this->assetHasCacheHeaders($compiledUrl)) {
                         $this->uncachedAssets->push([
                             'path' => $key,
                             'source' => 'mix',

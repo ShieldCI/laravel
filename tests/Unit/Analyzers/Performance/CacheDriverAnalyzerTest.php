@@ -371,6 +371,327 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
         $this->assertHasIssueContaining('unsupported', $result);
     }
 
+    public function test_skips_when_cache_default_is_null(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => null,
+            ],
+        ]);
+
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertStringContainsString('not configured', $analyzer->getSkipReason());
+    }
+
+    public function test_errors_when_cache_default_is_not_string(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => 123,
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertEquals('error', $result->getStatus()->value);
+        $this->assertStringContainsString('not configured properly', $result->getMessage());
+    }
+
+    public function test_errors_when_cache_default_is_array(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => ['redis', 'memcached'],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertEquals('error', $result->getStatus()->value);
+        $this->assertStringContainsString('not configured properly', $result->getMessage());
+    }
+
+    public function test_errors_when_driver_is_not_string(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => 'redis',
+                'stores' => [
+                    'redis' => [
+                        'driver' => ['redis'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertEquals('error', $result->getStatus()->value);
+        $this->assertStringContainsString('driver is not a string', $result->getMessage());
+    }
+
+    public function test_fails_when_store_not_defined_with_proper_metadata(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => 'nonexistent',
+                'stores' => [
+                    'redis' => [
+                        'driver' => 'redis',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('not defined', $result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertEquals('nonexistent', $issues[0]->metadata['store'] ?? '');
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+    }
+
+    public function test_fails_with_dynamodb_driver_with_null_table(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => 'dynamodb',
+                'stores' => [
+                    'dynamodb' => [
+                        'driver' => 'dynamodb',
+                        'table' => null,
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('missing a table', $result);
+    }
+
+    public function test_fails_with_dynamodb_driver_with_whitespace_table(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => 'dynamodb',
+                'stores' => [
+                    'dynamodb' => [
+                        'driver' => 'dynamodb',
+                        'table' => '   ',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('missing a table', $result);
+    }
+
+    public function test_fails_with_null_driver_in_staging(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'staging',
+            ],
+            'cache' => [
+                'default' => 'null',
+                'stores' => [
+                    'null' => [
+                        'driver' => 'null',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('null', $result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertEquals('staging', $issues[0]->metadata['environment'] ?? '');
+    }
+
+    public function test_fails_with_file_driver_in_staging(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'staging',
+            ],
+            'cache' => [
+                'default' => 'file',
+                'stores' => [
+                    'file' => [
+                        'driver' => 'file',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('File cache driver', $result);
+    }
+
+    public function test_fails_with_array_driver_in_staging(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'staging',
+            ],
+            'cache' => [
+                'default' => 'array',
+                'stores' => [
+                    'array' => [
+                        'driver' => 'array',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('array', $result);
+    }
+
+    public function test_fails_with_database_driver_in_staging(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'staging',
+            ],
+            'cache' => [
+                'default' => 'database',
+                'stores' => [
+                    'database' => [
+                        'driver' => 'database',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Database cache driver', $result);
+    }
+
+    public function test_fails_with_apc_driver_in_staging(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'staging',
+            ],
+            'cache' => [
+                'default' => 'apc',
+                'stores' => [
+                    'apc' => [
+                        'driver' => 'apc',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('APC cache driver', $result);
+    }
+
+    public function test_passes_with_null_driver_in_development(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'development',
+            ],
+            'cache' => [
+                'default' => 'null',
+                'stores' => [
+                    'null' => [
+                        'driver' => 'null',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_file_driver_in_development(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'development',
+            ],
+            'cache' => [
+                'default' => 'file',
+                'stores' => [
+                    'file' => [
+                        'driver' => 'file',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_array_driver_in_development(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'development',
+            ],
+            'cache' => [
+                'default' => 'array',
+                'stores' => [
+                    'array' => [
+                        'driver' => 'array',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_database_driver_in_development(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'development',
+            ],
+            'cache' => [
+                'default' => 'database',
+                'stores' => [
+                    'database' => [
+                        'driver' => 'database',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();

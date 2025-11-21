@@ -376,18 +376,6 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     }
 
     /**
-     * Get the URL for an asset.
-     */
-    private function getAssetUrl(string $path): ?string
-    {
-        try {
-            return $this->buildAbsoluteUrl($path);
-        } catch (\Throwable) {
-            return null;
-        }
-    }
-
-    /**
      * Get the URL for a Vite asset.
      */
     private function getViteAssetUrl(string $file): ?string

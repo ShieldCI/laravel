@@ -290,41 +290,70 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             }
         }
 
-        // Check CSS files
-        if (isset($entry['css']) && is_array($entry['css'])) {
-            foreach ($entry['css'] as $cssFile) {
-                if (is_string($cssFile)) {
-                    $url = $this->getViteAssetUrl($cssFile);
-                    if (! $this->assetHasCacheHeaders($url)) {
-                        $this->uncachedAssets->push([
-                            'path' => 'build/'.$cssFile,
-                            'source' => 'vite',
-                        ]);
-                    }
-                }
-            }
-        }
+        $this->checkViteAssetList($entry['css'] ?? null, 'css');
 
         // Check preloaded imports (Vite feature for code splitting)
         if (isset($entry['imports']) && is_array($entry['imports'])) {
-            foreach ($entry['imports'] as $importKey) {
-                if (! is_string($importKey)) {
-                    continue;
-                }
+            $this->checkViteImports($entry['imports'], $manifest, $visited);
+        }
 
-                if (isset($manifest[$importKey]) && is_array($manifest[$importKey])) {
-                    $this->checkViteManifestEntry($manifest[$importKey], $manifest, $visited, $importKey);
+        if (isset($entry['dynamicImports']) && is_array($entry['dynamicImports'])) {
+            $this->checkViteImports($entry['dynamicImports'], $manifest, $visited);
+        }
 
-                    continue;
-                }
+        if (isset($entry['assets']) && is_array($entry['assets'])) {
+            $this->checkViteAssetList($entry['assets'], 'asset');
+        }
+    }
 
-                $url = $this->getViteAssetUrl($importKey);
-                if (! $this->assetHasCacheHeaders($url)) {
-                    $this->uncachedAssets->push([
-                        'path' => 'build/'.$importKey,
-                        'source' => 'vite',
-                    ]);
-                }
+    /**
+     * @param  mixed  $items
+     */
+    private function checkViteAssetList($items, string $type): void
+    {
+        $files = is_array($items) ? $items : [$items];
+
+        foreach ($files as $file) {
+            if (! is_string($file)) {
+                continue;
+            }
+
+            $url = $this->getViteAssetUrl($file);
+            if (! $this->assetHasCacheHeaders($url)) {
+                $this->uncachedAssets->push([
+                    'path' => 'build/'.$file,
+                    'source' => 'vite',
+                    'type' => $type,
+                ]);
+            }
+        }
+    }
+
+    /**
+     * @param  array<int, string>  $imports
+     * @param  array<string, mixed>  $manifest
+     * @param  array<string, bool>  $visited
+     */
+    private function checkViteImports(array $imports, array $manifest, array &$visited): void
+    {
+        foreach ($imports as $importKey) {
+            if (! is_string($importKey)) {
+                continue;
+            }
+
+            if (isset($manifest[$importKey]) && is_array($manifest[$importKey])) {
+                $this->checkViteManifestEntry($manifest[$importKey], $manifest, $visited, $importKey);
+
+                continue;
+            }
+
+            $url = $this->getViteAssetUrl($importKey);
+            if (! $this->assetHasCacheHeaders($url)) {
+                $this->uncachedAssets->push([
+                    'path' => 'build/'.$importKey,
+                    'source' => 'vite',
+                    'type' => 'import',
+                ]);
             }
         }
     }

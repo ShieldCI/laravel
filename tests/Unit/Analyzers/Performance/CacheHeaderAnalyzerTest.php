@@ -249,6 +249,44 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $this->assertSame('build/assets/chunk.def456.js', $firstIssue->metadata['uncached_assets'][0]['path']);
     }
 
+    public function test_vite_dynamic_imports_and_assets_are_checked(): void
+    {
+        $manifest = json_encode([
+            'resources/js/app.js' => [
+                'file' => 'assets/app.abc123.js',
+                'dynamicImports' => ['resources/js/lazy.js'],
+                'assets' => ['assets/fonts.ghi789.woff2'],
+            ],
+            'resources/js/lazy.js' => [
+                'file' => 'assets/lazy.def456.js',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/build/manifest.json' => $manifest,
+        ]);
+
+        $responses = [
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),
+            new Response(200),
+            new Response(200),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $uncachedAssets = $issues[0]->metadata['uncached_assets'] ?? [];
+        $paths = is_array($uncachedAssets) ? array_column($uncachedAssets, 'path') : [];
+        $this->assertContains('build/assets/lazy.def456.js', $paths);
+        $this->assertContains('build/assets/fonts.ghi789.woff2', $paths);
+    }
+
     public function test_supports_both_mix_and_vite(): void
     {
         // Create both manifests

@@ -76,13 +76,17 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
 
         // Set root path for PHPStan
         $basePath = $this->getBasePath();
-        if ($basePath !== '') {
+        if ($basePath === '') {
+            $basePath = function_exists('base_path') ? base_path() : getcwd();
+        }
+
+        if (is_string($basePath) && $basePath !== '') {
             $this->phpStan->setRootPath($basePath);
         }
 
         // Run PHPStan on configured paths
         $paths = $this->paths;
-        if (empty($paths)) {
+        if (! is_array($paths) || empty($paths)) {
             $paths = ['app'];
         }
 
@@ -133,13 +137,24 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             $basePath = function_exists('base_path') ? base_path() : getcwd();
         }
 
-        if (! is_string($basePath) || $basePath === '') {
+        if ($basePath === '') {
             return false;
         }
 
-        $larastanPath = $basePath.DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR.'larastan'.DIRECTORY_SEPARATOR.'larastan'.DIRECTORY_SEPARATOR.'extension.neon';
+        // Check multiple possible Larastan paths (current and legacy package names)
+        $possiblePaths = [
+            $basePath.DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR.'larastan'.DIRECTORY_SEPARATOR.'larastan'.DIRECTORY_SEPARATOR.'extension.neon',
+            $basePath.DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR.'nunomaduro'.DIRECTORY_SEPARATOR.'larastan'.DIRECTORY_SEPARATOR.'extension.neon',
+        ];
 
-        return file_exists($larastanPath);
+        foreach ($possiblePaths as $path) {
+            if (file_exists($path)) {
+                return true;
+            }
+        }
+
+        // Fallback: check if Larastan class exists
+        return class_exists('Larastan\\Larastan\\ApplicationServiceProvider');
     }
 
     /**

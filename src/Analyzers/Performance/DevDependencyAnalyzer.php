@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Performance;
 
-use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
+use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -27,7 +27,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - Local/Development: Not relevant (dev dependencies are necessary for development)
  * - Testing: Not relevant (tests need dev dependencies like PHPUnit)
  */
-class DevDependencyAnalyzer extends AbstractFileAnalyzer
+class DevDependencyAnalyzer extends AbstractAnalyzer
 {
     /**
      * Dev dependency checks are not applicable in CI environments.
@@ -48,6 +48,8 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
      * Cached Composer availability check result.
      */
     private ?bool $composerAvailable = null;
+
+    private ?bool $timeoutAvailable = null;
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -71,7 +73,10 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         // Check other conditions
-        return file_exists($this->basePath.'/composer.json');
+        $basePath = $this->getBasePath();
+        $composerJsonPath = $basePath.DIRECTORY_SEPARATOR.'composer.json';
+
+        return file_exists($composerJsonPath);
     }
 
     public function getSkipReason(): string
@@ -89,15 +94,16 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
+        $basePath = $this->getBasePath();
 
-        $composerJsonPath = $this->basePath.'/composer.json';
-        $composerLockPath = $this->basePath.'/composer.lock';
+        $composerJsonPath = $basePath.DIRECTORY_SEPARATOR.'composer.json';
+        $composerLockPath = $basePath.DIRECTORY_SEPARATOR.'composer.lock';
 
         // Check 1: Verify composer.lock exists (critical for production)
         if (! file_exists($composerLockPath)) {
             $issues[] = $this->createIssue(
                 message: 'composer.lock file not found in production',
-                location: new Location($this->basePath, 1),
+                location: new Location($composerLockPath, 1),
                 severity: Severity::High,
                 recommendation: 'Always commit composer.lock to ensure consistent dependency versions across environments. Run "composer install" instead of "composer update" in production.',
                 metadata: ['environment' => $this->getEnvironment()]
@@ -132,7 +138,7 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
      * Check if Composer binary is available.
      * Result is cached to avoid repeated shell executions.
      */
-    private function isComposerAvailable(): bool
+    protected function isComposerAvailable(): bool
     {
         // Return cached result if already checked
         if ($this->composerAvailable !== null) {
@@ -141,10 +147,10 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
 
         if (PHP_OS_FAMILY === 'Windows') {
             $output = shell_exec('where composer 2>nul');
-            $this->composerAvailable = ! empty($output);
+            $this->composerAvailable = is_string($output) && ! empty(trim($output));
         } else {
             $output = shell_exec('command -v composer 2>&1');
-            $this->composerAvailable = ! empty($output);
+            $this->composerAvailable = is_string($output) && ! empty(trim($output));
         }
 
         return $this->composerAvailable;
@@ -157,10 +163,12 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
      */
     private function checkViaComposerDryRun(string $composerJsonPath): ?Issue
     {
+        $basePath = $this->getBasePath();
+
         // Use --working-dir instead of cd for better portability
         $command = sprintf(
             'composer install --working-dir=%s --dry-run --no-dev --no-interaction 2>&1',
-            escapeshellarg($this->basePath)
+            escapeshellarg($basePath)
         );
 
         $outputLines = [];
@@ -178,10 +186,12 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
 
         // More robust pattern matching for different Composer versions
         // Matches: "- Removing", "- would remove", "Removing package/name"
-        if (preg_match('/(-\s+)?(Removing|would\s+remove)\s+[\w\-\/]+/i', $output)) {
+        // Pattern matches standard Composer output format: "package/vendor" format
+        if (preg_match('/-\s+(Removing|would\s+remove)\s+([a-z0-9\-_]+\/[a-z0-9\-_]+)/i', $output)) {
             // Extract package names for better reporting
-            preg_match_all('/(-\s+)?(Removing|would\s+remove)\s+([\w\-\/]+)/i', $output, $allMatches);
-            $packageNames = $allMatches[3];
+            preg_match_all('/-\s+(Removing|would\s+remove)\s+([a-z0-9\-_]+\/[a-z0-9\-_]+)/i', $output, $allMatches);
+            /** @var array<int, string> $packageNames */
+            $packageNames = $allMatches[2];
             $removedPackages = array_slice($packageNames, 0, 10);
 
             return $this->createIssue(
@@ -212,13 +222,11 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
         if (PHP_OS_FAMILY === 'Windows') {
             exec($command, $outputLines, $exitCode);
 
-            return true;
+            return $exitCode === 0;
         }
 
         // On Unix systems, use timeout command if available
-        $hasTimeout = ! empty(shell_exec('command -v timeout 2>&1'));
-
-        if ($hasTimeout) {
+        if ($this->isTimeoutAvailable()) {
             $command = sprintf('timeout %d %s', $timeoutSeconds, $command);
         }
 
@@ -229,7 +237,23 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        return true;
+        return $exitCode === 0;
+    }
+
+    /**
+     * Check if timeout command is available (cached).
+     */
+    private function isTimeoutAvailable(): bool
+    {
+        // Return cached result if already checked
+        if ($this->timeoutAvailable !== null) {
+            return $this->timeoutAvailable;
+        }
+
+        $output = shell_exec('command -v timeout 2>&1');
+        $this->timeoutAvailable = is_string($output) && ! empty(trim($output));
+
+        return $this->timeoutAvailable;
     }
 
     /**
@@ -238,8 +262,10 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
      */
     private function checkViaFileSystem(string $composerJsonPath): ?Issue
     {
+        $basePath = $this->getBasePath();
+
         // Check if vendor directory exists first
-        $vendorPath = $this->basePath.'/vendor';
+        $vendorPath = $basePath.DIRECTORY_SEPARATOR.'vendor';
         if (! file_exists($vendorPath) || ! is_dir($vendorPath)) {
             // No vendor directory means no packages installed at all
             return null;
@@ -254,6 +280,10 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
         $installedDevPackages = [];
 
         foreach ($devDependencies as $package) {
+            if (! is_string($package)) {
+                continue;
+            }
+
             $normalizedPath = str_replace('/', DIRECTORY_SEPARATOR, $package);
             $packagePath = $vendorPath.DIRECTORY_SEPARATOR.$normalizedPath;
 
@@ -287,7 +317,8 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
      */
     private function getDevPackagesFromLock(): ?array
     {
-        $lockPath = $this->basePath.'/composer.lock';
+        $basePath = $this->getBasePath();
+        $lockPath = $basePath.DIRECTORY_SEPARATOR.'composer.lock';
 
         if (! file_exists($lockPath)) {
             return null;
@@ -301,7 +332,11 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
 
         $lockData = json_decode($contents, true);
 
-        if (! is_array($lockData) || ! isset($lockData['packages-dev']) || ! is_array($lockData['packages-dev'])) {
+        if (json_last_error() !== JSON_ERROR_NONE || ! is_array($lockData)) {
+            return null;
+        }
+
+        if (! isset($lockData['packages-dev']) || ! is_array($lockData['packages-dev'])) {
             return [];
         }
 
@@ -331,7 +366,7 @@ class DevDependencyAnalyzer extends AbstractFileAnalyzer
 
         $composerJson = json_decode($contents, true);
 
-        if (! is_array($composerJson)) {
+        if (json_last_error() !== JSON_ERROR_NONE || ! is_array($composerJson)) {
             return [];
         }
 

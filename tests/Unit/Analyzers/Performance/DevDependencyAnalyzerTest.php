@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
+use Illuminate\Foundation\Application as LaravelApplication;
 use ShieldCI\Analyzers\Performance\DevDependencyAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -15,69 +16,73 @@ class DevDependencyAnalyzerTest extends AnalyzerTestCase
         return new DevDependencyAnalyzer;
     }
 
-    public function test_checks_dev_dependencies(): void
+    public function test_fails_when_composer_lock_missing(): void
     {
-        $envContent = 'APP_ENV=production';
-        $composerLock = <<<'JSON'
-{
-    "packages": [
-        {
-            "name": "laravel/framework",
-            "version": "v10.0.0"
-        }
-    ],
-    "packages-dev": []
-}
-JSON;
-
         $tempDir = $this->createTempDirectory([
-            '.env' => $envContent,
-            'composer.lock' => $composerLock,
-            'vendor/autoload.php' => '<?php',
+            '.env' => 'APP_ENV=production',
+            'composer.json' => '{}',
         ]);
 
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
+        config()->set('app.env', 'production');
+        /** @var LaravelApplication $application */
+        $application = app();
+        $originalBasePath = $application->basePath();
+        $application->setBasePath($tempDir);
 
-        $result = $analyzer->analyze();
+        try {
+            $analyzer = $this->createAnalyzer();
+            $result = $analyzer->analyze();
+        } finally {
+            $application->setBasePath($originalBasePath);
+        }
 
-        // May pass or warn depending on environment detection
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('composer.lock file not found', $result);
     }
 
-    public function test_analyzes_vendor_directory(): void
+    public function test_detects_dev_packages_via_filesystem(): void
     {
-        $envContent = 'APP_ENV=production';
         $composerLock = <<<'JSON'
 {
-    "packages": [
-        {
-            "name": "laravel/framework",
-            "version": "v10.0.0"
-        }
-    ],
+    "packages": [],
     "packages-dev": [
-        {
-            "name": "phpunit/phpunit",
-            "version": "10.0.0"
-        }
+        {"name": "phpunit/phpunit"},
+        {"name": "fakerphp/faker"}
     ]
 }
 JSON;
 
         $tempDir = $this->createTempDirectory([
-            '.env' => $envContent,
+            '.env' => 'APP_ENV=production',
+            'composer.json' => '{}',
             'composer.lock' => $composerLock,
             'vendor/autoload.php' => '<?php',
             'vendor/phpunit/phpunit/composer.json' => '{}',
+            'vendor/fakerphp/faker/composer.json' => '{}',
         ]);
 
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
+        config()->set('app.env', 'production');
+        $analyzer = new class extends DevDependencyAnalyzer
+        {
+            protected function isComposerAvailable(): bool
+            {
+                return false;
+            }
+        };
+        /** @var LaravelApplication $application */
+        $application = app();
+        $originalBasePath = $application->basePath();
+        $application->setBasePath($tempDir);
 
-        $result = $analyzer->analyze();
+        try {
+            $result = $analyzer->analyze();
+        } finally {
+            $application->setBasePath($originalBasePath);
+        }
 
-        // Analyzer checks for dev dependencies in vendor
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Found 2 dev dependencies installed', $result);
+        $issues = $result->getIssues();
+        $this->assertSame('file_system', $issues[0]->metadata['detection_method'] ?? null);
     }
 }

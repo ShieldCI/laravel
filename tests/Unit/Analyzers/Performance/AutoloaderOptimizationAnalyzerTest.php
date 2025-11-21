@@ -168,6 +168,74 @@ PHP;
         $this->assertHasIssueContaining('not optimized', $result);
     }
 
+    public function test_reports_when_config_enables_optimize_without_optimized_files(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $composerJson = json_encode([
+            'config' => [
+                'optimize-autoloader' => true,
+            ],
+        ], JSON_PRETTY_PRINT);
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'composer.json' => $composerJson,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [];
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('config enables "optimize-autoloader"', $result);
+    }
+
+    public function test_detects_composer_scripts_with_optimization_flags(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $composerJson = json_encode([
+            'scripts' => [
+                'post-install-cmd' => [
+                    'composer dump-autoload -o',
+                ],
+                'post-update-cmd' => [
+                    'composer install --optimize-autoloader',
+                ],
+            ],
+        ], JSON_PRETTY_PRINT);
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'composer.json' => $composerJson,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [];
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $firstIssue = $issues[0];
+        $this->assertArrayHasKey('configured_via_scripts', $firstIssue->metadata);
+        $this->assertTrue($firstIssue->metadata['configured_via_scripts']);
+    }
+
     public function test_recommends_authoritative_when_optimized_but_not_authoritative(): void
     {
         $envContent = 'APP_ENV=production';

@@ -14,43 +14,18 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 {
-    /**
-     * @param  array<string, mixed>  $configValues
-     */
     protected function createAnalyzer(
-        array $configValues = [],
+        string $environment = 'production',
         bool $configIsCached = false,
         bool $implementsCachesConfiguration = true
     ): AnalyzerInterface {
         /** @var ConfigRepository&\Mockery\MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
-        // Set up default config values
-        $defaults = [
-            'app' => [
-                'env' => 'production', // Default to production so tests actually run
-            ],
-        ];
-
-        $configMap = array_replace_recursive($defaults, $configValues);
-
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
+        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
-            ->andReturnUsing(function ($key, $default = null) use ($configMap) {
-                // Handle dotted key access (e.g., 'app.env')
-                $keys = explode('.', $key);
-                $value = $configMap;
-
-                foreach ($keys as $segment) {
-                    if (is_array($value) && array_key_exists($segment, $value)) {
-                        $value = $value[$segment];
-                    } else {
-                        return $default;
-                    }
-                }
-
-                return $value ?? $default;
-            });
+            ->with('app.env', Mockery::any())
+            ->andReturn($environment);
 
         // Mock Application with CachesConfiguration interface
         if ($implementsCachesConfiguration) {
@@ -70,14 +45,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
     public function test_fails_when_config_cached_in_local(): void
     {
-        $analyzer = $this->createAnalyzer(
-            [
-                'app' => [
-                    'env' => 'local',
-                ],
-            ],
-            configIsCached: true
-        );
+        $analyzer = $this->createAnalyzer(environment: 'local', configIsCached: true);
 
         $result = $analyzer->analyze();
 
@@ -91,14 +59,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
     public function test_fails_when_config_not_cached_in_production(): void
     {
-        $analyzer = $this->createAnalyzer(
-            [
-                'app' => [
-                    'env' => 'production',
-                ],
-            ],
-            configIsCached: false
-        );
+        $analyzer = $this->createAnalyzer(environment: 'production', configIsCached: false);
 
         $result = $analyzer->analyze();
 
@@ -113,14 +74,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
     public function test_fails_when_config_not_cached_in_staging(): void
     {
-        $analyzer = $this->createAnalyzer(
-            [
-                'app' => [
-                    'env' => 'staging',
-                ],
-            ],
-            configIsCached: false
-        );
+        $analyzer = $this->createAnalyzer(environment: 'staging', configIsCached: false);
 
         $result = $analyzer->analyze();
 
@@ -130,14 +84,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
     public function test_passes_when_config_cached_in_production(): void
     {
-        $analyzer = $this->createAnalyzer(
-            [
-                'app' => [
-                    'env' => 'production',
-                ],
-            ],
-            configIsCached: true
-        );
+        $analyzer = $this->createAnalyzer(environment: 'production', configIsCached: true);
 
         $result = $analyzer->analyze();
 
@@ -147,14 +94,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
     public function test_passes_when_config_not_cached_in_local(): void
     {
-        $analyzer = $this->createAnalyzer(
-            [
-                'app' => [
-                    'env' => 'local',
-                ],
-            ],
-            configIsCached: false
-        );
+        $analyzer = $this->createAnalyzer(environment: 'local', configIsCached: false);
 
         $result = $analyzer->analyze();
 
@@ -170,6 +110,8 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         /** @var ConfigRepository&\Mockery\MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')->andReturn('production');
 
         $analyzer = new ConfigCachingAnalyzer($app, $config);
 

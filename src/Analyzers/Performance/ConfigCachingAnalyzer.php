@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -83,19 +84,24 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
     {
         $environment = $this->getEnvironment();
 
-        /** @var Application&CachesConfiguration $app */
-        $app = $this->app;
-        $configIsCached = $app->configurationIsCached();
+        if (! ($this->app instanceof CachesConfiguration)) {
+            return $this->error('Application does not implement CachesConfiguration interface');
+        }
 
-        // Config cached in local environment - not recommended
-        if ($environment === 'local' && $configIsCached) {
+        $configIsCached = $this->app->configurationIsCached();
+
+        // Config cached in local/development environment - not recommended
+        if ($this->isDevelopmentEnvironment($environment) && $configIsCached) {
+            $basePath = $this->getBasePath();
+            $configPath = $basePath.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'cache'.DIRECTORY_SEPARATOR.'config.php';
+
             return $this->failed(
-                'Configuration is cached in local environment',
+                "Configuration is cached in {$environment} environment",
                 [$this->createIssue(
-                    message: 'Configuration is cached in local environment',
-                    location: new Location('bootstrap/cache/config.php', 1),
+                    message: "Configuration is cached in {$environment} environment",
+                    location: new Location($configPath, 1),
                     severity: Severity::Medium,
-                    recommendation: 'Configuration caching is not recommended for development. Run "php artisan config:clear" to clear the cache. As you change your config files, the changes will not be reflected unless you clear the cache.',
+                    recommendation: 'Configuration caching is not recommended for '.$environment.'. Run "php artisan config:clear" to clear the cache. As you change your config files, the changes will not be reflected unless you clear the cache.',
                     metadata: [
                         'environment' => $environment,
                         'cached' => true,
@@ -105,13 +111,20 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
             );
         }
 
-        // Config not cached in non-local environment - performance issue
-        if ($environment !== 'local' && ! $configIsCached) {
+        // Config not cached in production/staging - performance issue
+        if ($this->shouldCacheConfig($environment) && ! $configIsCached) {
+            $basePath = $this->getBasePath();
+            $configPath = ConfigFileHelper::getConfigPath(
+                $basePath,
+                'app.php',
+                fn ($file) => function_exists('config_path') ? config_path($file) : null
+            );
+
             return $this->failed(
                 "Configuration is not cached in {$environment} environment",
                 [$this->createIssue(
                     message: "Configuration is not cached in {$environment} environment",
-                    location: new Location('config', 1),
+                    location: new Location($configPath, 1),
                     severity: Severity::Medium,
                     recommendation: 'Configuration caching provides significant performance improvements. Add "php artisan config:cache" to your deployment script. This enables a performance improvement by reducing the number of files that need to be loaded and can improve bootstrap time by up to 50%.',
                     metadata: [
@@ -124,5 +137,21 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
         }
 
         return $this->passed("Configuration caching is properly configured for {$environment} environment");
+    }
+
+    /**
+     * Check if the environment is a development environment.
+     */
+    private function isDevelopmentEnvironment(string $environment): bool
+    {
+        return in_array($environment, ['local', 'development'], true);
+    }
+
+    /**
+     * Check if configuration should be cached in this environment.
+     */
+    private function shouldCacheConfig(string $environment): bool
+    {
+        return in_array($environment, ['production', 'staging'], true);
     }
 }

@@ -196,6 +196,46 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
+    public function test_fails_with_database_driver_in_production(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => 'database',
+                'stores' => [
+                    'database' => [
+                        'driver' => 'database',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Database cache driver', $result);
+    }
+
+    public function test_passes_with_database_driver_in_local(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'local',
+            ],
+            'cache' => [
+                'default' => 'database',
+                'stores' => [
+                    'database' => [
+                        'driver' => 'database',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_passes_with_memcached_driver(): void
     {
         $analyzer = $this->createAnalyzer([
@@ -212,6 +252,123 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    public function test_warns_with_apc_driver_in_production(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => 'apc',
+                'stores' => [
+                    'apc' => [
+                        'driver' => 'apc',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('APC cache driver', $result);
+    }
+
+    public function test_passes_with_apc_driver_in_local(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'local',
+            ],
+            'cache' => [
+                'default' => 'apc',
+                'stores' => [
+                    'apc' => [
+                        'driver' => 'apc',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_dynamodb_driver_when_configured(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => 'dynamodb',
+                'stores' => [
+                    'dynamodb' => [
+                        'driver' => 'dynamodb',
+                        'table' => 'cache_table',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_with_dynamodb_driver_without_table(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => 'dynamodb',
+                'stores' => [
+                    'dynamodb' => [
+                        'driver' => 'dynamodb',
+                        'table' => '',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('DynamoDB cache driver', $result);
+    }
+
+    public function test_warns_when_octane_driver_without_octane_support(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => 'octane',
+                'stores' => [
+                    'octane' => [
+                        'driver' => 'octane',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Octane cache driver', $result);
+    }
+
+    public function test_warns_for_unknown_driver(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'cache' => [
+                'default' => 'custom',
+                'stores' => [
+                    'custom' => [
+                        'driver' => 'custom',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('unsupported', $result);
     }
 
     protected function tearDown(): void

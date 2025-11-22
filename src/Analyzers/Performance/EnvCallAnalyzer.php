@@ -4,10 +4,22 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Performance;
 
+use PhpParser\Node\Expr\ConstFetch;
+use PhpParser\Node\Expr\StaticCall;
+use PhpParser\Node\Identifier;
+use PhpParser\Node\Name;
+use PhpParser\Node\Scalar\DNumber;
+use PhpParser\Node\Scalar\LNumber;
+use PhpParser\Node\Scalar\String_;
+use PhpParser\Node\Stmt\GroupUse;
+use PhpParser\Node\Stmt\Use_;
+use PhpParser\Node\Stmt\UseUse;
+use PhpParser\NodeFinder;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
@@ -30,9 +42,19 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
     use InspectsCode;
 
     /**
+     * Paths to search for env() calls.
+     */
+    private const SEARCH_PATHS = ['app', 'routes', 'database', 'resources/views'];
+
+    /**
+     * Path patterns to exclude from analysis.
+     */
+    private const EXCLUDE_PATHS = ['/config/', '/tests/', '/Tests/'];
+
+    /**
      * AST parser for static call detection.
      */
-    private \ShieldCI\AnalyzersCore\Support\AstParser $staticParser;
+    private ?AstParser $staticParser = null;
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -51,14 +73,16 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         // Find all env() function calls and Env::get() static calls, excluding config and test directories
+        $excludePaths = $this->getNormalizedExcludePaths();
+
         $envCalls = $this->findFunctionCalls(
             functionName: 'env',
-            paths: ['app', 'routes', 'database', 'resources/views'],
-            excludePaths: ['/config/', '/tests/', '/Tests/']
+            paths: self::SEARCH_PATHS,
+            excludePaths: $excludePaths
         );
 
         // Also find Env::get() static calls
-        $envStaticCalls = $this->findEnvStaticCalls();
+        $envStaticCalls = $this->findEnvStaticCalls($excludePaths);
 
         // Combine both types of calls
         $allCalls = array_merge($envCalls, $envStaticCalls);
@@ -71,9 +95,20 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
         $issues = [];
 
         foreach ($allCalls as $call) {
+            // Validate call structure
+            if (! isset($call['file'], $call['node'], $call['args'])) {
+                continue;
+            }
+
             $varName = $call['args'][0] ?? null;
             $filePath = $call['file'];
-            $line = $call['node']->getLine();
+            $node = $call['node'];
+
+            if (! $node instanceof \PhpParser\Node) {
+                continue;
+            }
+
+            $line = $node->getLine();
             $callType = $call['type'] ?? 'function';
 
             // Ensure varName is string|null for ConfigSuggester
@@ -104,32 +139,45 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Find Env::get() static calls outside configuration files.
-     *
-     * @return array<int, array{file: string, node: \PhpParser\Node\Expr\StaticCall, args: array<int, mixed>, type: string}>
+     * Get the static parser instance (lazy initialization).
      */
-    private function findEnvStaticCalls(): array
+    private function getStaticParser(): AstParser
     {
-        if (! isset($this->staticParser)) {
-            $this->staticParser = new \ShieldCI\AnalyzersCore\Support\AstParser;
+        if ($this->staticParser === null) {
+            $this->staticParser = new AstParser;
         }
 
+        return $this->staticParser;
+    }
+
+    /**
+     * Find Env::get() static calls outside configuration files.
+     *
+     * @return array<int, array{file: string, node: StaticCall, args: array<int, mixed>, type: string}>
+     */
+    /**
+     * @param  array<int, string>  $excludePaths
+     */
+    private function findEnvStaticCalls(array $excludePaths): array
+    {
         $results = [];
+        $parser = $this->getStaticParser();
 
         // Set paths to analyze
-        $this->setPaths(['app', 'routes', 'database', 'resources/views']);
+        $this->setPaths(self::SEARCH_PATHS);
 
         foreach ($this->getPhpFiles() as $file) {
             $filePath = $file instanceof \SplFileInfo ? $file->getPathname() : (string) $file;
 
             // Skip excluded paths (config and tests)
-            if ($this->shouldExcludeEnvFile($filePath)) {
+            if ($this->shouldExcludeEnvFile($filePath, $excludePaths)) {
                 continue;
             }
 
             try {
-                $ast = $this->staticParser->parseFile($filePath);
-                $calls = $this->findEnvStaticCallsInAst($ast);
+                $ast = $parser->parseFile($filePath);
+                $envClasses = $this->getEnvClassAliases($ast);
+                $calls = $this->findEnvStaticCallsInAst($ast, $envClasses);
 
                 foreach ($calls as $call) {
                     $results[] = [
@@ -152,31 +200,33 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
      * Find Env::get() static calls in AST.
      *
      * @param  array<\PhpParser\Node>  $ast
-     * @return array<int, \PhpParser\Node\Expr\StaticCall>
+     * @return array<int, StaticCall>
      */
-    private function findEnvStaticCallsInAst(array $ast): array
+    /**
+     * @param  array<int, string>  $envClasses
+     */
+    private function findEnvStaticCallsInAst(array $ast, array $envClasses): array
     {
-        $nodeFinder = new \PhpParser\NodeFinder;
-        $staticCalls = $nodeFinder->findInstanceOf($ast, \PhpParser\Node\Expr\StaticCall::class);
+        $nodeFinder = new NodeFinder;
+        $staticCalls = $nodeFinder->findInstanceOf($ast, StaticCall::class);
 
         $matches = [];
 
         foreach ($staticCalls as $staticCall) {
             // Check if it's Env::get() or \Illuminate\Support\Facades\Env::get()
             // Also handles use statements (e.g., use Illuminate\Support\Facades\Env; Env::get())
-            if ($staticCall->class instanceof \PhpParser\Node\Name) {
-                $className = $staticCall->class->toString();
+            if (! ($staticCall->class instanceof Name)) {
+                continue;
+            }
 
-                // Check for Env facade (handles both short name and fully qualified)
-                // Matches: Env, \Env, Illuminate\Support\Facades\Env, \Illuminate\Support\Facades\Env
-                // Note: PhpParser doesn't resolve use statements automatically, so we check both
-                $isEnv = $className === 'Env'
-                    || $className === 'Illuminate\Support\Facades\Env'
-                    || $className === '\Illuminate\Support\Facades\Env';
+            $className = ltrim($staticCall->class->toString(), '\\');
+            $isEnv = in_array($className, $envClasses, true);
 
-                if ($isEnv && $staticCall->name instanceof \PhpParser\Node\Identifier && $staticCall->name->toString() === 'get') {
-                    $matches[] = $staticCall;
-                }
+            if ($isEnv
+                && $staticCall->name instanceof Identifier
+                && $staticCall->name->toString() === 'get'
+            ) {
+                $matches[] = $staticCall;
             }
         }
 
@@ -188,7 +238,7 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
      *
      * @return array<int, mixed>
      */
-    private function extractStaticCallArguments(\PhpParser\Node\Expr\StaticCall $staticCall): array
+    private function extractStaticCallArguments(StaticCall $staticCall): array
     {
         $args = [];
 
@@ -204,15 +254,15 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
      */
     private function extractStaticArgumentValue(\PhpParser\Node $node): mixed
     {
-        if ($node instanceof \PhpParser\Node\Scalar\String_) {
+        if ($node instanceof String_) {
             return $node->value;
         }
 
-        if ($node instanceof \PhpParser\Node\Scalar\LNumber || $node instanceof \PhpParser\Node\Scalar\DNumber) {
+        if ($node instanceof LNumber || $node instanceof DNumber) {
             return $node->value;
         }
 
-        if ($node instanceof \PhpParser\Node\Expr\ConstFetch) {
+        if ($node instanceof ConstFetch) {
             return $node->name->toString();
         }
 
@@ -223,16 +273,90 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
     /**
      * Check if file should be excluded for env() detection.
      */
-    private function shouldExcludeEnvFile(string $filePath): bool
+    /**
+     * @param  array<int, string>|null  $excludePaths
+     */
+    protected function shouldExcludeEnvFile(string $filePath, ?array $excludePaths = null): bool
     {
-        $excludePaths = ['/config/', '/tests/', '/Tests/'];
-
-        foreach ($excludePaths as $excludePath) {
+        $paths = $excludePaths ?? $this->getNormalizedExcludePaths();
+        foreach ($paths as $excludePath) {
             if (str_contains($filePath, $excludePath)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * Normalize exclude paths for different directory separators.
+     *
+     * @return array<int, string>
+     */
+    private function getNormalizedExcludePaths(): array
+    {
+        $paths = [];
+
+        foreach (self::EXCLUDE_PATHS as $path) {
+            $paths[] = $path;
+            $windowsPath = str_replace('/', '\\', $path);
+            if ($windowsPath !== $path) {
+                $paths[] = $windowsPath;
+            }
+        }
+
+        return array_values(array_unique($paths));
+    }
+
+    /**
+     * @param  array<\PhpParser\Node>  $ast
+     * @return array<int, string>
+     */
+    private function getEnvClassAliases(array $ast): array
+    {
+        $aliases = ['Env', 'Illuminate\\Support\\Facades\\Env'];
+        $nodeFinder = new NodeFinder;
+
+        /** @var array<int, Use_> $useStatements */
+        $useStatements = $nodeFinder->findInstanceOf($ast, Use_::class);
+
+        foreach ($useStatements as $useStatement) {
+            /** @var array<int, UseUse> $useItems */
+            $useItems = $useStatement->uses;
+            $this->collectEnvAliasFromUses($useItems, $aliases);
+        }
+
+        /** @var array<int, GroupUse> $groupUses */
+        $groupUses = $nodeFinder->findInstanceOf($ast, GroupUse::class);
+
+        foreach ($groupUses as $groupUse) {
+            $prefix = ltrim($groupUse->prefix->toString(), '\\');
+            /** @var array<int, UseUse> $groupUseItems */
+            $groupUseItems = $groupUse->uses;
+            $this->collectEnvAliasFromUses($groupUseItems, $aliases, $prefix);
+        }
+
+        return array_values(array_unique($aliases));
+    }
+
+    /**
+     * @param  array<int, UseUse>  $uses
+     * @param  array<int, string>  $aliases
+     */
+    private function collectEnvAliasFromUses(array $uses, array &$aliases, ?string $prefix = null): void
+    {
+        foreach ($uses as $use) {
+            if (! $use instanceof UseUse) {
+                continue;
+            }
+
+            $name = ltrim($use->name->toString(), '\\');
+            $fullName = $prefix ? $prefix.'\\'.$name : $name;
+
+            if ($fullName === 'Illuminate\\Support\\Facades\\Env') {
+                $alias = $use->alias?->toString() ?? $use->name->getLast();
+                $aliases[] = $alias;
+            }
+        }
     }
 }

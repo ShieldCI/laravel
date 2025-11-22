@@ -69,7 +69,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
         }
 
         // Only run if vendor directory exists
-        $autoloadPath = $this->basePath.'/vendor/autoload.php';
+        $autoloadPath = $this->buildPath('vendor', 'autoload.php');
 
         return file_exists($autoloadPath);
     }
@@ -112,7 +112,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
                 ? 'Composer config enables "optimize-autoloader" but the generated autoload files are not optimized'
                 : "Composer autoloader is not optimized in {$environment} environment";
 
-            $composerJsonPath = $this->basePath.'/composer.json';
+            $composerJsonPath = $this->buildPath('composer.json');
             $configLine = $this->findConfigSectionLine($composerJsonPath);
 
             $issues[] = $this->createIssue(
@@ -137,7 +137,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
                 ? 'Composer config enables classmap authoritative mode but the generated autoload files are not authoritative'
                 : 'Composer autoloader could use authoritative classmap for better performance';
 
-            $composerJsonPath = $this->basePath.'/composer.json';
+            $composerJsonPath = $this->buildPath('composer.json');
             $configLine = $this->findConfigSectionLine($composerJsonPath);
 
             $issues[] = $this->createIssue(
@@ -168,7 +168,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
 
     private function isAutoloaderOptimized(): bool
     {
-        $classMapPath = $this->basePath.'/vendor/composer/autoload_classmap.php';
+        $classMapPath = $this->buildPath('vendor', 'composer', 'autoload_classmap.php');
 
         if (! file_exists($classMapPath)) {
             return false;
@@ -195,7 +195,8 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        $normalizedBasePath = rtrim($this->normalizePathString($this->basePath), '/');
+        $basePath = $this->getBasePath();
+        $normalizedBasePath = rtrim($this->normalizePathString($basePath), '/');
         $vendorPrefix = $normalizedBasePath.'/vendor/';
 
         foreach ($classMap as $path) {
@@ -264,7 +265,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
 
     private function isClassMapAuthoritative(): bool
     {
-        $autoloadRealPath = $this->basePath.'/vendor/composer/autoload_real.php';
+        $autoloadRealPath = $this->buildPath('vendor', 'composer', 'autoload_real.php');
 
         if (! file_exists($autoloadRealPath)) {
             return false;
@@ -285,7 +286,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
      */
     private function getComposerConfig(): array
     {
-        $composerPath = $this->basePath.'/composer.json';
+        $composerPath = $this->buildPath('composer.json');
 
         if (! file_exists($composerPath)) {
             return [];

@@ -175,9 +175,7 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
      */
     private function getCachedConfigPath(): string
     {
-        $basePath = $this->getValidBasePath();
-
-        return $basePath.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'cache'.DIRECTORY_SEPARATOR.'config.php';
+        return $this->buildPath('bootstrap', 'cache', 'config.php');
     }
 
     /**
@@ -185,7 +183,7 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
      */
     private function getAppConfigPath(): string
     {
-        $basePath = $this->getValidBasePath();
+        $basePath = $this->getBasePath();
 
         $configPath = ConfigFileHelper::getConfigPath(
             $basePath,
@@ -195,27 +193,9 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
 
         // Fallback if ConfigFileHelper returns empty string
         if ($configPath === '') {
-            return $basePath.DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'app.php';
+            return $this->buildPath('config', 'app.php');
         }
 
         return $configPath;
-    }
-
-    /**
-     * Get a valid base path with fallback.
-     */
-    private function getValidBasePath(): string
-    {
-        $basePath = $this->getBasePath();
-
-        if ($basePath === '') {
-            $basePath = function_exists('base_path') ? base_path() : getcwd();
-        }
-
-        if (! is_string($basePath) || $basePath === '') {
-            $basePath = getcwd();
-        }
-
-        return $basePath !== false ? $basePath : '.';
     }
 }

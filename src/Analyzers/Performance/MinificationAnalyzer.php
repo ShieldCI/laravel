@@ -33,6 +33,30 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
     public static bool $runInCI = false;
 
     /**
+     * Maximum line count for a file to be considered minified.
+     * Minified files typically have very few lines (1-5 for small files, maybe 10-15 for large ones).
+     */
+    private const MAX_LINE_COUNT_FOR_MINIFIED = 15;
+
+    /**
+     * Minimum average line length (in characters) for a file to be considered minified.
+     * Minified files typically have very long lines (> 500 chars on average).
+     */
+    private const MIN_AVG_LINE_LENGTH_FOR_MINIFIED = 500;
+
+    /**
+     * Maximum whitespace ratio (0.15 = 15%) for a file to be considered minified.
+     * Unminified files have more whitespace due to formatting.
+     */
+    private const MAX_WHITESPACE_RATIO_FOR_MINIFIED = 0.15;
+
+    /**
+     * Minimum file size (in bytes) to skip pattern analysis.
+     * Very small files (< 1KB) need pattern analysis instead of size-based checks.
+     */
+    private const MIN_FILE_SIZE_FOR_SIZE_CHECKS = 1024;
+
+    /**
      * This analyzer is only relevant in production and staging environments.
      *
      * Minification is a critical production optimization that reduces asset file sizes
@@ -97,8 +121,10 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         $publicPath = $this->getBuildPath();
 
         // Check for build directories
-        $hasMix = file_exists($publicPath.'/mix-manifest.json');
-        $hasVite = file_exists($publicPath.'/build/manifest.json');
+        $mixManifestPath = $this->joinPaths($publicPath, 'mix-manifest.json');
+        $viteManifestPath = $this->joinPaths($publicPath, 'build', 'manifest.json');
+        $hasMix = file_exists($mixManifestPath);
+        $hasVite = file_exists($viteManifestPath);
 
         if (! $hasMix && ! $hasVite) {
             // Check for standalone JS/CSS files
@@ -110,7 +136,8 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             }
 
             if ($hasVite) {
-                $this->checkViteAssets($publicPath.'/build', $issues);
+                $viteBuildPath = $this->joinPaths($publicPath, 'build');
+                $this->checkViteAssets($viteBuildPath, $issues);
             }
         }
 
@@ -126,29 +153,34 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
 
     private function checkStandaloneAssets(string $publicPath, array &$issues): void
     {
-        // Find JS and CSS files in public directory (excluding vendor)
-        $jsFiles = glob($publicPath.'/js/*.js');
-        $cssFiles = glob($publicPath.'/css/*.css');
-
-        // Handle glob() returning false on error
-        if ($jsFiles === false) {
-            $jsFiles = [];
-        }
-        if ($cssFiles === false) {
-            $cssFiles = [];
-        }
-
         $unminifiedFiles = [];
 
-        foreach (array_merge($jsFiles, $cssFiles) as $file) {
-            // Skip already minified files
-            if (str_contains($file, '.min.')) {
+        foreach (['js', 'css'] as $subDirectory) {
+            $directoryPath = $this->joinPaths($publicPath, $subDirectory);
+            if (! is_dir($directoryPath)) {
                 continue;
             }
 
-            // Check if file looks minified (has very long lines or very few lines)
-            if ($this->isUnminified($file)) {
-                $unminifiedFiles[] = $this->getRelativePath($file);
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($directoryPath, \RecursiveDirectoryIterator::SKIP_DOTS),
+                \RecursiveIteratorIterator::LEAVES_ONLY
+            );
+
+            /** @var \SplFileInfo $fileInfo */
+            foreach ($iterator as $fileInfo) {
+                if (! $fileInfo->isFile()) {
+                    continue;
+                }
+
+                $filePath = $fileInfo->getPathname();
+
+                if (str_contains($filePath, '.min.')) {
+                    continue;
+                }
+
+                if ($this->isUnminified($filePath)) {
+                    $unminifiedFiles[] = $this->getRelativePath($filePath);
+                }
             }
         }
 
@@ -168,7 +200,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
 
     private function checkMixAssets(string $publicPath, array &$issues): void
     {
-        $manifestPath = $publicPath.'/mix-manifest.json';
+        $manifestPath = $this->joinPaths($publicPath, 'mix-manifest.json');
         $manifestContent = FileParser::readFile($manifestPath);
 
         if ($manifestContent === null) {
@@ -194,17 +226,18 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $fullPath = $publicPath.$path;
-
-            // Remove query string for file check
-            $cleanedPath = preg_replace('/\?.*$/', '', $fullPath);
+            // Normalize path: remove leading slash and query string
+            $normalizedPath = ltrim($path, DIRECTORY_SEPARATOR.'/');
+            $normalizedPath = preg_replace('/\?.*$/', '', $normalizedPath);
 
             // Validate preg_replace() result
-            if (! is_string($cleanedPath)) {
-                $cleanedPath = $fullPath;
+            if (! is_string($normalizedPath)) {
+                $normalizedPath = ltrim($path, DIRECTORY_SEPARATOR.'/');
             }
 
-            if (file_exists($cleanedPath) && $this->isUnminified($cleanedPath)) {
+            $fullPath = $this->joinPaths($publicPath, $normalizedPath);
+
+            if (file_exists($fullPath) && $this->isUnminified($fullPath)) {
                 $unminifiedAssets[] = $path;
             }
         }
@@ -232,8 +265,11 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         // Vite assets should be minified by default in production builds
         // Check if there are suspiciously large files
         $largeAssets = [];
-        $jsFiles = glob($buildPath.'/assets/*.js');
-        $cssFiles = glob($buildPath.'/assets/*.css');
+        // Note: glob() works with forward slashes on all platforms
+        $jsPattern = str_replace('\\', '/', $buildPath).'/assets/*.js';
+        $cssPattern = str_replace('\\', '/', $buildPath).'/assets/*.css';
+        $jsFiles = glob($jsPattern);
+        $cssFiles = glob($cssPattern);
 
         // Handle glob() returning false on error
         if ($jsFiles === false) {
@@ -284,14 +320,14 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         $lineCount = count($lines);
 
         // Minified files typically have very few lines (usually 1-5 for small files, maybe 10-15 for large ones)
-        // Files with more than 15 lines are likely not minified (accounting for source maps and copyright notices)
-        if ($lineCount > 15) {
+        // Files with more than the threshold are likely not minified (accounting for source maps and copyright notices)
+        if ($lineCount > self::MAX_LINE_COUNT_FOR_MINIFIED) {
             return true;
         }
 
-        // Check file size - very small files (< 1KB) might need pattern analysis
+        // Check file size - very small files might need pattern analysis
         $fileSize = strlen($content);
-        if ($fileSize < 1024) {
+        if ($fileSize < self::MIN_FILE_SIZE_FOR_SIZE_CHECKS) {
             // For very small files, check if they have typical minification patterns
             // (e.g., single line, no whitespace, or very compact)
             return $this->hasUnminifiedPatterns($content);
@@ -300,17 +336,17 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         // Also check average line length - minified files have very long lines
         $avgLineLength = $lineCount > 0 ? $fileSize / $lineCount : 0;
 
-        // Minified files typically have average line length > 500 chars
+        // Minified files typically have average line length above the threshold
         // But also check for other indicators
-        if ($avgLineLength < 500) {
+        if ($avgLineLength < self::MIN_AVG_LINE_LENGTH_FOR_MINIFIED) {
             // Check for patterns that indicate unminified code
             return $this->hasUnminifiedPatterns($content);
         }
 
         // Check for excessive whitespace (unminified files have more whitespace)
         $whitespaceRatio = substr_count($content, ' ') / max($fileSize, 1);
-        if ($whitespaceRatio > 0.15) {
-            return true; // More than 15% whitespace suggests unminified
+        if ($whitespaceRatio > self::MAX_WHITESPACE_RATIO_FOR_MINIFIED) {
+            return true; // More than the threshold suggests unminified
         }
 
         // Check for newlines in the middle of statements (unminified code)
@@ -391,18 +427,58 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
      */
     private function getBuildPath(): string
     {
+        // Use $this->basePath if set (from setBasePath), otherwise use getBasePath()
+        $basePath = ! empty($this->basePath) ? $this->basePath : $this->getBasePath();
+
         try {
             $configPath = config('shieldci.build_path');
 
-            // If config returns a valid path that is within the base path, use it
-            if ($configPath && is_string($configPath) && str_starts_with($configPath, $this->basePath)) {
-                return $configPath;
+            if ($configPath && is_string($configPath)) {
+                $resolved = str_starts_with($configPath, DIRECTORY_SEPARATOR)
+                    ? $configPath
+                    : $this->joinPaths($basePath, $configPath);
+
+                $normalizedConfigPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $resolved);
+                $normalizedBasePath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $basePath);
+
+                if (str_starts_with($normalizedConfigPath, rtrim($normalizedBasePath, DIRECTORY_SEPARATOR))) {
+                    return $resolved;
+                }
             }
         } catch (\Throwable $e) {
             // Config not available (e.g., in tests), fall through to default
         }
 
         // Default to public directory under base path
-        return $this->basePath.'/public';
+        return $this->joinPaths($basePath, 'public');
+    }
+
+    /**
+     * Join path segments using DIRECTORY_SEPARATOR.
+     */
+    private function joinPaths(string ...$paths): string
+    {
+        $filtered = array_filter($paths, fn ($path) => $path !== '' && $path !== null);
+
+        if (empty($filtered)) {
+            return '';
+        }
+
+        // Normalize all path segments
+        $normalized = array_map(
+            fn ($path) => str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $path),
+            $filtered
+        );
+
+        // Remove trailing separators from all but the last segment
+        $normalized = array_map(
+            fn ($index, $path) => $index < count($normalized) - 1
+                ? rtrim($path, DIRECTORY_SEPARATOR)
+                : $path,
+            array_keys($normalized),
+            $normalized
+        );
+
+        return implode(DIRECTORY_SEPARATOR, $normalized);
     }
 }

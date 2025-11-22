@@ -187,6 +187,44 @@ CSS;
         $this->assertHasIssueContaining('Mix', $result);
     }
 
+    public function test_detects_nested_unminified_assets(): void
+    {
+        $unminifiedJs = str_repeat("function example() {\n    console.log('nested');\n}\n", 10);
+
+        $tempDir = $this->createTempDirectory([
+            'public/js/nested/app.js' => $unminifiedJs,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('unminified assets', $result);
+    }
+
+    public function test_honors_custom_build_path_configuration(): void
+    {
+        $unminifiedCss = "body {\n    color: blue;\n}\n";
+
+        $tempDir = $this->createTempDirectory([
+            'custom_build/css/app.css' => $unminifiedCss,
+        ]);
+
+        config(['shieldci.build_path' => 'custom_build']);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertTrue($analyzer->shouldRun());
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('unminified assets', $result);
+    }
+
     public function test_detects_vite_manifest_assets(): void
     {
         $unminifiedJs = str_repeat("function test() {\n    console.log('x');\n}\n", 10);

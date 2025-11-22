@@ -192,7 +192,7 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
         );
 
         // Fallback if ConfigFileHelper returns empty string
-        if ($configPath === '') {
+        if ($configPath === '' || ! file_exists($configPath)) {
             return $this->buildPath('config', 'app.php');
         }
 

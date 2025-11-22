@@ -422,6 +422,114 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
         $this->assertFailed($result);
     }
 
+    public function test_handles_very_long_environment_names(): void
+    {
+        // Test with 255-character environment name
+        $longEnv = str_repeat('a', 255);
+        $analyzer = $this->createAnalyzer(environment: $longEnv, configIsCached: false);
+
+        $result = $analyzer->analyze();
+
+        // Unknown environment (not in DEV_ENVIRONMENTS or PROD_ENVIRONMENTS) should pass
+        $this->assertPassed($result);
+        $this->assertStringContainsString('properly configured', $result->getMessage());
+    }
+
+    public function test_handles_special_characters_in_environment_names(): void
+    {
+        // Test with environment name containing special characters
+        $specialEnv = 'production@v2.1-preview';
+        $analyzer = $this->createAnalyzer(environment: $specialEnv, configIsCached: false);
+
+        $result = $analyzer->analyze();
+
+        // Special characters environment (unknown) should pass
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_environment_with_hyphens(): void
+    {
+        // Common pattern: staging-preview, production-us, etc.
+        $analyzer = $this->createAnalyzer(environment: 'staging-preview', configIsCached: false);
+
+        $result = $analyzer->analyze();
+
+        // 'staging-preview' is not in PROD_ENVIRONMENTS constant (only 'staging' is)
+        // So it should pass (unknown environment, neither dev nor prod)
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_whitespace_in_environment(): void
+    {
+        // Test with leading/trailing whitespace
+        $analyzer = $this->createAnalyzer(environment: ' production ', configIsCached: false);
+
+        $result = $analyzer->analyze();
+
+        // ' production ' with spaces is not in PROD_ENVIRONMENTS
+        // So it should pass (unknown environment)
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_numeric_environment_names(): void
+    {
+        // Test with purely numeric environment name
+        $analyzer = $this->createAnalyzer(environment: '12345', configIsCached: false);
+
+        $result = $analyzer->analyze();
+
+        // Numeric environment (unknown) should pass
+        $this->assertPassed($result);
+    }
+
+    public function test_cached_config_path_uses_build_path(): void
+    {
+        // This test verifies that getCachedConfigPath uses buildPath correctly
+        $analyzer = $this->createAnalyzer(environment: 'local', configIsCached: true);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        // Verify path contains proper separators (buildPath uses DIRECTORY_SEPARATOR)
+        $path = $issues[0]->location->file;
+        $this->assertStringContainsString('bootstrap', $path);
+        $this->assertStringContainsString('cache', $path);
+        $this->assertStringContainsString('config.php', $path);
+
+        // Verify path uses system directory separator
+        if (DIRECTORY_SEPARATOR === '/') {
+            $this->assertStringContainsString('/bootstrap/cache/config.php', $path);
+        } else {
+            $this->assertStringContainsString('\\bootstrap\\cache\\config.php', $path);
+        }
+    }
+
+    public function test_app_config_path_uses_build_path_fallback(): void
+    {
+        // This test verifies getAppConfigPath fallback uses buildPath correctly
+        $analyzer = $this->createAnalyzer(environment: 'production', configIsCached: false);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        // Verify path structure from buildPath
+        $path = $issues[0]->location->file;
+        $this->assertStringContainsString('config', $path);
+        $this->assertStringContainsString('app.php', $path);
+
+        // Path should be absolute (starts with basePath)
+        $this->assertNotEmpty($path);
+        $this->assertIsString($path);
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();

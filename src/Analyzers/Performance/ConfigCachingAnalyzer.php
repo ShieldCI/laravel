@@ -32,20 +32,6 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
      */
     public static bool $runInCI = false;
 
-    /**
-     * Development environments where config caching is not recommended.
-     *
-     * @var array<string>
-     */
-    private const DEV_ENVIRONMENTS = ['local', 'development', 'testing'];
-
-    /**
-     * Production environments where config caching is recommended.
-     *
-     * @var array<string>
-     */
-    private const PROD_ENVIRONMENTS = ['production', 'staging'];
-
     public function __construct(
         private Application $app,
         ConfigRepository $config
@@ -159,7 +145,7 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
      */
     private function isDevelopmentEnvironment(string $environment): bool
     {
-        return in_array(strtolower($environment), self::DEV_ENVIRONMENTS, true);
+        return in_array(strtolower($environment), ['local', 'development', 'testing'], true);
     }
 
     /**
@@ -167,7 +153,7 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
      */
     private function shouldCacheConfig(string $environment): bool
     {
-        return in_array(strtolower($environment), self::PROD_ENVIRONMENTS, true);
+        return in_array(strtolower($environment), ['production', 'staging'], true);
     }
 
     /**

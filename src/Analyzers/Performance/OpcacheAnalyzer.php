@@ -32,6 +32,31 @@ class OpcacheAnalyzer extends AbstractAnalyzer
     public static bool $runInCI = false;
 
     /**
+     * Minimum memory consumption in MB (recommended: 128MB+).
+     */
+    private const MIN_MEMORY_CONSUMPTION = 128;
+
+    /**
+     * Recommended memory consumption in MB for Laravel apps.
+     */
+    private const RECOMMENDED_MEMORY_CONSUMPTION = 256;
+
+    /**
+     * Minimum interned strings buffer in MB (recommended: 16MB+).
+     */
+    private const MIN_INTERNED_STRINGS_BUFFER = 16;
+
+    /**
+     * Minimum max accelerated files (recommended: 10000+).
+     */
+    private const MIN_MAX_ACCELERATED_FILES = 10000;
+
+    /**
+     * Recommended max accelerated files for Laravel apps.
+     */
+    private const RECOMMENDED_MAX_ACCELERATED_FILES = 20000;
+
+    /**
      * This analyzer is only relevant in production and staging environments.
      *
      * OPcache is a production optimization that caches compiled bytecode.
@@ -40,6 +65,16 @@ class OpcacheAnalyzer extends AbstractAnalyzer
      * @var array<string>
      */
     protected ?array $relevantEnvironments = ['production', 'staging'];
+
+    /**
+     * For testing, allow overriding relevant environments.
+     *
+     * @param  array<string>|null  $environments
+     */
+    public function setRelevantEnvironments(?array $environments): void
+    {
+        $this->relevantEnvironments = $environments;
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -72,13 +107,35 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         return 'Analyzer is not applicable in current context';
     }
 
+    /**
+     * For testing, allow overriding the opcache configuration.
+     *
+     * @param  array<string, mixed>|null  $configuration
+     */
+    public function setConfiguration(?array $configuration): void
+    {
+        $this->configurationOverride = $configuration;
+    }
+
+    /**
+     * For testing, allow overriding the extension check.
+     */
+    public function setExtensionLoaded(bool $loaded): void
+    {
+        $this->extensionLoadedOverride = $loaded;
+    }
+
+    private ?array $configurationOverride = null;
+
+    private ?bool $extensionLoadedOverride = null;
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
         $phpIniPath = $this->getPhpIniPath();
 
         // Check if OPcache extension is loaded
-        if (! extension_loaded('Zend OPcache')) {
+        if (! $this->isOpcacheLoaded()) {
             $issues[] = $this->createIssue(
                 message: 'OPcache extension is not loaded',
                 location: new Location($phpIniPath, 1),
@@ -94,7 +151,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         }
 
         // Check if OPcache is enabled
-        $opcacheConfig = function_exists('opcache_get_configuration') ? opcache_get_configuration() : null;
+        $opcacheConfig = $this->configurationOverride ?? (function_exists('opcache_get_configuration') ? opcache_get_configuration() : null);
 
         if ($opcacheConfig === false || ! is_array($opcacheConfig) || ! isset($opcacheConfig['directives']) || ! is_array($opcacheConfig['directives'])) {
             $issues[] = $this->createIssue(
@@ -109,7 +166,9 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         }
 
         // Check if OPcache is enabled
-        if (! isset($opcacheConfig['directives']['opcache.enable']) || ! $opcacheConfig['directives']['opcache.enable']) {
+        if (! isset($opcacheConfig['directives']['opcache.enable'])
+            || $opcacheConfig['directives']['opcache.enable'] !== true
+        ) {
             $issues[] = $this->createIssue(
                 message: 'OPcache is disabled',
                 location: new Location($phpIniPath, 1),
@@ -147,6 +206,15 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         return $phpIniPath !== false && is_string($phpIniPath) ? $phpIniPath : 'php.ini';
     }
 
+    private function isOpcacheLoaded(): bool
+    {
+        if ($this->extensionLoadedOverride !== null) {
+            return $this->extensionLoadedOverride;
+        }
+
+        return extension_loaded('Zend OPcache') || extension_loaded('opcache');
+    }
+
     /**
      * Check OPcache configuration for optimization opportunities.
      *
@@ -162,101 +230,220 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         $directives = $config['directives'];
 
         // Check opcache.validate_timestamps (should be 0 in production)
-        if (isset($directives['opcache.validate_timestamps']) && $directives['opcache.validate_timestamps'] === true) {
-            $currentValue = $directives['opcache.validate_timestamps'];
+        $this->checkValidateTimestamps($directives, $issues, $phpIniPath);
+
+        // Check opcache.memory_consumption (recommended: 128MB+)
+        $this->checkMemoryConsumption($directives, $issues, $phpIniPath);
+
+        // Check opcache.interned_strings_buffer (recommended: 16MB+)
+        $this->checkInternedStringsBuffer($directives, $issues, $phpIniPath);
+
+        // Check opcache.max_accelerated_files (recommended: 10000+)
+        $this->checkMaxAcceleratedFiles($directives, $issues, $phpIniPath);
+
+        // Check opcache.revalidate_freq (should be 0 in production when validate_timestamps=0)
+        $this->checkRevalidateFreq($directives, $issues, $phpIniPath);
+
+        // Check opcache.fast_shutdown (should be 1 for better performance)
+        $this->checkFastShutdown($directives, $issues, $phpIniPath);
+    }
+
+    /**
+     * Check opcache.validate_timestamps setting.
+     *
+     * @param  array<string, mixed>  $directives
+     * @param  array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
+    private function checkValidateTimestamps(array $directives, array &$issues, string $phpIniPath): void
+    {
+        if (! isset($directives['opcache.validate_timestamps']) || $directives['opcache.validate_timestamps'] !== true) {
+            return;
+        }
+
+        $currentValue = $directives['opcache.validate_timestamps'];
+        $issues[] = $this->createIssue(
+            message: 'opcache.validate_timestamps is enabled in production',
+            location: new Location($phpIniPath, 1),
+            severity: Severity::Low,
+            recommendation: 'Set "opcache.validate_timestamps=0" in production for maximum performance. This disables checking for file changes on every request. You\'ll need to restart PHP after code changes.',
+            metadata: [
+                'current_value' => $currentValue,
+                'recommended_value' => 0,
+            ]
+        );
+    }
+
+    /**
+     * Check opcache.memory_consumption setting.
+     *
+     * @param  array<string, mixed>  $directives
+     * @param  array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
+    private function checkMemoryConsumption(array $directives, array &$issues, string $phpIniPath): void
+    {
+        if (! isset($directives['opcache.memory_consumption']) || ! is_numeric($directives['opcache.memory_consumption'])) {
+            return;
+        }
+
+        $memoryConsumption = (int) $directives['opcache.memory_consumption'];
+
+        if ($memoryConsumption >= 0 && $memoryConsumption < self::MIN_MEMORY_CONSUMPTION) {
             $issues[] = $this->createIssue(
-                message: 'opcache.validate_timestamps is enabled in production',
+                message: 'OPcache memory consumption is low',
                 location: new Location($phpIniPath, 1),
                 severity: Severity::Low,
-                recommendation: 'Set "opcache.validate_timestamps=0" in production for maximum performance. This disables checking for file changes on every request. You\'ll need to restart PHP after code changes.',
+                recommendation: sprintf(
+                    'Increase "opcache.memory_consumption" to at least %dMB (recommended: %dMB for Laravel apps). Current: %dMB. This ensures all your application code can be cached.',
+                    self::MIN_MEMORY_CONSUMPTION,
+                    self::RECOMMENDED_MEMORY_CONSUMPTION,
+                    $memoryConsumption
+                ),
                 metadata: [
-                    'current_value' => $currentValue,
+                    'current_value' => $memoryConsumption,
+                    'recommended_value' => self::RECOMMENDED_MEMORY_CONSUMPTION,
+                ]
+            );
+        }
+    }
+
+    /**
+     * Check opcache.interned_strings_buffer setting.
+     *
+     * @param  array<string, mixed>  $directives
+     * @param  array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
+    private function checkInternedStringsBuffer(array $directives, array &$issues, string $phpIniPath): void
+    {
+        if (! isset($directives['opcache.interned_strings_buffer']) || ! is_numeric($directives['opcache.interned_strings_buffer'])) {
+            return;
+        }
+
+        $internedStringsBuffer = (int) $directives['opcache.interned_strings_buffer'];
+
+        if ($internedStringsBuffer >= 0 && $internedStringsBuffer < self::MIN_INTERNED_STRINGS_BUFFER) {
+            $issues[] = $this->createIssue(
+                message: 'OPcache interned strings buffer is low',
+                location: new Location($phpIniPath, 1),
+                severity: Severity::Low,
+                recommendation: sprintf(
+                    'Increase "opcache.interned_strings_buffer" to at least %dMB. Current: %dMB. This caches common strings and improves memory efficiency.',
+                    self::MIN_INTERNED_STRINGS_BUFFER,
+                    $internedStringsBuffer
+                ),
+                metadata: [
+                    'current_value' => $internedStringsBuffer,
+                    'recommended_value' => self::MIN_INTERNED_STRINGS_BUFFER,
+                ]
+            );
+        }
+    }
+
+    /**
+     * Check opcache.max_accelerated_files setting.
+     *
+     * @param  array<string, mixed>  $directives
+     * @param  array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
+    private function checkMaxAcceleratedFiles(array $directives, array &$issues, string $phpIniPath): void
+    {
+        if (! isset($directives['opcache.max_accelerated_files']) || ! is_numeric($directives['opcache.max_accelerated_files'])) {
+            return;
+        }
+
+        $maxAcceleratedFiles = (int) $directives['opcache.max_accelerated_files'];
+
+        if ($maxAcceleratedFiles >= 0 && $maxAcceleratedFiles < self::MIN_MAX_ACCELERATED_FILES) {
+            $issues[] = $this->createIssue(
+                message: 'OPcache max accelerated files is low',
+                location: new Location($phpIniPath, 1),
+                severity: Severity::Low,
+                recommendation: sprintf(
+                    'Increase "opcache.max_accelerated_files" to at least %d (recommended: %d for Laravel apps). Current: %d. This ensures all your application files can be cached.',
+                    self::MIN_MAX_ACCELERATED_FILES,
+                    self::RECOMMENDED_MAX_ACCELERATED_FILES,
+                    $maxAcceleratedFiles
+                ),
+                metadata: [
+                    'current_value' => $maxAcceleratedFiles,
+                    'recommended_value' => self::RECOMMENDED_MAX_ACCELERATED_FILES,
+                ]
+            );
+        }
+    }
+
+    /**
+     * Check opcache.revalidate_freq setting.
+     *
+     * @param  array<string, mixed>  $directives
+     * @param  array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
+    private function checkRevalidateFreq(array $directives, array &$issues, string $phpIniPath): void
+    {
+        if (! isset($directives['opcache.revalidate_freq']) || ! is_numeric($directives['opcache.revalidate_freq'])) {
+            return;
+        }
+
+        $revalidateFreq = (int) $directives['opcache.revalidate_freq'];
+
+        if ($revalidateFreq > 0
+            && isset($directives['opcache.validate_timestamps'])
+            && $directives['opcache.validate_timestamps'] === false
+        ) {
+            $issues[] = $this->createIssue(
+                message: 'opcache.revalidate_freq should be 0 when validate_timestamps is disabled',
+                location: new Location($phpIniPath, 1),
+                severity: Severity::Low,
+                recommendation: sprintf(
+                    'Set "opcache.revalidate_freq=0" when "opcache.validate_timestamps=0" for maximum performance. Current: %d seconds.',
+                    $revalidateFreq
+                ),
+                metadata: [
+                    'current_value' => $revalidateFreq,
                     'recommended_value' => 0,
                 ]
             );
         }
+    }
 
-        // Check opcache.memory_consumption (recommended: 128MB+)
-        if (isset($directives['opcache.memory_consumption']) && is_numeric($directives['opcache.memory_consumption'])) {
-            $memoryConsumption = (int) $directives['opcache.memory_consumption'];
-            if ($memoryConsumption < 128) {
-                $issues[] = $this->createIssue(
-                    message: 'OPcache memory consumption is low',
-                    location: new Location($phpIniPath, 1),
-                    severity: Severity::Low,
-                    recommendation: 'Increase "opcache.memory_consumption" to at least 128MB (recommended: 256MB for Laravel apps). Current: '.$memoryConsumption.'MB. This ensures all your application code can be cached.',
-                    metadata: [
-                        'current_value' => $memoryConsumption,
-                        'recommended_value' => 256,
-                    ]
-                );
-            }
+    /**
+     * Check opcache.fast_shutdown setting.
+     *
+     * @param  array<string, mixed>  $directives
+     * @param  array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
+    private function checkFastShutdown(array $directives, array &$issues, string $phpIniPath): void
+    {
+        if (! isset($directives['opcache.fast_shutdown']) || $directives['opcache.fast_shutdown'] === true) {
+            return;
         }
 
-        // Check opcache.interned_strings_buffer (recommended: 16MB+)
-        if (isset($directives['opcache.interned_strings_buffer']) && is_numeric($directives['opcache.interned_strings_buffer'])) {
-            $internedStringsBuffer = (int) $directives['opcache.interned_strings_buffer'];
-            if ($internedStringsBuffer < 16) {
-                $issues[] = $this->createIssue(
-                    message: 'OPcache interned strings buffer is low',
-                    location: new Location($phpIniPath, 1),
-                    severity: Severity::Low,
-                    recommendation: 'Increase "opcache.interned_strings_buffer" to at least 16MB. Current: '.$internedStringsBuffer.'MB. This caches common strings and improves memory efficiency.',
-                    metadata: [
-                        'current_value' => $internedStringsBuffer,
-                        'recommended_value' => 16,
-                    ]
-                );
-            }
+        $currentValue = $directives['opcache.fast_shutdown'];
+        // At this point, we know:
+        // - isset() returned true, so value is NOT null
+        // - value !== true (filtered by early return)
+        // Therefore: $currentValue can be false, int, float, string, array, object, or resource
+        if (is_bool($currentValue)) {
+            $currentValueString = '0'; // Must be false since true was filtered out
+        } elseif (is_scalar($currentValue)) {
+            // Handles int, float, string (bool already handled above)
+            $currentValueString = (string) $currentValue;
+        } else {
+            // Handle arrays, objects, resources, etc.
+            $currentValueString = 'invalid value';
         }
 
-        // Check opcache.max_accelerated_files (recommended: 10000+)
-        if (isset($directives['opcache.max_accelerated_files']) && is_numeric($directives['opcache.max_accelerated_files'])) {
-            $maxAcceleratedFiles = (int) $directives['opcache.max_accelerated_files'];
-            if ($maxAcceleratedFiles < 10000) {
-                $issues[] = $this->createIssue(
-                    message: 'OPcache max accelerated files is low',
-                    location: new Location($phpIniPath, 1),
-                    severity: Severity::Low,
-                    recommendation: 'Increase "opcache.max_accelerated_files" to at least 10000 (recommended: 20000 for Laravel apps). Current: '.$maxAcceleratedFiles.'. This ensures all your application files can be cached.',
-                    metadata: [
-                        'current_value' => $maxAcceleratedFiles,
-                        'recommended_value' => 20000,
-                    ]
-                );
-            }
-        }
-
-        // Check opcache.revalidate_freq (should be 0 in production when validate_timestamps=0)
-        if (isset($directives['opcache.revalidate_freq']) && is_numeric($directives['opcache.revalidate_freq'])) {
-            $revalidateFreq = (int) $directives['opcache.revalidate_freq'];
-            if ($revalidateFreq > 0 && isset($directives['opcache.validate_timestamps']) && $directives['opcache.validate_timestamps'] === false) {
-                $issues[] = $this->createIssue(
-                    message: 'opcache.revalidate_freq should be 0 when validate_timestamps is disabled',
-                    location: new Location($phpIniPath, 1),
-                    severity: Severity::Low,
-                    recommendation: 'Set "opcache.revalidate_freq=0" when "opcache.validate_timestamps=0" for maximum performance. Current: '.$revalidateFreq.' seconds.',
-                    metadata: [
-                        'current_value' => $revalidateFreq,
-                        'recommended_value' => 0,
-                    ]
-                );
-            }
-        }
-
-        // Check opcache.fast_shutdown (should be 1 for better performance)
-        if (isset($directives['opcache.fast_shutdown']) && $directives['opcache.fast_shutdown'] !== true) {
-            $currentValue = $directives['opcache.fast_shutdown'];
-            $issues[] = $this->createIssue(
-                message: 'opcache.fast_shutdown is disabled',
-                location: new Location($phpIniPath, 1),
-                severity: Severity::Low,
-                recommendation: 'Enable "opcache.fast_shutdown=1" for faster PHP shutdown and better performance. Current: '.($currentValue ? '1' : '0').'.',
-                metadata: [
-                    'current_value' => $currentValue,
-                    'recommended_value' => 1,
-                ]
-            );
-        }
+        $issues[] = $this->createIssue(
+            message: 'opcache.fast_shutdown is disabled',
+            location: new Location($phpIniPath, 1),
+            severity: Severity::Low,
+            recommendation: sprintf(
+                'Enable "opcache.fast_shutdown=1" for faster PHP shutdown and better performance. Current: %s.',
+                $currentValueString
+            ),
+            metadata: [
+                'current_value' => $currentValue,
+                'recommended_value' => 1,
+            ]
+        );
     }
 }

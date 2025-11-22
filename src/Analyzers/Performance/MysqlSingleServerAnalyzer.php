@@ -194,9 +194,13 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
         // All of these indicate local connections that could use Unix sockets
         if ($this->isLocalhostConnection($host) && $this->isEmptySocket($unixSocket)) {
             $severity = $connectionName === $defaultConnection ? Severity::Medium : Severity::Low;
-            $basePath = $this->getBasePath();
-            $configFile = ConfigFileHelper::getConfigPath($basePath, 'database.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+            $configFile = $this->getDatabaseConfigPath();
             $lineNumber = ConfigFileHelper::findKeyLine($configFile, $connectionName, 'connections');
+
+            // Ensure valid line number (fallback to 1 if invalid)
+            if ($lineNumber < 1) {
+                $lineNumber = 1;
+            }
 
             return $this->createIssue(
                 message: "MySQL connection '{$connectionName}' uses TCP on localhost instead of Unix socket",
@@ -222,9 +226,13 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
      */
     private function getConnectionHost(array $connection): string
     {
+        $urlHost = $this->parseUrlHost($connection['url'] ?? null);
+        if ($urlHost !== null && $urlHost !== '') {
+            return $urlHost;
+        }
+
         $host = $connection['host'] ?? null;
 
-        // Handle both string and null values
         if (! is_string($host)) {
             return '';
         }
@@ -239,9 +247,13 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
      */
     private function getConnectionUnixSocket(array $connection): string
     {
+        $urlSocket = $this->parseUrlSocket($connection['url'] ?? null);
+        if ($urlSocket !== null && $urlSocket !== '') {
+            return $urlSocket;
+        }
+
         $socket = $connection['unix_socket'] ?? null;
 
-        // Handle both string and null values
         if (! is_string($socket)) {
             return '';
         }
@@ -268,7 +280,61 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
      */
     private function isEmptySocket(string $socket): bool
     {
-        return $socket === '';
+        return trim($socket) === '';
+    }
+
+    private function parseUrlHost(mixed $url): ?string
+    {
+        if (! is_string($url) || $url === '') {
+            return null;
+        }
+
+        $parts = parse_url($url);
+        if (! is_array($parts)) {
+            return null;
+        }
+
+        $host = $parts['host'] ?? null;
+
+        return is_string($host) ? $host : null;
+    }
+
+    private function parseUrlSocket(mixed $url): ?string
+    {
+        if (! is_string($url) || $url === '') {
+            return null;
+        }
+
+        $parts = parse_url($url);
+        if (! is_array($parts)) {
+            return null;
+        }
+
+        if (! empty($parts['path']) && str_contains((string) $parts['path'], '.sock')) {
+            return (string) $parts['path'];
+        }
+
+        return null;
+    }
+
+    /**
+     * Get the path to the database configuration file.
+     */
+    private function getDatabaseConfigPath(): string
+    {
+        $basePath = $this->getBasePath();
+        $configFile = ConfigFileHelper::getConfigPath(
+            $basePath,
+            'database.php',
+            fn ($file) => function_exists('config_path') ? config_path($file) : null
+        );
+
+        // Validate config file exists, fallback to default path if not
+        if (! file_exists($configFile)) {
+            $configFile = $basePath ? rtrim($basePath, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'database.php' : 'config/database.php';
+        }
+
+        return $configFile;
     }
 
     /**
@@ -276,9 +342,12 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
      */
     private function getRecommendation(string $connectionName): string
     {
-        return 'When MySQL runs on the same server as your application, use Unix sockets instead of TCP for up to 50% performance improvement (Percona benchmark). '.
-               "Add 'unix_socket' => env('DB_SOCKET', '/var/run/mysqld/mysqld.sock') to the '{$connectionName}' connection config, ".
-               'then set DB_SOCKET in your .env file with the path to your MySQL socket file. Common paths: '.
-               '/var/run/mysqld/mysqld.sock (Ubuntu/Debian), /tmp/mysql.sock (macOS), /var/lib/mysql/mysql.sock (RHEL/CentOS).';
+        return sprintf(
+            'When MySQL runs on the same server as your application, use Unix sockets instead of TCP for up to 50%% performance improvement (Percona benchmark). '.
+            "Add 'unix_socket' => env('DB_SOCKET', '/var/run/mysqld/mysqld.sock') to the '%s' connection config, ".
+            'then set DB_SOCKET in your .env file with the path to your MySQL socket file. Common paths: '.
+            '/var/run/mysqld/mysqld.sock (Ubuntu/Debian), /tmp/mysql.sock (macOS), /var/lib/mysql/mysql.sock (RHEL/CentOS).',
+            $connectionName
+        );
     }
 }

@@ -144,6 +144,45 @@ class MysqlSingleServerAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
+    public function test_passes_when_using_remote_url_connection(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'database' => [
+                'connections' => [
+                    'mysql' => [
+                        'driver' => 'mysql',
+                        'host' => '',
+                        'url' => 'mysql://user:pass@db.example.com:3306/database',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_warns_when_url_points_to_localhost_without_socket(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'database' => [
+                'connections' => [
+                    'mysql' => [
+                        'driver' => 'mysql',
+                        'host' => '',
+                        'url' => 'mysql://user:pass@localhost:3306/database',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('Unix socket', $result);
+    }
+
     public function test_checks_multiple_connections(): void
     {
         $analyzer = $this->createAnalyzer([

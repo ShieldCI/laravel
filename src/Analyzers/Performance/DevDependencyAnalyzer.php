@@ -73,8 +73,7 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
         }
 
         // Check other conditions
-        $basePath = $this->getBasePath();
-        $composerJsonPath = $basePath.DIRECTORY_SEPARATOR.'composer.json';
+        $composerJsonPath = $this->buildPath('composer.json');
 
         return file_exists($composerJsonPath);
     }
@@ -94,10 +93,9 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
-        $basePath = $this->getBasePath();
 
-        $composerJsonPath = $basePath.DIRECTORY_SEPARATOR.'composer.json';
-        $composerLockPath = $basePath.DIRECTORY_SEPARATOR.'composer.lock';
+        $composerJsonPath = $this->buildPath('composer.json');
+        $composerLockPath = $this->buildPath('composer.lock');
 
         // Check 1: Verify composer.lock exists (critical for production)
         if (! file_exists($composerLockPath)) {
@@ -187,9 +185,10 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
         // More robust pattern matching for different Composer versions
         // Matches: "- Removing", "- would remove", "Removing package/name"
         // Pattern matches standard Composer output format: "package/vendor" format
-        if (preg_match('/-\s+(Removing|would\s+remove)\s+([a-z0-9\-_]+\/[a-z0-9\-_]+)/i', $output)) {
+        // Updated to support dots in package names (e.g., symfony/polyfill-php8.0)
+        if (preg_match('/-\s+(Removing|would\s+remove)\s+([a-z0-9\-_.]+\/[a-z0-9\-_.]+)/i', $output)) {
             // Extract package names for better reporting
-            preg_match_all('/-\s+(Removing|would\s+remove)\s+([a-z0-9\-_]+\/[a-z0-9\-_]+)/i', $output, $allMatches);
+            preg_match_all('/-\s+(Removing|would\s+remove)\s+([a-z0-9\-_.]+\/[a-z0-9\-_.]+)/i', $output, $allMatches);
             /** @var array<int, string> $packageNames */
             $packageNames = $allMatches[2];
             $removedPackages = array_slice($packageNames, 0, 10);
@@ -262,10 +261,8 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
      */
     private function checkViaFileSystem(string $composerJsonPath): ?Issue
     {
-        $basePath = $this->getBasePath();
-
         // Check if vendor directory exists first
-        $vendorPath = $basePath.DIRECTORY_SEPARATOR.'vendor';
+        $vendorPath = $this->buildPath('vendor');
         if (! file_exists($vendorPath) || ! is_dir($vendorPath)) {
             // No vendor directory means no packages installed at all
             return null;
@@ -317,8 +314,7 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
      */
     private function getDevPackagesFromLock(): ?array
     {
-        $basePath = $this->getBasePath();
-        $lockPath = $basePath.DIRECTORY_SEPARATOR.'composer.lock';
+        $lockPath = $this->buildPath('composer.lock');
 
         if (! file_exists($lockPath)) {
             return null;

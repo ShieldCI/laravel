@@ -33,11 +33,6 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
      */
     public static bool $runInCI = false;
 
-    /**
-     * The search pattern used to identify collection call issues in PHPStan output.
-     */
-    private const COLLECTION_CALL_PATTERN = 'could have been retrieved as a query';
-
     private PHPStan $phpStan;
 
     public function __construct(PHPStan $phpStan)
@@ -97,7 +92,7 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             // Larastan reports these with "could have been retrieved as a query"
             $this->parsePHPStanAnalysis(
                 $this->phpStan,
-                self::COLLECTION_CALL_PATTERN,
+                'could have been retrieved as a query',
                 $issues
             );
         } catch (\Throwable $e) {

@@ -181,8 +181,30 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
         $this->assertNotEmpty($issues);
         // Lower severity in local
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
-        $this->assertStringContainsString('acceptable for local', $issues[0]->recommendation);
+        $this->assertStringContainsString('acceptable for development', $issues[0]->recommendation);
         $this->assertEquals('local', $issues[0]->metadata['environment'] ?? '');
+    }
+
+    public function test_passes_about_sync_driver_in_testing(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'testing',
+            ],
+            'queue' => [
+                'default' => 'sync',
+                'connections' => [
+                    'sync' => [
+                        'driver' => 'sync',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString('testing environment', $result->getMessage());
     }
 
     public function test_warns_about_database_driver_in_production(): void
@@ -236,6 +258,34 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
+    public function test_passes_with_database_driver_in_testing(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'app' => [
+                'env' => 'testing',
+            ],
+            'queue' => [
+                'default' => 'database',
+                'connections' => [
+                    'database' => [
+                        'driver' => 'database',
+                        'table' => 'jobs',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('database', $result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
+        $this->assertEquals('testing', $issues[0]->metadata['environment'] ?? '');
+    }
+
     public function test_fails_when_connection_not_defined(): void
     {
         $analyzer = $this->createAnalyzer([
@@ -257,6 +307,48 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
         $this->assertEquals('nonexistent', $issues[0]->metadata['connection'] ?? '');
+    }
+
+    public function test_fails_when_default_connection_is_not_string(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'queue' => [
+                'default' => 123,
+                'connections' => [
+                    'redis' => [
+                        'driver' => 'redis',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('default connection is not configured', $result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertSame(123, $issues[0]->metadata['connection'] ?? null);
+    }
+
+    public function test_errors_when_driver_is_not_string(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'queue' => [
+                'default' => 'redis',
+                'connections' => [
+                    'redis' => [
+                        'driver' => ['not-a-string'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertError($result);
+        $this->assertStringContainsString('driver is not a string', $result->getMessage());
     }
 
     public function test_skips_when_queue_config_not_found(): void

@@ -139,6 +139,289 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
         $this->assertFalse(ConfigCachingAnalyzer::$runInCI);
     }
 
+    public function test_fails_when_config_cached_in_development(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'development', configIsCached: true);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('cached in development', $result);
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertEquals('development', $issues[0]->metadata['environment'] ?? '');
+    }
+
+    public function test_fails_when_config_cached_in_testing(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'testing', configIsCached: true);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('cached in testing', $result);
+    }
+
+    public function test_passes_when_config_not_cached_in_development(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'development', configIsCached: false);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_config_not_cached_in_testing(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'testing', configIsCached: false);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_config_cached_in_staging(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'staging', configIsCached: true);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_unknown_environment(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'qa', configIsCached: false);
+
+        $result = $analyzer->analyze();
+
+        // Unknown environments should pass (neither dev nor prod)
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_case_insensitive_production_environment(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'Production', configIsCached: false);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because 'Production' (case-insensitive) is not cached
+        $this->assertFailed($result);
+    }
+
+    public function test_handles_case_insensitive_local_environment(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'Local', configIsCached: true);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because 'Local' (case-insensitive) is cached
+        $this->assertFailed($result);
+    }
+
+    public function test_handles_empty_environment(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: '', configIsCached: false);
+
+        $result = $analyzer->analyze();
+
+        // When environment is empty, parent AbstractAnalyzer defaults to 'production'
+        // So this fails because production is not cached
+        $this->assertFailed($result);
+        $this->assertStringContainsString('not cached', $result->getMessage());
+    }
+
+    public function test_handles_configuration_is_cached_exception(): void
+    {
+        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        $config = Mockery::mock(ConfigRepository::class);
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('app.env', Mockery::any())
+            ->andReturn('production');
+
+        /** @var Application&CachesConfiguration&\Mockery\MockInterface $app */
+        $app = Mockery::mock(Application::class.', '.CachesConfiguration::class);
+
+        /** @phpstan-ignore-next-line */
+        $app->shouldReceive('configurationIsCached')
+            ->andThrow(new \RuntimeException('Cache check failed'));
+
+        $analyzer = new ConfigCachingAnalyzer($app, $config);
+
+        $result = $analyzer->analyze();
+
+        $this->assertError($result);
+        $this->assertStringContainsString('Failed to check configuration cache status', $result->getMessage());
+        $this->assertStringContainsString('Cache check failed', $result->getMessage());
+    }
+
+    public function test_recommendation_contains_config_clear_command_for_dev(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'local', configIsCached: true);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertStringContainsString('php artisan config:clear', $issues[0]->recommendation);
+    }
+
+    public function test_recommendation_contains_config_cache_command_for_production(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'production', configIsCached: false);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertStringContainsString('php artisan config:cache', $issues[0]->recommendation);
+    }
+
+    public function test_issue_location_points_to_cached_config_file_for_dev(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'local', configIsCached: true);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertStringContainsString('bootstrap', $issues[0]->location->file);
+        $this->assertStringContainsString('cache', $issues[0]->location->file);
+        $this->assertStringContainsString('config.php', $issues[0]->location->file);
+    }
+
+    public function test_issue_location_points_to_app_config_for_production(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'production', configIsCached: false);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertStringContainsString('config', $issues[0]->location->file);
+        $this->assertStringContainsString('app.php', $issues[0]->location->file);
+    }
+
+    public function test_issue_has_correct_severity(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'production', configIsCached: false);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+    }
+
+    public function test_creates_exactly_one_issue_for_dev_environment(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'local', configIsCached: true);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+    }
+
+    public function test_creates_exactly_one_issue_for_production_environment(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'production', configIsCached: false);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+    }
+
+    public function test_metadata_includes_cached_status_true(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'local', configIsCached: true);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertTrue($issues[0]->metadata['cached'] ?? false);
+    }
+
+    public function test_metadata_includes_cached_status_false(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'production', configIsCached: false);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertFalse($issues[0]->metadata['cached'] ?? true);
+    }
+
+    public function test_skip_reason_mentions_caches_configuration_interface(): void
+    {
+        /** @var Application&\Mockery\MockInterface $app */
+        $app = Mockery::mock(Application::class);
+
+        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        $config = Mockery::mock(ConfigRepository::class);
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')->andReturn('production');
+
+        $analyzer = new ConfigCachingAnalyzer($app, $config);
+
+        $skipReason = $analyzer->getSkipReason();
+
+        $this->assertStringContainsString('CachesConfiguration', $skipReason);
+    }
+
+    public function test_multiple_consecutive_runs_produce_same_result(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'production', configIsCached: false);
+
+        $result1 = $analyzer->analyze();
+        $result2 = $analyzer->analyze();
+
+        $this->assertEquals($result1->getMessage(), $result2->getMessage());
+        $this->assertEquals($result1->getStatus(), $result2->getStatus());
+    }
+
+    public function test_handles_uppercase_staging_environment(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'STAGING', configIsCached: false);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because STAGING (case-insensitive) is not cached
+        $this->assertFailed($result);
+    }
+
+    public function test_handles_mixed_case_development_environment(): void
+    {
+        $analyzer = $this->createAnalyzer(environment: 'Development', configIsCached: true);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because Development (case-insensitive) is cached
+        $this->assertFailed($result);
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();

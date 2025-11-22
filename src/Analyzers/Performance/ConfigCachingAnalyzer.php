@@ -32,6 +32,20 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
      */
     public static bool $runInCI = false;
 
+    /**
+     * Development environments where config caching is not recommended.
+     *
+     * @var array<string>
+     */
+    private const DEV_ENVIRONMENTS = ['local', 'development', 'testing'];
+
+    /**
+     * Production environments where config caching is recommended.
+     *
+     * @var array<string>
+     */
+    private const PROD_ENVIRONMENTS = ['production', 'staging'];
+
     public function __construct(
         private Application $app,
         ConfigRepository $config
@@ -84,16 +98,22 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
     {
         $environment = $this->getEnvironment();
 
+        // Type assertion for PHPStan
         if (! ($this->app instanceof CachesConfiguration)) {
             return $this->error('Application does not implement CachesConfiguration interface');
         }
 
-        $configIsCached = $this->app->configurationIsCached();
+        try {
+            $configIsCached = $this->app->configurationIsCached();
+        } catch (\Throwable $e) {
+            return $this->error(
+                sprintf('Failed to check configuration cache status: %s', $e->getMessage())
+            );
+        }
 
         // Config cached in local/development environment - not recommended
         if ($this->isDevelopmentEnvironment($environment) && $configIsCached) {
-            $basePath = $this->getBasePath();
-            $configPath = $basePath.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'cache'.DIRECTORY_SEPARATOR.'config.php';
+            $configPath = $this->getCachedConfigPath();
 
             return $this->failed(
                 "Configuration is cached in {$environment} environment",
@@ -113,12 +133,7 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
 
         // Config not cached in production/staging - performance issue
         if ($this->shouldCacheConfig($environment) && ! $configIsCached) {
-            $basePath = $this->getBasePath();
-            $configPath = ConfigFileHelper::getConfigPath(
-                $basePath,
-                'app.php',
-                fn ($file) => function_exists('config_path') ? config_path($file) : null
-            );
+            $configPath = $this->getAppConfigPath();
 
             return $this->failed(
                 "Configuration is not cached in {$environment} environment",
@@ -144,7 +159,7 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
      */
     private function isDevelopmentEnvironment(string $environment): bool
     {
-        return in_array($environment, ['local', 'development'], true);
+        return in_array(strtolower($environment), self::DEV_ENVIRONMENTS, true);
     }
 
     /**
@@ -152,6 +167,55 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
      */
     private function shouldCacheConfig(string $environment): bool
     {
-        return in_array($environment, ['production', 'staging'], true);
+        return in_array(strtolower($environment), self::PROD_ENVIRONMENTS, true);
+    }
+
+    /**
+     * Get the path to the cached config file.
+     */
+    private function getCachedConfigPath(): string
+    {
+        $basePath = $this->getValidBasePath();
+
+        return $basePath.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'cache'.DIRECTORY_SEPARATOR.'config.php';
+    }
+
+    /**
+     * Get the path to the app config file.
+     */
+    private function getAppConfigPath(): string
+    {
+        $basePath = $this->getValidBasePath();
+
+        $configPath = ConfigFileHelper::getConfigPath(
+            $basePath,
+            'app.php',
+            fn ($file) => function_exists('config_path') ? config_path($file) : null
+        );
+
+        // Fallback if ConfigFileHelper returns empty string
+        if ($configPath === '') {
+            return $basePath.DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'app.php';
+        }
+
+        return $configPath;
+    }
+
+    /**
+     * Get a valid base path with fallback.
+     */
+    private function getValidBasePath(): string
+    {
+        $basePath = $this->getBasePath();
+
+        if ($basePath === '') {
+            $basePath = function_exists('base_path') ? base_path() : getcwd();
+        }
+
+        if (! is_string($basePath) || $basePath === '') {
+            $basePath = getcwd();
+        }
+
+        return $basePath !== false ? $basePath : '.';
     }
 }

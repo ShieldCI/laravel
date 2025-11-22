@@ -93,11 +93,15 @@ class DebugLogAnalyzer extends AbstractAnalyzer
 
             // If using stack, add all stack channels
             if ($defaultChannel === 'stack') {
-                /** @var array<int, mixed> $stackChannels */
+                /** @var mixed $stackChannels */
                 $stackChannels = $this->config->get('logging.channels.stack.channels', []);
-                foreach ($stackChannels as $channel) {
-                    if (is_string($channel)) {
-                        $channels[] = $channel;
+
+                // Ensure stackChannels is actually an array before iterating
+                if (is_array($stackChannels)) {
+                    foreach ($stackChannels as $channel) {
+                        if (is_string($channel)) {
+                            $channels[] = $channel;
+                        }
                     }
                 }
             }
@@ -124,6 +128,12 @@ class DebugLogAnalyzer extends AbstractAnalyzer
                 'logging.php',
                 fn ($file) => function_exists('config_path') ? config_path($file) : null
             );
+
+            // Fallback to buildPath if ConfigFileHelper returns empty string
+            if ($configPath === '' || ! file_exists($configPath)) {
+                $configPath = $this->buildPath('config', 'logging.php');
+            }
+
             $lineNumber = ConfigFileHelper::findNestedKeyLine($configPath, 'channels', 'level', $channel);
 
             $issues[] = $this->createIssue(

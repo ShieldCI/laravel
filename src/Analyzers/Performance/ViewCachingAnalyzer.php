@@ -10,6 +10,8 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use Symfony\Component\Finder\Finder;
@@ -108,40 +110,42 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
             return $this->error('Invalid view.compiled configuration');
         }
 
-        $globResult = $this->files->glob("{$compiledPath}/*");
-        $compiledViewCount = is_array($globResult) ? count($globResult) : 0;
+        $compiledViewCount = $this->getCompiledViewCount($compiledPath);
 
         if ($viewCount > $compiledViewCount) {
-            $cachedPercentage = round(($compiledViewCount / $viewCount) * 100, 1);
+            $cachedPercentage = $this->calculateCachedPercentage($compiledViewCount, $viewCount);
+            $configLocation = $this->getViewConfigLocation();
 
-            return $this->failed(
-                sprintf(
-                    'Views are not fully cached (%d/%d views cached, %.1f%%)',
-                    $compiledViewCount,
-                    $viewCount,
-                    $cachedPercentage
-                ),
-                [
-                    $this->createIssue(
-                        message: sprintf(
-                            'Only %d out of %d blade views are compiled (%.1f%% cached)',
-                            $compiledViewCount,
-                            $viewCount,
-                            $cachedPercentage
-                        ),
-                        location: new Location($this->getBasePath().DIRECTORY_SEPARATOR.'artisan', 0),
-                        severity: Severity::Medium,
-                        recommendation: 'View caching improves performance by pre-compiling all Blade templates. Add "php artisan view:cache" to your deployment script. This eliminates the need to compile views on each request and is especially important in production environments where view caching can significantly reduce response times.',
-                        metadata: [
-                            'environment' => $environment,
-                            'total_views' => $viewCount,
-                            'compiled_views' => $compiledViewCount,
-                            'cached_percentage' => $cachedPercentage,
-                            'missing_views' => $viewCount - $compiledViewCount,
-                        ]
+            $issues = [
+                $this->createIssue(
+                    message: sprintf(
+                        'Only %d out of %d blade views are compiled (%.1f%% cached)',
+                        $compiledViewCount,
+                        $viewCount,
+                        $cachedPercentage
                     ),
-                ]
+                    location: $configLocation,
+                    severity: Severity::Medium,
+                    recommendation: 'View caching improves performance by pre-compiling all Blade templates. Add "php artisan view:cache" to your deployment script. This eliminates the need to compile views on each request and is especially important in production environments where view caching can significantly reduce response times.',
+                    code: FileParser::getCodeSnippet($configLocation->file, $configLocation->line),
+                    metadata: [
+                        'environment' => $environment,
+                        'total_views' => $viewCount,
+                        'compiled_views' => $compiledViewCount,
+                        'cached_percentage' => $cachedPercentage,
+                        'missing_views' => $viewCount - $compiledViewCount,
+                    ]
+                ),
+            ];
+
+            $summary = sprintf(
+                'Views are not fully cached (%d/%d views cached, %.1f%%)',
+                $compiledViewCount,
+                $viewCount,
+                $cachedPercentage
             );
+
+            return $this->resultBySeverity($summary, $issues);
         }
 
         return $this->passed(sprintf(
@@ -179,6 +183,10 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
      */
     private function countBladeFilesIn(string $path): int
     {
+        if (! is_string($path) || empty(trim($path))) {
+            return 0;
+        }
+
         try {
             return collect(
                 Finder::create()
@@ -190,5 +198,61 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
         } catch (\Throwable $e) {
             return 0;
         }
+    }
+
+    /**
+     * Get the count of compiled views in the compiled path.
+     */
+    private function getCompiledViewCount(string $compiledPath): int
+    {
+        $globResult = $this->files->glob("{$compiledPath}/*.php");
+
+        // Filesystem::glob() can return false on error
+        if ($globResult === false) {
+            return 0;
+        }
+
+        return is_array($globResult) ? count($globResult) : 0;
+    }
+
+    /**
+     * Calculate the cached percentage, protecting against division by zero.
+     */
+    private function calculateCachedPercentage(int $compiledCount, int $totalCount): float
+    {
+        if ($totalCount === 0) {
+            return 0.0;
+        }
+
+        return round(($compiledCount / $totalCount) * 100, 1);
+    }
+
+    /**
+     * Get the location of the view configuration file.
+     * Falls back to artisan file if config file not found.
+     */
+    private function getViewConfigLocation(): Location
+    {
+        $basePath = $this->getBasePath();
+        $configPath = ConfigFileHelper::getConfigPath(
+            $basePath,
+            'view.php',
+            fn ($file) => function_exists('config_path') ? config_path($file) : null
+        );
+
+        if (file_exists($configPath)) {
+            $lineNumber = ConfigFileHelper::findKeyLine($configPath, 'compiled');
+
+            if ($lineNumber < 1) {
+                $lineNumber = 1;
+            }
+
+            return new Location($configPath, $lineNumber);
+        }
+
+        // Fallback to artisan file if config not found
+        $artisanPath = $basePath.DIRECTORY_SEPARATOR.'artisan';
+
+        return new Location($artisanPath, 1);
     }
 }

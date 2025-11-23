@@ -224,7 +224,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
         $this->assertEquals('debug-log-level', $metadata->id);
         $this->assertEquals('Debug Log Level', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $metadata->severity);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $metadata->severity);
         $this->assertContains('logging', $metadata->tags);
         $this->assertContains('performance', $metadata->tags);
     }
@@ -665,7 +665,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
     }
 
     public function test_detection_method_in_metadata(): void

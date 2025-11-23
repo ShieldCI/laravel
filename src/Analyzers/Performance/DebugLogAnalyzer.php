@@ -44,7 +44,7 @@ class DebugLogAnalyzer extends AbstractAnalyzer
             name: 'Debug Log Level',
             description: 'Ensures log level is not set to debug in production for optimal performance',
             category: Category::Performance,
-            severity: Severity::Medium,
+            severity: Severity::High,
             tags: ['logging', 'performance', 'configuration'],
             docsUrl: 'https://docs.shieldci.com/analyzers/performance/debug-log-level',
             timeToFix: 5
@@ -68,14 +68,14 @@ class DebugLogAnalyzer extends AbstractAnalyzer
             $this->checkChannelLogLevel($channel, $issues);
         }
 
-        if (! empty($issues)) {
-            return $this->failed(
-                "Debug log level detected in {$environment} environment",
-                $issues
-            );
+        if (count($issues) === 0) {
+            return $this->passed("Log level is properly configured for {$environment} environment");
         }
 
-        return $this->passed("Log level is properly configured for {$environment} environment");
+        return $this->resultBySeverity(
+            sprintf('Debug log level detected in %s environment', $environment),
+            $issues
+        );
     }
 
     /**
@@ -139,8 +139,8 @@ class DebugLogAnalyzer extends AbstractAnalyzer
             $issues[] = $this->createIssue(
                 message: "Log channel '{$channel}' is set to debug level in {$environment} environment",
                 location: new Location($configPath, $lineNumber),
-                severity: Severity::Medium,
-                recommendation: "Change the log level to 'info' or higher in production. Debug logging can significantly impact performance and generate excessive log files. Update your logging configuration or set LOG_LEVEL environment variable to 'info', 'warning', or 'error'.",
+                severity: Severity::High,
+                recommendation: "Change the log level to 'info' or higher in production. Debug logging causes 50-300% performance degradation, generates massive log files that can exhaust disk space, and exposes sensitive data in logs. This is a critical production misconfiguration. Update your logging configuration or set LOG_LEVEL environment variable to 'info', 'warning', or 'error'.",
                 metadata: [
                     'environment' => $environment,
                     'channel' => $channel,

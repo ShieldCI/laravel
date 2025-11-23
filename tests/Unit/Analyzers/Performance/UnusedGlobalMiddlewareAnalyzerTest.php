@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
+use Fruitcake\Cors\HandleCors as FruitcakeHandleCors;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Http\Kernel;
@@ -160,7 +161,7 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
-    public function test_fails_when_trust_proxies_without_configuration(): void
+    public function test_warns_when_trust_proxies_without_configuration(): void
     {
         $app = Mockery::mock(Application::class);
         $config = Mockery::mock(ConfigRepository::class);
@@ -205,7 +206,7 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertIssueCount(1, $result);
         $this->assertHasIssueContaining('TrustProxies', $result);
     }
@@ -253,7 +254,7 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
-    public function test_fails_when_trust_hosts_without_trust_proxies(): void
+    public function test_warns_when_trust_hosts_without_trust_proxies(): void
     {
         $app = Mockery::mock(Application::class);
         $config = Mockery::mock(ConfigRepository::class);
@@ -278,12 +279,12 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertIssueCount(1, $result);
         $this->assertHasIssueContaining('TrustHosts', $result);
     }
 
-    public function test_fails_when_cors_without_configuration(): void
+    public function test_warns_when_cors_without_configuration(): void
     {
         $app = Mockery::mock(Application::class);
         $config = Mockery::mock(ConfigRepository::class);
@@ -308,9 +309,102 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertIssueCount(1, $result);
         $this->assertHasIssueContaining('HandleCors', $result);
+    }
+
+    public function test_warns_about_trust_hosts_only_when_trust_proxies_unused(): void
+    {
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
+
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
+
+            /** @var array<int, string> */
+            protected $middleware = [
+                TrustHosts::class,
+                TrustProxies::class,
+            ];
+        };
+
+        /** @phpstan-ignore-next-line */
+        $app->shouldReceive('make')
+            ->with(TrustProxies::class)
+            ->andReturn(new class
+            {
+                /** @var mixed */
+                protected $proxies = null;
+            });
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('trustedproxy.proxies')
+            ->andReturn(null);
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
+
+        /** @phpstan-ignore-next-line Mockery mocks passed to constructor */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(2, $result);
+
+        $issues = $result->getIssues();
+        $classes = array_map(fn ($issue) => $issue->metadata['middleware_class'] ?? null, $issues);
+        $this->assertContains(TrustProxies::class, $classes);
+        $this->assertContains(TrustHosts::class, $classes);
+    }
+
+    public function test_warns_when_fruitcake_cors_without_configuration(): void
+    {
+        if (! class_exists(FruitcakeHandleCors::class)) {
+            $this->markTestSkipped('Fruitcake CORS package not installed');
+        }
+
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
+
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
+
+            /** @var array<int, string> */
+            protected $middleware = [
+                /** @phpstan-ignore-next-line Class exists due to skip check above */
+                FruitcakeHandleCors::class,
+            ];
+        };
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('trustedproxy.proxies')
+            ->andReturn(null);
+
+        /** @phpstan-ignore-next-line Mockery mocks passed to constructor */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $issues = $result->getIssues();
+        $this->assertContains(
+            $issues[0]->metadata['middleware_class'] ?? null,
+            [FruitcakeHandleCors::class, HandleCors::class]
+        );
     }
 
     public function test_passes_when_cors_has_configuration(): void
@@ -339,5 +433,510 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    public function test_passes_when_trust_proxies_has_array_configuration(): void
+    {
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
+
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
+
+            /** @var array<int, string> */
+            protected $middleware = [
+                TrustProxies::class,
+            ];
+        };
+
+        // Mock TrustProxies with array of IPs
+        /** @phpstan-ignore-next-line */
+        $app->shouldReceive('make')
+            ->with(TrustProxies::class)
+            ->andReturn(new class
+            {
+                /** @var mixed */
+                protected $proxies = ['192.168.1.1', '10.0.0.0/8'];
+            });
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('trustedproxy.proxies')
+            ->andReturn(null);
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
+
+        /** @phpstan-ignore-next-line */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_trust_proxies_configured_via_config(): void
+    {
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
+
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
+
+            /** @var array<int, string> */
+            protected $middleware = [
+                TrustProxies::class,
+            ];
+        };
+
+        // TrustProxies middleware has null proxies
+        /** @phpstan-ignore-next-line */
+        $app->shouldReceive('make')
+            ->with(TrustProxies::class)
+            ->andReturn(new class
+            {
+                /** @var mixed */
+                protected $proxies = null;
+            });
+
+        // But config has proxies configured (Fideloper package pattern)
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('trustedproxy.proxies')
+            ->andReturn(['192.168.1.1']);
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
+
+        /** @phpstan-ignore-next-line */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_middleware_instantiation_failure_gracefully(): void
+    {
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
+
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
+
+            /** @var array<int, string> */
+            protected $middleware = [
+                TrustProxies::class,
+            ];
+        };
+
+        // Mock app->make() to throw exception
+        /** @phpstan-ignore-next-line */
+        $app->shouldReceive('make')
+            ->with(TrustProxies::class)
+            ->andThrow(new \Exception('Cannot instantiate'));
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
+
+        /** @phpstan-ignore-next-line */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
+        $result = $analyzer->analyze();
+
+        // Should pass because exception is caught and check is skipped
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_invalid_config_types_gracefully(): void
+    {
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
+
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
+
+            /** @var array<int, string> */
+            protected $middleware = [
+                TrustProxies::class,
+                HandleCors::class,
+            ];
+        };
+
+        /** @phpstan-ignore-next-line */
+        $app->shouldReceive('make')
+            ->with(TrustProxies::class)
+            ->andReturn(new class
+            {
+                /** @var mixed */
+                protected $proxies = null;
+            });
+
+        // Return invalid types for config values
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('trustedproxy.proxies')
+            ->andReturn(12345); // Invalid: should be string, array, or null
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn('not-an-array'); // Invalid: should be array
+
+        /** @phpstan-ignore-next-line */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
+        $result = $analyzer->analyze();
+
+        // Should warn about both middleware being unused (invalid types treated as null/empty)
+        $this->assertWarning($result);
+        $this->assertIssueCount(2, $result);
+    }
+
+    public function test_warns_when_multiple_middleware_unused(): void
+    {
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
+
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
+
+            /** @var array<int, string> */
+            protected $middleware = [
+                TrustProxies::class,
+                HandleCors::class,
+            ];
+        };
+
+        /** @phpstan-ignore-next-line */
+        $app->shouldReceive('make')
+            ->with(TrustProxies::class)
+            ->andReturn(new class
+            {
+                /** @var mixed */
+                protected $proxies = null;
+            });
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('trustedproxy.proxies')
+            ->andReturn(null);
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
+
+        /** @phpstan-ignore-next-line */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(2, $result);
+        $this->assertHasIssueContaining('TrustProxies', $result);
+        $this->assertHasIssueContaining('HandleCors', $result);
+    }
+
+    public function test_warns_when_all_three_middleware_types_unused(): void
+    {
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
+
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
+
+            /** @var array<int, string> */
+            protected $middleware = [
+                TrustProxies::class,
+                TrustHosts::class,
+                HandleCors::class,
+            ];
+        };
+
+        /** @phpstan-ignore-next-line */
+        $app->shouldReceive('make')
+            ->with(TrustProxies::class)
+            ->andReturn(new class
+            {
+                /** @var mixed */
+                protected $proxies = null;
+            });
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('trustedproxy.proxies')
+            ->andReturn(null);
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
+
+        /** @phpstan-ignore-next-line */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(3, $result);
+
+        $issues = $result->getIssues();
+        $classes = array_map(fn ($issue) => $issue->metadata['middleware_class'] ?? null, $issues);
+        $this->assertContains(TrustProxies::class, $classes);
+        $this->assertContains(TrustHosts::class, $classes);
+        $this->assertContains(HandleCors::class, $classes);
+    }
+
+    public function test_trust_hosts_appears_only_once_when_trust_proxies_unused(): void
+    {
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
+
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
+
+            /** @var array<int, string> */
+            protected $middleware = [
+                TrustProxies::class,
+                TrustHosts::class,
+            ];
+        };
+
+        /** @phpstan-ignore-next-line */
+        $app->shouldReceive('make')
+            ->with(TrustProxies::class)
+            ->andReturn(new class
+            {
+                /** @var mixed */
+                protected $proxies = null;
+            });
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('trustedproxy.proxies')
+            ->andReturn(null);
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
+
+        /** @phpstan-ignore-next-line */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        // Should only have 2 issues: TrustProxies and TrustHosts (not duplicate TrustHosts)
+        $this->assertIssueCount(2, $result);
+
+        // Verify TrustHosts appears exactly once
+        $issues = $result->getIssues();
+        $trustHostsCount = collect($issues)->filter(fn ($issue) => ($issue->metadata['middleware_class'] ?? null) === TrustHosts::class)->count();
+        $this->assertEquals(1, $trustHostsCount, 'TrustHosts should appear exactly once in the issues list');
+    }
+
+    public function test_issue_metadata_includes_all_required_fields(): void
+    {
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
+
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
+
+            /** @var array<int, string> */
+            protected $middleware = [
+                TrustProxies::class,
+            ];
+        };
+
+        /** @phpstan-ignore-next-line */
+        $app->shouldReceive('make')
+            ->with(TrustProxies::class)
+            ->andReturn(new class
+            {
+                /** @var mixed */
+                protected $proxies = null;
+            });
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('trustedproxy.proxies')
+            ->andReturn(null);
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
+
+        /** @phpstan-ignore-next-line */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        $issue = $issues[0];
+        $this->assertArrayHasKey('middleware_class', $issue->metadata);
+        $this->assertArrayHasKey('middleware_name', $issue->metadata);
+        $this->assertArrayHasKey('reason', $issue->metadata);
+        $this->assertEquals(TrustProxies::class, $issue->metadata['middleware_class']);
+        $this->assertEquals('TrustProxies', $issue->metadata['middleware_name']);
+        $this->assertIsString($issue->metadata['reason']);
+        $this->assertStringContainsString('No proxies', $issue->metadata['reason']);
+    }
+
+    public function test_result_message_format_includes_count(): void
+    {
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
+
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
+
+            /** @var array<int, string> */
+            protected $middleware = [
+                TrustProxies::class,
+                HandleCors::class,
+            ];
+        };
+
+        /** @phpstan-ignore-next-line */
+        $app->shouldReceive('make')
+            ->with(TrustProxies::class)
+            ->andReturn(new class
+            {
+                /** @var mixed */
+                protected $proxies = null;
+            });
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('trustedproxy.proxies')
+            ->andReturn(null);
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
+
+        /** @phpstan-ignore-next-line */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
+        $result = $analyzer->analyze();
+
+        $this->assertStringContainsString('Found 2 unused global middleware', $result->getMessage());
+    }
+
+    public function test_all_issues_have_low_severity(): void
+    {
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
+
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
+
+            /** @var array<int, string> */
+            protected $middleware = [
+                TrustProxies::class,
+                HandleCors::class,
+            ];
+        };
+
+        /** @phpstan-ignore-next-line */
+        $app->shouldReceive('make')
+            ->with(TrustProxies::class)
+            ->andReturn(new class
+            {
+                /** @var mixed */
+                protected $proxies = null;
+            });
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('trustedproxy.proxies')
+            ->andReturn(null);
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
+
+        /** @phpstan-ignore-next-line */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        foreach ($issues as $issue) {
+            $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issue->severity);
+        }
+    }
+
+    public function test_passes_when_mixed_used_and_unused_middleware(): void
+    {
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
+
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
+
+            /** @var array<int, string> */
+            protected $middleware = [
+                TrustProxies::class,
+                HandleCors::class,
+            ];
+        };
+
+        // TrustProxies is configured
+        /** @phpstan-ignore-next-line */
+        $app->shouldReceive('make')
+            ->with(TrustProxies::class)
+            ->andReturn(new class
+            {
+                /** @var mixed */
+                protected $proxies = '*';
+            });
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('trustedproxy.proxies')
+            ->andReturn(null);
+
+        // CORS is not configured
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
+
+        /** @phpstan-ignore-next-line */
+        $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
+        $result = $analyzer->analyze();
+
+        // Should only warn about CORS
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('HandleCors', $result);
     }
 }

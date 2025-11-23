@@ -106,12 +106,12 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        if (empty($issues)) {
+        if (count($issues) === 0) {
             return $this->passed('No inefficient collection calls detected');
         }
 
-        return $this->failed(
-            sprintf('Found %d inefficient collection operations that should be database queries', count($issues)),
+        return $this->resultBySeverity(
+            sprintf('Found %d inefficient collection operation(s) that should be database queries', count($issues)),
             $issues
         );
     }

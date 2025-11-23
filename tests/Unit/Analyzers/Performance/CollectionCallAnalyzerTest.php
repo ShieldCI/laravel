@@ -403,7 +403,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertCount(100, $issues);
-        $this->assertStringContainsString('100 inefficient collection operations', $result->getMessage());
+        $this->assertStringContainsString('100 inefficient collection operation(s)', $result->getMessage());
     }
 
     public function test_handles_phpstan_exception_during_start(): void

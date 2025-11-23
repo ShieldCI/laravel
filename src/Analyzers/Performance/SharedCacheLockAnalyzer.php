@@ -5,6 +5,12 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\Performance;
 
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use PhpParser\Node\Expr\MethodCall;
+use PhpParser\Node\Expr\PropertyFetch;
+use PhpParser\Node\Expr\StaticCall;
+use PhpParser\Node\Expr\Variable;
+use PhpParser\Node\Identifier;
+use PhpParser\Node\Name;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -25,7 +31,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
 class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
 {
     /**
-     * @var array<int, array{file: string, line: int}>
+     * @var array<string, array{file: string, line: int}>
      */
     private array $lockUsages = [];
 
@@ -76,12 +82,20 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
         $lockConnection = $this->config->get("cache.stores.$defaultStore.lock_connection");
         $cacheConnection = $this->config->get("cache.stores.$defaultStore.connection");
 
+        // Validate types
+        if ($lockConnection !== null && ! is_string($lockConnection)) {
+            $lockConnection = null;
+        }
+        if ($cacheConnection !== null && ! is_string($cacheConnection)) {
+            $cacheConnection = null;
+        }
+
         if ($lockConnection !== null && $lockConnection !== $cacheConnection) {
             return $this->passed('Cache locks use a separate connection');
         }
 
         // Set paths to analyze (app directory only)
-        $this->setPaths([$this->basePath.'/app']);
+        $this->setPaths([$this->basePath.DIRECTORY_SEPARATOR.'app']);
 
         // Search for Cache::lock() usage in the codebase
         $this->findCacheLockUsage();
@@ -92,12 +106,13 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
 
         // Create issues for each lock usage
         $issues = [];
-        foreach ($this->lockUsages as $usage) {
+        foreach (array_values($this->lockUsages) as $usage) {
             $issues[] = $this->createIssue(
                 message: 'Cache lock usage detected on default cache store',
                 location: new Location($usage['file'], $usage['line']),
                 severity: Severity::Low,
                 recommendation: $this->getRecommendation(),
+                code: FileParser::getCodeSnippet($usage['file'], $usage['line']),
                 metadata: [
                     'file' => $usage['file'],
                     'line' => $usage['line'],
@@ -108,16 +123,18 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        return $this->warning(
-            sprintf('Found %d cache lock usage(s) on default cache store', count($this->lockUsages)),
-            $issues
-        );
+        $message = count($issues) === 0
+            ? 'No cache lock usage detected'
+            : sprintf('Found %d cache lock usage(s) on default cache store', count($this->lockUsages));
+
+        return $this->resultBySeverity($message, $issues);
     }
 
     private function findCacheLockUsage(): void
     {
         foreach ($this->getPhpFiles() as $file) {
-            $content = FileParser::readFile($file);
+            $filePath = $file instanceof \SplFileInfo ? $file->getPathname() : (string) $file;
+            $content = FileParser::readFile($filePath);
 
             if ($content === null) {
                 continue;
@@ -126,26 +143,21 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
             // Simple pattern matching for Cache::lock() calls
             if (str_contains($content, 'Cache::lock(') || str_contains($content, '->lock(')) {
                 try {
-                    $ast = $this->parser->parseFile($file);
+                    $ast = $this->parser->parseFile($filePath);
 
                     // Find Cache::lock() static calls
                     $lockCalls = $this->parser->findStaticCalls($ast, 'Cache', 'lock');
 
                     foreach ($lockCalls as $call) {
-                        $this->lockUsages[] = [
-                            'file' => $file,
-                            'line' => $call->getLine(),
-                        ];
+                        $this->addLockUsage($filePath, $call->getLine());
                     }
 
                     // Also check for $cache->lock() method calls on cache-related variables
                     $methodCalls = $this->parser->findMethodCalls($ast, 'lock');
                     foreach ($methodCalls as $call) {
-                        // Add method calls (note: may include some false positives for non-cache locks)
-                        $this->lockUsages[] = [
-                            'file' => $file,
-                            'line' => $call->getLine(),
-                        ];
+                        if ($call instanceof MethodCall && $this->isCacheLockMethodCall($call)) {
+                            $this->addLockUsage($filePath, $call->getLine());
+                        }
                     }
                 } catch (\Throwable) {
                     // Skip files that can't be parsed
@@ -153,6 +165,43 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
                 }
             }
         }
+    }
+
+    private function isCacheLockMethodCall(MethodCall $call): bool
+    {
+        $caller = $call->var;
+
+        if ($caller instanceof Variable && is_string($caller->name)) {
+            return str_contains(strtolower($caller->name), 'cache');
+        }
+
+        if ($caller instanceof PropertyFetch && $caller->name instanceof Identifier) {
+            return str_contains(strtolower($caller->name->name), 'cache');
+        }
+
+        if ($caller instanceof StaticCall && $caller->class instanceof Name) {
+            if ($caller->class->toString() === 'Cache') {
+                return $caller->name instanceof Identifier && $caller->name->name === 'store';
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Add a lock usage entry, avoiding duplicates.
+     */
+    private function addLockUsage(string $file, int $line): void
+    {
+        $key = "{$file}:{$line}";
+        if (isset($this->lockUsages[$key])) {
+            return; // Already added
+        }
+
+        $this->lockUsages[$key] = [
+            'file' => $file,
+            'line' => $line,
+        ];
     }
 
     /**
@@ -182,16 +231,15 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
 
     private function getRecommendation(): string
     {
-        return 'Your application uses cache locks on your default cache store. This means that when '
-            .'your cache is cleared, your locks will also be cleared. Typically, this is not the '
-            .'intention when using locks for managing race conditions or concurrent processing. '
-            .'If you intend to persist locks despite cache clearing, it is recommended that '
-            .'you use cache locks on a separate store. '
-            ."\n\n"
-            .'Laravel 8.20+ supports a separate lock_connection configuration. Add this to your cache store config: '
-            ."\n"
-            .'"lock_connection" => "lock_redis", '
-            ."\n"
-            .'Then define a separate "lock_redis" connection in config/database.php that uses a different Redis database number.';
+        return <<<'REC'
+Your application uses cache locks on your default cache store. This means that when your cache is cleared, your locks will also be cleared. Typically, this is not the intention when using locks for managing race conditions or concurrent processing.
+
+If you intend to persist locks despite cache clearing, it is recommended that you use cache locks on a separate store.
+
+Laravel 8.20+ supports a separate lock_connection configuration. Add this to your cache store config:
+"lock_connection" => "lock_redis",
+
+Then define a separate "lock_redis" connection in config/database.php that uses a different Redis database number.
+REC;
     }
 }

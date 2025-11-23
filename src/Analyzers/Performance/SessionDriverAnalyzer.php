@@ -75,15 +75,13 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
 
         // Assess the driver based on environment
         $issue = $this->assessDriver($driver, $environment);
+        $issues = $issue !== null ? [$issue] : [];
 
-        if ($issue !== null) {
-            return $this->failed(
-                "Session driver '$driver' has configuration issues",
-                [$issue]
-            );
-        }
+        $message = empty($issues)
+            ? "Session driver '$driver' is properly configured for $environment environment"
+            : "Session driver '$driver' has configuration issues";
 
-        return $this->passed("Session driver '$driver' is properly configured for $environment environment");
+        return $this->resultBySeverity($message, $issues);
     }
 
     /**
@@ -123,7 +121,7 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
      */
     private function assessArrayDriver(string $environment): ?Issue
     {
-        if ($environment === 'local') {
+        if ($this->isLocalEnvironment($environment)) {
             return null; // Acceptable in local
         }
 
@@ -144,7 +142,7 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
      */
     private function assessFileDriver(string $environment): ?Issue
     {
-        if ($environment === 'local') {
+        if ($this->isLocalEnvironment($environment)) {
             return null; // Perfectly fine for local dev
         }
 
@@ -165,7 +163,7 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
      */
     private function assessCookieDriver(string $environment): ?Issue
     {
-        if ($environment === 'local') {
+        if ($this->isLocalEnvironment($environment)) {
             return null; // Fine for local development
         }
 
@@ -192,7 +190,15 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
             ? $this->kernel->getGlobalMiddleware()
             : [];
 
+        if (! is_array($globalMiddleware)) {
+            $globalMiddleware = [];
+        }
+
         foreach ($globalMiddleware as $middleware) {
+            if (! is_string($middleware)) {
+                continue;
+            }
+
             if ($this->isSessionMiddleware($middleware)) {
                 return false; // App uses sessions
             }
@@ -204,7 +210,15 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
         foreach ($routes as $route) {
             $middleware = $route->middleware();
 
+            if (! is_array($middleware)) {
+                continue;
+            }
+
             foreach ($middleware as $m) {
+                if (! is_string($m)) {
+                    continue;
+                }
+
                 if ($this->isSessionMiddleware($m)) {
                     return false; // App uses sessions
                 }
@@ -219,9 +233,32 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
      */
     private function isSessionMiddleware(string $middleware): bool
     {
-        return str_contains($middleware, 'StartSession')
-            || str_contains($middleware, 'session')
-            || $middleware === 'web'; // 'web' middleware group typically includes session
+        // Check for exact middleware class names
+        $sessionMiddlewareClasses = [
+            'Illuminate\Session\Middleware\StartSession',
+            'StartSession',
+        ];
+
+        foreach ($sessionMiddlewareClasses as $class) {
+            if ($middleware === $class || str_ends_with($middleware, '\\'.$class)) {
+                return true;
+            }
+        }
+
+        // Check for 'web' middleware group (typically includes session)
+        if ($middleware === 'web') {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if environment is local/development.
+     */
+    private function isLocalEnvironment(string $environment): bool
+    {
+        return in_array($environment, ['local', 'development', 'testing'], true);
     }
 
     /**
@@ -230,20 +267,18 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
     private function getConfigLocation(): Location
     {
         $basePath = $this->getBasePath();
-        $configPath = ConfigFileHelper::getConfigPath($basePath, 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+        $configPath = ConfigFileHelper::getConfigPath(
+            $basePath,
+            'session.php',
+            fn ($file) => function_exists('config_path') ? config_path($file) : null
+        );
 
-        // Try to find the exact line with 'driver' key
-        if (file_exists($configPath)) {
-            $lines = file($configPath);
-            if ($lines !== false) {
-                foreach ($lines as $lineNumber => $line) {
-                    if (str_contains($line, "'driver'") || str_contains($line, '"driver"')) {
-                        return new Location($configPath, $lineNumber + 1);
-                    }
-                }
-            }
+        $lineNumber = ConfigFileHelper::findKeyLine($configPath, 'driver');
+
+        if ($lineNumber < 1) {
+            $lineNumber = 1;
         }
 
-        return new Location($configPath, 1);
+        return new Location($configPath, $lineNumber);
     }
 }

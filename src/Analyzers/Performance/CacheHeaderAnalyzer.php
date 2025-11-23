@@ -181,25 +181,27 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
         $firstSource = $this->uncachedAssets->first()['source'] ?? 'mix';
         $issueLocation = $firstSource === 'vite' ? 'public/build/manifest.json' : 'public/mix-manifest.json';
 
-        return $this->failed(
+        $issues = [$this->createIssue(
+            message: 'Compiled assets are missing Cache-Control headers or use non-cacheable directives',
+            location: new Location($issueLocation, 1),
+            severity: Severity::High,
+            recommendation: sprintf(
+                'Your application does not set appropriate cache headers on compiled assets. '.
+                'To improve performance, configure Cache-Control headers via your web server. '.
+                'Uncached assets: %s. '.
+                'For Apache, add rules to .htaccess. For Nginx, add cache headers in server config. '.
+                'Versioned assets should use "Cache-Control: public, max-age=31536000, immutable".',
+                $this->formatUncachedAssets()
+            ),
+            metadata: [
+                'uncached_assets' => $this->uncachedAssets->toArray(),
+                'count' => $this->uncachedAssets->count(),
+            ]
+        )];
+
+        return $this->resultBySeverity(
             sprintf('Found %d asset(s) without proper cache headers', $this->uncachedAssets->count()),
-            [$this->createIssue(
-                message: 'Compiled assets are missing Cache-Control headers or use non-cacheable directives',
-                location: new Location($issueLocation, 1),
-                severity: Severity::High,
-                recommendation: sprintf(
-                    'Your application does not set appropriate cache headers on compiled assets. '.
-                    'To improve performance, configure Cache-Control headers via your web server. '.
-                    'Uncached assets: %s. '.
-                    'For Apache, add rules to .htaccess. For Nginx, add cache headers in server config. '.
-                    'Versioned assets should use "Cache-Control: public, max-age=31536000, immutable".',
-                    $this->formatUncachedAssets()
-                ),
-                metadata: [
-                    'uncached_assets' => $this->uncachedAssets->toArray(),
-                    'count' => $this->uncachedAssets->count(),
-                ]
-            )]
+            $issues
         );
     }
 

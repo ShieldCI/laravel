@@ -49,7 +49,8 @@ class InvalidPropertyAccessAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['phpstan', 'static-analysis', 'properties', 'type-safety'],
-            docsUrl: 'https://phpstan.org/user-guide/getting-started'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/invalid-property-access',
+            timeToFix: 15
         );
     }
 

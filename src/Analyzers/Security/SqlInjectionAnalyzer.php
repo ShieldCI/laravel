@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -56,7 +57,8 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['sql', 'injection', 'database', 'security'],
-            docsUrl: 'https://laravel.com/docs/queries#raw-expressions'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/sql-injection',
+            timeToFix: 30
         );
     }
 
@@ -82,7 +84,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
                         ),
                         severity: Severity::Critical,
                         recommendation: 'Use parameter binding instead of string concatenation. Example: DB::raw("SELECT * FROM users WHERE id = ?", [$id])',
-                        code: $this->getCodeSnippet($file, $call->getLine())
+                        code: FileParser::getCodeSnippet($file, $call->getLine())
                     );
                 }
             }
@@ -99,7 +101,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
                         ),
                         severity: Severity::Critical,
                         recommendation: "Use parameter binding: ->{$method}('column = ?', [\$value]) instead of concatenation",
-                        code: $this->getCodeSnippet($file, $call->getLine())
+                        code: FileParser::getCodeSnippet($file, $call->getLine())
                     );
                 }
             }
@@ -118,7 +120,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
                             ),
                             severity: Severity::Critical,
                             recommendation: 'Use parameter binding with placeholders',
-                            code: $this->getCodeSnippet($file, $call->getLine())
+                            code: FileParser::getCodeSnippet($file, $call->getLine())
                         );
                     }
                 }

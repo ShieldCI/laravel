@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -30,7 +31,8 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::Critical,
             tags: ['queue', 'configuration', 'reliability', 'jobs'],
-            docsUrl: 'https://laravel.com/docs/queues#timeout'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/queue-timeout-configuration',
+            timeToFix: 10
         );
     }
 
@@ -70,9 +72,10 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
 
             // Timeout should be at least several seconds shorter than retry_after
             if ($timeout >= $retryAfter) {
+                $configFile = ConfigFileHelper::getConfigPath($this->basePath, 'queue.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
                 $issues[] = $this->createIssue(
                     message: "Queue connection '{$name}' has improper timeout configuration",
-                    location: new Location($this->basePath.'/config/queue.php', $this->findLineInConfig('queue', $name)),
+                    location: new Location($configFile, ConfigFileHelper::findKeyLine($configFile, $name, 'connections')),
                     severity: Severity::Critical,
                     recommendation: $this->getRecommendation($name, $timeout, $retryAfter),
                     metadata: [
@@ -165,7 +168,7 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
      */
     private function getQueueConfig(): array
     {
-        $configFile = $this->basePath.'/config/queue.php';
+        $configFile = ConfigFileHelper::getConfigPath($this->basePath, 'queue.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
         if (! file_exists($configFile)) {
             return [];
@@ -174,30 +177,5 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
         $config = include $configFile;
 
         return is_array($config) ? $config : [];
-    }
-
-    private function findLineInConfig(string $file, string $key): int
-    {
-        $configFile = $this->basePath.'/config/'.$file.'.php';
-
-        if (! file_exists($configFile)) {
-            return 1;
-        }
-
-        $content = file_get_contents($configFile);
-
-        if ($content === false) {
-            return 1;
-        }
-
-        $lines = explode("\n", $content);
-
-        foreach ($lines as $lineNumber => $line) {
-            if (str_contains($line, "'{$key}'") || str_contains($line, "\"{$key}\"")) {
-                return $lineNumber + 1;
-            }
-        }
-
-        return 1;
     }
 }

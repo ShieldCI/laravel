@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -40,7 +41,8 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['cache', 'configuration', 'reliability', 'multi-tenant'],
-            docsUrl: 'https://laravel.com/docs/cache#configuration'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/cache-prefix-configuration',
+            timeToFix: 5
         );
     }
 
@@ -64,13 +66,15 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
         $cacheConfig = $this->getCacheConfig();
         $prefix = $cacheConfig['prefix'] ?? '';
 
+        $configFile = ConfigFileHelper::getConfigPath($this->basePath, 'cache.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+
         // Check if prefix is empty
         if (empty($prefix)) {
             return $this->failed(
                 'Cache prefix is not configured',
                 [$this->createIssue(
                     message: 'Cache prefix is empty or not set',
-                    location: new Location($this->basePath.'/config/cache.php', $this->findLineInConfig('cache', 'prefix')),
+                    location: new Location($configFile, ConfigFileHelper::findKeyLine($configFile, 'prefix')),
                     severity: Severity::High,
                     recommendation: 'Set a unique cache prefix in config/cache.php to avoid collisions with other applications sharing the same cache server. Use your application name or a unique identifier. Example: \'prefix\' => env(\'CACHE_PREFIX\', Str::slug(env(\'APP_NAME\', \'laravel\'), \'_\').\'_cache\')',
                     metadata: [
@@ -87,7 +91,7 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
                 'Cache prefix is too generic',
                 [$this->createIssue(
                     message: "Cache prefix '{$prefix}' is too generic and may cause collisions",
-                    location: new Location($this->basePath.'/config/cache.php', $this->findLineInConfig('cache', 'prefix')),
+                    location: new Location($configFile, ConfigFileHelper::findKeyLine($configFile, 'prefix')),
                     severity: Severity::High,
                     recommendation: "The cache prefix '{$prefix}' is generic and may collide with other applications using the same cache server. ".
                                    'Use a unique prefix based on your application name. Example: \'myapp_cache\' or use env(\'APP_NAME\') to generate it dynamically. '.
@@ -109,7 +113,7 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
      */
     private function getCacheConfig(): array
     {
-        $configFile = $this->basePath.'/config/cache.php';
+        $configFile = ConfigFileHelper::getConfigPath($this->basePath, 'cache.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
         if (! file_exists($configFile)) {
             return [];
@@ -118,30 +122,5 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
         $config = include $configFile;
 
         return is_array($config) ? $config : [];
-    }
-
-    private function findLineInConfig(string $file, string $key): int
-    {
-        $configFile = $this->basePath.'/config/'.$file.'.php';
-
-        if (! file_exists($configFile)) {
-            return 1;
-        }
-
-        $content = file_get_contents($configFile);
-
-        if ($content === false) {
-            return 1;
-        }
-
-        $lines = explode("\n", $content);
-
-        foreach ($lines as $lineNumber => $line) {
-            if (str_contains($line, "'{$key}'") || str_contains($line, "\"{$key}\"")) {
-                return $lineNumber + 1;
-            }
-        }
-
-        return 1;
     }
 }

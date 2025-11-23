@@ -29,7 +29,8 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::Critical,
             tags: ['environment', 'configuration', 'deployment'],
-            docsUrl: 'https://laravel.com/docs/configuration#environment-configuration'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/env-file-exists',
+            timeToFix: 5
         );
     }
 

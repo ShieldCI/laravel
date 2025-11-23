@@ -49,7 +49,8 @@ class DuplicateCodeAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Medium,
             tags: ['duplication', 'maintainability', 'code-quality', 'dry', 'refactoring'],
-            docsUrl: 'https://refactoring.guru/smells/duplicate-code'
+            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/duplicate-code',
+            timeToFix: 45
         );
     }
 

@@ -33,7 +33,8 @@ class EnvironmentCheckSmellAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Low,
             tags: ['laravel', 'configuration', 'maintainability', 'testing'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/environment-check-smell',
+            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/environment-check-smell',
+            timeToFix: 15
         );
     }
 

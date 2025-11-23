@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -30,7 +31,8 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['environment', 'configuration', 'reliability', 'deployment'],
-            docsUrl: 'https://laravel.com/docs/configuration#environment-configuration'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/env-variables-complete',
+            timeToFix: 20
         );
     }
 
@@ -93,12 +95,11 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
      */
     private function parseEnvFile(string $filePath): array
     {
-        $content = file_get_contents($filePath);
-        if ($content === false) {
+        $lines = FileParser::getLines($filePath);
+
+        if (empty($lines)) {
             return [];
         }
-
-        $lines = explode("\n", $content);
         $variables = [];
 
         foreach ($lines as $line) {

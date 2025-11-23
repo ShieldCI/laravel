@@ -33,7 +33,8 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Medium,
             tags: ['laravel', 'configuration', 'maintainability', 'testability'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/config-outside-config',
+            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/config-outside-config',
+            timeToFix: 10
         );
     }
 

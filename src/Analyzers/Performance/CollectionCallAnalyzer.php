@@ -49,27 +49,19 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             category: Category::Performance,
             severity: Severity::High,
             tags: ['database', 'collection', 'performance', 'n+1', 'optimization', 'phpstan'],
-            docsUrl: 'https://laravel.com/docs/queries#aggregates'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/collection-call-optimization',
+            timeToFix: 45
         );
     }
 
     public function shouldRun(): bool
     {
-        // Check if we should skip in local environment
-        if ($this->isLocalAndShouldSkip()) {
-            return false;
-        }
-
         // Check if PHPStan and Larastan are available
         return $this->hasLarastan();
     }
 
     public function getSkipReason(): string
     {
-        if ($this->isLocalAndShouldSkip()) {
-            return 'Skipped in local environment (configured)';
-        }
-
         return 'Larastan package not installed (required for collection call analysis)';
     }
 
@@ -78,12 +70,20 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
         $issues = [];
 
         // Set root path for PHPStan
-        if (function_exists('base_path')) {
-            $this->phpStan->setRootPath(base_path());
+        $basePath = $this->getBasePath();
+        if ($basePath === '') {
+            $basePath = function_exists('base_path') ? base_path() : getcwd();
+        }
+
+        if (is_string($basePath) && $basePath !== '') {
+            $this->phpStan->setRootPath($basePath);
         }
 
         // Run PHPStan on configured paths
-        $paths = $this->paths ?? ['app'];
+        $paths = $this->paths;
+        if (! is_array($paths) || empty($paths)) {
+            $paths = ['app'];
+        }
 
         try {
             $this->phpStan->start($paths);
@@ -97,37 +97,23 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             );
         } catch (\Throwable $e) {
             // If PHPStan fails, return error but don't crash
-            return $this->failed(
-                'PHPStan analysis failed: '.$e->getMessage(),
+            return $this->error(
+                sprintf(
+                    'PHPStan analysis failed: %s. Ensure PHPStan and Larastan are properly configured.',
+                    $e->getMessage()
+                ),
                 []
             );
         }
 
-        if (empty($issues)) {
+        if (count($issues) === 0) {
             return $this->passed('No inefficient collection calls detected');
         }
 
-        return $this->failed(
-            sprintf('Found %d inefficient collection operations that should be database queries', count($issues)),
+        return $this->resultBySeverity(
+            sprintf('Found %d inefficient collection operation(s) that should be database queries', count($issues)),
             $issues
         );
-    }
-
-    /**
-     * Check if running in local environment and should skip.
-     */
-    protected function isLocalAndShouldSkip(): bool
-    {
-        if (! function_exists('config') || ! function_exists('app')) {
-            return false;
-        }
-
-        $skipEnvSpecific = config('shieldci.skip_env_specific', false);
-
-        /** @var \Illuminate\Foundation\Application $app */
-        $app = app();
-
-        return $skipEnvSpecific && $app->environment('local');
     }
 
     /**
@@ -135,19 +121,54 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
      */
     protected function hasLarastan(): bool
     {
-        // For testing: check if we're in a test environment with mocked PHPStan
-        if (get_class($this->phpStan) === 'Mockery\Mock') {
+        // For testing: check if PHPStan is mocked
+        if ($this->isMockedPHPStan()) {
             return true; // Assume Larastan is available when using mocked PHPStan
         }
 
-        // Check if it's a Mockery mock by checking class name
-        $className = get_class($this->phpStan);
-        if (str_contains($className, 'Mockery') || str_contains($className, 'Mock')) {
+        // Check actual Larastan installation
+        $basePath = $this->getBasePath();
+        if ($basePath === '') {
+            $basePath = function_exists('base_path') ? base_path() : getcwd();
+        }
+
+        if ($basePath === '') {
+            return false;
+        }
+
+        // Check multiple possible Larastan paths (current and legacy package names)
+        $possiblePaths = [
+            $basePath.DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR.'larastan'.DIRECTORY_SEPARATOR.'larastan'.DIRECTORY_SEPARATOR.'extension.neon',
+            $basePath.DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR.'nunomaduro'.DIRECTORY_SEPARATOR.'larastan'.DIRECTORY_SEPARATOR.'extension.neon',
+        ];
+
+        foreach ($possiblePaths as $path) {
+            if (file_exists($path)) {
+                return true;
+            }
+        }
+
+        // Fallback: check if Larastan class exists
+        return class_exists('Larastan\\Larastan\\ApplicationServiceProvider');
+    }
+
+    /**
+     * Check if PHPStan instance is a mock (for testing).
+     */
+    private function isMockedPHPStan(): bool
+    {
+        // Check for Mockery mock
+        if (interface_exists('Mockery\MockInterface') && $this->phpStan instanceof \Mockery\MockInterface) {
             return true;
         }
 
-        $basePath = function_exists('base_path') ? base_path() : getcwd();
+        // Check for PHPUnit mock (starts with "Mock_")
+        $className = get_class($this->phpStan);
+        if (str_starts_with($className, 'Mock_')) {
+            return true;
+        }
 
-        return file_exists($basePath.'/vendor/larastan/larastan/extension.neon');
+        // Fallback: check class name for common mock patterns
+        return str_contains($className, 'Mockery') || str_contains($className, 'Mock');
     }
 }

@@ -42,15 +42,58 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Environment-Specific Analyzers
+    | Environment Mapping
     |--------------------------------------------------------------------------
     |
-    | Skip environment-specific analyzers when set to true.
-    | Useful for excluding checks specific to non-local environments when running in local.
+    | Map custom environment names to standard environment types.
+    |
+    | Standard environments (no mapping needed):
+    | - local: Local development on developer machines
+    | - development: Development server environment
+    | - staging: Pre-production/staging environment
+    | - production: Live production environment
+    | - testing: Automated testing environment (PHPUnit, CI/CD)
+    |
+    | Only configure mappings for custom environment names that don't match
+    | the standard names above.
+    |
+    | Common multi-environment scenarios:
+    | - Blue-green deployments: production-blue, production-green
+    | - Multi-region: production-us, production-eu, production-asia
+    | - Numbered environments: prod-1, prod-2, staging-1
+    | - Preview environments: staging-preview, staging-pr-123
+    |
+    | Example configuration:
+    |
+    | 'environment_mapping' => [
+    |     'production-us' => 'production',
+    |     'production-eu' => 'production',
+    |     'production-blue' => 'production',
+    |     'production-green' => 'production',
+    |     'prod-1' => 'production',
+    |     'prod-2' => 'production',
+    |     'staging-preview' => 'staging',
+    |     'staging-1' => 'staging',
+    |     'stag-us' => 'staging',
+    | ],
+    |
+    | How it works:
+    | - If APP_ENV=production → No mapping needed, uses 'production' directly
+    | - If APP_ENV=production-us → Maps to 'production'
+    | - If APP_ENV=local → No mapping needed, uses 'local' directly
+    | - If APP_ENV=demo → No mapping, uses 'demo' (won't match production/staging)
+    |
+    | Analyzers then use standard environment names in their $relevantEnvironments:
+    |   protected ?array $relevantEnvironments = ['production', 'staging'];
     |
     */
 
-    'skip_env_specific' => env('SHIELDCI_SKIP_ENV_SPECIFIC', false),
+    'environment_mapping' => [
+        // Map your custom environment names to standard types here
+        // Example:
+        // 'production-us' => 'production',
+        // 'staging-preview' => 'staging',
+    ],
 
     /*
     |--------------------------------------------------------------------------

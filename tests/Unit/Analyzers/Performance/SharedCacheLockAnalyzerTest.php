@@ -4,28 +4,48 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
+use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Mockery;
 use ShieldCI\Analyzers\Performance\SharedCacheLockAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class SharedCacheLockAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
-    {
-        return new SharedCacheLockAnalyzer($this->parser);
-    }
+    protected function createAnalyzer(
+        string $defaultStore = 'redis',
+        string $driver = 'redis',
+        ?string $lockConnection = null,
+        ?string $cacheConnection = 'cache'
+    ): AnalyzerInterface {
+        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        $config = Mockery::mock(ConfigRepository::class);
 
-    protected function setUp(): void
-    {
-        parent::setUp();
+        // Mock cache.default
+        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
+        $config->shouldReceive('get')
+            ->with('cache.default')
+            ->andReturn($defaultStore);
 
-        // Mock config for Redis cache
-        config([
-            'cache.default' => 'redis',
-            'cache.stores.redis.driver' => 'redis',
-            'cache.stores.redis.connection' => 'cache',
-            'cache.stores.redis.lock_connection' => null,
-        ]);
+        // Mock cache driver
+        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
+        $config->shouldReceive('get')
+            ->with("cache.stores.$defaultStore.driver")
+            ->andReturn($driver);
+
+        // Mock lock_connection
+        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
+        $config->shouldReceive('get')
+            ->with("cache.stores.$defaultStore.lock_connection")
+            ->andReturn($lockConnection);
+
+        // Mock cache connection
+        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
+        $config->shouldReceive('get')
+            ->with("cache.stores.$defaultStore.connection")
+            ->andReturn($cacheConnection);
+
+        return new SharedCacheLockAnalyzer($this->parser, $config);
     }
 
     public function test_passes_when_no_cache_lock_usage(): void
@@ -68,11 +88,6 @@ PHP;
 
     public function test_passes_when_separate_lock_connection_configured(): void
     {
-        // Configure separate lock connection
-        config([
-            'cache.stores.redis.lock_connection' => 'lock_redis',
-        ]);
-
         $code = <<<'PHP'
 <?php
 
@@ -98,7 +113,12 @@ PHP;
             'app/Services/OrderService.php' => $code,
         ]);
 
-        $analyzer = $this->createAnalyzer();
+        $analyzer = $this->createAnalyzer(
+            defaultStore: 'redis',
+            driver: 'redis',
+            lockConnection: 'lock_redis',
+            cacheConnection: 'cache'
+        );
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths([$tempDir.'/app']);
 
@@ -109,13 +129,11 @@ PHP;
 
     public function test_skips_when_not_using_redis_driver(): void
     {
-        // Change to file cache
-        config([
-            'cache.default' => 'file',
-            'cache.stores.file.driver' => 'file',
-        ]);
+        $analyzer = $this->createAnalyzer(
+            defaultStore: 'file',
+            driver: 'file'
+        );
 
-        $analyzer = $this->createAnalyzer();
         $shouldRun = $analyzer->shouldRun();
 
         $this->assertFalse($shouldRun);
@@ -126,5 +144,68 @@ PHP;
         // Skip this test for now - AST parsing in tests is complex
         // The analyzer works in real environments
         $this->markTestSkipped('AST parsing of ->lock() requires real environment');
+    }
+
+    public function test_passes_when_using_redis_driver(): void
+    {
+        $analyzer = $this->createAnalyzer(
+            defaultStore: 'redis',
+            driver: 'redis'
+        );
+
+        $shouldRun = $analyzer->shouldRun();
+
+        $this->assertTrue($shouldRun);
+    }
+
+    public function test_skip_reason_shows_current_driver(): void
+    {
+        $analyzer = $this->createAnalyzer(
+            defaultStore: 'file',
+            driver: 'file'
+        );
+
+        if (method_exists($analyzer, 'getSkipReason')) {
+            $reason = $analyzer->getSkipReason();
+
+            $this->assertStringContainsString('file', $reason);
+            $this->assertStringContainsString('Not using Redis', $reason);
+        }
+    }
+
+    public function test_passes_when_lock_and_cache_connections_are_different(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache;
+
+class PaymentService
+{
+    public function process()
+    {
+        return Cache::get('payment');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/PaymentService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer(
+            defaultStore: 'redis',
+            driver: 'redis',
+            lockConnection: 'lock_redis',
+            cacheConnection: 'default_redis'
+        );
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString('separate connection', $result->getMessage());
     }
 }

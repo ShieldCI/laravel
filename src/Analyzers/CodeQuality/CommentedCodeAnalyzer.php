@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -58,7 +59,8 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Low,
             tags: ['maintainability', 'code-quality', 'comments', 'dead-code', 'version-control'],
-            docsUrl: 'https://refactoring.guru/smells/comments'
+            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/commented-code',
+            timeToFix: 5
         );
     }
 
@@ -68,9 +70,9 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
         $minLines = $this->minConsecutiveLines;
 
         foreach ($this->getPhpFiles() as $file) {
-            $content = file_get_contents($file);
+            $content = FileParser::readFile($file);
 
-            if ($content === false) {
+            if ($content === null) {
                 continue;
             }
 

@@ -38,7 +38,8 @@ class RawEloquentAvoidanceAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Low,
             tags: ['laravel', 'eloquent', 'sql', 'readability', 'security'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/raw-eloquent-avoidance',
+            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/raw-eloquent-avoidance',
+            timeToFix: 30
         );
     }
 

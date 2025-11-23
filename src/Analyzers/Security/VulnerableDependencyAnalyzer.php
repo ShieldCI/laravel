@@ -31,7 +31,8 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['dependencies', 'composer', 'vulnerabilities', 'cve', 'security'],
-            docsUrl: 'https://getcomposer.org/doc/articles/scripts.md#command-events'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/vulnerable-dependencies',
+            timeToFix: 60
         );
     }
 

@@ -7,6 +7,7 @@ namespace ShieldCI\Commands;
 use Illuminate\Console\Command;
 use ShieldCI\AnalyzerManager;
 use ShieldCI\AnalyzersCore\Enums\Status;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 
 class BaselineCommand extends Command
@@ -58,7 +59,8 @@ class BaselineCommand extends Command
         $existingBaseline = [];
         $existingDontReport = [];
         if ($this->option('merge') && file_exists($outputPath)) {
-            $decoded = json_decode(file_get_contents($outputPath), true);
+            $content = FileParser::readFile($outputPath);
+            $decoded = $content !== null ? json_decode($content, true) : null;
             $existingBaseline = is_array($decoded) && isset($decoded['errors']) && is_array($decoded['errors'])
                 ? $decoded['errors']
                 : [];

@@ -17,6 +17,20 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * This analyzer is only relevant in production and staging environments.
+     *
+     * Custom environment names are automatically handled via environment mapping.
+     *
+     * Not relevant in:
+     * - local: Developers don't need error tracking
+     * - development: Same as local
+     * - testing: Test suite doesn't need error tracking
+     *
+     * @var array<string>
+     */
+    protected ?array $relevantEnvironments = ['production', 'staging'];
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
@@ -26,14 +40,15 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Medium,
             tags: ['laravel', 'monitoring', 'production', 'error-tracking'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/missing-error-tracking',
+            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/missing-error-tracking',
+            timeToFix: 30
         );
     }
 
     public function shouldRun(): bool
     {
-        // Skip if user configured to skip in local environment
-        return ! $this->isLocalAndShouldSkip();
+        // Check if relevant for current environment first
+        return $this->isRelevantForCurrentEnvironment();
     }
 
     protected function runAnalysis(): ResultInterface

@@ -38,7 +38,8 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::High,
             tags: ['eloquent', 'mass-assignment', 'models', 'security', 'unguard'],
-            docsUrl: 'https://laravel.com/docs/eloquent#mass-assignment'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/unguarded-models',
+            timeToFix: 20
         );
     }
 
@@ -157,7 +158,7 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
                 ),
                 severity: $this->getSeverityForContext($file),
                 recommendation: 'Remove Model::unguard() and use $fillable or forceFill() instead. Unguarding models opens mass assignment vulnerabilities.',
-                code: $this->getCodeSnippet($file, $lineNumber)
+                code: FileParser::getCodeSnippet($file, $lineNumber)
             );
         }
     }

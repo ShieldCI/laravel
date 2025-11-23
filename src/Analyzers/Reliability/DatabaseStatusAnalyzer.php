@@ -9,6 +9,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -36,7 +37,8 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::Critical,
             tags: ['database', 'infrastructure', 'reliability', 'availability'],
-            docsUrl: 'https://laravel.com/docs/database'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/database-status',
+            timeToFix: 15
         );
     }
 
@@ -63,7 +65,7 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
                 if (! $pdo) {
                     $issues[] = $this->createIssue(
                         message: "Database connection '{$connectionName}' returned null PDO",
-                        location: new Location($this->basePath.'/config/database.php', 1),
+                        location: new Location(ConfigFileHelper::getConfigPath($this->basePath, 'database.php', fn ($file) => function_exists('config_path') ? config_path($file) : null), 1),
                         severity: Severity::Critical,
                         recommendation: "Check database configuration for '{$connectionName}' connection in config/database.php. Ensure the database server is running and credentials are correct.",
                         metadata: [
@@ -75,7 +77,7 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
             } catch (\Throwable $e) {
                 $issues[] = $this->createIssue(
                     message: "Cannot connect to database '{$connectionName}'",
-                    location: new Location($this->basePath.'/config/database.php', 1),
+                    location: new Location(ConfigFileHelper::getConfigPath($this->basePath, 'database.php', fn ($file) => function_exists('config_path') ? config_path($file) : null), 1),
                     severity: Severity::Critical,
                     recommendation: $this->getRecommendation($connectionName, $e),
                     metadata: [

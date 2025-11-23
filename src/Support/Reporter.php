@@ -6,6 +6,7 @@ namespace ShieldCI\Support;
 
 use DateTimeImmutable;
 use Illuminate\Support\Collection;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\ValueObjects\AnalysisReport;
 
@@ -66,7 +67,15 @@ class Reporter implements ReporterInterface
                 // Get name from metadata
                 $name = $metadata['name'] ?? $result->getAnalyzerId();
 
-                $output[] = $this->color("Check {$current}/{$total}: ", 'yellow')."{$name}. {$status}";
+                // Build status line with optional timeToFix
+                $statusLine = "{$name}. {$status}";
+                $timeToFix = $metadata['timeToFix'] ?? null;
+                if ($timeToFix !== null && is_int($timeToFix) && ($result->getStatus()->value === 'failed' || $result->getStatus()->value === 'warning')) {
+                    $timeLabel = $timeToFix === 1 ? '1 min' : "{$timeToFix} mins";
+                    $statusLine .= ' '.$this->color("({$timeLabel} to fix)", 'gray');
+                }
+
+                $output[] = $this->color("Check {$current}/{$total}: ", 'yellow').$statusLine;
 
                 // Show skip reason for skipped analyzers
                 if ($result->getStatus()->value === 'skipped') {
@@ -440,9 +449,12 @@ class Reporter implements ReporterInterface
         $composerPath = __DIR__.'/../../composer.json';
 
         if (file_exists($composerPath)) {
-            $composer = json_decode(file_get_contents($composerPath), true);
+            $content = FileParser::readFile($composerPath);
+            if ($content !== null) {
+                $composer = json_decode($content, true);
 
-            return $composer['version'] ?? 'dev';
+                return is_array($composer) && isset($composer['version']) ? $composer['version'] : 'dev';
+            }
         }
 
         return 'dev';

@@ -59,7 +59,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::High,
             tags: ['authentication', 'authorization', 'security', 'middleware'],
-            docsUrl: 'https://laravel.com/docs/authentication'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/authentication-protection',
+            timeToFix: 25
         );
     }
 
@@ -224,7 +225,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                                 ),
                                 severity: Severity::High,
                                 recommendation: 'Add $this->middleware("auth") in constructor or use authorization checks',
-                                code: $this->getCodeSnippet($file, $stmt->getLine())
+                                code: FileParser::getCodeSnippet($file, $stmt->getLine())
                             );
                         }
                     }

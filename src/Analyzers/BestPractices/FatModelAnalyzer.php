@@ -44,7 +44,8 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Medium,
             tags: ['laravel', 'eloquent', 'architecture', 'solid', 'srp'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/fat-model',
+            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/fat-model',
+            timeToFix: 45
         );
     }
 

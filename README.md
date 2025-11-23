@@ -111,12 +111,6 @@ Run informational analyzers without failing CI:
 ],
 ```
 
-#### Environment Control
-Exclude checks specific to non-local environments when running in local:
-```bash
-SHIELDCI_SKIP_ENV_SPECIFIC=true php artisan shield:analyze
-```
-
 #### Compact Output
 Limit displayed issues per check:
 ```bash
@@ -124,11 +118,39 @@ Limit displayed issues per check:
 SHIELDCI_MAX_ISSUES=3 php artisan shield:analyze
 ```
 
+#### Environment-Aware Analyzers
+Some analyzers are only relevant in specific environments. ShieldCI automatically handles multi-environment setups through environment mapping.
+
+**Standard environments** (no configuration needed):
+- `local` - Local development
+- `development` - Development server
+- `staging` - Staging/pre-production
+- `production` - Production
+- `testing` - Automated testing
+
+**Custom environments** (configure mapping):
+```php
+// config/shieldci.php
+'environment_mapping' => [
+    'production-us' => 'production',
+    'production-eu' => 'production',
+    'staging-preview' => 'staging',
+    'prod-1' => 'production',
+],
+```
+
+How it works:
+- Analyzers declare which environments they're relevant for (e.g., `['production', 'staging']`)
+- Custom environment names are automatically mapped to standard types
+- Analyzers run only in their relevant environments
+
+Example: AutoloaderOptimizationAnalyzer only runs in production/staging environments.
+
 ## Available Analyzers
 
-ShieldCI includes **101 comprehensive analyzers** across five categories:
+ShieldCI includes **102 comprehensive analyzers** across five categories:
 - **22 Security Analyzers** - Complete OWASP Top 10 2021 coverage
-- **17 Performance Analyzers** - Optimize application speed and efficiency
+- **18 Performance Analyzers** - Optimize application speed and efficiency
 - **24 Reliability Analyzers** - Ensure application stability and correctness
 - **15 Code Quality Analyzers** - Improve maintainability and code standards
 - **23 Best Practices Analyzers** - Enforce Laravel-specific best practices
@@ -180,7 +202,7 @@ Providing complete OWASP Top 10 2021 coverage:
 - **Stable Dependency Analyzer** - Validates stable version usage (no dev/alpha/beta)
 - **License Analyzer** - Ensures dependencies use legally acceptable licenses (detects GPL/AGPL issues)
 
-### Performance Analyzers (17)
+### Performance Analyzers (18)
 
 Optimize your Laravel application for production:
 
@@ -192,6 +214,7 @@ Optimize your Laravel application for production:
 - **Debug Log Analyzer** - Detects debug-level logging in production environments
 - **Dev Dependency Analyzer** - Ensures dev dependencies aren't in production
 - **Env Call Analyzer** - Detects env() calls outside configuration files
+- **Horizon Suggestion Analyzer** - Recommends Laravel Horizon for Redis queue management
 - **Minification Analyzer** - Checks asset minification for production
 - **Mysql Single Server Analyzer** - Validates database configuration
 - **Opcache Analyzer** - Ensures OPcache is enabled in production

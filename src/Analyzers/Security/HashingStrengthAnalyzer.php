@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
@@ -37,7 +38,8 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['hashing', 'passwords', 'bcrypt', 'argon2', 'security'],
-            docsUrl: 'https://laravel.com/docs/hashing'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/hashing-strength',
+            timeToFix: 15
         );
     }
 
@@ -66,7 +68,7 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
      */
     private function checkHashingConfig(array &$issues): void
     {
-        $hashingConfig = $this->basePath.'/config/hashing.php';
+        $hashingConfig = ConfigFileHelper::getConfigPath($this->basePath, 'hashing.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
         if (! file_exists($hashingConfig)) {
             return;

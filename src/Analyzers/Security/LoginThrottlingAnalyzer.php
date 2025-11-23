@@ -38,7 +38,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::High,
             tags: ['authentication', 'rate-limiting', 'brute-force', 'security', 'throttling'],
-            docsUrl: 'https://laravel.com/docs/routing#rate-limiting'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/login-throttling',
+            timeToFix: 20
         );
     }
 
@@ -253,7 +254,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                                     ),
                                     severity: Severity::High,
                                     recommendation: 'Implement rate limiting using RateLimiter facade or throttle middleware to prevent brute force attacks',
-                                    code: $this->getCodeSnippet($controllerPath, $stmt->getLine())
+                                    code: FileParser::getCodeSnippet($controllerPath, $stmt->getLine())
                                 );
                             }
                         }

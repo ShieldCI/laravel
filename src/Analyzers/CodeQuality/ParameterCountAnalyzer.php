@@ -50,7 +50,8 @@ class ParameterCountAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Medium,
             tags: ['complexity', 'maintainability', 'code-quality', 'refactoring', 'parameters'],
-            docsUrl: 'https://refactoring.guru/smells/long-parameter-list'
+            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/parameter-count',
+            timeToFix: 25
         );
     }
 

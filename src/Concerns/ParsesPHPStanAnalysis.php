@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Concerns;
 
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Support\PHPStan;
 
@@ -22,12 +23,21 @@ trait ParsesPHPStanAnalysis
     protected function parsePHPStanAnalysis(PHPStan $phpStan, string|array $search, array &$issues): void
     {
         foreach ($phpStan->parseAnalysis($search) as $trace) {
+            // Validate trace structure
+            if (! isset($trace['message'], $trace['path'], $trace['line'])) {
+                continue;  // Skip malformed traces
+            }
+
+            if (! is_string($trace['message']) || ! is_string($trace['path']) || ! is_int($trace['line'])) {
+                continue;  // Skip invalid types
+            }
+
             $issues[] = $this->createIssue(
                 message: $trace['message'],
                 location: new Location($trace['path'], $trace['line']),
                 severity: Severity::High,
                 recommendation: $this->getRecommendationFromMessage($trace['message']),
-                code: $this->getCodeSnippet($trace['path'], $trace['line']),
+                code: FileParser::getCodeSnippet($trace['path'], $trace['line']),
                 metadata: [
                     'phpstan_message' => $trace['message'],
                     'detection_method' => 'phpstan',
@@ -50,7 +60,7 @@ trait ParsesPHPStanAnalysis
                 location: new Location($trace['path'], $trace['line']),
                 severity: Severity::High,
                 recommendation: $this->getRecommendationFromMessage($trace['message']),
-                code: $this->getCodeSnippet($trace['path'], $trace['line']),
+                code: FileParser::getCodeSnippet($trace['path'], $trace['line']),
                 metadata: [
                     'phpstan_message' => $trace['message'],
                     'detection_method' => 'phpstan',
@@ -72,7 +82,7 @@ trait ParsesPHPStanAnalysis
                 location: new Location($trace['path'], $trace['line']),
                 severity: Severity::High,
                 recommendation: $this->getRecommendationFromMessage($trace['message']),
-                code: $this->getCodeSnippet($trace['path'], $trace['line']),
+                code: FileParser::getCodeSnippet($trace['path'], $trace['line']),
                 metadata: [
                     'phpstan_message' => $trace['message'],
                     'detection_method' => 'phpstan',

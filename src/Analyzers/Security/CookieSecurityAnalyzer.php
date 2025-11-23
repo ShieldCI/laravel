@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
@@ -32,7 +33,8 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['cookies', 'encryption', 'xss', 'security', 'configuration'],
-            docsUrl: 'https://laravel.com/docs/requests#cookies'
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/cookie-security',
+            timeToFix: 15
         );
     }
 
@@ -61,7 +63,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
      */
     private function checkSessionConfig(array &$issues): void
     {
-        $sessionConfig = $this->basePath.'/config/session.php';
+        $sessionConfig = ConfigFileHelper::getConfigPath($this->basePath, 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
         if (! file_exists($sessionConfig)) {
             return;

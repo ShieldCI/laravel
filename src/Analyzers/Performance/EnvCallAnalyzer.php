@@ -4,17 +4,28 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Performance;
 
-use PhpParser\Node;
-use PhpParser\Node\Expr\FuncCall;
+use PhpParser\Node\Expr\ConstFetch;
+use PhpParser\Node\Expr\StaticCall;
+use PhpParser\Node\Identifier;
 use PhpParser\Node\Name;
+use PhpParser\Node\Scalar\DNumber;
+use PhpParser\Node\Scalar\LNumber;
+use PhpParser\Node\Scalar\String_;
+use PhpParser\Node\Stmt\GroupUse;
+use PhpParser\Node\Stmt\Use_;
+use PhpParser\Node\Stmt\UseUse;
 use PhpParser\NodeFinder;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\AstParser;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\InspectsCode;
+use ShieldCI\Support\ConfigSuggester;
+use ShieldCI\Support\FileTypeDetector;
 
 /**
  * Detects env() calls outside of configuration files.
@@ -23,15 +34,27 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - env() function calls in controllers, models, services
  * - env() calls that will break when config is cached
  * - Recommends using config() instead of env()
+ *
+ * Uses the InspectsCode trait for AST parsing abstraction.
  */
 class EnvCallAnalyzer extends AbstractFileAnalyzer
 {
-    private AstParser $parser;
+    use InspectsCode;
 
-    public function __construct()
-    {
-        $this->parser = new AstParser;
-    }
+    /**
+     * Paths to search for env() calls.
+     */
+    private const SEARCH_PATHS = ['app', 'routes', 'database', 'resources/views'];
+
+    /**
+     * Path patterns to exclude from analysis.
+     */
+    private const EXCLUDE_PATHS = ['/config/', '/tests/', '/Tests/'];
+
+    /**
+     * AST parser for static call detection.
+     */
+    private ?AstParser $staticParser = null;
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -42,144 +65,298 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
             category: Category::Performance,
             severity: Severity::High,
             tags: ['configuration', 'cache', 'performance', 'env'],
-            docsUrl: 'https://laravel.com/docs/configuration#configuration-caching'
+            docsUrl: 'https://docs.shieldci.com/analyzers/performance/env-call-outside-config',
+            timeToFix: 30
         );
     }
 
     protected function runAnalysis(): ResultInterface
     {
+        // Find all env() function calls and Env::get() static calls, excluding config and test directories
+        $excludePaths = $this->getNormalizedExcludePaths();
+
+        $envCalls = $this->findFunctionCalls(
+            functionName: 'env',
+            paths: self::SEARCH_PATHS,
+            excludePaths: $excludePaths
+        );
+
+        // Also find Env::get() static calls
+        $envStaticCalls = $this->findEnvStaticCalls($excludePaths);
+
+        // Combine both types of calls
+        $allCalls = array_merge($envCalls, $envStaticCalls);
+
+        if (count($allCalls) === 0) {
+            return $this->passed('No env() calls detected outside configuration files');
+        }
+
+        // Create issues for each env() call found
         $issues = [];
 
-        // Set paths to analyze (exclude config directory)
-        $this->setPaths(['app', 'routes', 'database', 'resources/views']);
+        foreach ($allCalls as $call) {
+            // Validate call structure
+            if (! isset($call['file'], $call['node'], $call['args'])) {
+                continue;
+            }
+
+            $varName = $call['args'][0] ?? null;
+            $filePath = $call['file'];
+            $node = $call['node'];
+
+            if (! $node instanceof \PhpParser\Node) {
+                continue;
+            }
+
+            $line = $node->getLine();
+            $callType = $call['type'] ?? 'function';
+
+            // Ensure varName is string|null for ConfigSuggester
+            $varNameString = is_string($varName) ? $varName : null;
+
+            $message = $callType === 'static'
+                ? 'Env::get() call detected outside configuration files'
+                : 'env() call detected outside configuration files';
+
+            $issues[] = $this->createIssue(
+                message: $message,
+                location: new Location($filePath, $line),
+                severity: Severity::High,
+                recommendation: ConfigSuggester::getRecommendation($varNameString),
+                code: FileParser::getCodeSnippet($filePath, $line),
+                metadata: [
+                    'function' => $callType === 'static' ? 'Env::get' : 'env',
+                    'variable' => $varNameString,
+                    'file_type' => FileTypeDetector::detect($filePath),
+                ]
+            );
+        }
+
+        return $this->resultBySeverity(
+            sprintf('Found %d env() call(s) outside configuration files', count($issues)),
+            $issues
+        );
+    }
+
+    /**
+     * Get the static parser instance (lazy initialization).
+     */
+    private function getStaticParser(): AstParser
+    {
+        if ($this->staticParser === null) {
+            $this->staticParser = new AstParser;
+        }
+
+        return $this->staticParser;
+    }
+
+    /**
+     * Find Env::get() static calls outside configuration files.
+     *
+     * @return array<int, array{file: string, node: StaticCall, args: array<int, mixed>, type: string}>
+     */
+    /**
+     * @param  array<int, string>  $excludePaths
+     */
+    private function findEnvStaticCalls(array $excludePaths): array
+    {
+        $results = [];
+        $parser = $this->getStaticParser();
+
+        // Set paths to analyze
+        $this->setPaths(self::SEARCH_PATHS);
 
         foreach ($this->getPhpFiles() as $file) {
             $filePath = $file instanceof \SplFileInfo ? $file->getPathname() : (string) $file;
 
-            // Skip config files
-            if (str_contains($filePath, '/config/')) {
+            // Skip excluded paths (config and tests)
+            if ($this->shouldExcludeEnvFile($filePath, $excludePaths)) {
                 continue;
             }
 
             try {
-                $ast = $this->parser->parseFile($filePath);
-                $this->analyzeFile($filePath, $ast, $issues);
+                $ast = $parser->parseFile($filePath);
+                $envClasses = $this->getEnvClassAliases($ast);
+                $calls = $this->findEnvStaticCallsInAst($ast, $envClasses);
+
+                foreach ($calls as $call) {
+                    $results[] = [
+                        'file' => $filePath,
+                        'node' => $call,
+                        'args' => $this->extractStaticCallArguments($call),
+                        'type' => 'static',
+                    ];
+                }
             } catch (\Throwable $e) {
                 // Skip files that can't be parsed
                 continue;
             }
         }
 
-        if (empty($issues)) {
-            return $this->passed('No env() calls detected outside configuration files');
-        }
-
-        return $this->failed(
-            sprintf('Found %d env() calls outside configuration files', count($issues)),
-            $issues
-        );
+        return $results;
     }
 
-    private function analyzeFile(string $filePath, array $ast, array &$issues): void
+    /**
+     * Find Env::get() static calls in AST.
+     *
+     * @param  array<\PhpParser\Node>  $ast
+     * @return array<int, StaticCall>
+     */
+    /**
+     * @param  array<int, string>  $envClasses
+     */
+    private function findEnvStaticCallsInAst(array $ast, array $envClasses): array
     {
         $nodeFinder = new NodeFinder;
+        $staticCalls = $nodeFinder->findInstanceOf($ast, StaticCall::class);
 
-        // Find all function calls
-        $functionCalls = $nodeFinder->findInstanceOf($ast, FuncCall::class);
+        $matches = [];
 
-        foreach ($functionCalls as $funcCall) {
-            if ($funcCall->name instanceof Name && $funcCall->name->toString() === 'env') {
-                // Get the env variable name if it's a string literal
-                $varName = null;
+        foreach ($staticCalls as $staticCall) {
+            // Check if it's Env::get() or \Illuminate\Support\Facades\Env::get()
+            // Also handles use statements (e.g., use Illuminate\Support\Facades\Env; Env::get())
+            if (! ($staticCall->class instanceof Name)) {
+                continue;
+            }
 
-                if (isset($funcCall->args[0]) && $funcCall->args[0]->value instanceof Node\Scalar\String_) {
-                    $varName = $funcCall->args[0]->value->value;
-                }
+            $className = ltrim($staticCall->class->toString(), '\\');
+            $isEnv = in_array($className, $envClasses, true);
 
-                $issues[] = $this->createIssue(
-                    message: 'env() call detected outside configuration files',
-                    location: new Location($filePath, $funcCall->getLine()),
-                    severity: Severity::High,
-                    recommendation: $this->getRecommendation($varName),
-                    code: $this->getCodeSnippet($filePath, $funcCall->getLine()),
-                    metadata: [
-                        'function' => 'env',
-                        'variable' => $varName,
-                        'file_type' => $this->getFileType($filePath),
-                    ]
-                );
+            if ($isEnv
+                && $staticCall->name instanceof Identifier
+                && $staticCall->name->toString() === 'get'
+            ) {
+                $matches[] = $staticCall;
             }
         }
+
+        return $matches;
     }
 
-    private function getRecommendation(?string $varName): string
+    /**
+     * Extract arguments from a static call.
+     *
+     * @return array<int, mixed>
+     */
+    private function extractStaticCallArguments(StaticCall $staticCall): array
     {
-        $base = 'Do not call env() outside of configuration files. Once config is cached (php artisan config:cache), the .env file is not loaded and env() returns null. ';
+        $args = [];
 
-        if ($varName) {
-            $configKey = $this->suggestConfigKey($varName);
-
-            return $base."Add '{$varName}' to a config file (e.g., config/{$configKey[0]}.php) and use config('{$configKey[1]}') instead of env('{$varName}').";
+        foreach ($staticCall->args as $index => $arg) {
+            $args[$index] = $this->extractStaticArgumentValue($arg->value);
         }
 
-        return $base.'Move this env() call to a configuration file and use config() to retrieve the value instead.';
+        return $args;
     }
 
-    private function suggestConfigKey(string $varName): array
+    /**
+     * Extract value from a node (for static calls).
+     */
+    private function extractStaticArgumentValue(\PhpParser\Node $node): mixed
     {
-        // Suggest appropriate config file and key based on env variable name
-        $varLower = strtolower($varName);
-
-        if (str_starts_with($varLower, 'app_')) {
-            return ['app', 'app.'.strtolower(substr($varName, 4))];
+        if ($node instanceof String_) {
+            return $node->value;
         }
 
-        if (str_starts_with($varLower, 'db_') || str_starts_with($varLower, 'database_')) {
-            return ['database', 'database.'.strtolower(str_replace(['DB_', 'DATABASE_'], '', $varName))];
+        if ($node instanceof LNumber || $node instanceof DNumber) {
+            return $node->value;
         }
 
-        if (str_starts_with($varLower, 'cache_')) {
-            return ['cache', 'cache.'.strtolower(substr($varName, 6))];
+        if ($node instanceof ConstFetch) {
+            return $node->name->toString();
         }
 
-        if (str_starts_with($varLower, 'mail_')) {
-            return ['mail', 'mail.'.strtolower(substr($varName, 5))];
-        }
-
-        if (str_starts_with($varLower, 'queue_')) {
-            return ['queue', 'queue.'.strtolower(substr($varName, 6))];
-        }
-
-        if (str_starts_with($varLower, 'session_')) {
-            return ['session', 'session.'.strtolower(substr($varName, 8))];
-        }
-
-        // Default to custom config file
-        return ['custom', 'custom.'.strtolower($varName)];
+        // For complex expressions, return null
+        return null;
     }
 
-    private function getFileType(string $filePath): string
+    /**
+     * Check if file should be excluded for env() detection.
+     */
+    /**
+     * @param  array<int, string>|null  $excludePaths
+     */
+    protected function shouldExcludeEnvFile(string $filePath, ?array $excludePaths = null): bool
     {
-        if (str_contains($filePath, '/app/Http/Controllers/')) {
-            return 'controller';
+        $paths = $excludePaths ?? $this->getNormalizedExcludePaths();
+        foreach ($paths as $excludePath) {
+            if (str_contains($filePath, $excludePath)) {
+                return true;
+            }
         }
 
-        if (str_contains($filePath, '/app/Models/')) {
-            return 'model';
+        return false;
+    }
+
+    /**
+     * Normalize exclude paths for different directory separators.
+     *
+     * @return array<int, string>
+     */
+    private function getNormalizedExcludePaths(): array
+    {
+        $paths = [];
+
+        foreach (self::EXCLUDE_PATHS as $path) {
+            $paths[] = $path;
+            $windowsPath = str_replace('/', '\\', $path);
+            if ($windowsPath !== $path) {
+                $paths[] = $windowsPath;
+            }
         }
 
-        if (str_contains($filePath, '/app/Services/')) {
-            return 'service';
+        return array_values(array_unique($paths));
+    }
+
+    /**
+     * @param  array<\PhpParser\Node>  $ast
+     * @return array<int, string>
+     */
+    private function getEnvClassAliases(array $ast): array
+    {
+        $aliases = ['Env', 'Illuminate\\Support\\Facades\\Env'];
+        $nodeFinder = new NodeFinder;
+
+        /** @var array<int, Use_> $useStatements */
+        $useStatements = $nodeFinder->findInstanceOf($ast, Use_::class);
+
+        foreach ($useStatements as $useStatement) {
+            /** @var array<int, UseUse> $useItems */
+            $useItems = $useStatement->uses;
+            $this->collectEnvAliasFromUses($useItems, $aliases);
         }
 
-        if (str_contains($filePath, '/routes/')) {
-            return 'route';
+        /** @var array<int, GroupUse> $groupUses */
+        $groupUses = $nodeFinder->findInstanceOf($ast, GroupUse::class);
+
+        foreach ($groupUses as $groupUse) {
+            $prefix = ltrim($groupUse->prefix->toString(), '\\');
+            /** @var array<int, UseUse> $groupUseItems */
+            $groupUseItems = $groupUse->uses;
+            $this->collectEnvAliasFromUses($groupUseItems, $aliases, $prefix);
         }
 
-        if (str_contains($filePath, '/resources/views/')) {
-            return 'view';
-        }
+        return array_values(array_unique($aliases));
+    }
 
-        return 'application';
+    /**
+     * @param  array<int, UseUse>  $uses
+     * @param  array<int, string>  $aliases
+     */
+    private function collectEnvAliasFromUses(array $uses, array &$aliases, ?string $prefix = null): void
+    {
+        foreach ($uses as $use) {
+            if (! $use instanceof UseUse) {
+                continue;
+            }
+
+            $name = ltrim($use->name->toString(), '\\');
+            $fullName = $prefix ? $prefix.'\\'.$name : $name;
+
+            if ($fullName === 'Illuminate\\Support\\Facades\\Env') {
+                $alias = $use->alias?->toString() ?? $use->name->getLast();
+                $aliases[] = $alias;
+            }
+        }
     }
 }

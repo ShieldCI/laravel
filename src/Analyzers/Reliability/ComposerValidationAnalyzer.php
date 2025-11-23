@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -30,7 +31,8 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::Critical,
             tags: ['composer', 'dependencies', 'reliability', 'configuration'],
-            docsUrl: 'https://getcomposer.org/doc/03-cli.md#validate'
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/composer-validation',
+            timeToFix: 10
         );
     }
 
@@ -52,8 +54,8 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
         }
 
         // Check if composer.json is valid JSON
-        $content = file_get_contents($composerJsonPath);
-        if ($content === false) {
+        $content = FileParser::readFile($composerJsonPath);
+        if ($content === null) {
             return $this->failed('Unable to read composer.json file');
         }
 

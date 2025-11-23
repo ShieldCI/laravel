@@ -128,16 +128,13 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
             default => $this->assessOtherDriver($driver, $issues, $configFile, $defaultConnection),
         };
 
-        if (empty($issues)) {
-            $environment = $this->getEnvironment();
+        $environment = $this->getEnvironment();
 
-            return $this->passed("Queue driver '{$driver}' is properly configured for {$environment} environment");
-        }
+        $summary = empty($issues)
+            ? "Queue driver '{$driver}' is properly configured for {$environment} environment"
+            : sprintf('Found %d queue driver configuration issue%s', count($issues), count($issues) === 1 ? '' : 's');
 
-        return $this->warning(
-            sprintf('Found %d queue driver configuration issue%s', count($issues), count($issues) === 1 ? '' : 's'),
-            $issues
-        );
+        return $this->resultBySeverity($summary, $issues);
     }
 
     /**

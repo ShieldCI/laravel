@@ -120,7 +120,8 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertWarning($result);
+        // Critical severity should return failed, not warning
+        $this->assertFailed($result);
         $this->assertHasIssueContaining('null', $result);
 
         $issues = $result->getIssues();
@@ -147,7 +148,8 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertWarning($result);
+        // High severity should return failed, not warning
+        $this->assertFailed($result);
         $this->assertHasIssueContaining('sync', $result);
 
         $issues = $result->getIssues();
@@ -449,7 +451,8 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertWarning($result);
+        // High severity should return failed, not warning
+        $this->assertFailed($result);
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
@@ -526,7 +529,8 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertWarning($result);
+        // Critical severity should return failed, not warning
+        $this->assertFailed($result);
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
@@ -553,7 +557,8 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertWarning($result);
+        // Critical severity should return failed, not warning
+        $this->assertFailed($result);
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);

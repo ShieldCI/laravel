@@ -46,7 +46,7 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
             name: 'Configuration Caching',
             description: 'Ensures configuration caching is properly configured for each environment',
             category: Category::Performance,
-            severity: Severity::Medium,
+            severity: Severity::High,
             tags: ['cache', 'configuration', 'performance', 'optimization'],
             docsUrl: 'https://docs.shieldci.com/analyzers/performance/config-caching',
             timeToFix: 5

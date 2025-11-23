@@ -367,7 +367,7 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('unsupported', $result);
     }
 

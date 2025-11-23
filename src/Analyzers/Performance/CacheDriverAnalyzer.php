@@ -117,12 +117,12 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
             default => $this->assessOtherDriver($driver, $issues, $configFile, $lineNumber, $defaultStore, $environment),
         };
 
-        if (empty($issues)) {
+        if (count($issues) === 0) {
             return $this->passed("Cache driver '{$driver}' is properly configured for {$environment} environment");
         }
 
-        return $this->failed(
-            sprintf('Found %d cache driver configuration issues', count($issues)),
+        return $this->resultBySeverity(
+            sprintf('Found %d cache driver configuration issue(s)', count($issues)),
             $issues
         );
     }
@@ -189,8 +189,8 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
         $issues[] = $this->createIssue(
             message: "File cache driver in {$environment} environment",
             location: new Location($configFile, $lineNumber),
-            severity: Severity::Medium,
-            recommendation: 'File cache is only suitable for single-server setups. For better performance, use Redis or Memcached with unix sockets. They provide faster access and more efficient eviction of expired cache items.',
+            severity: Severity::High,
+            recommendation: 'File cache is only suitable for single-server setups and causes significant performance degradation in production. Use Redis or Memcached with unix sockets for 10-100x better performance and proper multi-server support.',
             metadata: ['driver' => 'file', 'store' => $defaultStore, 'environment' => $environment]
         );
     }
@@ -209,8 +209,8 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
         $issues[] = $this->createIssue(
             message: "Database cache driver in {$environment} environment",
             location: new Location($configFile, $lineNumber),
-            severity: Severity::Medium,
-            recommendation: 'Database cache driver is not recommended for production. Use Redis or Memcached for better performance and robustness.',
+            severity: Severity::High,
+            recommendation: 'Database cache driver defeats the purpose of caching by adding load to your database server. This creates a performance bottleneck and can cause cascading failures under high load. Use Redis or Memcached for proper production caching.',
             metadata: ['driver' => 'database', 'store' => $defaultStore, 'environment' => $environment]
         );
     }
@@ -244,8 +244,8 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
         $issues[] = $this->createIssue(
             message: "APC cache driver in {$environment} environment",
             location: new Location($configFile, $lineNumber),
-            severity: Severity::Medium,
-            recommendation: 'APCu storage only works on a single server. For load-balanced or containerized environments use Redis or Memcached instead.',
+            severity: Severity::High,
+            recommendation: 'APCu storage only works on a single server and will cause cache inconsistency in load-balanced or containerized environments. Use Redis or Memcached for proper distributed caching.',
             metadata: ['driver' => 'apc', 'store' => $defaultStore, 'environment' => $environment]
         );
     }

@@ -74,19 +74,19 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
         $app = $this->app;
         $routesAreCached = $app->routesAreCached();
 
-        if ($environment === 'local' && $routesAreCached) {
+        if ($this->isLocalEnvironment($environment) && $routesAreCached) {
             $issues[] = $this->createIssue(
-                message: 'Routes are cached in local environment',
+                message: "Routes are cached in {$environment} environment",
                 location: new Location($this->getCachedRoutesPath(), 1),
                 severity: Severity::Low,
                 recommendation: 'Route caching is not recommended for development. Run "php artisan route:clear" to clear the cache. Route changes won\'t be reflected until you clear the cache.',
                 metadata: [
-                    'environment' => 'local',
+                    'environment' => $environment,
                     'cached' => true,
                     'detection_method' => 'routesAreCached()',
                 ]
             );
-        } elseif ($environment !== 'local' && ! $routesAreCached) {
+        } elseif ($this->isProductionOrStaging($environment) && ! $routesAreCached) {
             $issues[] = $this->createIssue(
                 message: "Routes are not cached in {$environment} environment",
                 location: new Location($this->getRoutesDirectory(), 1),
@@ -100,14 +100,27 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
             );
         }
 
-        if (empty($issues)) {
-            return $this->passed("Route caching is properly configured for {$environment} environment");
-        }
+        $summary = empty($issues)
+            ? "Route caching is properly configured for {$environment} environment"
+            : sprintf('Found %d route caching issues', count($issues));
 
-        return $this->failed(
-            sprintf('Found %d route caching issues', count($issues)),
-            $issues
-        );
+        return $this->resultBySeverity($summary, $issues);
+    }
+
+    /**
+     * Check if environment is local/development.
+     */
+    private function isLocalEnvironment(string $environment): bool
+    {
+        return in_array($environment, ['local', 'development', 'testing'], true);
+    }
+
+    /**
+     * Check if environment is production or staging.
+     */
+    private function isProductionOrStaging(string $environment): bool
+    {
+        return in_array($environment, ['production', 'staging'], true);
     }
 
     /**
@@ -116,11 +129,11 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
      */
     private function getCachedRoutesPath(): string
     {
-        $basePath = function_exists('base_path') ? base_path() : getcwd();
+        $cacheDir = $this->buildPath('bootstrap', 'cache');
 
         $paths = [
-            $basePath.'/bootstrap/cache/routes-v7.php', // Laravel 10+
-            $basePath.'/bootstrap/cache/routes.php',     // Older versions
+            $cacheDir.DIRECTORY_SEPARATOR.'routes-v7.php', // Laravel 10+
+            $cacheDir.DIRECTORY_SEPARATOR.'routes.php',     // Older versions
         ];
 
         foreach ($paths as $path) {
@@ -129,7 +142,8 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
             }
         }
 
-        return $basePath.'/bootstrap/cache/routes-v7.php';
+        // Return default path even if file doesn't exist
+        return $cacheDir.DIRECTORY_SEPARATOR.'routes-v7.php';
     }
 
     /**
@@ -137,8 +151,6 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
      */
     private function getRoutesDirectory(): string
     {
-        $basePath = function_exists('base_path') ? base_path() : getcwd();
-
-        return $basePath.'/routes';
+        return $this->buildPath('routes');
     }
 }

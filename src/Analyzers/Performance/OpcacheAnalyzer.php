@@ -162,7 +162,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
                 metadata: ['php_version' => PHP_VERSION]
             );
 
-            return $this->failed('Unable to retrieve OPcache configuration', $issues);
+            return $this->resultBySeverity('Unable to retrieve OPcache configuration', $issues);
         }
 
         // Check if OPcache is enabled
@@ -180,18 +180,18 @@ class OpcacheAnalyzer extends AbstractAnalyzer
                 ]
             );
 
-            return $this->failed('OPcache is disabled', $issues);
+            return $this->resultBySeverity('OPcache is disabled', $issues);
         }
 
         // OPcache is enabled, check configuration recommendations
         $this->checkOpcacheConfiguration($opcacheConfig, $issues, $phpIniPath);
 
-        if (empty($issues)) {
+        if (count($issues) === 0) {
             return $this->passed('OPcache is enabled and properly configured');
         }
 
-        return $this->failed(
-            sprintf('Found %d OPcache configuration issues', count($issues)),
+        return $this->resultBySeverity(
+            sprintf('Found %d OPcache configuration issue(s)', count($issues)),
             $issues
         );
     }

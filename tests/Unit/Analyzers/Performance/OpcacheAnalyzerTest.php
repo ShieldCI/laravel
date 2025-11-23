@@ -76,7 +76,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('memory', $result);
     }
 
@@ -137,7 +137,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $this->assertHasIssueContaining('not loaded', $result);
     }
 
-    public function test_fails_when_directives_key_missing(): void
+    public function test_warns_when_directives_key_missing(): void
     {
         /** @var OpcacheAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
@@ -146,11 +146,11 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Unable to retrieve', $result);
     }
 
-    public function test_fails_when_directives_is_not_array(): void
+    public function test_warns_when_directives_is_not_array(): void
     {
         /** @var OpcacheAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
@@ -161,7 +161,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Unable to retrieve', $result);
     }
 
@@ -197,7 +197,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('validate_timestamps', $result);
         $issues = $result->getIssues();
         $this->assertEquals(true, $issues[0]->metadata['current_value']);
@@ -255,7 +255,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('memory consumption', $result);
         $issues = $result->getIssues();
         $this->assertEquals(64, $issues[0]->metadata['current_value']);
@@ -331,7 +331,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         // String "64" should be cast to int and warn
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('memory consumption', $result);
     }
 
@@ -351,7 +351,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('interned strings buffer', $result);
         $issues = $result->getIssues();
         $this->assertEquals(8, $issues[0]->metadata['current_value']);
@@ -425,7 +425,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('max accelerated files', $result);
         $issues = $result->getIssues();
         $this->assertEquals(5000, $issues[0]->metadata['current_value']);
@@ -500,7 +500,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('revalidate_freq', $result);
         $issues = $result->getIssues();
         $this->assertEquals(60, $issues[0]->metadata['current_value']);
@@ -525,7 +525,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
-    public function test_passes_when_revalidate_freq_positive_with_validate_timestamps_true(): void
+    public function test_warns_when_revalidate_freq_positive_with_validate_timestamps_true(): void
     {
         /** @var OpcacheAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
@@ -541,7 +541,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         // Should only warn about validate_timestamps, not revalidate_freq
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertStringContainsString('validate_timestamps', $issues[0]->message);
@@ -598,7 +598,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('fast_shutdown', $result);
         $issues = $result->getIssues();
         $this->assertEquals(false, $issues[0]->metadata['current_value']);
@@ -655,7 +655,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         // 0 is not === true, so should warn
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('fast_shutdown', $result);
     }
 
@@ -679,7 +679,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(5, $issues);
     }
@@ -703,7 +703,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertStringContainsString('fast_shutdown', $issues[0]->message);
@@ -755,7 +755,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
     }

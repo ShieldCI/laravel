@@ -43,13 +43,13 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
         return new ConfigCachingAnalyzer($app, $config);
     }
 
-    public function test_fails_when_config_cached_in_local(): void
+    public function test_warns_when_config_cached_in_local(): void
     {
         $analyzer = $this->createAnalyzer(environment: 'local', configIsCached: true);
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('cached in local', $result);
 
         $issues = $result->getIssues();
@@ -139,13 +139,13 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
         $this->assertFalse(ConfigCachingAnalyzer::$runInCI);
     }
 
-    public function test_fails_when_config_cached_in_development(): void
+    public function test_warns_when_config_cached_in_development(): void
     {
         $analyzer = $this->createAnalyzer(environment: 'development', configIsCached: true);
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('cached in development', $result);
 
         $issues = $result->getIssues();
@@ -153,13 +153,13 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
         $this->assertEquals('development', $issues[0]->metadata['environment'] ?? '');
     }
 
-    public function test_fails_when_config_cached_in_testing(): void
+    public function test_warns_when_config_cached_in_testing(): void
     {
         $analyzer = $this->createAnalyzer(environment: 'testing', configIsCached: true);
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('cached in testing', $result);
     }
 
@@ -217,7 +217,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         // Should fail because 'Local' (case-insensitive) is cached
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_handles_empty_environment(): void
@@ -229,7 +229,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
         // When environment is empty, parent AbstractAnalyzer defaults to 'production'
         // So this fails because production is not cached
         $this->assertFailed($result);
-        $this->assertStringContainsString('not cached', $result->getMessage());
+        $this->assertStringContainsString('not properly configured', $result->getMessage());
     }
 
     public function test_handles_configuration_is_cached_exception(): void
@@ -264,7 +264,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
@@ -290,7 +290,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
@@ -323,7 +323,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
     }
 
     public function test_creates_exactly_one_issue_for_dev_environment(): void
@@ -332,7 +332,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
@@ -356,7 +356,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         $this->assertTrue($issues[0]->metadata['cached'] ?? false);
@@ -419,7 +419,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         // Should fail because Development (case-insensitive) is cached
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_handles_very_long_environment_names(): void
@@ -489,7 +489,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);

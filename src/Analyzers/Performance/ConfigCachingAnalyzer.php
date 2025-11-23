@@ -97,23 +97,22 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
             );
         }
 
+        $issues = [];
+
         // Config cached in local/development environment - not recommended
         if ($this->isDevelopmentEnvironment($environment) && $configIsCached) {
             $configPath = $this->getCachedConfigPath();
 
-            return $this->failed(
-                "Configuration is cached in {$environment} environment",
-                [$this->createIssue(
-                    message: "Configuration is cached in {$environment} environment",
-                    location: new Location($configPath, 1),
-                    severity: Severity::Medium,
-                    recommendation: 'Configuration caching is not recommended for '.$environment.'. Run "php artisan config:clear" to clear the cache. As you change your config files, the changes will not be reflected unless you clear the cache.',
-                    metadata: [
-                        'environment' => $environment,
-                        'cached' => true,
-                        'detection_method' => 'configurationIsCached()',
-                    ]
-                )]
+            $issues[] = $this->createIssue(
+                message: "Configuration is cached in {$environment} environment",
+                location: new Location($configPath, 1),
+                severity: Severity::Medium,
+                recommendation: 'Configuration caching is not recommended for '.$environment.'. Run "php artisan config:clear" to clear the cache. As you change your config files, the changes will not be reflected unless you clear the cache.',
+                metadata: [
+                    'environment' => $environment,
+                    'cached' => true,
+                    'detection_method' => 'configurationIsCached()',
+                ]
             );
         }
 
@@ -121,23 +120,27 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
         if ($this->shouldCacheConfig($environment) && ! $configIsCached) {
             $configPath = $this->getAppConfigPath();
 
-            return $this->failed(
-                "Configuration is not cached in {$environment} environment",
-                [$this->createIssue(
-                    message: "Configuration is not cached in {$environment} environment",
-                    location: new Location($configPath, 1),
-                    severity: Severity::Medium,
-                    recommendation: 'Configuration caching provides significant performance improvements. Add "php artisan config:cache" to your deployment script. This enables a performance improvement by reducing the number of files that need to be loaded and can improve bootstrap time by up to 50%.',
-                    metadata: [
-                        'environment' => $environment,
-                        'cached' => false,
-                        'detection_method' => 'configurationIsCached()',
-                    ]
-                )]
+            $issues[] = $this->createIssue(
+                message: "Configuration is not cached in {$environment} environment",
+                location: new Location($configPath, 1),
+                severity: Severity::High,
+                recommendation: 'Configuration caching is critical for production performance - it improves bootstrap time by up to 50% on every request. Add "php artisan config:cache" to your deployment script. Without caching, Laravel must load and parse all config files on every request, causing significant performance degradation.',
+                metadata: [
+                    'environment' => $environment,
+                    'cached' => false,
+                    'detection_method' => 'configurationIsCached()',
+                ]
             );
         }
 
-        return $this->passed("Configuration caching is properly configured for {$environment} environment");
+        if (count($issues) === 0) {
+            return $this->passed("Configuration caching is properly configured for {$environment} environment");
+        }
+
+        return $this->resultBySeverity(
+            sprintf('Configuration caching is not properly configured in %s environment', $environment),
+            $issues
+        );
     }
 
     /**

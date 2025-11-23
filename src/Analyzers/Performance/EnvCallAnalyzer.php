@@ -87,7 +87,7 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
         // Combine both types of calls
         $allCalls = array_merge($envCalls, $envStaticCalls);
 
-        if (empty($allCalls)) {
+        if (count($allCalls) === 0) {
             return $this->passed('No env() calls detected outside configuration files');
         }
 
@@ -132,8 +132,8 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        return $this->failed(
-            sprintf('Found %d env() calls outside configuration files', count($issues)),
+        return $this->resultBySeverity(
+            sprintf('Found %d env() call(s) outside configuration files', count($issues)),
             $issues
         );
     }

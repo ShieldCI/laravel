@@ -122,11 +122,11 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
             $issues[] = $devDepsResult;
         }
 
-        if (empty($issues)) {
+        if (count($issues) === 0) {
             return $this->passed('No dev dependencies detected in production');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d dev dependency issue(s)', count($issues)),
             $issues
         );

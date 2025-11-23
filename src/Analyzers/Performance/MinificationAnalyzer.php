@@ -141,12 +141,12 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        if (empty($issues)) {
+        if (count($issues) === 0) {
             return $this->passed('All assets appear to be properly minified');
         }
 
-        return $this->warning(
-            sprintf('Found %d asset minification recommendations', count($issues)),
+        return $this->resultBySeverity(
+            sprintf('Found %d asset minification recommendation(s)', count($issues)),
             $issues
         );
     }

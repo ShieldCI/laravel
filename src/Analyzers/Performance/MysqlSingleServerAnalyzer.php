@@ -154,12 +154,12 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
             }
         }
 
-        if (empty($issues)) {
+        if (count($issues) === 0) {
             return $this->passed('MySQL connections are optimally configured');
         }
 
-        return $this->warning(
-            sprintf('Found %d MySQL configuration optimization opportunities', count($issues)),
+        return $this->resultBySeverity(
+            sprintf('Found %d MySQL configuration optimization %s', count($issues), count($issues) === 1 ? 'opportunity' : 'opportunities'),
             $issues
         );
     }

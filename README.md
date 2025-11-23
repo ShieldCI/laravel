@@ -148,9 +148,9 @@ Example: AutoloaderOptimizationAnalyzer only runs in production/staging environm
 
 ## Available Analyzers
 
-ShieldCI includes **101 comprehensive analyzers** across five categories:
+ShieldCI includes **102 comprehensive analyzers** across five categories:
 - **22 Security Analyzers** - Complete OWASP Top 10 2021 coverage
-- **17 Performance Analyzers** - Optimize application speed and efficiency
+- **18 Performance Analyzers** - Optimize application speed and efficiency
 - **24 Reliability Analyzers** - Ensure application stability and correctness
 - **15 Code Quality Analyzers** - Improve maintainability and code standards
 - **23 Best Practices Analyzers** - Enforce Laravel-specific best practices
@@ -202,7 +202,7 @@ Providing complete OWASP Top 10 2021 coverage:
 - **Stable Dependency Analyzer** - Validates stable version usage (no dev/alpha/beta)
 - **License Analyzer** - Ensures dependencies use legally acceptable licenses (detects GPL/AGPL issues)
 
-### Performance Analyzers (17)
+### Performance Analyzers (18)
 
 Optimize your Laravel application for production:
 
@@ -214,6 +214,7 @@ Optimize your Laravel application for production:
 - **Debug Log Analyzer** - Detects debug-level logging in production environments
 - **Dev Dependency Analyzer** - Ensures dev dependencies aren't in production
 - **Env Call Analyzer** - Detects env() calls outside configuration files
+- **Horizon Suggestion Analyzer** - Recommends Laravel Horizon for Redis queue management
 - **Minification Analyzer** - Checks asset minification for production
 - **Mysql Single Server Analyzer** - Validates database configuration
 - **Opcache Analyzer** - Ensures OPcache is enabled in production

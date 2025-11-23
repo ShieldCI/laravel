@@ -156,12 +156,12 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        if (empty($issues)) {
+        if (count($issues) === 0) {
             return $this->passed("Composer autoloader is properly optimized for {$environment} environment");
         }
 
-        return $this->failed(
-            sprintf('Found %d autoloader optimization issues', count($issues)),
+        return $this->resultBySeverity(
+            sprintf('Found %d autoloader optimization issue(s)', count($issues)),
             $issues
         );
     }

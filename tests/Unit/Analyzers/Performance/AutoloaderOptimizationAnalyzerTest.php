@@ -268,7 +268,7 @@ PHP,
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('authoritative', $result);
     }
 
@@ -659,7 +659,7 @@ PHP,
         $result = $analyzer->analyze();
 
         // Should recommend authoritative (optimized but not authoritative)
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('authoritative', $result);
 
         $issues = $result->getIssues();

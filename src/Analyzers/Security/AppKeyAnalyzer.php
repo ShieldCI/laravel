@@ -47,8 +47,15 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
     {
         $issues = [];
 
+        // Check for cached config (must be first to warn about effectiveness of changes)
+        $this->checkCachedConfig($issues);
+
         // Check .env files for APP_KEY
-        $this->checkEnvFiles($issues);
+        $envKeys = [];
+        $this->checkEnvFiles($issues, $envKeys);
+
+        // Check for inconsistent keys across env files
+        $this->checkKeyConsistency($envKeys, $issues);
 
         // Check config/app.php
         $this->checkAppConfig($issues);
@@ -65,14 +72,16 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check .env files for APP_KEY configuration.
+     *
+     * @param  array<string, string>  &$envKeys  Map of file paths to their APP_KEY values
      */
-    private function checkEnvFiles(array &$issues): void
+    private function checkEnvFiles(array &$issues, array &$envKeys): void
     {
         $envFiles = [
-            $this->basePath.'/.env',
-            $this->basePath.'/.env.example',
-            $this->basePath.'/.env.production',
-            $this->basePath.'/.env.prod',
+            $this->buildPath('.env'),
+            $this->buildPath('.env.example'),
+            $this->buildPath('.env.production'),
+            $this->buildPath('.env.prod'),
         ];
 
         foreach ($envFiles as $envFile) {
@@ -88,15 +97,50 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
             $lines = FileParser::getLines($envFile);
             $hasAppKey = false;
             $appKeyValue = null;
+            $appKeyCount = 0;
+            $firstKeyLine = 0;
 
             foreach ($lines as $lineNumber => $line) {
+                if (! is_string($line)) {
+                    continue;
+                }
+
                 // Check for APP_KEY setting
                 if (preg_match('/^APP_KEY\s*=\s*(.*)$/i', trim($line), $matches)) {
+                    $appKeyCount++;
+
+                    if ($appKeyCount === 1) {
+                        $firstKeyLine = $lineNumber;
+                    }
+
                     $hasAppKey = true;
+
+                    // Extract and validate match result
+                    if (! is_string($matches[1])) {
+                        continue;
+                    }
+
                     $appKeyValue = trim($matches[1]);
 
-                    // Check if APP_KEY is empty
-                    if (empty($appKeyValue)) {
+                    // Detect multiple APP_KEY definitions
+                    if ($appKeyCount > 1) {
+                        $issues[] = $this->createIssue(
+                            message: sprintf('Multiple APP_KEY definitions found (first at line %d, duplicate at line %d)', $firstKeyLine + 1, $lineNumber + 1),
+                            location: new Location(
+                                $this->getRelativePath($envFile),
+                                $lineNumber + 1
+                            ),
+                            severity: Severity::High,
+                            recommendation: 'Remove duplicate APP_KEY definitions. Only one APP_KEY should be defined per file.',
+                            code: FileParser::getCodeSnippet($envFile, $lineNumber + 1),
+                            metadata: ['duplicate_count' => $appKeyCount]
+                        );
+
+                        continue; // Skip validation for duplicate entries
+                    }
+
+                    // Check if APP_KEY is empty or whitespace
+                    if ($appKeyValue === '' || trim($appKeyValue, '"\'  ') === '') {
                         $issues[] = $this->createIssue(
                             message: 'APP_KEY is not set or is empty',
                             location: new Location(
@@ -105,11 +149,12 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                             ),
                             severity: Severity::Critical,
                             recommendation: 'Run "php artisan key:generate" to generate a secure application key',
-                            code: trim($line)
+                            code: FileParser::getCodeSnippet($envFile, $lineNumber + 1),
+                            metadata: []
                         );
                     }
-                    // Check if APP_KEY is a placeholder
-                    elseif (in_array($appKeyValue, ['base64:your-key-here', 'SomeRandomString', 'null', '""', "''"])) {
+                    // Check if APP_KEY is a placeholder (case-insensitive)
+                    elseif ($this->isPlaceholderValue($appKeyValue)) {
                         $issues[] = $this->createIssue(
                             message: 'APP_KEY is set to a placeholder/example value',
                             location: new Location(
@@ -118,11 +163,12 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                             ),
                             severity: Severity::Critical,
                             recommendation: 'Run "php artisan key:generate" to generate a secure application key',
-                            code: trim($line)
+                            code: FileParser::getCodeSnippet($envFile, $lineNumber + 1),
+                            metadata: []
                         );
                     }
-                    // Check if APP_KEY format is correct
-                    elseif (! str_starts_with($appKeyValue, 'base64:') && strlen($appKeyValue) < 32) {
+                    // Validate APP_KEY format and strength
+                    elseif (! $this->isValidAppKey($appKeyValue)) {
                         $issues[] = $this->createIssue(
                             message: 'APP_KEY does not follow the expected format or is too short',
                             location: new Location(
@@ -130,8 +176,9 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                                 $lineNumber + 1
                             ),
                             severity: Severity::High,
-                            recommendation: 'Ensure APP_KEY is properly generated with "php artisan key:generate"',
-                            code: trim($line)
+                            recommendation: 'Ensure APP_KEY is properly generated with "php artisan key:generate". Valid keys must be at least 32 characters or use base64: prefix with properly encoded content (minimum 16 bytes decoded).',
+                            code: FileParser::getCodeSnippet($envFile, $lineNumber + 1),
+                            metadata: []
                         );
                     }
                 }
@@ -147,8 +194,17 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                     ),
                     severity: Severity::Critical,
                     recommendation: 'Add APP_KEY to your .env file and run "php artisan key:generate"',
-                    code: 'Missing APP_KEY configuration'
+                    code: FileParser::getCodeSnippet($envFile, 1),
+                    metadata: []
                 );
+            }
+
+            // Track valid keys for cross-file consistency checking
+            if ($hasAppKey && $appKeyValue !== null && ! str_contains($envFile, '.example')) {
+                $normalizedKey = trim($appKeyValue, '"\'');
+                if ($normalizedKey !== '' && ! $this->isPlaceholderValue($appKeyValue)) {
+                    $envKeys[$envFile] = $normalizedKey;
+                }
             }
         }
     }
@@ -158,7 +214,8 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
      */
     private function checkAppConfig(array &$issues): void
     {
-        $appConfig = ConfigFileHelper::getConfigPath($this->basePath, 'app.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+        $basePath = $this->getBasePath();
+        $appConfig = ConfigFileHelper::getConfigPath($basePath, 'app.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
         if (! file_exists($appConfig)) {
             return;
@@ -172,10 +229,13 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
         $lines = FileParser::getLines($appConfig);
 
         foreach ($lines as $lineNumber => $line) {
-            // Check for hardcoded key (security issue)
-            if (preg_match('/["\']key["\']\s*=>\s*["\'](?!env\()/i', $line) &&
-                ! str_contains($line, 'env(')) {
+            if (! is_string($line)) {
+                continue;
+            }
 
+            // Check for hardcoded key (security issue)
+            // The regex already excludes env() with negative lookahead
+            if (preg_match('/["\']key["\']\s*=>\s*["\'](?!env\()/i', $line)) {
                 // Check if it's a real hardcoded key (not a comment or documentation)
                 if (! preg_match('/^\s*\/\/|^\s*\*/', $line)) {
                     $issues[] = $this->createIssue(
@@ -186,29 +246,202 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                         ),
                         severity: Severity::Critical,
                         recommendation: 'Use env("APP_KEY") to reference the key from .env file',
-                        code: trim($line)
+                        code: FileParser::getCodeSnippet($appConfig, $lineNumber + 1),
+                        metadata: []
                     );
                 }
             }
 
             // Check for insecure cipher configuration
             if (preg_match('/["\']cipher["\']\s*=>\s*["\']([^"\']+)["\']/i', $line, $matches)) {
-                $cipher = strtolower($matches[1]);
+                if (is_string($matches[1])) {
+                    $cipher = strtolower($matches[1]);
 
-                // Laravel supports AES-128-CBC and AES-256-CBC
-                if (! in_array($cipher, ['aes-128-cbc', 'aes-256-cbc'])) {
-                    $issues[] = $this->createIssue(
-                        message: "Unsupported or weak cipher algorithm: {$cipher}",
-                        location: new Location(
-                            $this->getRelativePath($appConfig),
-                            $lineNumber + 1
-                        ),
-                        severity: Severity::High,
-                        recommendation: 'Use "AES-256-CBC" or "AES-128-CBC" cipher',
-                        code: trim($line)
-                    );
+                    // Laravel supports AES-128-CBC and AES-256-CBC
+                    if (! in_array($cipher, ['aes-128-cbc', 'aes-256-cbc'], true)) {
+                        $issues[] = $this->createIssue(
+                            message: sprintf('Unsupported or weak cipher algorithm: %s', $cipher),
+                            location: new Location(
+                                $this->getRelativePath($appConfig),
+                                $lineNumber + 1
+                            ),
+                            severity: Severity::High,
+                            recommendation: 'Use "AES-256-CBC" or "AES-128-CBC" cipher',
+                            code: FileParser::getCodeSnippet($appConfig, $lineNumber + 1),
+                            metadata: ['cipher' => $cipher]
+                        );
+                    }
                 }
             }
+        }
+    }
+
+    /**
+     * Check if value is a placeholder/example value.
+     */
+    private function isPlaceholderValue(string $value): bool
+    {
+        // Remove quotes and trim whitespace
+        $normalized = trim($value, '"\'  ');
+        $lower = strtolower($normalized);
+
+        $placeholders = [
+            'base64:your-key-here',
+            'somerandomstring',
+            'null',
+            '',
+        ];
+
+        return in_array($lower, $placeholders, true);
+    }
+
+    /**
+     * Validate APP_KEY format and strength.
+     */
+    private function isValidAppKey(string $value): bool
+    {
+        // Remove surrounding quotes if present
+        $value = trim($value, '"\'');
+
+        // Check for base64: prefix
+        if (str_starts_with($value, 'base64:')) {
+            return $this->validateBase64Key($value);
+        }
+
+        // Keys without base64: prefix should be at least 32 characters
+        return strlen($value) >= 32;
+    }
+
+    /**
+     * Validate base64-encoded APP_KEY.
+     */
+    private function validateBase64Key(string $value): bool
+    {
+        // Extract encoded portion after 'base64:' prefix
+        $encoded = substr($value, 7);
+
+        // Check if empty
+        if ($encoded === '') {
+            return false;
+        }
+
+        // Validate base64 format (alphanumeric + / + = for padding)
+        if (! preg_match('/^[A-Za-z0-9+\/]+=*$/', $encoded)) {
+            return false;
+        }
+
+        // Validate base64 padding
+        if (! $this->isValidBase64Padding($encoded)) {
+            return false;
+        }
+
+        // Check minimum encoded length
+        // AES-128 requires 16 bytes (24 base64 chars)
+        // AES-256 requires 32 bytes (44 base64 chars)
+        if (strlen($encoded) < 24) {
+            return false;
+        }
+
+        // Verify it decodes properly
+        $decoded = base64_decode($encoded, true);
+        if ($decoded === false) {
+            return false;
+        }
+
+        // Check decoded length (minimum 16 bytes for AES-128)
+        if (strlen($decoded) < 16) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Validate base64 padding is correct.
+     */
+    private function isValidBase64Padding(string $encoded): bool
+    {
+        // Count padding characters
+        $paddingCount = substr_count($encoded, '=');
+
+        // Max 2 padding chars for base64
+        if ($paddingCount > 2) {
+            return false;
+        }
+
+        // Padding must be at the end
+        if ($paddingCount > 0) {
+            $paddingStart = strlen($encoded) - $paddingCount;
+            if (substr($encoded, $paddingStart) !== str_repeat('=', $paddingCount)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Check for cached config files.
+     */
+    private function checkCachedConfig(array &$issues): void
+    {
+        $cachedConfigPath = $this->buildPath('bootstrap/cache/config.php');
+
+        if (file_exists($cachedConfigPath)) {
+            $issues[] = $this->createIssue(
+                message: 'Configuration is cached - .env changes will not take effect',
+                location: new Location(
+                    'bootstrap/cache/config.php',
+                    1
+                ),
+                severity: Severity::High,
+                recommendation: 'Run "php artisan config:clear" to clear the configuration cache and make .env changes effective. After making changes, run "php artisan config:cache" to rebuild the cache.',
+                code: FileParser::getCodeSnippet($cachedConfigPath, 1),
+                metadata: ['cached_file' => $cachedConfigPath]
+            );
+        }
+    }
+
+    /**
+     * Check for inconsistent APP_KEY values across environment files.
+     *
+     * @param  array<string, string>  $envKeys  Map of file paths to their APP_KEY values
+     */
+    private function checkKeyConsistency(array $envKeys, array &$issues): void
+    {
+        if (count($envKeys) < 2) {
+            return;
+        }
+
+        // Get the keys and their files
+        $keys = array_values($envKeys);
+        $files = array_keys($envKeys);
+
+        // Check if all keys are identical
+        $uniqueKeys = array_unique($keys);
+
+        if (count($uniqueKeys) > 1) {
+            // Build a list of files and their keys
+            $keyList = [];
+            foreach ($envKeys as $file => $key) {
+                $shortKey = strlen($key) > 20 ? substr($key, 0, 20).'...' : $key;
+                $keyList[] = basename($file).' has key: '.$shortKey;
+            }
+
+            $issues[] = $this->createIssue(
+                message: 'Inconsistent APP_KEY values across environment files',
+                location: new Location(
+                    $this->getRelativePath($files[0]),
+                    1
+                ),
+                severity: Severity::High,
+                recommendation: 'Ensure all environment files use the same APP_KEY. Different keys will cause encryption/decryption issues when moving between environments. Keys found: '.implode('; ', $keyList),
+                code: FileParser::getCodeSnippet($files[0], 1),
+                metadata: [
+                    'files_with_different_keys' => array_map('basename', $files),
+                    'unique_key_count' => count($uniqueKeys),
+                ]
+            );
         }
     }
 }

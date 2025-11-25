@@ -26,6 +26,15 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class AuthenticationAnalyzer extends AbstractFileAnalyzer
 {
+    private const ROUTE_MIDDLEWARE_SEARCH_RANGE = 10;
+
+    private const ROUTE_GROUP_SEARCH_RANGE = 5;
+
+    private const NULL_CHECK_SEARCH_RANGE = 3;
+
+    /**
+     * @var array<string>
+     */
     private array $sensitiveControllerMethods = [
         'destroy',
         'delete',
@@ -35,6 +44,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         'create',
     ];
 
+    /**
+     * @var array<string>
+     */
     private array $publicRoutes = [
         'login',
         'register',
@@ -64,6 +76,23 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         );
     }
 
+    public function shouldRun(): bool
+    {
+        $routePath = $this->basePath.'/routes';
+        $hasRoutes = is_dir($routePath) && ! empty($this->getRouteFiles());
+
+        // Check if there are any PHP files to analyze (controllers)
+        $hasPhpFiles = ! empty($this->getPhpFiles());
+
+        // Run if we have either routes or PHP files to check
+        return $hasRoutes || $hasPhpFiles;
+    }
+
+    public function getSkipReason(): string
+    {
+        return 'No routes or controllers found to analyze';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
@@ -85,14 +114,11 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             $this->checkUnsafeAuthUsage($file, $issues);
         }
 
-        if (empty($issues)) {
-            return $this->passed('No authentication/authorization issues detected');
-        }
+        $summary = empty($issues)
+            ? 'No authentication/authorization issues detected'
+            : sprintf('Found %d potential authentication/authorization issue%s', count($issues), count($issues) === 1 ? '' : 's');
 
-        return $this->failed(
-            sprintf('Found %d potential authentication/authorization issues', count($issues)),
-            $issues
-        );
+        return $this->resultBySeverity($summary, $issues);
     }
 
     /**
@@ -121,7 +147,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 }
 
                 // Check if route has auth middleware
-                $searchRange = min($lineNumber + 10, count($lines));
+                $searchRange = min($lineNumber + self::ROUTE_MIDDLEWARE_SEARCH_RANGE, count($lines));
                 $hasAuthMiddleware = false;
                 $routeDefinition = '';
 
@@ -141,21 +167,22 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 // Resource routes that modify data should require auth
                 if (! $hasAuthMiddleware && in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE', 'RESOURCE', 'APIRESOURCE'])) {
                     $issues[] = $this->createIssue(
-                        message: "{$method} route without authentication middleware",
+                        message: sprintf('%s route without authentication middleware', $method),
                         location: new Location(
                             $this->getRelativePath($file),
                             $lineNumber + 1
                         ),
                         severity: Severity::High,
                         recommendation: 'Add ->middleware("auth") or wrap in Route::middleware(["auth"])->group()',
-                        code: trim($line)
+                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
+                        metadata: ['method' => $method]
                     );
                 }
             }
 
             // Check for route groups without middleware
             if (preg_match('/Route::group\s*\(/i', $line)) {
-                $searchRange = min($lineNumber + 5, count($lines));
+                $searchRange = min($lineNumber + self::ROUTE_GROUP_SEARCH_RANGE, count($lines));
                 $hasAuthMiddleware = false;
 
                 for ($i = $lineNumber; $i < $searchRange; $i++) {
@@ -174,7 +201,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                         ),
                         severity: Severity::Medium,
                         recommendation: 'Add "middleware" => "auth" to route group configuration',
-                        code: trim($line)
+                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
+                        metadata: ['route_type' => 'group', 'file' => basename($file)]
                     );
                 }
             }
@@ -293,7 +321,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check for Gate authorization.
+     * Check for Gate authorization in a statement.
+     *
+     * Looks for Gate::authorize(), Gate::allows(), Gate::denies(), Gate::check()
      */
     private function hasGateCheck(Node $stmt): bool
     {
@@ -314,7 +344,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check for policy checks.
+     * Check for policy checks in a statement.
+     *
+     * Looks for ->can(), ->cannot(), ->authorize() method calls
      */
     private function hasPolicyCheck(Node $stmt): bool
     {
@@ -340,59 +372,83 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         $lines = FileParser::getLines($file);
 
         foreach ($lines as $lineNumber => $line) {
-            // Check for Auth::user()-> without null checks
+            // Check for Auth::user()->
             if (preg_match('/Auth::user\(\)->/i', $line)) {
-                // Look for null checks in surrounding lines
-                $searchRange = max(0, $lineNumber - 3);
-                $hasNullCheck = false;
-
-                for ($i = $searchRange; $i <= $lineNumber; $i++) {
-                    if (isset($lines[$i]) && preg_match('/if\s*\(\s*.*?Auth::user\(\)|Auth::check\(\)|auth\(\)->check\(\)/i', $lines[$i])) {
-                        $hasNullCheck = true;
-                        break;
-                    }
-                }
-
-                if (! $hasNullCheck) {
-                    $issues[] = $this->createIssue(
-                        message: 'Unsafe Auth::user() usage without null check',
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $lineNumber + 1
-                        ),
-                        severity: Severity::Medium,
-                        recommendation: 'Check if user is authenticated before accessing: if (Auth::check()) or use Auth::user()?->property',
-                        code: trim($line)
-                    );
-                }
+                $this->checkAuthUsageWithNullSafety(
+                    file: $file,
+                    lines: $lines,
+                    lineNumber: $lineNumber,
+                    method: 'Auth::user()',
+                    checkMethod: 'Auth::check()',
+                    issues: $issues
+                );
             }
 
-            // Check for auth()->user()-> without null checks
+            // Check for auth()->user()->
             if (preg_match('/auth\(\)->user\(\)->/i', $line)) {
-                $searchRange = max(0, $lineNumber - 3);
-                $hasNullCheck = false;
-
-                for ($i = $searchRange; $i <= $lineNumber; $i++) {
-                    if (isset($lines[$i]) && preg_match('/if\s*\(|auth\(\)->check\(\)|Auth::check\(\)/i', $lines[$i])) {
-                        $hasNullCheck = true;
-                        break;
-                    }
-                }
-
-                if (! $hasNullCheck) {
-                    $issues[] = $this->createIssue(
-                        message: 'Unsafe auth()->user() usage without null check',
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $lineNumber + 1
-                        ),
-                        severity: Severity::Medium,
-                        recommendation: 'Check if user is authenticated or use null-safe operator: auth()->user()?->property',
-                        code: trim($line)
-                    );
-                }
+                $this->checkAuthUsageWithNullSafety(
+                    file: $file,
+                    lines: $lines,
+                    lineNumber: $lineNumber,
+                    method: 'auth()->user()',
+                    checkMethod: 'auth()->check()',
+                    issues: $issues
+                );
             }
         }
+    }
+
+    /**
+     * Check if auth method is used with proper null safety.
+     */
+    private function checkAuthUsageWithNullSafety(
+        string $file,
+        array $lines,
+        int $lineNumber,
+        string $method,
+        string $checkMethod,
+        array &$issues
+    ): void {
+        // Look for null checks in surrounding lines
+        $searchRange = max(0, $lineNumber - self::NULL_CHECK_SEARCH_RANGE);
+        $hasNullCheck = false;
+
+        for ($i = $searchRange; $i <= $lineNumber; $i++) {
+            if (isset($lines[$i]) && $this->hasAuthNullCheck($lines[$i])) {
+                $hasNullCheck = true;
+                break;
+            }
+        }
+
+        if (! $hasNullCheck) {
+            $issues[] = $this->createIssue(
+                message: "Unsafe {$method} usage without null check",
+                location: new Location(
+                    $this->getRelativePath($file),
+                    $lineNumber + 1
+                ),
+                severity: Severity::Medium,
+                recommendation: "Check if user is authenticated before accessing: if ({$checkMethod}) or use {$method}?->property",
+                code: FileParser::getCodeSnippet($file, $lineNumber + 1),
+                metadata: [
+                    'method' => $method,
+                    'check_method' => $checkMethod,
+                    'file' => basename($file),
+                ]
+            );
+        }
+    }
+
+    /**
+     * Check if a line contains an auth null check.
+     */
+    private function hasAuthNullCheck(string $line): bool
+    {
+        // Look for actual auth checks: Auth::check(), auth()->check(), if (Auth::user()), if (auth()->user())
+        return (bool) preg_match(
+            '/(?:Auth::check\(\)|auth\(\)->check\(\)|if\s*\(\s*Auth::user\(\)|if\s*\(\s*auth\(\)->user\(\))/i',
+            $line
+        );
     }
 
     /**
@@ -421,10 +477,14 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             return $files;
         }
 
-        foreach (new \DirectoryIterator($routePath) as $file) {
-            if ($file->isFile() && $file->getExtension() === 'php') {
-                $files[] = $file->getPathname();
+        try {
+            foreach (new \DirectoryIterator($routePath) as $file) {
+                if ($file->isFile() && $file->getExtension() === 'php') {
+                    $files[] = $file->getPathname();
+                }
             }
+        } catch (\Throwable $e) {
+            // Silently fail if directory iterator fails
         }
 
         return $files;

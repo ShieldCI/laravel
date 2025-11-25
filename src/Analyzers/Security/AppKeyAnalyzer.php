@@ -43,6 +43,21 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
         );
     }
 
+    public function shouldRun(): bool
+    {
+        // Check if there are any .env files or config/app.php to analyze
+        return file_exists($this->buildPath('.env')) ||
+               file_exists($this->buildPath('.env.production')) ||
+               file_exists($this->buildPath('.env.prod')) ||
+               file_exists($this->buildPath('.env.example')) ||
+               file_exists($this->buildPath('config/app.php'));
+    }
+
+    public function getSkipReason(): string
+    {
+        return 'No .env files or app configuration found to analyze';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
@@ -60,14 +75,11 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
         // Check config/app.php
         $this->checkAppConfig($issues);
 
-        if (empty($issues)) {
-            return $this->passed('Application encryption key is properly configured');
-        }
+        $summary = empty($issues)
+            ? 'Application encryption key is properly configured'
+            : sprintf('Found %d application key security issue%s', count($issues), count($issues) === 1 ? '' : 's');
 
-        return $this->failed(
-            sprintf('Found %d application key security issues', count($issues)),
-            $issues
-        );
+        return $this->resultBySeverity($summary, $issues);
     }
 
     /**
@@ -150,7 +162,7 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                             severity: Severity::Critical,
                             recommendation: 'Run "php artisan key:generate" to generate a secure application key',
                             code: FileParser::getCodeSnippet($envFile, $lineNumber + 1),
-                            metadata: []
+                            metadata: ['file' => basename($envFile)]
                         );
                     }
                     // Check if APP_KEY is a placeholder (case-insensitive)
@@ -164,7 +176,10 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                             severity: Severity::Critical,
                             recommendation: 'Run "php artisan key:generate" to generate a secure application key',
                             code: FileParser::getCodeSnippet($envFile, $lineNumber + 1),
-                            metadata: []
+                            metadata: [
+                                'file' => basename($envFile),
+                                'placeholder_detected' => trim($appKeyValue, '"\'  '),
+                            ]
                         );
                     }
                     // Validate APP_KEY format and strength
@@ -178,7 +193,11 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                             severity: Severity::High,
                             recommendation: 'Ensure APP_KEY is properly generated with "php artisan key:generate". Valid keys must be at least 32 characters or use base64: prefix with properly encoded content (minimum 16 bytes decoded).',
                             code: FileParser::getCodeSnippet($envFile, $lineNumber + 1),
-                            metadata: []
+                            metadata: [
+                                'file' => basename($envFile),
+                                'provided_length' => strlen(trim($appKeyValue, '"\'  ')),
+                                'minimum_length' => 32,
+                            ]
                         );
                     }
                 }
@@ -195,7 +214,7 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                     severity: Severity::Critical,
                     recommendation: 'Add APP_KEY to your .env file and run "php artisan key:generate"',
                     code: FileParser::getCodeSnippet($envFile, 1),
-                    metadata: []
+                    metadata: ['file' => basename($envFile)]
                 );
             }
 
@@ -247,7 +266,10 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                         severity: Severity::Critical,
                         recommendation: 'Use env("APP_KEY") to reference the key from .env file',
                         code: FileParser::getCodeSnippet($appConfig, $lineNumber + 1),
-                        metadata: []
+                        metadata: [
+                            'file' => 'app.php',
+                            'config_key' => 'key',
+                        ]
                     );
                 }
             }
@@ -268,7 +290,11 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                             severity: Severity::High,
                             recommendation: 'Use "AES-256-CBC" or "AES-128-CBC" cipher',
                             code: FileParser::getCodeSnippet($appConfig, $lineNumber + 1),
-                            metadata: ['cipher' => $cipher]
+                            metadata: [
+                                'file' => 'app.php',
+                                'config_key' => 'cipher',
+                                'cipher' => $cipher,
+                            ]
                         );
                     }
                 }

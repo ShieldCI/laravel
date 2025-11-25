@@ -243,7 +243,7 @@ ENV;
         $this->assertPassed($result);
     }
 
-    public function test_passes_when_no_env_or_config_exists(): void
+    public function test_skips_when_no_env_or_config_exists(): void
     {
         $tempDir = $this->createTempDirectory([]);
 
@@ -252,7 +252,8 @@ ENV;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        $this->assertSkipped($result);
+        $this->assertSame('No .env files or app configuration found to analyze', $result->getMessage());
     }
 
     // ==================== CRITICAL BUG FIX TESTS ====================
@@ -980,5 +981,115 @@ ENV;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    // ==================== SHOULD RUN TESTS ====================
+
+    public function test_should_run_when_env_exists(): void
+    {
+        $envContent = <<<'ENV'
+APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=
+ENV;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertTrue($analyzer->shouldRun());
+    }
+
+    public function test_should_run_when_env_production_exists(): void
+    {
+        $envContent = <<<'ENV'
+APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=
+ENV;
+
+        $tempDir = $this->createTempDirectory([
+            '.env.production' => $envContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertTrue($analyzer->shouldRun());
+    }
+
+    public function test_should_run_when_env_prod_exists(): void
+    {
+        $envContent = <<<'ENV'
+APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=
+ENV;
+
+        $tempDir = $this->createTempDirectory([
+            '.env.prod' => $envContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertTrue($analyzer->shouldRun());
+    }
+
+    public function test_should_run_when_env_example_exists(): void
+    {
+        $envContent = <<<'ENV'
+APP_KEY=
+ENV;
+
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => $envContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertTrue($analyzer->shouldRun());
+    }
+
+    public function test_should_run_when_config_app_exists(): void
+    {
+        $configContent = <<<'PHP'
+<?php
+
+return [
+    'key' => env('APP_KEY'),
+    'cipher' => 'AES-256-CBC',
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/app.php' => $configContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertTrue($analyzer->shouldRun());
+    }
+
+    public function test_should_not_run_when_no_files_exist(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertFalse($analyzer->shouldRun());
+    }
+
+    public function test_get_skip_reason(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertSame(
+            'No .env files or app configuration found to analyze',
+            $analyzer->getSkipReason()
+        );
     }
 }

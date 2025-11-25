@@ -78,7 +78,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        $routePath = $this->basePath.'/routes';
+        $routePath = $this->buildPath('routes');
         $hasRoutes = is_dir($routePath) && ! empty($this->getRouteFiles());
 
         // Check if there are any PHP files to analyze (controllers)
@@ -471,7 +471,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     private function getRouteFiles(): array
     {
         $files = [];
-        $routePath = $this->basePath.'/routes';
+        $routePath = $this->buildPath('routes');
 
         if (! is_dir($routePath)) {
             return $files;

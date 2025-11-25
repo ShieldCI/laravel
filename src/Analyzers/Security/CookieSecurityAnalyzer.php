@@ -42,8 +42,8 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
     {
         // Check if there are any files to analyze
         $sessionConfig = ConfigFileHelper::getConfigPath($this->basePath, 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
-        $kernelFile = $this->basePath.'/app/Http/Kernel.php';
-        $bootstrapApp = $this->basePath.'/bootstrap/app.php';
+        $kernelFile = $this->buildPath('app', 'Http', 'Kernel.php');
+        $bootstrapApp = $this->buildPath('bootstrap', 'app.php');
 
         return file_exists($sessionConfig) ||
                file_exists($kernelFile) ||
@@ -164,11 +164,11 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
      */
     private function checkEncryptCookiesMiddleware(array &$issues): void
     {
-        $kernelFile = $this->basePath.'/app/Http/Kernel.php';
+        $kernelFile = $this->buildPath('app', 'Http', 'Kernel.php');
 
         if (! file_exists($kernelFile)) {
             // Check bootstrap/app.php for Laravel 11+
-            $bootstrapApp = $this->basePath.'/bootstrap/app.php';
+            $bootstrapApp = $this->buildPath('bootstrap', 'app.php');
             if (file_exists($bootstrapApp)) {
                 $this->checkBootstrapApp($bootstrapApp, $issues);
             }

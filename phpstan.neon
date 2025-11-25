@@ -45,13 +45,10 @@ parameters:
         - '#Argument of an invalid type array<PhpParser\\Node\\Stmt>\|null supplied for foreach#'
 
         # Shell command outputs and JSON decode can be false or mixed
-        - '#Parameter .* of function (chdir|json_decode|explode) expects string, string\|false given#'
         - '#Cannot access offset .* on mixed#'
-        - '#Parameter .* of function (sprintf|implode) expects .*, mixed given#'
         - '#Argument of an invalid type mixed supplied for foreach#'
         - '#Cannot access an offset on array\|float\|int\|string\|false\|null#'
         - '#Parameter .* of function (strtolower|trim|rtrim|ltrim) expects string, string\|false given#'
-        - '#Parameter .* of method .*::(parseNpmPlainTextAudit|parsePlainTextAudit|parseOutdatedPlainText)\(\) expects string, string\|false given#'
 
         # RecursiveDirectoryIterator and file operations return mixed types
         - '#Cannot call method getExtension\(\) on mixed#'
@@ -66,11 +63,7 @@ parameters:
         - '#Part .* \(mixed\) of encapsed string cannot be cast to string#'
 
         # JSON/array decode and file operations return mixed
-        - '#Method .* should return .* but returns mixed#'
         - '#Method .* should return string but returns string\|false#'
-
-        # array_map with string callbacks and mixed data
-        - '#Parameter .* of function array_map expects .*callable.*, .* given#'
 
         # Constructor parameter issues with mixed config data
         - '#Argument of an invalid type .*\|false supplied for foreach#'
@@ -88,13 +81,3 @@ parameters:
         - '#has parameter \$nodes with no value type specified in iterable type array#'
         - '#has parameter \$metadata with no value type specified in iterable type array#'
         - '#has parameter \$ast with no value type specified in iterable type array#'
-
-        # String functions expecting string but getting mixed from JSON
-        - '#Parameter .* of function str_starts_with expects string, mixed given#'
-        - '#Parameter \#2 \$subject of function preg_match expects string, mixed given#'
-        - '#Parameter \#2 \$array of function array_map expects array, mixed given#'
-
-        # Methods that work with mixed JSON data
-        -
-            message: '#should return array\|null but returns mixed#'
-            path: src/Analyzers/Security/FrontendVulnerableDependencyAnalyzer.php

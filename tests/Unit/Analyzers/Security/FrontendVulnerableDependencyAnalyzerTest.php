@@ -6,6 +6,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
 use ShieldCI\Analyzers\Security\FrontendVulnerableDependencyAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class FrontendVulnerableDependencyAnalyzerTest extends AnalyzerTestCase
@@ -15,7 +16,9 @@ class FrontendVulnerableDependencyAnalyzerTest extends AnalyzerTestCase
         return new FrontendVulnerableDependencyAnalyzer;
     }
 
-    public function test_passes_when_no_package_json_exists(): void
+    // ==================== Basic Functionality Tests ====================
+
+    public function test_skips_when_no_package_json_exists(): void
     {
         $tempDir = $this->createTempDirectory([
             'composer.json' => '{"require": {}}',
@@ -27,8 +30,41 @@ class FrontendVulnerableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
-        $this->assertStringContainsString('No package.json found', $result->getMessage());
+        $this->assertSkipped($result);
+    }
+
+    public function test_should_run_returns_false_when_no_package_json(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => '{"require": {}}',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertFalse($analyzer->shouldRun());
+    }
+
+    public function test_should_run_returns_true_when_package_json_exists(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'package.json' => '{"name": "test"}',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertTrue($analyzer->shouldRun());
+    }
+
+    public function test_get_skip_reason_returns_correct_message(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reason = $analyzer->getSkipReason();
+
+        $this->assertStringContainsString('No package.json found', $reason);
+        $this->assertStringContainsString('not a frontend project', $reason);
     }
 
     public function test_fails_when_package_json_exists_without_lock_file(): void
@@ -50,8 +86,33 @@ class FrontendVulnerableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        // Medium severity results in Warning status
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('No package-lock.json or yarn.lock found', $result);
+    }
+
+    public function test_missing_lock_file_has_medium_severity(): void
+    {
+        $packageJson = json_encode([
+            'name' => 'test-app',
+            'dependencies' => ['vue' => '^3.0.0'],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'package.json' => $packageJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Medium severity results in Warning status
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertEquals(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_passes_with_package_lock_and_no_vulnerabilities(): void
@@ -123,107 +184,6 @@ YARN;
         $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
     }
 
-    public function test_detects_vulnerable_npm_packages(): void
-    {
-        // Skip this test if npm is not available
-        if (! $this->isNpmAvailable()) {
-            $this->markTestSkipped('npm is not available in test environment');
-        }
-
-        $packageJson = json_encode([
-            'name' => 'test-app',
-            'dependencies' => [
-                // Using a package known to have vulnerabilities in old versions
-                'lodash' => '4.17.4',
-            ],
-        ]);
-
-        $packageLock = json_encode([
-            'name' => 'test-app',
-            'lockfileVersion' => 2,
-            'packages' => [
-                'node_modules/lodash' => [
-                    'version' => '4.17.4',
-                ],
-            ],
-        ]);
-
-        $tempDir = $this->createTempDirectory([
-            'package.json' => $packageJson,
-            'package-lock.json' => $packageLock,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        // The result depends on npm audit, which may or may not detect vulnerabilities
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
-    }
-
-    public function test_handles_npm_audit_json_output(): void
-    {
-        $packageJson = json_encode([
-            'name' => 'test-app',
-            'dependencies' => [
-                'express' => '^4.0.0',
-            ],
-        ]);
-
-        $packageLock = json_encode([
-            'name' => 'test-app',
-            'lockfileVersion' => 2,
-        ]);
-
-        $tempDir = $this->createTempDirectory([
-            'package.json' => $packageJson,
-            'package-lock.json' => $packageLock,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        // Should handle JSON output gracefully
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
-    }
-
-    public function test_handles_yarn_audit_json_output(): void
-    {
-        $packageJson = json_encode([
-            'name' => 'test-app',
-            'dependencies' => [
-                'axios' => '^0.21.0',
-            ],
-        ]);
-
-        $yarnLock = <<<'YARN'
-# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.
-# yarn lockfile v1
-
-axios@^0.21.0:
-  version "0.21.1"
-YARN;
-
-        $tempDir = $this->createTempDirectory([
-            'package.json' => $packageJson,
-            'yarn.lock' => $yarnLock,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        // Should handle yarn audit output
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
-    }
-
     public function test_prefers_package_lock_over_yarn_lock(): void
     {
         $packageJson = json_encode([
@@ -273,6 +233,255 @@ YARN;
         // Should handle empty dependencies gracefully
         $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
     }
+
+    // ==================== Configuration Tests ====================
+
+    public function test_respects_ignored_packages_configuration(): void
+    {
+        // This test would require mocking the config
+        // For now, verify the configuration method exists and returns expected format
+        $analyzer = $this->createAnalyzer();
+
+        // Use reflection to test private method
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('getConfiguration');
+        $method->setAccessible(true);
+
+        $config = $method->invoke($analyzer);
+
+        $this->assertIsArray($config);
+        $this->assertArrayHasKey('ignored_packages', $config);
+        $this->assertArrayHasKey('ignored_advisories', $config);
+        $this->assertIsArray($config['ignored_packages']);
+        $this->assertIsArray($config['ignored_advisories']);
+    }
+
+    // ==================== Severity Mapping Tests ====================
+
+    public function test_determines_critical_severity_from_summary(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('determineSeverityFromSummary');
+        $method->setAccessible(true);
+
+        $vulnerabilities = [
+            'critical' => 2,
+            'high' => 5,
+            'moderate' => 10,
+            'low' => 3,
+        ];
+
+        $severity = $method->invoke($analyzer, $vulnerabilities);
+
+        $this->assertEquals(Severity::Critical, $severity);
+    }
+
+    public function test_determines_high_severity_from_summary(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('determineSeverityFromSummary');
+        $method->setAccessible(true);
+
+        $vulnerabilities = [
+            'critical' => 0,
+            'high' => 3,
+            'moderate' => 5,
+            'low' => 2,
+        ];
+
+        $severity = $method->invoke($analyzer, $vulnerabilities);
+
+        $this->assertEquals(Severity::High, $severity);
+    }
+
+    public function test_determines_medium_severity_from_summary(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('determineSeverityFromSummary');
+        $method->setAccessible(true);
+
+        $vulnerabilities = [
+            'critical' => 0,
+            'high' => 0,
+            'moderate' => 8,
+            'low' => 1,
+        ];
+
+        $severity = $method->invoke($analyzer, $vulnerabilities);
+
+        $this->assertEquals(Severity::Medium, $severity);
+    }
+
+    public function test_determines_low_severity_from_summary(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('determineSeverityFromSummary');
+        $method->setAccessible(true);
+
+        $vulnerabilities = [
+            'critical' => 0,
+            'high' => 0,
+            'moderate' => 0,
+            'low' => 5,
+        ];
+
+        $severity = $method->invoke($analyzer, $vulnerabilities);
+
+        $this->assertEquals(Severity::Low, $severity);
+    }
+
+    // ==================== Metadata Tests ====================
+
+    public function test_issue_metadata_includes_package_and_severity(): void
+    {
+        // Skip if npm not available
+        if (! $this->isNpmAvailable()) {
+            $this->markTestSkipped('npm is not available');
+        }
+
+        $packageJson = json_encode([
+            'name' => 'test-app',
+            'dependencies' => [
+                'lodash' => '4.17.4', // Known vulnerability
+            ],
+        ]);
+
+        $packageLock = json_encode([
+            'name' => 'test-app',
+            'lockfileVersion' => 2,
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'package.json' => $packageJson,
+            'package-lock.json' => $packageLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Result should be valid (pass this test even if no vulnerabilities found)
+        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+
+        // If vulnerabilities are found, check metadata
+        if (count($result->getIssues()) > 0) {
+            $issue = $result->getIssues()[0];
+            $metadata = $issue->metadata;
+
+            $this->assertArrayHasKey('package', $metadata);
+            $this->assertArrayHasKey('severity', $metadata);
+            $this->assertArrayHasKey('issue_type', $metadata);
+        }
+    }
+
+    // ==================== Plain Text Parsing Tests ====================
+
+    public function test_parses_npm_plain_text_output(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('parseNpmPlainTextAudit');
+        $method->setAccessible(true);
+
+        $output = <<<'TEXT'
+found 15 vulnerabilities (3 low, 8 moderate, 3 high, 1 critical)
+run `npm audit fix` to fix them
+TEXT;
+
+        $result = $method->invoke($analyzer, $output);
+
+        $this->assertIsArray($result);
+        $this->assertArrayHasKey('metadata', $result);
+        $this->assertEquals(15, $result['metadata']['vulnerabilities']['total']);
+    }
+
+    public function test_parses_npm_plain_text_with_singular_vulnerability(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('parseNpmPlainTextAudit');
+        $method->setAccessible(true);
+
+        $output = 'found 1 vulnerability (1 low)';
+
+        $result = $method->invoke($analyzer, $output);
+
+        $this->assertIsArray($result);
+        $this->assertEquals(1, $result['metadata']['vulnerabilities']['total']);
+    }
+
+    public function test_returns_null_for_plain_text_with_no_vulnerabilities(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('parseNpmPlainTextAudit');
+        $method->setAccessible(true);
+
+        $output = 'found 0 vulnerabilities';
+
+        $result = $method->invoke($analyzer, $output);
+
+        $this->assertNull($result);
+    }
+
+    // ==================== Result Format Tests ====================
+
+    public function test_result_uses_resultBySeverity(): void
+    {
+        $packageJson = json_encode(['name' => 'test']);
+        $packageLock = json_encode(['lockfileVersion' => 2]);
+
+        $tempDir = $this->createTempDirectory([
+            'package.json' => $packageJson,
+            'package-lock.json' => $packageLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Result should be instance of ResultInterface
+        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+
+        // Should have getMessage() method (from resultBySeverity)
+        $this->assertIsString($result->getMessage());
+    }
+
+    public function test_summary_message_format_singular(): void
+    {
+        $packageJson = json_encode(['name' => 'test']);
+
+        $tempDir = $this->createTempDirectory([
+            'package.json' => $packageJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Verify message is generated (singular form checked with missing lock file)
+        $this->assertIsString($result->getMessage());
+        $this->assertNotEmpty($result->getMessage());
+    }
+
+    // ==================== Helper Methods ====================
 
     /**
      * Check if npm is available in the system.

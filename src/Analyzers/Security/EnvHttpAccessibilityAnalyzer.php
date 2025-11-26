@@ -12,7 +12,6 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\FindsLoginRoute;
 
@@ -36,6 +35,11 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
      * HTTP checks require a live web server, not applicable in CI.
      */
     public static bool $runInCI = false;
+
+    /**
+     * Minimum number of indicators required to confirm .env file.
+     */
+    private const MIN_INDICATORS_FOR_DETECTION = 2;
 
     private Client $httpClient;
 
@@ -156,34 +160,25 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
                         'path' => $path,
                         'accessible' => true,
                         'indicators_found' => $result['indicators_found'],
+                        'status_code' => $result['status_code'] ?? null,
+                        'response_size' => $result['response_size'] ?? null,
+                        'server_type' => $result['server_type'] ?? null,
                     ]
                 );
             }
         }
 
-        if (empty($issues)) {
-            return $this->passed('.env file is not accessible via HTTP - web server properly configured');
-        }
+        $summary = empty($issues)
+            ? '.env file is not accessible via HTTP - web server properly configured'
+            : sprintf('.env file is publicly accessible at %d location%s', count($issues), count($issues) === 1 ? '' : 's');
 
-        $criticalCount = collect($issues)->filter(fn (Issue $issue) => $issue->severity === Severity::Critical)->count();
-
-        if ($criticalCount > 0) {
-            return $this->failed(
-                sprintf('CRITICAL SECURITY ISSUE: .env file is publicly accessible at %d location(s)!', count($issues)),
-                $issues
-            );
-        }
-
-        return $this->warning(
-            sprintf('Found %d potential .env accessibility issue(s)', count($issues)),
-            $issues
-        );
+        return $this->resultBySeverity($summary, $issues);
     }
 
     /**
      * Check if .env is accessible at the given URL.
      *
-     * @return array{accessible: bool, indicators_found: array<string>}
+     * @return array{accessible: bool, indicators_found: array<string>, status_code?: int, response_size?: int, server_type?: string|null}
      */
     private function checkEnvAccessibility(string $url): array
     {
@@ -191,10 +186,16 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
             $response = $this->httpClient->get($url);
             $statusCode = $response->getStatusCode();
             $body = (string) $response->getBody();
+            $responseSize = strlen($body);
+            $serverType = $response->getHeaderLine('Server');
 
             // If we don't get a 200, it's likely blocked (good!)
             if ($statusCode !== 200) {
-                return ['accessible' => false, 'indicators_found' => []];
+                return [
+                    'accessible' => false,
+                    'indicators_found' => [],
+                    'status_code' => $statusCode,
+                ];
             }
 
             // Check if the content looks like an .env file
@@ -206,9 +207,15 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
                 }
             }
 
-            // If we found 2 or more indicators, it's very likely an .env file
-            if (count($indicatorsFound) >= 2) {
-                return ['accessible' => true, 'indicators_found' => $indicatorsFound];
+            // If we found enough indicators, it's very likely an .env file
+            if (count($indicatorsFound) >= self::MIN_INDICATORS_FOR_DETECTION) {
+                return [
+                    'accessible' => true,
+                    'indicators_found' => $indicatorsFound,
+                    'status_code' => $statusCode,
+                    'response_size' => $responseSize,
+                    'server_type' => $serverType ?: null,
+                ];
             }
 
             // Check for .env-like patterns (key=value format)
@@ -216,10 +223,20 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
             if (preg_match($envPattern, $body)) {
                 // Found key=value patterns, but no specific indicators
                 // Could be a false positive, so mark as accessible but with caution
-                return ['accessible' => true, 'indicators_found' => ['KEY=VALUE pattern detected']];
+                return [
+                    'accessible' => true,
+                    'indicators_found' => ['KEY=VALUE pattern detected'],
+                    'status_code' => $statusCode,
+                    'response_size' => $responseSize,
+                    'server_type' => $serverType ?: null,
+                ];
             }
 
-            return ['accessible' => false, 'indicators_found' => []];
+            return [
+                'accessible' => false,
+                'indicators_found' => [],
+                'status_code' => $statusCode,
+            ];
 
         } catch (RequestException $e) {
             // Network errors, timeouts, DNS failures, etc.
@@ -285,6 +302,11 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
     private function extractBaseUrl(string $url): string
     {
         $parsed = parse_url($url);
+
+        // parse_url() can return false for malformed URLs
+        if ($parsed === false || ! is_array($parsed)) {
+            return '';
+        }
 
         $scheme = $parsed['scheme'] ?? 'https';
         $host = $parsed['host'] ?? '';

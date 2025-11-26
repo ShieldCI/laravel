@@ -362,11 +362,487 @@ ENV;
 
         $this->assertFailed($result);
         $this->assertCount(3, $result->getIssues());
-        $this->assertStringContainsString('3 location(s)', $result->getMessage());
+        $this->assertStringContainsString('3 locations', $result->getMessage());
     }
 
     public function test_run_in_ci_property_is_false(): void
     {
         $this->assertFalse(EnvHttpAccessibilityAnalyzer::$runInCI);
+    }
+
+    // ==================== extractBaseUrl() Tests ====================
+
+    public function test_extract_base_url_with_standard_url(): void
+    {
+        config(['app.url' => 'https://example.com/login']);
+        config(['shieldci.guest_url' => '/']);
+
+        $responses = [new Response(404)];
+        $analyzer = $this->createAnalyzer($responses);
+
+        // Use reflection to test private method
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('extractBaseUrl');
+        $method->setAccessible(true);
+
+        $result = $method->invoke($analyzer, 'https://example.com/login');
+        $this->assertEquals('https://example.com', $result);
+    }
+
+    public function test_extract_base_url_with_port(): void
+    {
+        config(['app.url' => 'https://example.com:8443/admin']);
+
+        $responses = [new Response(404)];
+        $analyzer = $this->createAnalyzer($responses);
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('extractBaseUrl');
+        $method->setAccessible(true);
+
+        $result = $method->invoke($analyzer, 'https://example.com:8443/admin');
+        $this->assertEquals('https://example.com:8443', $result);
+    }
+
+    public function test_extract_base_url_with_http(): void
+    {
+        config(['app.url' => 'http://example.com']);
+
+        $responses = [new Response(404)];
+        $analyzer = $this->createAnalyzer($responses);
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('extractBaseUrl');
+        $method->setAccessible(true);
+
+        $result = $method->invoke($analyzer, 'http://example.com/path');
+        $this->assertEquals('http://example.com', $result);
+    }
+
+    public function test_extract_base_url_with_malformed_url(): void
+    {
+        config(['app.url' => 'https://example.com']);
+
+        $responses = [new Response(404)];
+        $analyzer = $this->createAnalyzer($responses);
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('extractBaseUrl');
+        $method->setAccessible(true);
+
+        // Test with a truly malformed URL that parse_url will reject
+        $result = $method->invoke($analyzer, 'http:///example');
+        // parse_url returns false for severely malformed URLs, resulting in empty string
+        $this->assertEquals('', $result);
+    }
+
+    public function test_extract_base_url_with_subdomain(): void
+    {
+        config(['app.url' => 'https://app.example.com']);
+
+        $responses = [new Response(404)];
+        $analyzer = $this->createAnalyzer($responses);
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('extractBaseUrl');
+        $method->setAccessible(true);
+
+        $result = $method->invoke($analyzer, 'https://app.example.com/dashboard');
+        $this->assertEquals('https://app.example.com', $result);
+    }
+
+    // ==================== determineSeverity() Tests ====================
+
+    public function test_determine_severity_critical_for_public_path(): void
+    {
+        config(['app.url' => 'https://example.com']);
+
+        $responses = [new Response(404)];
+        $analyzer = $this->createAnalyzer($responses);
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('determineSeverity');
+        $method->setAccessible(true);
+
+        $result = $method->invoke($analyzer, 'public/.env');
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $result);
+    }
+
+    public function test_determine_severity_critical_for_root_env(): void
+    {
+        config(['app.url' => 'https://example.com']);
+
+        $responses = [new Response(404)];
+        $analyzer = $this->createAnalyzer($responses);
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('determineSeverity');
+        $method->setAccessible(true);
+
+        $result = $method->invoke($analyzer, '.env');
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $result);
+    }
+
+    public function test_determine_severity_critical_for_parent_env(): void
+    {
+        config(['app.url' => 'https://example.com']);
+
+        $responses = [new Response(404)];
+        $analyzer = $this->createAnalyzer($responses);
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('determineSeverity');
+        $method->setAccessible(true);
+
+        $result = $method->invoke($analyzer, '../.env');
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $result);
+    }
+
+    public function test_determine_severity_high_for_storage_path(): void
+    {
+        config(['app.url' => 'https://example.com']);
+
+        $responses = [new Response(404)];
+        $analyzer = $this->createAnalyzer($responses);
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('determineSeverity');
+        $method->setAccessible(true);
+
+        $result = $method->invoke($analyzer, 'storage/.env');
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $result);
+    }
+
+    public function test_determine_severity_high_for_app_path(): void
+    {
+        config(['app.url' => 'https://example.com']);
+
+        $responses = [new Response(404)];
+        $analyzer = $this->createAnalyzer($responses);
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('determineSeverity');
+        $method->setAccessible(true);
+
+        $result = $method->invoke($analyzer, 'app/.env');
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $result);
+    }
+
+    public function test_determine_severity_medium_for_deep_traversal(): void
+    {
+        config(['app.url' => 'https://example.com']);
+
+        $responses = [new Response(404)];
+        $analyzer = $this->createAnalyzer($responses);
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('determineSeverity');
+        $method->setAccessible(true);
+
+        $result = $method->invoke($analyzer, '../../.env');
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $result);
+    }
+
+    // ==================== getRecommendation() Tests ====================
+
+    public function test_get_recommendation_for_public_directory(): void
+    {
+        config(['app.url' => 'https://example.com']);
+
+        $responses = [new Response(404)];
+        $analyzer = $this->createAnalyzer($responses);
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('getRecommendation');
+        $method->setAccessible(true);
+
+        $result = $method->invoke($analyzer, 'public/.env');
+        $this->assertIsString($result);
+        $this->assertStringContainsString('public directory', $result);
+        $this->assertStringContainsString('NEVER be in a publicly accessible directory', $result);
+    }
+
+    public function test_get_recommendation_for_root_env(): void
+    {
+        config(['app.url' => 'https://example.com']);
+
+        $responses = [new Response(404)];
+        $analyzer = $this->createAnalyzer($responses);
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('getRecommendation');
+        $method->setAccessible(true);
+
+        $result = $method->invoke($analyzer, '.env');
+        $this->assertIsString($result);
+        $this->assertStringContainsString('web server', $result);
+        $this->assertStringContainsString('htaccess', $result);
+    }
+
+    public function test_get_recommendation_for_path_traversal(): void
+    {
+        config(['app.url' => 'https://example.com']);
+
+        $responses = [new Response(404)];
+        $analyzer = $this->createAnalyzer($responses);
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('getRecommendation');
+        $method->setAccessible(true);
+
+        $result = $method->invoke($analyzer, '../../.env');
+        $this->assertIsString($result);
+        $this->assertStringContainsString('directory traversal', $result);
+        $this->assertStringContainsString('path traversal', $result);
+    }
+
+    // ==================== Edge Cases ====================
+
+    public function test_detects_env_with_only_one_indicator_and_key_value_pattern(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+
+        $envContent = <<<'ENV'
+APP_NAME=MyApp
+SOME_KEY=some_value
+ANOTHER_KEY=another_value
+ENV;
+
+        $responses = [
+            new Response(200, [], $envContent),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+        ];
+
+        $analyzer = $this->createAnalyzer($responses);
+        $result = $analyzer->analyze();
+
+        // Should detect due to KEY=VALUE pattern even with only 1 indicator
+        $this->assertFailed($result);
+    }
+
+    public function test_passes_when_env_contains_zero_indicators(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+
+        $content = 'Random content without env indicators';
+
+        $responses = [
+            new Response(200, [], $content),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+        ];
+
+        $analyzer = $this->createAnalyzer($responses);
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_includes_metadata_in_issues(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+
+        $envContent = <<<'ENV'
+APP_NAME=Test
+APP_KEY=base64:test
+DB_HOST=localhost
+ENV;
+
+        $responses = [
+            new Response(200, ['Server' => 'nginx/1.18'], $envContent),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+        ];
+
+        $analyzer = $this->createAnalyzer($responses);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issue = $result->getIssues()[0];
+
+        $this->assertArrayHasKey('url', $issue->metadata);
+        $this->assertArrayHasKey('path', $issue->metadata);
+        $this->assertArrayHasKey('accessible', $issue->metadata);
+        $this->assertArrayHasKey('indicators_found', $issue->metadata);
+        $this->assertArrayHasKey('status_code', $issue->metadata);
+        $this->assertArrayHasKey('response_size', $issue->metadata);
+        $this->assertArrayHasKey('server_type', $issue->metadata);
+        $this->assertEquals(200, $issue->metadata['status_code']);
+        $this->assertEquals('nginx/1.18', $issue->metadata['server_type']);
+    }
+
+    public function test_avoids_duplicate_url_tests(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+
+        // Only need one response since duplicate URLs should be skipped
+        $responses = [
+            new Response(404),
+        ];
+
+        $analyzer = $this->createAnalyzer($responses);
+        $result = $analyzer->analyze();
+
+        // If it tries to test duplicates, MockHandler will throw exception
+        // for missing responses. If we get here, test passed.
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_empty_response_body(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+
+        $responses = [
+            new Response(200, [], ''),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+        ];
+
+        $analyzer = $this->createAnalyzer($responses);
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_response_without_server_header(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+
+        $envContent = <<<'ENV'
+APP_NAME=Test
+APP_KEY=base64:test
+DB_HOST=localhost
+ENV;
+
+        $responses = [
+            new Response(200, [], $envContent), // No Server header
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+        ];
+
+        $analyzer = $this->createAnalyzer($responses);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issue = $result->getIssues()[0];
+        $this->assertNull($issue->metadata['server_type']);
+    }
+
+    public function test_detects_env_with_different_status_codes(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+
+        $responses = [
+            new Response(301), // Redirect - not 200
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+            new Response(404),
+        ];
+
+        $analyzer = $this->createAnalyzer($responses);
+        $result = $analyzer->analyze();
+
+        // Should pass since non-200 responses are considered blocked
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_exception_from_http_client(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+
+        $responses = [
+            new \Exception('Network error'),
+        ];
+
+        $analyzer = $this->createAnalyzer($responses);
+        $result = $analyzer->analyze();
+
+        // Should pass because error means not accessible
+        $this->assertPassed($result);
+    }
+
+    // ==================== Configuration Edge Cases ====================
+
+    public function test_skips_with_empty_guest_url(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '']);
+
+        $analyzer = $this->createAnalyzer();
+
+        // Empty guest URL still uses app.url, so analyzer should run
+        $this->assertTrue($analyzer->shouldRun());
+    }
+
+    public function test_uses_app_url_when_guest_url_is_relative(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/dashboard']);
+
+        $analyzer = $this->createAnalyzer();
+
+        $this->assertTrue($analyzer->shouldRun());
+    }
+
+    public function test_get_skip_reason_when_no_url(): void
+    {
+        config(['app.url' => null]);
+        config(['shieldci.guest_url' => null]);
+
+        $analyzer = $this->createAnalyzer();
+
+        $this->assertFalse($analyzer->shouldRun());
+        $reason = $analyzer->getSkipReason();
+        // When no URL is configured, findLoginRoute() falls back to url('/') which is localhost
+        $this->assertStringContainsString('localhost', $reason);
+    }
+
+    public function test_get_skip_reason_for_localhost(): void
+    {
+        config(['app.url' => 'http://localhost']);
+
+        $analyzer = $this->createAnalyzer();
+
+        $reason = $analyzer->getSkipReason();
+        $this->assertStringContainsString('localhost', $reason);
+        $this->assertStringContainsString('local development', $reason);
     }
 }

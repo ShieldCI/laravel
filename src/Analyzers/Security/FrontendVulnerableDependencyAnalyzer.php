@@ -376,7 +376,7 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
     /**
      * Determine severity from summary breakdown.
      *
-     * @param array<string, mixed> $vulnerabilities
+     * @param  array<string, mixed>  $vulnerabilities
      */
     private function determineSeverityFromSummary(array $vulnerabilities): Severity
     {

@@ -439,7 +439,7 @@ TEXT;
 
     // ==================== Result Format Tests ====================
 
-    public function test_result_uses_resultBySeverity(): void
+    public function test_result_uses_result_by_severity(): void
     {
         $packageJson = json_encode(['name' => 'test']);
         $packageLock = json_encode(['lockfileVersion' => 2]);

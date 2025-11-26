@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -19,28 +20,21 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - Files with write permissions for others (world-writable)
  * - Sensitive files (.env, config files) with insecure permissions
  * - Executable permissions on non-executable files
+ * - Group-writable permissions on sensitive files
  */
 class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 {
-    private array $criticalDirectories = [
-        'app',
-        'config',
-        'database',
-        'resources',
-        'routes',
-        'storage',
-        'public',
-        'bootstrap',
-    ];
+    private const WORLD_WRITABLE = 0x0002;
 
-    private array $criticalFiles = [
-        '.env',
-        '.env.production',
-        '.env.prod',
-        'config/app.php',
-        'config/database.php',
-        'config/services.php',
-    ];
+    private const WORLD_READABLE = 0x0004;
+
+    private const WORLD_EXECUTE = 0x0001;
+
+    private const GROUP_WRITABLE = 0x0020;
+
+    private const GROUP_READABLE = 0x0040;
+
+    private const GROUP_EXECUTE = 0x0010;
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -56,170 +50,298 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
         );
     }
 
+    public function shouldRun(): bool
+    {
+        $basePath = $this->getBasePath();
+        if ($basePath === '') {
+            return false;
+        }
+
+        // Check if at least one configured path exists
+        foreach ($this->getPathsToCheck() as $relativePath => $config) {
+            $path = $this->buildPath($relativePath);
+            if (file_exists($path)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function getSkipReason(): string
+    {
+        if ($this->getBasePath() === '') {
+            return 'Unable to determine base path for file permissions analysis';
+        }
+
+        return 'No configured files or directories found to analyze';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
+        $basePath = $this->getBasePath();
+
+        if ($basePath === '') {
+            return $this->error('Unable to determine base path for file permissions analysis');
+        }
+
         $issues = [];
 
-        // Check critical directories
-        foreach ($this->criticalDirectories as $dir) {
-            $path = $this->basePath.'/'.$dir;
-            if (is_dir($path)) {
-                $this->checkDirectoryPermissions($path, $issues);
-            }
-        }
+        foreach ($this->getPathsToCheck() as $relativePath => $config) {
+            $path = $this->buildPath($relativePath);
 
-        // Check critical files
-        foreach ($this->criticalFiles as $file) {
-            $path = $this->basePath.'/'.$file;
-            if (file_exists($path)) {
-                $this->checkFilePermissions($path, $issues);
-            }
-        }
-
-        // Check storage directory specifically
-        $this->checkStoragePermissions($issues);
-
-        if (empty($issues)) {
-            return $this->passed('File and directory permissions are secure');
-        }
-
-        return $this->failed(
-            sprintf('Found %d file permission security issues', count($issues)),
-            $issues
-        );
-    }
-
-    /**
-     * Check directory permissions.
-     */
-    private function checkDirectoryPermissions(string $path, array &$issues): void
-    {
-        $perms = fileperms($path);
-        $octal = substr(sprintf('%o', $perms), -3);
-
-        // Check if directory is world-writable (permissions like 777)
-        if (($perms & 0x0002)) {
-            $issues[] = $this->createIssue(
-                message: sprintf('Directory "%s" is world-writable (permissions: %s)', basename($path), $octal),
-                location: new Location(
-                    $this->getRelativePath($path),
-                    1
-                ),
-                severity: Severity::Critical,
-                recommendation: 'Change permissions to 775 or 755: chmod 755 '.$this->getRelativePath($path),
-                code: sprintf('Current permissions: %s', $octal)
-            );
-        }
-
-        // Check if permissions are more permissive than 775
-        $numericPerms = octdec($octal);
-        if ($numericPerms > 775) {
-            $issues[] = $this->createIssue(
-                message: sprintf('Directory "%s" has overly permissive permissions (%s)', basename($path), $octal),
-                location: new Location(
-                    $this->getRelativePath($path),
-                    1
-                ),
-                severity: Severity::High,
-                recommendation: 'Change permissions to 775 or 755: chmod 755 '.$this->getRelativePath($path),
-                code: sprintf('Current permissions: %s', $octal)
-            );
-        }
-    }
-
-    /**
-     * Check file permissions.
-     */
-    private function checkFilePermissions(string $path, array &$issues): void
-    {
-        $perms = fileperms($path);
-        $octal = substr(sprintf('%o', $perms), -3);
-
-        // Check if file is world-writable
-        if (($perms & 0x0002)) {
-            $issues[] = $this->createIssue(
-                message: sprintf('File "%s" is world-writable (permissions: %s)', basename($path), $octal),
-                location: new Location(
-                    $this->getRelativePath($path),
-                    1
-                ),
-                severity: Severity::Critical,
-                recommendation: 'Change permissions to 644: chmod 644 '.$this->getRelativePath($path),
-                code: sprintf('Current permissions: %s', $octal)
-            );
-        }
-
-        // Check if .env files have appropriate permissions
-        if (str_contains($path, '.env')) {
-            $numericPerms = octdec($octal);
-            if ($numericPerms > 644) {
-                $issues[] = $this->createIssue(
-                    message: sprintf('.env file has insecure permissions (%s)', $octal),
-                    location: new Location(
-                        $this->getRelativePath($path),
-                        1
-                    ),
-                    severity: Severity::Critical,
-                    recommendation: 'Change permissions to 600 or 644: chmod 600 '.$this->getRelativePath($path),
-                    code: sprintf('Current permissions: %s', $octal)
-                );
-            }
-        }
-
-        // Check for executable permissions on non-script files
-        if (! str_ends_with($path, '.sh') && ! str_contains($path, 'artisan')) {
-            if (($perms & 0x0040) || ($perms & 0x0008) || ($perms & 0x0001)) {
-                $issues[] = $this->createIssue(
-                    message: sprintf('Non-executable file "%s" has execute permissions (%s)', basename($path), $octal),
-                    location: new Location(
-                        $this->getRelativePath($path),
-                        1
-                    ),
-                    severity: Severity::Medium,
-                    recommendation: 'Remove execute permissions: chmod 644 '.$this->getRelativePath($path),
-                    code: sprintf('Current permissions: %s', $octal)
-                );
-            }
-        }
-    }
-
-    /**
-     * Check storage directory permissions specifically.
-     */
-    private function checkStoragePermissions(array &$issues): void
-    {
-        $storagePath = $this->basePath.'/storage';
-
-        if (! is_dir($storagePath)) {
-            return;
-        }
-
-        // Storage directories should be writable by web server
-        $subdirs = ['app', 'framework', 'logs'];
-
-        foreach ($subdirs as $subdir) {
-            $path = $storagePath.'/'.$subdir;
-
-            if (! is_dir($path)) {
+            if (! file_exists($path)) {
                 continue;
             }
 
-            $perms = fileperms($path);
-            $octal = substr(sprintf('%o', $perms), -3);
-
-            // Storage needs to be writable, but check for world-writable
-            if (($perms & 0x0002)) {
-                $issues[] = $this->createIssue(
-                    message: sprintf('Storage directory "%s" is world-writable (permissions: %s)', $subdir, $octal),
-                    location: new Location(
-                        $this->getRelativePath($path),
-                        1
-                    ),
-                    severity: Severity::High,
-                    recommendation: 'Change permissions to 775: chmod 775 '.$this->getRelativePath($path),
-                    code: sprintf('Current permissions: %s', $octal)
-                );
-            }
+            $this->checkPath($path, $relativePath, $config, $issues);
         }
+
+        $summary = empty($issues)
+            ? 'File and directory permissions are secure'
+            : sprintf('Found %d file permission security issue%s', count($issues), count($issues) === 1 ? '' : 's');
+
+        return $this->resultBySeverity($summary, $issues);
+    }
+
+    /**
+     * Get paths to check with their configuration.
+     *
+     * Format: ['path' => ['type' => 'file|directory', 'max' => 644, 'recommended' => 600, 'critical' => true, 'executable' => true]]
+     *
+     * @return array<string, array{type: string, max: int, recommended: int, critical?: bool, executable?: bool}>
+     */
+    private function getPathsToCheck(): array
+    {
+        /** @var array<string, array{type: string, max: int, recommended: int, critical?: bool, executable?: bool}> $defaults */
+        $defaults = [
+            // Critical directories (values in octal converted to decimal for comparison)
+            'app' => ['type' => 'directory', 'max' => octdec('775'), 'recommended' => octdec('755')],
+            'config' => ['type' => 'directory', 'max' => octdec('775'), 'recommended' => octdec('755')],
+            'database' => ['type' => 'directory', 'max' => octdec('775'), 'recommended' => octdec('755')],
+            'resources' => ['type' => 'directory', 'max' => octdec('775'), 'recommended' => octdec('755')],
+            'routes' => ['type' => 'directory', 'max' => octdec('775'), 'recommended' => octdec('755')],
+            'bootstrap' => ['type' => 'directory', 'max' => octdec('775'), 'recommended' => octdec('755')],
+            'public' => ['type' => 'directory', 'max' => octdec('775'), 'recommended' => octdec('755')],
+
+            // Storage directories (need to be writable)
+            'storage' => ['type' => 'directory', 'max' => octdec('775'), 'recommended' => octdec('775')],
+            'storage/app' => ['type' => 'directory', 'max' => octdec('775'), 'recommended' => octdec('775')],
+            'storage/framework' => ['type' => 'directory', 'max' => octdec('775'), 'recommended' => octdec('775')],
+            'storage/logs' => ['type' => 'directory', 'max' => octdec('775'), 'recommended' => octdec('775')],
+
+            // Critical files - stricter permissions
+            '.env' => ['type' => 'file', 'max' => octdec('600'), 'recommended' => octdec('600'), 'critical' => true],
+            '.env.production' => ['type' => 'file', 'max' => octdec('600'), 'recommended' => octdec('600'), 'critical' => true],
+            '.env.prod' => ['type' => 'file', 'max' => octdec('600'), 'recommended' => octdec('600'), 'critical' => true],
+            'config/app.php' => ['type' => 'file', 'max' => octdec('644'), 'recommended' => octdec('644')],
+            'config/database.php' => ['type' => 'file', 'max' => octdec('644'), 'recommended' => octdec('644')],
+            'config/services.php' => ['type' => 'file', 'max' => octdec('644'), 'recommended' => octdec('644')],
+
+            // Executable files
+            'artisan' => ['type' => 'file', 'max' => octdec('775'), 'recommended' => octdec('755'), 'executable' => true],
+        ];
+
+        // Allow configuration override
+        /** @var array<string, array{type: string, max: int, recommended: int, critical?: bool, executable?: bool}> $config */
+        $config = config('shieldci.file_permissions', []);
+
+        return array_merge($defaults, $config);
+    }
+
+    /**
+     * Check a single path's permissions.
+     *
+     * @param  array{type?: string, max: int, recommended: int, critical?: bool, executable?: bool}  $config
+     * @param  array<int, mixed>  $issues
+     */
+    private function checkPath(string $path, string $relativePath, array $config, array &$issues): void
+    {
+        $permissions = $this->getPermissions($path);
+        if ($permissions === null) {
+            return;
+        }
+
+        $type = $config['type'] ?? 'file';
+        $max = $config['max'];
+        $recommended = $config['recommended'];
+        $isCritical = $config['critical'] ?? false;
+        $isExecutable = $config['executable'] ?? false;
+
+        // Check 1: World-writable (CRITICAL - always)
+        if ($this->isWorldWritable($permissions['raw'])) {
+            $issues[] = $this->createIssue(
+                message: sprintf('%s "%s" is world-writable (permissions: %s)', ucfirst($type), $relativePath, $permissions['octal']),
+                location: new Location($relativePath, 1),
+                severity: Severity::Critical,
+                recommendation: sprintf(
+                    'Change permissions to %s: chmod %s %s',
+                    decoct($recommended),
+                    decoct($recommended),
+                    $relativePath
+                ),
+                code: FileParser::getCodeSnippet($path, 1),
+                metadata: [
+                    'path' => $relativePath,
+                    'permissions' => $permissions['octal'],
+                    'numeric_permissions' => $permissions['numeric'],
+                    'type' => $type,
+                    'world_writable' => true,
+                    'world_readable' => $this->isWorldReadable($permissions['raw']),
+                    'group_writable' => $this->isGroupWritable($permissions['raw']),
+                    'group_readable' => $this->isGroupReadable($permissions['raw']),
+                ]
+            );
+
+            return; // Don't check further - world-writable is the main issue
+        }
+
+        // Check 2: Exceeds maximum permissions
+        if ($permissions['numeric'] > $max) {
+            $severity = $isCritical ? Severity::Critical : Severity::High;
+
+            $issues[] = $this->createIssue(
+                message: sprintf('%s "%s" has overly permissive permissions (%s)', ucfirst($type), $relativePath, $permissions['octal']),
+                location: new Location($relativePath, 1),
+                severity: $severity,
+                recommendation: sprintf(
+                    'Change permissions to %s or %s: chmod %s %s',
+                    decoct($max),
+                    decoct($recommended),
+                    decoct($recommended),
+                    $relativePath
+                ),
+                code: FileParser::getCodeSnippet($path, 1),
+                metadata: [
+                    'path' => $relativePath,
+                    'permissions' => $permissions['octal'],
+                    'numeric_permissions' => $permissions['numeric'],
+                    'type' => $type,
+                    'max_allowed' => $max,
+                    'recommended' => $recommended,
+                    'world_writable' => false,
+                    'world_readable' => $this->isWorldReadable($permissions['raw']),
+                    'group_writable' => $this->isGroupWritable($permissions['raw']),
+                    'group_readable' => $this->isGroupReadable($permissions['raw']),
+                ]
+            );
+
+            return; // Don't check further
+        }
+
+        // Check 3: Group-writable on critical files (Medium severity)
+        if ($isCritical && $this->isGroupWritable($permissions['raw'])) {
+            $issues[] = $this->createIssue(
+                message: sprintf('Critical file "%s" is group-writable (permissions: %s)', $relativePath, $permissions['octal']),
+                location: new Location($relativePath, 1),
+                severity: Severity::Medium,
+                recommendation: sprintf(
+                    'Remove group write permissions: chmod %s %s',
+                    decoct($recommended),
+                    $relativePath
+                ),
+                code: FileParser::getCodeSnippet($path, 1),
+                metadata: [
+                    'path' => $relativePath,
+                    'permissions' => $permissions['octal'],
+                    'numeric_permissions' => $permissions['numeric'],
+                    'type' => $type,
+                    'world_writable' => false,
+                    'world_readable' => $this->isWorldReadable($permissions['raw']),
+                    'group_writable' => true,
+                    'group_readable' => $this->isGroupReadable($permissions['raw']),
+                ]
+            );
+
+            return; // Don't check executable if already flagged
+        }
+
+        // Check 4: Executable permissions on non-executable files (Medium severity)
+        if ($type === 'file' && ! $isExecutable && $this->hasExecutePermissions($permissions['raw'])) {
+            $issues[] = $this->createIssue(
+                message: sprintf('Non-executable file "%s" has execute permissions (%s)', $relativePath, $permissions['octal']),
+                location: new Location($relativePath, 1),
+                severity: Severity::Medium,
+                recommendation: sprintf(
+                    'Remove execute permissions: chmod %s %s',
+                    decoct($recommended),
+                    $relativePath
+                ),
+                code: FileParser::getCodeSnippet($path, 1),
+                metadata: [
+                    'path' => $relativePath,
+                    'permissions' => $permissions['octal'],
+                    'numeric_permissions' => $permissions['numeric'],
+                    'type' => $type,
+                    'has_execute' => true,
+                    'should_be_executable' => false,
+                    'world_writable' => false,
+                    'world_readable' => $this->isWorldReadable($permissions['raw']),
+                    'group_writable' => $this->isGroupWritable($permissions['raw']),
+                    'group_readable' => $this->isGroupReadable($permissions['raw']),
+                ]
+            );
+        }
+    }
+
+    /**
+     * Get permissions for a path.
+     *
+     * @return array{raw: int, octal: string, numeric: int}|null
+     */
+    private function getPermissions(string $path): ?array
+    {
+        $perms = @fileperms($path);
+        if ($perms === false) {
+            return null;
+        }
+
+        $octal = substr(sprintf('%o', $perms), -3);
+
+        return [
+            'raw' => $perms,
+            'octal' => $octal,
+            'numeric' => (int) octdec($octal),
+        ];
+    }
+
+    /**
+     * Check if path is world-writable.
+     */
+    private function isWorldWritable(int $perms): bool
+    {
+        return (bool) ($perms & self::WORLD_WRITABLE);
+    }
+
+    /**
+     * Check if path is world-readable.
+     */
+    private function isWorldReadable(int $perms): bool
+    {
+        return (bool) ($perms & self::WORLD_READABLE);
+    }
+
+    /**
+     * Check if path is group-writable.
+     */
+    private function isGroupWritable(int $perms): bool
+    {
+        return (bool) ($perms & self::GROUP_WRITABLE);
+    }
+
+    /**
+     * Check if path is group-readable.
+     */
+    private function isGroupReadable(int $perms): bool
+    {
+        return (bool) ($perms & self::GROUP_READABLE);
+    }
+
+    /**
+     * Check if path has any execute permissions.
+     */
+    private function hasExecutePermissions(int $perms): bool
+    {
+        return (bool) ($perms & (0x0040 | self::GROUP_EXECUTE | self::WORLD_EXECUTE));
     }
 }

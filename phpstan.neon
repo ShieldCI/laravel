@@ -47,7 +47,6 @@ parameters:
         # Shell command outputs and JSON decode can be false or mixed
         - '#Cannot access offset .* on mixed#'
         - '#Argument of an invalid type mixed supplied for foreach#'
-        - '#Cannot access an offset on array\|float\|int\|string\|false\|null#'
         - '#Parameter .* of function (strtolower|trim|rtrim|ltrim) expects string, string\|false given#'
 
         # RecursiveDirectoryIterator and file operations return mixed types

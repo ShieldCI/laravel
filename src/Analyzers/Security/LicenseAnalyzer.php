@@ -73,27 +73,32 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
         );
     }
 
+    public function shouldRun(): bool
+    {
+        $composerLock = $this->getBasePath().DIRECTORY_SEPARATOR.'composer.lock';
+
+        return file_exists($composerLock);
+    }
+
+    public function getSkipReason(): string
+    {
+        return 'No composer.lock file found';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
 
         // Check composer.lock for PHP dependencies
-        $composerLock = $this->basePath.'/composer.lock';
-
-        if (! file_exists($composerLock)) {
-            return $this->passed('No composer.lock found - skipping license check');
-        }
+        $composerLock = $this->getBasePath().DIRECTORY_SEPARATOR.'composer.lock';
 
         $this->checkComposerLicenses($composerLock, $issues);
 
-        if (empty($issues)) {
-            return $this->passed('All dependency licenses are acceptable');
-        }
+        $summary = empty($issues)
+            ? 'All dependency licenses are acceptable'
+            : sprintf('Found %d package%s with potentially problematic licenses', count($issues), count($issues) === 1 ? '' : 's');
 
-        return $this->failed(
-            sprintf('Found %d packages with potentially problematic licenses', count($issues)),
-            $issues
-        );
+        return $this->resultBySeverity($summary, $issues);
     }
 
     /**
@@ -108,26 +113,78 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
 
         $lockData = json_decode($content, true);
 
-        if (! isset($lockData['packages'])) {
+        if (json_last_error() !== JSON_ERROR_NONE || ! is_array($lockData)) {
             return;
         }
 
-        foreach ($lockData['packages'] as $package) {
-            $packageName = $package['name'] ?? 'Unknown';
-            $licenses = $package['license'] ?? [];
+        if (! isset($lockData['packages']) || ! is_array($lockData['packages'])) {
+            return;
+        }
+
+        $config = $this->getConfiguration();
+
+        // Check production dependencies
+        $this->checkPackageLicenses(
+            $lockData['packages'],
+            $composerLock,
+            $issues,
+            $config,
+            false
+        );
+
+        // Check dev dependencies separately (less critical)
+        if (isset($lockData['packages-dev']) && is_array($lockData['packages-dev'])) {
+            $this->checkPackageLicenses(
+                $lockData['packages-dev'],
+                $composerLock,
+                $issues,
+                $config,
+                true
+            );
+        }
+    }
+
+    /**
+     * Check licenses for a list of packages.
+     *
+     * @param  array<int, mixed>  $packages
+     * @param  array<string, mixed>  $config
+     */
+    private function checkPackageLicenses(
+        array $packages,
+        string $composerLock,
+        array &$issues,
+        array $config,
+        bool $isDevDependency
+    ): void {
+        foreach ($packages as $package) {
+            if (! is_array($package)) {
+                continue;
+            }
+
+            $packageName = isset($package['name']) && is_string($package['name'])
+                ? $package['name']
+                : 'Unknown';
+
+            // Normalize license to array (handle both string and array)
+            $licenses = $this->normalizeLicenseField($package);
 
             // Skip if no license information
             if (empty($licenses)) {
-                $issues[] = $this->createIssue(
-                    message: sprintf('Package "%s" has no license information', $packageName),
-                    location: new Location(
-                        'composer.lock',
-                        1
-                    ),
-                    severity: Severity::Medium,
-                    recommendation: sprintf('Investigate license for "%s" or contact the package maintainer', $packageName),
-                    code: sprintf('No license: %s', $packageName)
-                );
+                // Only flag missing licenses for production dependencies
+                if (! $isDevDependency) {
+                    $issues[] = $this->createIssue(
+                        message: sprintf('Package "%s" has no license information', $packageName),
+                        location: new Location($composerLock, 1),
+                        severity: Severity::Medium,
+                        recommendation: sprintf('Investigate license for "%s" or contact the package maintainer', $packageName),
+                        code: FileParser::getCodeSnippet($composerLock, 1),
+                        metadata: [
+                            'package' => $packageName,
+                            'issue_type' => 'missing_license',
+                        ]
+                    );
+                }
 
                 continue;
             }
@@ -135,96 +192,122 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
             // Normalize licenses to uppercase for comparison
             $normalizedLicenses = array_map('strtoupper', $licenses);
 
+            /** @var array<int, string> $whitelistedLicenses */
+            $whitelistedLicenses = $config['whitelisted_licenses'];
+
+            /** @var array<int, string> $restrictiveLicenses */
+            $restrictiveLicenses = $config['restrictive_licenses'];
+
             // Check if any license is whitelisted
             $hasWhitelistedLicense = ! empty(array_intersect(
                 $normalizedLicenses,
-                array_map('strtoupper', $this->whitelistedLicenses)
+                array_map('strtoupper', $whitelistedLicenses)
             ));
 
             // Check for restrictive licenses
             $restrictiveMatches = array_intersect(
                 $normalizedLicenses,
-                array_map('strtoupper', $this->restrictiveLicenses)
+                array_map('strtoupper', $restrictiveLicenses)
             );
 
-            if (! empty($restrictiveMatches)) {
-                $issues[] = $this->createIssue(
-                    message: sprintf(
-                        'Package "%s" uses restrictive license: %s',
-                        $packageName,
-                        implode(', ', $licenses)
-                    ),
-                    location: new Location(
-                        'composer.lock',
-                        1
-                    ),
-                    severity: Severity::Critical,
-                    recommendation: sprintf(
-                        'GPL/AGPL licenses may require your application to be open-source. Review "%s" license implications or find an alternative package',
-                        $packageName
-                    ),
-                    code: sprintf('Restrictive license: %s [%s]', $packageName, implode(', ', $licenses))
-                );
-            } elseif (! $hasWhitelistedLicense) {
-                // License is not whitelisted and not explicitly restrictive - flag for review
-                $issues[] = $this->createIssue(
-                    message: sprintf(
-                        'Package "%s" uses non-standard license: %s',
-                        $packageName,
-                        implode(', ', $licenses)
-                    ),
-                    location: new Location(
-                        'composer.lock',
-                        1
-                    ),
-                    severity: Severity::Medium,
-                    recommendation: sprintf(
-                        'Review the "%s" license terms to ensure compatibility with your application. Common safe licenses: MIT, Apache-2.0, BSD',
-                        implode(', ', $licenses)
-                    ),
-                    code: sprintf('Non-standard license: %s [%s]', $packageName, implode(', ', $licenses))
-                );
+            // If package has whitelisted license, it's OK (dual-license scenario)
+            if ($hasWhitelistedLicense) {
+                continue;
             }
-        }
 
-        // Check dev dependencies separately (less critical)
-        if (isset($lockData['packages-dev'])) {
-            foreach ($lockData['packages-dev'] as $package) {
-                $packageName = $package['name'] ?? 'Unknown';
-                $licenses = $package['license'] ?? [];
+            // Check for restrictive licenses (only if no whitelisted license exists)
+            if (! empty($restrictiveMatches)) {
+                $severity = $isDevDependency ? Severity::Low : Severity::Critical;
+                $prefix = $isDevDependency ? 'Dev package' : 'Package';
 
-                if (empty($licenses)) {
-                    continue; // Skip missing licenses for dev dependencies
-                }
-
-                $normalizedLicenses = array_map('strtoupper', $licenses);
-
-                // Only flag GPL/AGPL in dev dependencies as warning (not critical)
-                $restrictiveMatches = array_intersect(
-                    $normalizedLicenses,
-                    array_map('strtoupper', $this->restrictiveLicenses)
+                $issues[] = $this->createIssue(
+                    message: sprintf(
+                        '%s "%s" uses restrictive license: %s',
+                        $prefix,
+                        $packageName,
+                        implode(', ', $licenses)
+                    ),
+                    location: new Location($composerLock, 1),
+                    severity: $severity,
+                    recommendation: $isDevDependency
+                        ? sprintf('Dev dependency "%s" has GPL/AGPL license. This is generally safe for development tools, but verify it\'s not distributed with your application', $packageName)
+                        : sprintf('GPL/AGPL licenses may require your application to be open-source. Review "%s" license implications or find an alternative package', $packageName),
+                    code: FileParser::getCodeSnippet($composerLock, 1),
+                    metadata: [
+                        'package' => $packageName,
+                        'licenses' => $licenses,
+                        'issue_type' => 'restrictive_license',
+                        'type' => $isDevDependency ? 'dev_dependency' : 'production_dependency',
+                    ]
                 );
-
-                if (! empty($restrictiveMatches)) {
+            } else {
+                // License is not whitelisted and not explicitly restrictive - flag for review (production only)
+                if (! $isDevDependency) {
                     $issues[] = $this->createIssue(
                         message: sprintf(
-                            'Dev package "%s" uses restrictive license: %s',
+                            'Package "%s" uses non-standard license: %s',
                             $packageName,
                             implode(', ', $licenses)
                         ),
-                        location: new Location(
-                            'composer.lock',
-                            1
-                        ),
+                        location: new Location($composerLock, 1),
                         severity: Severity::Low,
                         recommendation: sprintf(
-                            'Dev dependency "%s" has GPL/AGPL license. This is generally safe for development tools, but verify it\'s not distributed with your application',
+                            'Review the "%s" license terms to ensure compatibility with your application. Common safe licenses: MIT, Apache-2.0, BSD',
                             $packageName
                         ),
-                        code: sprintf('Dev dependency: %s [%s]', $packageName, implode(', ', $licenses))
+                        code: FileParser::getCodeSnippet($composerLock, 1),
+                        metadata: [
+                            'package' => $packageName,
+                            'licenses' => $licenses,
+                            'issue_type' => 'unknown_license',
+                        ]
                     );
                 }
             }
         }
+    }
+
+    /**
+     * Normalize license field to array (handle both string and array).
+     *
+     * @param  array<string, mixed>  $package
+     * @return array<int, string>
+     */
+    private function normalizeLicenseField(array $package): array
+    {
+        if (! isset($package['license'])) {
+            return [];
+        }
+
+        $license = $package['license'];
+
+        // Handle string license
+        if (is_string($license)) {
+            return [$license];
+        }
+
+        // Handle array license
+        if (is_array($license)) {
+            return $license;
+        }
+
+        return [];
+    }
+
+    /**
+     * Get analyzer configuration.
+     *
+     * @return array<string, mixed>
+     */
+    private function getConfiguration(): array
+    {
+        /** @var array<string, mixed> $config */
+        $config = config('shieldci.license_compliance', []);
+
+        return array_merge([
+            'whitelisted_licenses' => $this->whitelistedLicenses,
+            'restrictive_licenses' => $this->restrictiveLicenses,
+            'check_dev_dependencies' => true,
+        ], $config);
     }
 }

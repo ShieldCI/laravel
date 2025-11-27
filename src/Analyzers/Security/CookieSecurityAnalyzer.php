@@ -41,7 +41,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
     public function shouldRun(): bool
     {
         // Check if there are any files to analyze
-        $sessionConfig = ConfigFileHelper::getConfigPath($this->basePath, 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+        $sessionConfig = ConfigFileHelper::getConfigPath($this->getBasePath(), 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
         $kernelFile = $this->buildPath('app', 'Http', 'Kernel.php');
         $bootstrapApp = $this->buildPath('bootstrap', 'app.php');
 
@@ -77,7 +77,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
      */
     private function checkSessionConfig(array &$issues): void
     {
-        $sessionConfig = ConfigFileHelper::getConfigPath($this->basePath, 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+        $sessionConfig = ConfigFileHelper::getConfigPath($this->getBasePath(), 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
         if (! file_exists($sessionConfig)) {
             return;

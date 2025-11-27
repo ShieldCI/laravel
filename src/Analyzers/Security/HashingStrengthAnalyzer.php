@@ -49,7 +49,7 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
     {
         // Run if hashing config exists OR if there are PHP files to scan
         $hashingConfig = ConfigFileHelper::getConfigPath(
-            $this->basePath,
+            $this->getBasePath(),
             'hashing.php',
             fn ($file) => function_exists('config_path') ? config_path($file) : null
         );
@@ -91,7 +91,7 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
      */
     private function checkHashingConfig(array &$issues): void
     {
-        $hashingConfig = ConfigFileHelper::getConfigPath($this->basePath, 'hashing.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+        $hashingConfig = ConfigFileHelper::getConfigPath($this->getBasePath(), 'hashing.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
         if (! file_exists($hashingConfig)) {
             return;

@@ -49,9 +49,6 @@ parameters:
         - '#Argument of an invalid type mixed supplied for foreach#'
         - '#Parameter .* of function (strtolower|trim|rtrim|ltrim) expects string, string\|false given#'
 
-        # Parser/AST operations work with mixed node types
-        - '#Cannot call method find\(\) on mixed#'
-
         # Config and Laravel app operations return mixed
         - '#Cannot call method (getAnalyzerId|getMessage|getIssues|version|error)\(\) on mixed#'
         - '#Property .* does not accept mixed#'

@@ -70,6 +70,5 @@ parameters:
 
         # Private helper methods with untyped arrays (internal implementation details)
         - '#has parameter \$packages with no value type specified in iterable type array#'
-        - '#has parameter \$nodes with no value type specified in iterable type array#'
         - '#has parameter \$metadata with no value type specified in iterable type array#'
         - '#has parameter \$ast with no value type specified in iterable type array#'

@@ -6,6 +6,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
 use ShieldCI\Analyzers\Security\UnguardedModelsAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class UnguardedModelsAnalyzerTest extends AnalyzerTestCase
@@ -62,8 +63,6 @@ class ImportCommand
         Model::unguard();
 
         // Import data...
-
-        Model::reguard();
     }
 }
 PHP;
@@ -126,8 +125,6 @@ class UserController extends Controller
         Model::unguard();
 
         User::create(request()->all());
-
-        Model::reguard();
     }
 }
 PHP;
@@ -142,7 +139,9 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('Model::unguard()', $result);
-        // Issue should have critical severity (checked in analyzer)
+
+        $issues = $result->getIssues();
+        $this->assertSame(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_medium_severity_in_seeders(): void
@@ -164,8 +163,6 @@ class DatabaseSeeder extends Seeder
         $this->call([
             UserSeeder::class,
         ]);
-
-        Model::reguard();
     }
 }
 PHP;
@@ -180,7 +177,9 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('Model::unguard()', $result);
-        // Issue should have medium severity for seeders
+
+        $issues = $result->getIssues();
+        $this->assertSame(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_low_severity_in_tests(): void
@@ -203,8 +202,6 @@ class UserTest extends TestCase
             'name' => 'Test User',
         ]);
 
-        Model::reguard();
-
         $this->assertNotNull($user);
     }
 }
@@ -220,7 +217,9 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('Model::unguard()', $result);
-        // Issue should have low severity for tests
+
+        $issues = $result->getIssues();
+        $this->assertSame(Severity::Low, $issues[0]->severity);
     }
 
     public function test_detects_unguard_without_reguard(): void
@@ -274,14 +273,12 @@ class DataService
     {
         Model::unguard();
         // Import users...
-        Model::reguard();
     }
 
     public function importProducts()
     {
         Model::unguard();
         // Import products...
-        Model::reguard();
     }
 }
 PHP;
@@ -295,9 +292,8 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        // Should detect at least 2 unguard calls (may detect more due to traversal)
         $issues = $result->getIssues();
-        $this->assertGreaterThanOrEqual(2, count($issues));
+        $this->assertCount(2, $issues);
     }
 
     public function test_ignores_other_unguard_methods(): void
@@ -349,8 +345,6 @@ class UserService
         Model::unguard();
 
         $user = User::create($data);
-
-        Model::reguard();
 
         return $user;
     }
@@ -439,6 +433,68 @@ class UserController extends Controller
 PHP;
 
         $tempDir = $this->createTempDirectory(['Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_reguard_is_called_after_unguard(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Database\Eloquent\Model;
+
+class BatchImporter
+{
+    public function import(array $payload)
+    {
+        Model::unguard();
+
+        foreach ($payload as $record) {
+            User::create($record);
+        }
+
+        Model::reguard();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/BatchImporter.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_vendor_directory(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace Illuminate\Database\Eloquent;
+
+use Illuminate\Database\Eloquent\Model;
+
+class LegacyModel
+{
+    public static function boot()
+    {
+        Model::unguard();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['vendor/laravel/framework/src/LegacyModel.php' => $code]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);

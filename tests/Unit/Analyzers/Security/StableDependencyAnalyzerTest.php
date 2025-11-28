@@ -4,18 +4,44 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
+use Mockery;
+use RuntimeException;
 use ShieldCI\Analyzers\Security\StableDependencyAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\Support\Composer;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class StableDependencyAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    private const DEFAULT_COMPOSER_OUTPUT = "Nothing to install or update\n";
+
+    protected function createAnalyzer(?Composer $composer = null): AnalyzerInterface
     {
-        return new StableDependencyAnalyzer;
+        return new StableDependencyAnalyzer($composer ?? $this->mockComposer());
     }
 
-    public function test_passes_when_no_composer_json_exists(): void
+    /**
+     * @return Composer&\Mockery\MockInterface
+     */
+    private function mockComposer(?string $output = null, ?\Throwable $throwable = null): Composer
+    {
+        /** @var Composer&\Mockery\MockInterface $composer */
+        $composer = Mockery::mock(Composer::class);
+
+        if ($throwable !== null) {
+            /** @phpstan-ignore-next-line Mockery expectation chaining */
+            $composer->shouldReceive('updateDryRun')->andThrow($throwable);
+
+            return $composer;
+        }
+
+        $composer->shouldReceive('updateDryRun')
+            ->andReturn($output ?? self::DEFAULT_COMPOSER_OUTPUT);
+
+        return $composer;
+    }
+
+    public function test_skips_when_no_composer_json_exists(): void
     {
         $tempDir = $this->createTempDirectory([]);
 
@@ -25,7 +51,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        $this->assertSkipped($result);
         $this->assertStringContainsString('No composer.json found', $result->getMessage());
     }
 
@@ -381,6 +407,41 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         $this->assertHasIssueContaining('3 unstable', $result);
     }
 
+    public function test_detects_unstable_packages_in_packages_dev(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        $composerLock = json_encode([
+            'packages-dev' => [
+                [
+                    'name' => 'vendor/dev-package',
+                    'version' => 'dev-main',
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('unstable', $result);
+    }
+
     public function test_passes_with_all_stable_versions(): void
     {
         $composerJson = json_encode([
@@ -414,5 +475,80 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    public function test_flags_prefer_stable_dry_run_changes(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+                'vendor/package' => '^1.0',
+            ],
+        ]);
+
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'vendor/package',
+                    'version' => '1.0.0',
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            'composer.lock' => $composerLock,
+        ]);
+
+        $composer = $this->mockComposer("Loading composer repositories\nUpgrading vendor/package (1.0.0 => 1.0.1)\n");
+
+        $analyzer = $this->createAnalyzer($composer);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('prefer-stable', $result);
+    }
+
+    public function test_returns_error_when_composer_update_fails(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'vendor/package',
+                    'version' => '1.0.0',
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            'composer.lock' => $composerLock,
+        ]);
+
+        $composer = $this->mockComposer(null, new RuntimeException('Composer binary missing'));
+
+        $analyzer = $this->createAnalyzer($composer);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertError($result);
+        $this->assertStringContainsString('Unable to verify dependency stability', $result->getMessage());
     }
 }

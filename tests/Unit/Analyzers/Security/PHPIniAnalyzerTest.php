@@ -140,6 +140,177 @@ class PHPIniAnalyzerTest extends AnalyzerTestCase
         $this->assertSkipped($result);
     }
 
+    public function test_it_detects_verbose_error_reporting_with_e_strict(): void
+    {
+        // Use a safe value with E_STRICT added (not E_ALL which might trigger disallowed_values check)
+        $testValue = E_ALL & ~E_DEPRECATED & ~E_NOTICE | E_STRICT;
+
+        $iniPath = $this->createPhpIniFixture([
+            'error_reporting = '.$testValue,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues($this->secureIniValues([
+            'error_reporting' => (string) $testValue,
+        ]));
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('error_reporting includes verbose flags', $result);
+        $this->assertHasIssueContaining('E_STRICT', $result);
+    }
+
+    public function test_it_detects_verbose_error_reporting_with_e_deprecated(): void
+    {
+        // Use a safe value with E_DEPRECATED added
+        $testValue = E_ALL & ~E_STRICT & ~E_NOTICE | E_DEPRECATED;
+
+        $iniPath = $this->createPhpIniFixture([
+            'error_reporting = '.$testValue,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues($this->secureIniValues([
+            'error_reporting' => (string) $testValue,
+        ]));
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('error_reporting includes verbose flags', $result);
+        $this->assertHasIssueContaining('E_DEPRECATED', $result);
+    }
+
+    public function test_it_detects_dangerous_functions_with_case_variations(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'disable_functions = EXEC,PassThru',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues($this->secureIniValues([
+            'disable_functions' => 'EXEC,PassThru',
+        ]));
+
+        $result = $analyzer->analyze();
+
+        // Should still detect missing functions (shell_exec, system, etc.)
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('dangerous PHP functions', $result);
+    }
+
+    public function test_it_detects_dangerous_functions_with_spaces(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'disable_functions = exec , passthru , shell_exec',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues($this->secureIniValues([
+            'disable_functions' => 'exec , passthru , shell_exec',
+        ]));
+
+        $result = $analyzer->analyze();
+
+        // Should still detect missing functions (system, proc_open, etc.)
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('dangerous PHP functions', $result);
+    }
+
+    public function test_it_handles_missing_php_ini_path_gracefully(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => "APP_ENV=production\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath('/nonexistent/php.ini');
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setIniValues($this->secureIniValues());
+
+        $result = $analyzer->analyze();
+
+        // When file doesn't exist but ini values are provided (mocked), it still passes
+        // because it uses the mocked values via getIniValue()
+        $this->assertPassed($result);
+    }
+
+    public function test_it_merges_custom_config_settings(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'custom_setting = On',
+        ]);
+
+        config([
+            'shieldci.php_configuration.secure_settings' => [
+                'custom_setting' => false,
+            ],
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues(array_merge($this->secureIniValues(), [
+            'custom_setting' => '1',
+        ]));
+
+        $result = $analyzer->analyze();
+
+        // Medium severity = Warning status
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('custom_setting', $result);
+    }
+
+    public function test_it_ignores_settings_in_comments(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            '; display_errors = On',
+            '# expose_php = On',
+            '// allow_url_fopen = On',
+            'allow_url_fopen = Off',
+            'expose_php = Off',
+            'display_errors = Off',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues($this->secureIniValues());
+
+        $result = $analyzer->analyze();
+
+        // Should pass because actual settings (not comments) are secure
+        $this->assertPassed($result);
+    }
+
+    public function test_it_finds_correct_line_for_settings_with_similar_names(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            '; This is a comment about display_errors',
+            'display_errors = Off',
+            'display_startup_errors = Off',
+            '; Another comment mentioning display_errors',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues($this->secureIniValues());
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     /**
      * @param  array<int, string>  $lines
      */

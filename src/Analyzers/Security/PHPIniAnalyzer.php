@@ -170,17 +170,14 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
             $expected = $expectedValue ? 'enabled' : 'disabled';
             $actual = $isEnabled ? 'enabled' : ($isDisabled ? 'disabled' : $currentValue);
 
-            $line = $this->getSettingLine($phpIniPath, $setting);
-            $snippet = FileParser::getCodeSnippet($phpIniPath, $line);
-
             // Check if current value matches expected
             if ($expectedValue && ! $isEnabled) {
-                $issues[] = $this->createIssue(
+                $issues[] = $this->createPhpIniIssue(
+                    phpIniPath: $phpIniPath,
+                    setting: $setting,
                     message: sprintf('PHP ini setting "%s" should be enabled but is %s', $setting, $actual),
-                    location: new Location($phpIniPath, $line),
-                    severity: $this->getSeverityForSetting($setting),
                     recommendation: sprintf('Set %s = On in php.ini', $setting),
-                    code: $snippet,
+                    severity: $this->getSeverityForSetting($setting),
                     metadata: [
                         'setting' => $setting,
                         'current_value' => $currentValue,
@@ -188,12 +185,12 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
                     ]
                 );
             } elseif (! $expectedValue && $isEnabled) {
-                $issues[] = $this->createIssue(
+                $issues[] = $this->createPhpIniIssue(
+                    phpIniPath: $phpIniPath,
+                    setting: $setting,
                     message: sprintf('PHP ini setting "%s" should be disabled but is %s', $setting, $actual),
-                    location: new Location($phpIniPath, $line),
-                    severity: $this->getSeverityForSetting($setting),
                     recommendation: sprintf('Set %s = Off in php.ini', $setting),
-                    code: $snippet,
+                    severity: $this->getSeverityForSetting($setting),
                     metadata: [
                         'setting' => $setting,
                         'current_value' => $currentValue,
@@ -232,19 +229,17 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
     private function checkDisabledFunctions(array &$issues, string $phpIniPath, array $dangerousFunctions): void
     {
         $disabledFunctions = $this->getIniValue('disable_functions');
-        $line = $this->getSettingLine($phpIniPath, 'disable_functions');
-        $snippet = FileParser::getCodeSnippet($phpIniPath, $line);
 
         if (empty($disabledFunctions)) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createPhpIniIssue(
+                phpIniPath: $phpIniPath,
+                setting: 'disable_functions',
                 message: 'No dangerous PHP functions are disabled',
-                location: new Location($phpIniPath, $line),
-                severity: Severity::Medium,
                 recommendation: sprintf(
                     'Consider disabling dangerous functions in php.ini: disable_functions = %s',
                     implode(',', $dangerousFunctions)
                 ),
-                code: $snippet,
+                severity: Severity::Medium,
                 metadata: [
                     'dangerous_functions' => $dangerousFunctions,
                     'current_value' => $disabledFunctions,
@@ -252,25 +247,27 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
             );
         } else {
             // Check which dangerous functions are still enabled
-            $disabledList = array_map('trim', explode(',', $disabledFunctions));
-            $enabledDangerous = array_diff($dangerousFunctions, $disabledList);
+            // Normalize by trimming and lowercasing for comparison
+            $disabledList = array_map('strtolower', array_map('trim', explode(',', $disabledFunctions)));
+            $normalizedDangerous = array_map('strtolower', $dangerousFunctions);
+            $enabledDangerous = array_diff($normalizedDangerous, $disabledList);
 
             if (! empty($enabledDangerous)) {
                 $examples = array_slice(array_values($enabledDangerous), 0, 3);
                 $displayExamples = array_slice(array_values($enabledDangerous), 0, 5);
 
-                $issues[] = $this->createIssue(
+                $issues[] = $this->createPhpIniIssue(
+                    phpIniPath: $phpIniPath,
+                    setting: 'disable_functions',
                     message: sprintf(
                         '%d potentially dangerous PHP functions are still enabled',
                         count($enabledDangerous)
                     ),
-                    location: new Location($phpIniPath, $line),
-                    severity: Severity::Medium,
                     recommendation: sprintf(
                         'Update disable_functions to include: %s',
                         implode(', ', $examples)
                     ),
-                    code: $snippet,
+                    severity: Severity::Medium,
                     metadata: [
                         'enabled_count' => count($enabledDangerous),
                         'examples' => $displayExamples,
@@ -290,13 +287,12 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
         $openBasedir = $this->getIniValue('open_basedir');
 
         if ($openBasedir === '') {
-            $line = $this->getSettingLine($phpIniPath, 'open_basedir');
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createPhpIniIssue(
+                phpIniPath: $phpIniPath,
+                setting: 'open_basedir',
                 message: 'open_basedir restriction is not configured',
-                location: new Location($phpIniPath, $line),
-                severity: Severity::Medium,
                 recommendation: 'Consider setting open_basedir to restrict file access to specific directories',
-                code: FileParser::getCodeSnippet($phpIniPath, $line),
+                severity: Severity::Medium,
                 metadata: [
                     'current_value' => $openBasedir,
                 ]
@@ -316,9 +312,6 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
         if ($value === null) {
             return;
         }
-
-        $line = $this->getSettingLine($phpIniPath, 'error_reporting');
-        $snippet = FileParser::getCodeSnippet($phpIniPath, $line);
 
         $disallowedRaw = $errorConfig['disallowed_values'] ?? [];
         $disallowedValues = array_map(
@@ -345,12 +338,12 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
             is_array($disallowedRaw) ? $disallowedRaw : []
         );
         if (! empty($disallowedValues) && in_array($value, $disallowedValues, true)) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createPhpIniIssue(
+                phpIniPath: $phpIniPath,
+                setting: 'error_reporting',
                 message: 'error_reporting is too verbose for production environments',
-                location: new Location($phpIniPath, $line),
-                severity: Severity::Medium,
                 recommendation: 'Adjust error_reporting to exclude verbose levels (e.g., use E_ALL & ~E_DEPRECATED & ~E_STRICT).',
-                code: $snippet,
+                severity: Severity::Medium,
                 metadata: [
                     'current_value' => $value,
                 ]
@@ -376,12 +369,12 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
         }
 
         if (! empty($offendingFlags)) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createPhpIniIssue(
+                phpIniPath: $phpIniPath,
+                setting: 'error_reporting',
                 message: sprintf('error_reporting includes verbose flags: %s', implode(', ', $offendingFlags)),
-                location: new Location($phpIniPath, $line),
-                severity: Severity::Medium,
                 recommendation: 'Remove verbose error_reporting flags in production environments.',
-                code: $snippet,
+                severity: Severity::Medium,
                 metadata: [
                     'current_value' => $value,
                     'offending_flags' => $offendingFlags,
@@ -569,12 +562,49 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
         return '';
     }
 
+    /**
+     * Create an issue for a PHP ini setting with automatic location and code snippet.
+     *
+     * @param  array<string, mixed>  $metadata
+     */
+    private function createPhpIniIssue(
+        string $phpIniPath,
+        string $setting,
+        string $message,
+        string $recommendation,
+        Severity $severity,
+        array $metadata = []
+    ): Issue {
+        $line = $this->getSettingLine($phpIniPath, $setting);
+        $snippet = FileParser::getCodeSnippet($phpIniPath, $line);
+
+        return $this->createIssue(
+            message: $message,
+            location: new Location($phpIniPath, $line),
+            severity: $severity,
+            recommendation: $recommendation,
+            code: $snippet,
+            metadata: $metadata
+        );
+    }
+
     private function getSettingLine(string $phpIniPath, string $setting): int
     {
         $lines = $this->getPhpIniLines($phpIniPath);
 
         foreach ($lines as $index => $line) {
-            if (is_string($line) && stripos($line, $setting) !== false) {
+            if (! is_string($line)) {
+                continue;
+            }
+
+            // Strip comments (;, //, #)
+            $lineWithoutComments = preg_replace('/[;#].*$/', '', $line);
+            $lineWithoutComments = preg_replace('/\/\/.*$/', '', $lineWithoutComments ?? '');
+
+            // Look for pattern: setting = value (with optional spaces)
+            // This ensures we match actual settings, not just strings in comments
+            $pattern = '/^\s*'.preg_quote($setting, '/').'\s*=/i';
+            if (preg_match($pattern, $lineWithoutComments ?? '') === 1) {
                 return $index + 1;
             }
         }

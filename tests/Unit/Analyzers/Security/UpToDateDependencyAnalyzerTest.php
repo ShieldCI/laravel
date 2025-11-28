@@ -15,7 +15,9 @@ class UpToDateDependencyAnalyzerTest extends AnalyzerTestCase
     protected function createAnalyzer(
         ?string $composerLockPath = '/path/to/composer.lock',
         ?string $allDepsOutput = null,
-        ?string $prodDepsOutput = null
+        ?string $prodDepsOutput = null,
+        ?string $composerJsonPath = '/path/to/composer.json',
+        ?\Throwable $installDryRunException = null
     ): AnalyzerInterface {
         /** @var Composer&\Mockery\MockInterface $composer */
         $composer = Mockery::mock(Composer::class);
@@ -24,8 +26,14 @@ class UpToDateDependencyAnalyzerTest extends AnalyzerTestCase
         $composer->shouldReceive('getLockFile')
             ->andReturn($composerLockPath);
 
+        $composer->shouldReceive('getJsonFile')
+            ->andReturn($composerJsonPath);
+
         // Mock installDryRun - called twice per analysis
-        if ($allDepsOutput !== null && $prodDepsOutput !== null) {
+        if ($installDryRunException !== null) {
+            /** @phpstan-ignore-next-line Mockery expectation chaining */
+            $composer->shouldReceive('installDryRun')->andThrow($installDryRunException);
+        } elseif ($allDepsOutput !== null && $prodDepsOutput !== null) {
             /** @phpstan-ignore-next-line Mockery's times() is not recognized by PHPStan */
             $composer->shouldReceive('installDryRun')
                 ->times(2)
@@ -46,13 +54,26 @@ class UpToDateDependencyAnalyzerTest extends AnalyzerTestCase
 
     public function test_skips_when_no_composer_lock_exists(): void
     {
-        $analyzer = $this->createAnalyzer(composerLockPath: null);
+        $analyzer = $this->createAnalyzer(composerLockPath: null, composerJsonPath: null);
 
         $this->assertFalse($analyzer->shouldRun());
 
         if (method_exists($analyzer, 'getSkipReason')) {
-            $this->assertStringContainsString('composer.lock', $analyzer->getSkipReason());
+            $this->assertStringContainsString('composer.json', $analyzer->getSkipReason());
         }
+    }
+
+    public function test_warns_when_composer_lock_missing_but_json_exists(): void
+    {
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: null,
+            composerJsonPath: '/path/to/composer.json'
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('composer.lock file is missing', $result);
     }
 
     public function test_passes_when_all_dependencies_up_to_date_composer_1(): void
@@ -196,6 +217,20 @@ OUTPUT;
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $metadata->severity);
         $this->assertContains('dependencies', $metadata->tags);
         $this->assertContains('security-patches', $metadata->tags);
+    }
+
+    public function test_returns_error_when_composer_command_fails(): void
+    {
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            composerJsonPath: '/path/to/composer.json',
+            installDryRunException: new \RuntimeException('Composer binary missing')
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertError($result);
+        $this->assertStringContainsString('Unable to check dependency status', $result->getMessage());
     }
 
     public function test_provides_helpful_recommendations(): void

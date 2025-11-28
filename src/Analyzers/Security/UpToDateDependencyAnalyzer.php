@@ -4,11 +4,11 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
-use Illuminate\Support\Str;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Support\Composer;
@@ -27,6 +27,17 @@ use ShieldCI\Support\Composer;
  */
 class UpToDateDependencyAnalyzer extends AbstractAnalyzer
 {
+    /**
+     * Composer output patterns indicating no updates needed.
+     * First string is for Composer 1, second is for Composer 2.
+     *
+     * @var array<string>
+     */
+    private const NOTHING_TO_UPDATE_PATTERNS = [
+        'Nothing to install or update',
+        'Nothing to install, update or remove',
+    ];
+
     public function __construct(
         private Composer $composer
     ) {}
@@ -47,78 +58,93 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
 
     public function shouldRun(): bool
     {
-        // Only run if composer.lock exists
-        return $this->composer->getLockFile() !== null;
+        return $this->composer->getLockFile() !== null
+            || $this->composer->getJsonFile() !== null;
     }
 
     public function getSkipReason(): string
     {
-        return 'No composer.lock file found';
+        return 'No composer.json file found';
     }
 
     protected function runAnalysis(): ResultInterface
     {
+        $composerLockPath = $this->composer->getLockFile();
+
+        if ($composerLockPath === null) {
+            return $this->warning(
+                'composer.lock file not found',
+                [$this->createIssue(
+                    message: 'composer.lock file is missing',
+                    location: new Location('composer.lock', 1),
+                    severity: Severity::Medium,
+                    recommendation: 'Run "composer install" to generate composer.lock for dependency tracking.',
+                    metadata: []
+                )]
+            );
+        }
+
         $issues = [];
 
-        // Check all dependencies (including dev)
-        $allDepsOutput = $this->composer->installDryRun();
+        try {
+            // Check all dependencies (including dev)
+            $allDepsOutput = $this->composer->installDryRun();
 
-        // Check production dependencies only
-        $prodDepsOutput = $this->composer->installDryRun(['--no-dev']);
+            // Check production dependencies only
+            $prodDepsOutput = $this->composer->installDryRun(['--no-dev']);
 
-        // First string match is for Composer 1 and the second one is for Composer 2.
-        $nothingToUpdate = [
-            'Nothing to install or update',
-            'Nothing to install, update or remove',
-        ];
+            // Validate outputs are strings
+            if (! is_string($allDepsOutput) || ! is_string($prodDepsOutput)) {
+                return $this->error('Unable to check dependency status - Composer command failed');
+            }
 
-        $allDepsUpToDate = Str::contains($allDepsOutput, $nothingToUpdate);
-        $prodDepsUpToDate = Str::contains($prodDepsOutput, $nothingToUpdate);
+            $allDepsUpToDate = $this->isUpToDate($allDepsOutput);
+            $prodDepsUpToDate = $this->isUpToDate($prodDepsOutput);
 
-        // If both all deps and prod deps need updates, create a single issue
-        if (! $allDepsUpToDate && ! $prodDepsUpToDate) {
-            $issues[] = $this->createIssue(
-                message: 'Dependencies are not up-to-date',
-                location: new Location('composer.lock', 1),
-                severity: Severity::Medium,
-                recommendation: 'Your application\'s dependencies (including production and dev) are not up-to-date. '.
-                    'These may include bug fixes and/or security patches. '.
-                    'Run "composer update" to update dependencies within your version constraints. '.
-                    'Review the changes before deploying to production.',
-                metadata: [
-                    'scope' => 'all (production and dev)',
-                    'composer_version_check' => 'install --dry-run',
-                ]
-            );
-        } elseif (! $prodDepsUpToDate) {
-            // Only production dependencies need updates
-            $issues[] = $this->createIssue(
-                message: 'Production dependencies are not up-to-date',
-                location: new Location('composer.lock', 1),
-                severity: Severity::Medium,
-                recommendation: 'Your application\'s production dependencies are not up-to-date. '.
-                    'These may include bug fixes and/or security patches. '.
-                    'Run "composer update --no-dev" to update production dependencies only, '.
-                    'or "composer update" to update all dependencies. '.
-                    'Review the changes before deploying to production.',
-                metadata: [
-                    'scope' => 'production only',
-                    'composer_version_check' => 'install --dry-run --no-dev',
-                ]
-            );
-        } elseif (! $allDepsUpToDate) {
-            // Only dev dependencies need updates (production is up-to-date)
-            $issues[] = $this->createIssue(
-                message: 'Development dependencies are not up-to-date',
-                location: new Location('composer.lock', 1),
-                severity: Severity::Low,
-                recommendation: 'Your application\'s development dependencies are not up-to-date. '.
-                    'While these don\'t affect production, keeping them updated helps maintain a healthy development environment. '.
-                    'Run "composer update" to update all dependencies.',
-                metadata: [
-                    'scope' => 'dev only',
-                    'composer_version_check' => 'install --dry-run',
-                ]
+            // If both all deps and prod deps need updates, create a single issue
+            if (! $allDepsUpToDate && ! $prodDepsUpToDate) {
+                $issues[] = $this->createIssue(
+                    message: 'Dependencies are not up-to-date',
+                    location: new Location($composerLockPath, 1),
+                    severity: Severity::Medium,
+                    recommendation: $this->getAllDepsRecommendation(),
+                    code: FileParser::getCodeSnippet($composerLockPath, 1),
+                    metadata: [
+                        'scope' => 'all (production and dev)',
+                        'composer_version_check' => 'install --dry-run',
+                    ]
+                );
+            } elseif (! $prodDepsUpToDate) {
+                // Only production dependencies need updates
+                $issues[] = $this->createIssue(
+                    message: 'Production dependencies are not up-to-date',
+                    location: new Location($composerLockPath, 1),
+                    severity: Severity::Medium,
+                    recommendation: $this->getProductionDepsRecommendation(),
+                    code: FileParser::getCodeSnippet($composerLockPath, 1),
+                    metadata: [
+                        'scope' => 'production only',
+                        'composer_version_check' => 'install --dry-run --no-dev',
+                    ]
+                );
+            } elseif (! $allDepsUpToDate) {
+                // Only dev dependencies need updates (production is up-to-date)
+                $issues[] = $this->createIssue(
+                    message: 'Development dependencies are not up-to-date',
+                    location: new Location($composerLockPath, 1),
+                    severity: Severity::Low,
+                    recommendation: $this->getDevDepsRecommendation(),
+                    code: FileParser::getCodeSnippet($composerLockPath, 1),
+                    metadata: [
+                        'scope' => 'dev only',
+                        'composer_version_check' => 'install --dry-run',
+                    ]
+                );
+            }
+        } catch (\Throwable $e) {
+            return $this->error(
+                sprintf('Unable to check dependency status: %s', $e->getMessage()),
+                []
             );
         }
 
@@ -130,5 +156,52 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
             sprintf('Found %d dependency update issue(s)', count($issues)),
             $issues
         );
+    }
+
+    /**
+     * Check if Composer output indicates dependencies are up-to-date.
+     */
+    private function isUpToDate(string $output): bool
+    {
+        foreach (self::NOTHING_TO_UPDATE_PATTERNS as $pattern) {
+            if (str_contains($output, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Get recommendation message for all dependencies (production and dev).
+     */
+    private function getAllDepsRecommendation(): string
+    {
+        return 'Your application\'s dependencies (including production and dev) are not up-to-date. '.
+            'These may include bug fixes and/or security patches. '.
+            'Run "composer update" to update dependencies within your version constraints. '.
+            'Review the changes before deploying to production.';
+    }
+
+    /**
+     * Get recommendation message for production dependencies only.
+     */
+    private function getProductionDepsRecommendation(): string
+    {
+        return 'Your application\'s production dependencies are not up-to-date. '.
+            'These may include bug fixes and/or security patches. '.
+            'Run "composer update --no-dev" to update production dependencies only, '.
+            'or "composer update" to update all dependencies. '.
+            'Review the changes before deploying to production.';
+    }
+
+    /**
+     * Get recommendation message for development dependencies only.
+     */
+    private function getDevDepsRecommendation(): string
+    {
+        return 'Your application\'s development dependencies are not up-to-date. '.
+            'While these don\'t affect production, keeping them updated helps maintain a healthy development environment. '.
+            'Run "composer update" to update all dependencies.';
     }
 }

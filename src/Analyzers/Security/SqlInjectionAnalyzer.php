@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
+use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use PhpParser\Node;
+use PhpParser\PrettyPrinter\Standard as PrettyPrinter;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -12,6 +14,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
@@ -31,6 +34,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
         'havingRaw',
         'orderByRaw',
         'selectRaw',
+        'unprepared',
     ];
 
     private array $userInputSources = [
@@ -41,12 +45,50 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
         'request(',
         'Request::input',
         'Request::get',
+        'Request::all',
+        'Request::query',
+        'Request::post',
+        'Request::cookie',
+        'Request::header',
+        'Request::route',
         'Input::get',
+        'Input::all',
+        '$request->input',
+        '$request->get',
+        '$request->all',
+        '$request->query',
+        '$request->post',
+        '$request->cookie',
     ];
 
+    private array $nativeMysqliFunctions = [
+        'mysqli_connect', 'mysqli_execute', 'mysqli_stmt_execute', 'mysqli_stmt_close',
+        'mysqli_stmt_fetch', 'mysqli_stmt_get_result', 'mysqli_stmt_more_results',
+        'mysqli_stmt_next_result', 'mysqli_stmt_prepare', 'mysqli_close', 'mysqli_commit',
+        'mysqli_begin_transaction', 'mysqli_init', 'mysqli_insert_id', 'mysqli_prepare',
+        'mysqli_query', 'mysqli_real_connect', 'mysqli_real_query', 'mysqli_store_result',
+        'mysqli_use_result', 'mysqli_multi_query',
+    ];
+
+    private array $nativePostgresFunctions = [
+        'pg_connect', 'pg_close', 'pg_affected_rows', 'pg_delete', 'pg_execute',
+        'pg_fetch_all', 'pg_fetch_result', 'pg_fetch_row', 'pg_fetch_all_columns',
+        'pg_fetch_array', 'pg_fetch_assoc', 'pg_fetch_object', 'pg_flush', 'pg_insert',
+        'pg_get_result', 'pg_pconnect', 'pg_prepare', 'pg_query', 'pg_query_params',
+        'pg_select', 'pg_send_execute', 'pg_send_prepare', 'pg_send_query',
+        'pg_send_query_params',
+    ];
+
+    private array $nativePdoClasses = ['PDO', 'mysqli'];
+
+    private ?PrettyPrinter $printer = null;
+
     public function __construct(
-        private ParserInterface $parser
-    ) {}
+        private ParserInterface $parser,
+        private ?ConfigRepository $config = null
+    ) {
+        $this->printer = new PrettyPrinter;
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -62,6 +104,18 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
         );
     }
 
+    public function shouldRun(): bool
+    {
+        $files = $this->getPhpFiles();
+
+        return ! empty($files);
+    }
+
+    public function getSkipReason(): string
+    {
+        return 'No PHP files found to analyze';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
@@ -72,37 +126,60 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            // Check for DB::raw() with string concatenation
+            // Check for DB::raw() with string concatenation or variable interpolation
             $rawCalls = $this->parser->findStaticCalls($ast, 'DB', 'raw');
             foreach ($rawCalls as $call) {
-                if ($this->hasStringConcatenation($call) || $this->hasUserInput($call)) {
-                    $issues[] = $this->createIssue(
-                        message: 'Potential SQL injection: DB::raw() with string concatenation or user input',
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $call->getLine()
-                        ),
-                        severity: Severity::Critical,
-                        recommendation: 'Use parameter binding instead of string concatenation. Example: DB::raw("SELECT * FROM users WHERE id = ?", [$id])',
-                        code: FileParser::getCodeSnippet($file, $call->getLine())
+                if ($this->isVulnerable($call)) {
+                    $issues[] = $this->createSqlInjectionIssue(
+                        $file,
+                        $call,
+                        'DB::raw()',
+                        'Use parameter binding instead of string concatenation. Example: DB::raw("SELECT * FROM users WHERE id = ?", [$id])'
                     );
                 }
             }
 
+            // Check for DB::unprepared() - explicitly unsafe method
+            $unpreparedCalls = $this->parser->findStaticCalls($ast, 'DB', 'unprepared');
+            foreach ($unpreparedCalls as $call) {
+                $issues[] = $this->createSqlInjectionIssue(
+                    $file,
+                    $call,
+                    'DB::unprepared()',
+                    'Avoid DB::unprepared() - use prepared statements with DB::select(), DB::insert(), etc. with parameter binding'
+                );
+            }
+
             // Check for dangerous query methods
             foreach ($this->dangerousMethods as $method) {
-                $calls = $this->findMethodCallsWithConcatenation($ast, $method);
-                foreach ($calls as $call) {
-                    $issues[] = $this->createIssue(
-                        message: "Potential SQL injection: {$method}() with string concatenation or user input",
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $call->getLine()
-                        ),
-                        severity: Severity::Critical,
-                        recommendation: "Use parameter binding: ->{$method}('column = ?', [\$value]) instead of concatenation",
-                        code: FileParser::getCodeSnippet($file, $call->getLine())
-                    );
+                if ($method === 'unprepared') {
+                    continue; // Already handled above
+                }
+
+                // Check static calls (DB::method)
+                $staticCalls = $this->parser->findStaticCalls($ast, 'DB', $method);
+                foreach ($staticCalls as $call) {
+                    if ($this->isVulnerable($call)) {
+                        $issues[] = $this->createSqlInjectionIssue(
+                            $file,
+                            $call,
+                            "DB::{$method}()",
+                            "Use parameter binding: DB::{$method}('column = ?', [\$value]) instead of concatenation"
+                        );
+                    }
+                }
+
+                // Check method calls (->method)
+                $methodCalls = $this->parser->findMethodCalls($ast, $method);
+                foreach ($methodCalls as $call) {
+                    if ($this->isVulnerable($call)) {
+                        $issues[] = $this->createSqlInjectionIssue(
+                            $file,
+                            $call,
+                            "{$method}()",
+                            "Use parameter binding: ->{$method}('column = ?', [\$value]) instead of concatenation"
+                        );
+                    }
                 }
             }
 
@@ -111,16 +188,49 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             foreach ($queryMethods as $method) {
                 $calls = $this->parser->findStaticCalls($ast, 'DB', $method);
                 foreach ($calls as $call) {
-                    if ($this->hasStringConcatenation($call) || $this->hasUserInput($call)) {
-                        $issues[] = $this->createIssue(
-                            message: "Potential SQL injection: DB::{$method}() with string concatenation",
-                            location: new Location(
-                                $this->getRelativePath($file),
-                                $call->getLine()
-                            ),
-                            severity: Severity::Critical,
-                            recommendation: 'Use parameter binding with placeholders',
-                            code: FileParser::getCodeSnippet($file, $call->getLine())
+                    if ($this->isVulnerable($call)) {
+                        $issues[] = $this->createSqlInjectionIssue(
+                            $file,
+                            $call,
+                            "DB::{$method}()",
+                            'Use parameter binding with placeholders'
+                        );
+                    }
+                }
+            }
+
+            // Check for native PHP database functions
+            $nativeFunctions = array_merge(
+                $this->getNativeMysqliFunctions(),
+                $this->getNativePostgresFunctions()
+            );
+
+            $functionCalls = $this->parser->findNodes($ast, Node\Expr\FuncCall::class);
+            foreach ($functionCalls as $call) {
+                if ($call instanceof Node\Expr\FuncCall && $call->name instanceof Node\Name) {
+                    $functionName = $call->name->toString();
+                    if (in_array($functionName, $nativeFunctions, true)) {
+                        $issues[] = $this->createSqlInjectionIssue(
+                            $file,
+                            $call,
+                            "{$functionName}()",
+                            'Avoid native PHP database functions. Use Laravel\'s DB facade or Eloquent ORM for better security and parameter binding'
+                        );
+                    }
+                }
+            }
+
+            // Check for PDO/mysqli instantiation
+            $newExpressions = $this->parser->findNodes($ast, Node\Expr\New_::class);
+            foreach ($newExpressions as $node) {
+                if ($node instanceof Node\Expr\New_ && $node->class instanceof Node\Name) {
+                    $className = $node->class->toString();
+                    if (in_array($className, $this->nativePdoClasses, true)) {
+                        $issues[] = $this->createSqlInjectionIssue(
+                            $file,
+                            $node,
+                            "new {$className}()",
+                            'Avoid direct PDO/mysqli usage. Use Laravel\'s DB facade or Eloquent ORM for better security'
                         );
                     }
                 }
@@ -138,20 +248,68 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Find method calls that have string concatenation in arguments.
+     * Create an SQL injection issue with standardized format.
      */
-    private function findMethodCallsWithConcatenation(array $ast, string $methodName): array
-    {
-        $results = [];
-        $calls = $this->parser->findMethodCalls($ast, $methodName);
+    private function createSqlInjectionIssue(
+        string $file,
+        Node $node,
+        string $method,
+        string $recommendation
+    ): Issue {
+        return $this->createIssue(
+            message: "Potential SQL injection: {$method} with string concatenation or user input",
+            location: new Location(
+                $this->getRelativePath($file),
+                $node->getLine()
+            ),
+            severity: Severity::Critical,
+            recommendation: $recommendation,
+            code: FileParser::getCodeSnippet($file, $node->getLine())
+        );
+    }
 
-        foreach ($calls as $call) {
-            if ($this->hasStringConcatenation($call) || $this->hasUserInput($call)) {
-                $results[] = $call;
+    /**
+     * Check if a node is vulnerable (has concatenation or user input or interpolation).
+     */
+    private function isVulnerable(Node $node): bool
+    {
+        return $this->hasStringConcatenation($node)
+            || $this->hasVariableInterpolation($node)
+            || $this->hasUserInput($node);
+    }
+
+    /**
+     * Get native mysqli functions from config or defaults.
+     *
+     * @return array<string>
+     */
+    private function getNativeMysqliFunctions(): array
+    {
+        if ($this->config) {
+            $custom = $this->config->get('shieldci.sql_injection.mysqli_functions');
+            if (is_array($custom) && ! empty($custom)) {
+                return $custom;
             }
         }
 
-        return $results;
+        return $this->nativeMysqliFunctions;
+    }
+
+    /**
+     * Get native postgres functions from config or defaults.
+     *
+     * @return array<string>
+     */
+    private function getNativePostgresFunctions(): array
+    {
+        if ($this->config) {
+            $custom = $this->config->get('shieldci.sql_injection.postgres_functions');
+            if (is_array($custom) && ! empty($custom)) {
+                return $custom;
+            }
+        }
+
+        return $this->nativePostgresFunctions;
     }
 
     /**
@@ -183,6 +341,35 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Check if a node contains variable interpolation in strings.
+     */
+    private function hasVariableInterpolation(Node $node): bool
+    {
+        // Check for Encapsed strings (strings with variables like "value $var")
+        if ($node instanceof Node\Scalar\Encapsed) {
+            return true;
+        }
+
+        // Recursively check child nodes
+        foreach ($node->getSubNodeNames() as $name) {
+            $subNode = $node->$name;
+            if ($subNode instanceof Node) {
+                if ($this->hasVariableInterpolation($subNode)) {
+                    return true;
+                }
+            } elseif (is_array($subNode)) {
+                foreach ($subNode as $item) {
+                    if ($item instanceof Node && $this->hasVariableInterpolation($item)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Check if a node contains user input sources.
      */
     private function hasUserInput(Node $node): bool
@@ -199,11 +386,24 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Convert a node to string representation.
+     * Convert a node to string representation using PhpParser printer.
      */
     private function nodeToString(Node $node): string
     {
-        // Simple string representation - in production, use a proper printer
-        return serialize($node);
+        if ($this->printer === null) {
+            $this->printer = new PrettyPrinter;
+        }
+
+        try {
+            if ($node instanceof Node\Expr) {
+                return $this->printer->prettyPrintExpr($node);
+            }
+
+            // For non-expression nodes, use prettyPrint
+            return $this->printer->prettyPrint([$node]);
+        } catch (\Exception $e) {
+            // Fallback to empty string if printing fails
+            return '';
+        }
     }
 }

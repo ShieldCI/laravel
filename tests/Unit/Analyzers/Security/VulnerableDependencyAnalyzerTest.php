@@ -13,14 +13,15 @@ use ShieldCI\Support\SecurityAdvisories\AdvisoryAnalyzerInterface;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryFetcherInterface;
 use ShieldCI\Support\SecurityAdvisories\ComposerDependencyReader;
 use ShieldCI\Tests\AnalyzerTestCase;
+
 use function assert;
 
 class VulnerableDependencyAnalyzerTest extends AnalyzerTestCase
 {
     /**
-     * @param (AdvisoryFetcherInterface&MockInterface)|null $fetcher
-     * @param (AdvisoryAnalyzerInterface&MockInterface)|null $analyzer
-     * @param (ComposerDependencyReader&MockInterface)|null $dependencyReader
+     * @param  (AdvisoryFetcherInterface&MockInterface)|null  $fetcher
+     * @param  (AdvisoryAnalyzerInterface&MockInterface)|null  $analyzer
+     * @param  (ComposerDependencyReader&MockInterface)|null  $dependencyReader
      */
     protected function createAnalyzer(
         ?AdvisoryFetcherInterface $fetcher = null,

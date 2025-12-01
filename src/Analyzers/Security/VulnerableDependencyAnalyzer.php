@@ -206,7 +206,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * @param array<string, mixed> $advisory
+     * @param  array<string, mixed>  $advisory
      */
     private function formatRecommendation(string $package, array $advisory): string
     {

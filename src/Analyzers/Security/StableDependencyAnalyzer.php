@@ -252,9 +252,12 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                     code: FileParser::getCodeSnippet($composerJson, $line),
                     metadata: ['package' => $package, 'version' => $version, 'section' => $section]
                 );
+
+                // Skip stability flag check to avoid double-counting
+                continue;
             }
 
-            // Check for @dev, @alpha, @beta, @RC stability flags
+            // Check for @dev, @alpha, @beta, @RC stability flags (only if not already flagged above)
             $stabilityFlag = $this->extractStabilityFlag($version);
             if ($stabilityFlag !== null) {
                 $issues[] = $this->createIssue(

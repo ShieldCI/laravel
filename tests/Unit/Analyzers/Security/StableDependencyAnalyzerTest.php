@@ -551,4 +551,315 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         $this->assertError($result);
         $this->assertStringContainsString('Unable to verify dependency stability', $result->getMessage());
     }
+
+    public function test_handles_invalid_json_in_composer_json_gracefully(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => '{ invalid json }',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass gracefully (no valid data to check), not throw exception
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_invalid_json_in_composer_lock_gracefully(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            'composer.lock' => '{ invalid json in lock file }',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass (composer.json is valid, lock file error is ignored)
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_branch_alias_dev_version(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+                'vendor/package' => '2.0.x-dev',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('2.0.x-dev', $result);
+    }
+
+    public function test_detects_version_with_v_prefix_and_beta(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+                'vendor/package' => 'v1.0.0-beta1',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('v1.0.0-beta1', $result);
+    }
+
+    public function test_detects_unstable_versions_in_require_dev(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+            'require-dev' => [
+                'vendor/dev-tool' => 'dev-master',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('dev-master', $result);
+        $this->assertHasIssueContaining('require-dev', $result);
+    }
+
+    public function test_passes_with_only_stable_versions_in_require_dev(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+            'require-dev' => [
+                'phpunit/phpunit' => '^10.0',
+                'mockery/mockery' => '^1.5',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_downgrading_in_composer_dry_run(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+                'vendor/package' => '^1.0',
+            ],
+        ]);
+
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'vendor/package',
+                    'version' => '1.5.0',
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            'composer.lock' => $composerLock,
+        ]);
+
+        $composer = $this->mockComposer("Loading composer repositories\nDowngrading vendor/package (1.5.0 => 1.0.0)\n");
+
+        $analyzer = $this->createAnalyzer($composer);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('prefer-stable', $result);
+    }
+
+    public function test_handles_empty_require_section(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_non_string_version_values(): void
+    {
+        $composerJson = <<<'JSON'
+        {
+            "name": "test/app",
+            "minimum-stability": "stable",
+            "prefer-stable": true,
+            "require": {
+                "php": "^8.1",
+                "vendor/package": 123
+            }
+        }
+        JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should not crash, just skip invalid entry
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_missing_packages_array_in_composer_lock(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        $composerLock = json_encode([
+            'content-hash' => 'abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass gracefully (lock file exists but has no packages array)
+        $this->assertPassed($result);
+    }
+
+    public function test_finds_correct_line_numbers_for_packages(): void
+    {
+        // Create a multi-line composer.json with specific package on line 7
+        $composerJson = <<<'JSON'
+        {
+            "name": "test/app",
+            "minimum-stability": "stable",
+            "prefer-stable": true,
+            "require": {
+                "php": "^8.1",
+                "vendor/unstable-package": "dev-master"
+            }
+        }
+        JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        // Find the issue for vendor/unstable-package
+        $found = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'vendor/unstable-package')) {
+                // The package is on line 7 in the JSON above
+                $this->assertEquals(7, $issue->location->line);
+                $found = true;
+                break;
+            }
+        }
+
+        $this->assertTrue($found, 'Should find issue for vendor/unstable-package');
+    }
 }

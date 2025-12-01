@@ -92,11 +92,19 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Normalize path for comparison (lowercase, forward slashes).
+     */
+    private function normalizePath(string $path): string
+    {
+        return strtolower(str_replace('\\', '/', $path));
+    }
+
+    /**
      * Get severity based on file context.
      */
     private function getSeverityForContext(string $relativePath): Severity
     {
-        $normalized = strtolower(str_replace('\\', '/', $relativePath));
+        $normalized = $this->normalizePath($relativePath);
 
         if ($this->containsAny($normalized, ['app/http/controllers', 'http/controllers', 'app/models', 'models/', 'app/services', 'services/'])) {
             return Severity::Critical;
@@ -133,7 +141,7 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
 
     private function shouldSkipFile(string $relativePath): bool
     {
-        $normalized = strtolower(str_replace('\\', '/', $relativePath));
+        $normalized = $this->normalizePath($relativePath);
 
         return str_starts_with($normalized, 'vendor/') || str_contains($normalized, '/vendor/');
     }
@@ -151,12 +159,14 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
         $reguardLines = [];
 
         foreach ($staticCalls as $call) {
-            $method = $call->name instanceof Node\Identifier ? $call->name->toString() : null;
-            if ($method === null) {
+            // Only process static calls with Identifier method names
+            if (! ($call->name instanceof Node\Identifier)) {
                 continue;
             }
 
+            $method = $call->name->toString();
             $className = $call->class instanceof Node\Name ? $call->class->toString() : null;
+
             if (! $this->isEloquentClass($className)) {
                 continue;
             }
@@ -219,17 +229,27 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Check if there's a reguard() call after this unguard() and consume it.
+     * Also removes any reguard() calls that appear before this unguard() (they belong to previous unguards).
+     *
      * @param  array<int>  $reguardLines
      */
     private function consumeReguardAfterLine(array &$reguardLines, int $lineNumber): bool
     {
+        // Remove all reguards at or before this unguard (they belong to previous unguards)
         foreach ($reguardLines as $index => $reguardLine) {
-            if ($reguardLine > $lineNumber) {
+            if ($reguardLine <= $lineNumber) {
                 unset($reguardLines[$index]);
-                $reguardLines = array_values($reguardLines);
-
-                return true;
             }
+        }
+        $reguardLines = array_values($reguardLines);
+
+        // Now check if there's a reguard after this unguard
+        if (! empty($reguardLines)) {
+            // Consume the first reguard after this unguard
+            array_shift($reguardLines);
+
+            return true;
         }
 
         return false;

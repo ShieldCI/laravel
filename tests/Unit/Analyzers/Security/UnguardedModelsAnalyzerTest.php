@@ -504,4 +504,197 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    public function test_multiple_unguard_reguard_pairs_in_sequence(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Database\Eloquent\Model;
+
+class SequentialImporter
+{
+    public function importUsers()
+    {
+        Model::unguard();
+        // Import users...
+        Model::reguard();
+    }
+
+    public function importProducts()
+    {
+        Model::unguard();
+        // Import products...
+        Model::reguard();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/SequentialImporter.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Both unguard calls are properly paired with reguard
+        $this->assertPassed($result);
+    }
+
+    public function test_unpaired_unguard_in_middle(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Database\Eloquent\Model;
+
+class ProblematicImporter
+{
+    public function import()
+    {
+        Model::unguard();  // First unguard - NO reguard after!
+
+        Model::unguard();  // Second unguard
+        // Some code...
+        Model::reguard();  // Reguard for second unguard only
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ProblematicImporter.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // First unguard() should be flagged as unpaired
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+    }
+
+    public function test_handles_parse_errors_gracefully(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\Model;
+
+class BrokenCode
+{
+    public function import()
+    {
+        Model::unguard();
+        // Syntax error - missing closing brace
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/BrokenCode.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should not crash on parse errors
+        // Parser will return empty AST, analyzer should handle gracefully
+        $this->assertPassed($result);
+    }
+
+    public function test_empty_file_does_not_crash(): void
+    {
+        $code = '';
+
+        $tempDir = $this->createTempDirectory(['EmptyFile.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_file_without_php_opening_tag(): void
+    {
+        $code = 'This is not PHP code';
+
+        $tempDir = $this->createTempDirectory(['NotPhp.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_unguard_with_fully_qualified_class_name(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ImportService
+{
+    public function import()
+    {
+        \Illuminate\Database\Eloquent\Model::unguard();
+
+        // Import data...
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ImportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('unguard()', $result);
+    }
+
+    public function test_detects_unguard_in_different_namespaces(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace Custom\Package;
+
+use Illuminate\Database\Eloquent\Model;
+
+class CustomImporter
+{
+    public function process()
+    {
+        Model::unguard();
+
+        // Process data...
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Custom/Package/CustomImporter.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Model::unguard()', $result);
+    }
 }

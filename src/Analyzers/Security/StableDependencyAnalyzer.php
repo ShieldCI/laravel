@@ -68,7 +68,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
         $this->checkComposerConfiguration($composerJson, $issues);
 
         // Check composer.lock for unstable versions
-        $composerLock = $this->getBasePath().DIRECTORY_SEPARATOR.'composer.lock';
+        $composerLock = $this->buildPath('composer.lock');
         if (file_exists($composerLock)) {
             $this->checkComposerLock($composerLock, $issues);
         }

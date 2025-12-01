@@ -24,8 +24,6 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 {
-    private const ENV_FILE = '.env';
-
     private const MIN_SUSPICIOUS_VALUE_LENGTH = 20;
 
     private const WORLD_READABLE = 0x0004;
@@ -66,7 +64,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        $envFile = $this->buildPath(self::ENV_FILE);
+        $envFile = $this->buildPath('.env');
         $envExample = $this->buildPath('.env.example');
         $gitignore = $this->buildPath('.gitignore');
         $gitDir = $this->buildPath('.git');
@@ -128,10 +126,10 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
     private function checkPublicEnvFile(array &$issues): void
     {
         $publicEnvPaths = [
-            $this->buildPath('public', self::ENV_FILE),
-            $this->buildPath('public_html', self::ENV_FILE),
-            $this->buildPath('www', self::ENV_FILE),
-            $this->buildPath('html', self::ENV_FILE),
+            $this->buildPath('public', '.env'),
+            $this->buildPath('public_html', '.env'),
+            $this->buildPath('www', '.env'),
+            $this->buildPath('html', '.env'),
         ];
 
         foreach ($publicEnvPaths as $path) {
@@ -157,7 +155,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
     private function checkEnvExample(array &$issues): void
     {
         $envExample = $this->buildPath('.env.example');
-        $envFile = $this->buildPath(self::ENV_FILE);
+        $envFile = $this->buildPath('.env');
 
         if (! file_exists($envExample)) {
             // Only flag missing .env.example if .env exists
@@ -289,7 +287,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
      */
     private function checkIfEnvCommitted(array &$issues): void
     {
-        $envPath = $this->buildPath(self::ENV_FILE);
+        $envPath = $this->buildPath('.env');
 
         if (! file_exists($envPath)) {
             return;
@@ -303,7 +301,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
         ];
 
         $process = proc_open(
-            ['git', 'ls-files', '--error-unmatch', self::ENV_FILE],
+            ['git', 'ls-files', '--error-unmatch', '.env'],
             $descriptorspec,
             $pipes,
             $this->getBasePath()
@@ -320,18 +318,18 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
         $returnCode = proc_close($process);
 
         // Return code 0 means file is tracked by git
-        if ($returnCode === 0 && is_string($output) && str_contains($output, self::ENV_FILE)) {
+        if ($returnCode === 0 && is_string($output) && str_contains($output, '.env')) {
             $issues[] = $this->createIssue(
                 message: '.env file is committed to git repository',
                 location: new Location(
-                    self::ENV_FILE,
+                    '.env',
                     1
                 ),
                 severity: Severity::Critical,
                 recommendation: 'Remove .env from git: "git rm --cached .env" and ensure it\'s in .gitignore',
                 code: FileParser::getCodeSnippet($envPath, 1),
                 metadata: [
-                    'file' => self::ENV_FILE,
+                    'file' => '.env',
                     'git_tracked' => true,
                 ]
             );
@@ -343,7 +341,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
      */
     private function checkEnvPermissions(array &$issues): void
     {
-        $envPath = $this->buildPath(self::ENV_FILE);
+        $envPath = $this->buildPath('.env');
 
         if (! file_exists($envPath)) {
             return;
@@ -362,7 +360,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
             $issues[] = $this->createIssue(
                 message: sprintf('.env file has insecure permissions (%s)', $octal),
                 location: new Location(
-                    self::ENV_FILE,
+                    '.env',
                     1
                 ),
                 severity: Severity::Critical,
@@ -383,7 +381,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
             $issues[] = $this->createIssue(
                 message: sprintf('.env file has overly permissive permissions (%s)', $octal),
                 location: new Location(
-                    self::ENV_FILE,
+                    '.env',
                     1
                 ),
                 severity: Severity::Medium,

@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Support\Facades\URL;
 use ShieldCI\Analyzers\Security\XssAnalyzer;
@@ -30,7 +32,7 @@ class XssAnalyzerTest extends AnalyzerTestCase
     /**
      * Create analyzer with mocked HTTP client for header testing.
      *
-     * @param  array<\Psr\Http\Message\ResponseInterface>  $responses
+     * @param  array<int, (\Psr\Http\Message\ResponseInterface|\Throwable)>  $responses
      */
     protected function createAnalyzerWithHttpMock(array $responses): XssAnalyzer
     {
@@ -96,6 +98,26 @@ BLADE;
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('Unescaped blade output', $result);
+    }
+
+    public function test_does_not_duplicate_blade_issues(): void
+    {
+        config(['shieldci.ci_mode' => true]);
+
+        $bladeCode = <<<'BLADE'
+<div>{!! request('payload') !!}</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['dup.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
     }
 
     public function test_detects_echo_with_superglobals(): void
@@ -477,9 +499,15 @@ BLADE;
 
         $tempDir = $this->createTempDirectory(['test.blade.php' => '<div>{{ $safe }}</div>']);
 
-        // Network error will cause getHeadersOnUrl to return null
-        // The analyzer should gracefully skip HTTP checks
-        $analyzer = $this->createAnalyzer();
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        $responses = [
+            new ConnectException('Timeout', new Request('GET', 'https://example.com')),
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 

@@ -2,7 +2,7 @@
 
 > **⚠️ Initial Development Release (v0.1.x)** - This package is under active development. APIs may change between minor versions until v1.0.0 is released.
 
-Modern security and code quality analysis for Laravel applications with 81 comprehensive analyzers covering security, performance, reliability, and code quality.
+Modern security and code quality analysis for Laravel applications with 102 comprehensive analyzers covering security, performance, reliability, and code quality.
 
 Built on top of [`shieldci/analyzers-core`](https://github.com/shieldci/analyzers-core) (v0.1.x) - a shared, framework-agnostic foundation for static analysis tools.
 

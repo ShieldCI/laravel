@@ -38,9 +38,15 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
      */
     private array $genericPrefixes = [
         'laravel_cache',
+        'laravel_database_cache',
         'laravel',
         'app',
         'cache',
+        'my_app',
+        'myapp',
+        'test',
+        'demo',
+        'example',
     ];
 
     protected function metadata(): AnalyzerMetadata
@@ -87,7 +93,7 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
                     recommendation: $this->getEmptyPrefixRecommendation(),
                     code: FileParser::getCodeSnippet($configFile, $prefixLine),
                     metadata: [
-                        'cache_driver' => $this->getCacheDriver(),
+                        'cache_driver' => $this->getDefaultDriver(),
                         'prefix' => $prefix,
                     ]
                 )]
@@ -105,7 +111,7 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
                     recommendation: $this->getGenericPrefixRecommendation($prefix),
                     code: FileParser::getCodeSnippet($configFile, $prefixLine),
                     metadata: [
-                        'cache_driver' => $this->getCacheDriver(),
+                        'cache_driver' => $this->getDefaultDriver(),
                         'prefix' => $prefix,
                         'app_name' => $this->getAppName(),
                     ]
@@ -160,23 +166,46 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
     {
         $normalized = strtolower($prefix);
         $slug = Str::slug($prefix, '_');
+        $trimmed = trim($prefix);
 
-        return in_array($normalized, $this->genericPrefixes, true)
-            || in_array($slug, $this->genericPrefixes, true);
+        // Check if prefix is in generic list
+        if (in_array($normalized, $this->genericPrefixes, true)
+            || in_array($slug, $this->genericPrefixes, true)) {
+            return true;
+        }
+
+        // Check for very short prefixes (1-2 characters)
+        if (strlen($trimmed) <= 2) {
+            return true;
+        }
+
+        // Check for whitespace-only or underscore-only prefixes
+        if (preg_match('/^[\s_]+$/', $prefix)) {
+            return true;
+        }
+
+        return false;
     }
 
     private function getEffectivePrefix(): string
     {
         $store = $this->getDefaultStore();
 
+        // Check store-specific prefix first
         $storePrefix = config("cache.stores.{$store}.prefix");
         if (is_string($storePrefix) && $storePrefix !== '') {
             return $storePrefix;
         }
 
+        // Fall back to global prefix
         $globalPrefix = config('cache.prefix');
 
-        return is_string($globalPrefix) ? $globalPrefix : '';
+        // Validate that prefix is a string (not numeric, boolean, etc.)
+        if (! is_string($globalPrefix)) {
+            return '';
+        }
+
+        return $globalPrefix;
     }
 
     private function hasStoreSpecificPrefix(string $store): bool
@@ -203,14 +232,6 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
         }
 
         return $store;
-    }
-
-    /**
-     * Get the cache driver from config.
-     */
-    private function getCacheDriver(): string
-    {
-        return $this->getDefaultDriver();
     }
 
     /**

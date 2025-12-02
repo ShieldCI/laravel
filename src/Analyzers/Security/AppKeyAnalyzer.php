@@ -50,7 +50,7 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                file_exists($this->buildPath('.env.production')) ||
                file_exists($this->buildPath('.env.prod')) ||
                file_exists($this->buildPath('.env.example')) ||
-               file_exists($this->buildPath('config/app.php'));
+               file_exists($this->buildPath('config', 'app.php'));
     }
 
     public function getSkipReason(): string
@@ -411,7 +411,7 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
      */
     private function checkCachedConfig(array &$issues): void
     {
-        $cachedConfigPath = $this->buildPath('bootstrap/cache/config.php');
+        $cachedConfigPath = $this->buildPath('bootstrap', 'cache', 'config.php');
 
         if (file_exists($cachedConfigPath)) {
             $issues[] = $this->createIssue(

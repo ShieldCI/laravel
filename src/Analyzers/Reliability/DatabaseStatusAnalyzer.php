@@ -10,8 +10,11 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Support\DatabaseConnectionChecker;
+use ShieldCI\Support\DatabaseConnectionResult;
 
 /**
  * Checks that database connections are accessible.
@@ -27,6 +30,13 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
      * Database connectivity checks are not applicable in CI environments.
      */
     public static bool $runInCI = false;
+
+    private DatabaseConnectionChecker $connectionChecker;
+
+    public function __construct(?DatabaseConnectionChecker $connectionChecker = null)
+    {
+        $this->connectionChecker = $connectionChecker ?? new DatabaseConnectionChecker(DB::getFacadeRoot());
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -51,42 +61,25 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
             return $this->warning('Unable to determine default database connection');
         }
 
-        $connections = [$defaultConnection];
+        $connections = $this->getConnectionsToCheck($defaultConnection);
 
-        // Check each connection
         foreach ($connections as $connectionName) {
-            if (! $connectionName || ! is_string($connectionName)) {
-                continue;
-            }
+            $result = $this->connectionChecker->check($connectionName);
+            $configLocation = $this->getDatabaseConfigLocation($connectionName);
 
-            try {
-                $pdo = DB::connection($connectionName)->getPdo();
-
-                if (! $pdo) {
-                    $issues[] = $this->createIssue(
-                        message: "Database connection '{$connectionName}' returned null PDO",
-                        location: new Location(ConfigFileHelper::getConfigPath($this->basePath, 'database.php', fn ($file) => function_exists('config_path') ? config_path($file) : null), 1),
-                        severity: Severity::Critical,
-                        recommendation: "Check database configuration for '{$connectionName}' connection in config/database.php. Ensure the database server is running and credentials are correct.",
-                        metadata: [
-                            'connection' => $connectionName,
-                            'driver' => config("database.connections.{$connectionName}.driver"),
-                        ]
-                    );
-                }
-            } catch (\Throwable $e) {
+            if (! $result->successful) {
                 $issues[] = $this->createIssue(
-                    message: "Cannot connect to database '{$connectionName}'",
-                    location: new Location(ConfigFileHelper::getConfigPath($this->basePath, 'database.php', fn ($file) => function_exists('config_path') ? config_path($file) : null), 1),
+                    message: $result->message ?? "Cannot connect to database '{$connectionName}'",
+                    location: $configLocation,
                     severity: Severity::Critical,
-                    recommendation: $this->getRecommendation($connectionName, $e),
+                    recommendation: $this->buildRecommendation($connectionName, $result),
+                    code: FileParser::getCodeSnippet($configLocation->file, $configLocation->line),
                     metadata: [
                         'connection' => $connectionName,
-                        'driver' => config("database.connections.{$connectionName}.driver"),
-                        'host' => config("database.connections.{$connectionName}.host"),
-                        'database' => config("database.connections.{$connectionName}.database"),
-                        'exception' => get_class($e),
-                        'error' => $e->getMessage(),
+                        'driver' => $this->getConnectionDriver($connectionName),
+                        'host' => $this->getConnectionHost($connectionName),
+                        'database' => $this->getConnectionDatabase($connectionName),
+                        'exception' => $result->exceptionClass,
                     ]
                 );
             }
@@ -102,18 +95,52 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
         );
     }
 
-    private function getRecommendation(string $connection, \Throwable $e): string
+    /**
+     * Get the list of database connections to verify.
+     *
+     * @return list<string>
+     */
+    private function getConnectionsToCheck(string $defaultConnection): array
     {
-        $driver = config("database.connections.{$connection}.driver");
-        $errorMsg = $e->getMessage();
+        $configured = config('shieldci.database.connections', []);
 
-        $recommendation = "Database connection '{$connection}' failed: {$errorMsg}. ";
+        if (is_string($configured)) {
+            $configured = array_filter(array_map('trim', explode(',', $configured)));
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        $connections = [];
+        foreach ($configured as $connection) {
+            if (is_string($connection) && $connection !== '') {
+                $connections[] = $connection;
+            }
+        }
+
+        array_unshift($connections, $defaultConnection);
+
+        return array_values(array_unique($connections));
+    }
+
+    /**
+     * Get recommendation message for database connection failure.
+     */
+    private function buildRecommendation(string $connection, DatabaseConnectionResult $result): string
+    {
+        $driver = $this->getConnectionDriver($connection);
+        $errorMsg = $result->message ?? '';
+        $sanitizedError = $this->sanitizeErrorMessage($errorMsg);
+
+        $recommendation = "Database connection '{$connection}' failed: {$sanitizedError}. ";
 
         // Provide specific recommendations based on error and driver
         if (str_contains($errorMsg, 'Access denied')) {
             $recommendation .= 'Check database username and password in your .env file. ';
         } elseif (str_contains($errorMsg, 'Connection refused') || str_contains($errorMsg, 'could not find driver')) {
-            $recommendation .= "Ensure the database server is running and the PHP {$driver} extension is installed. ";
+            $driverText = is_string($driver) ? $driver : 'database';
+            $recommendation .= "Ensure the database server is running and the PHP {$driverText} extension is installed. ";
         } elseif (str_contains($errorMsg, 'Unknown database')) {
             $recommendation .= 'The specified database does not exist. Create it or check the DB_DATABASE value in .env. ';
         } else {
@@ -123,5 +150,94 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
         $recommendation .= "Verify settings in .env and config/database.php for the '{$connection}' connection.";
 
         return $recommendation;
+    }
+
+    /**
+     * Get the path to the database configuration file.
+     */
+    private function getDatabaseConfigPath(): string
+    {
+        $basePath = $this->getBasePath();
+
+        return ConfigFileHelper::getConfigPath(
+            $basePath,
+            'database.php',
+            fn ($file) => function_exists('config_path') ? config_path($file) : null
+        );
+    }
+
+    /**
+     * Get the location of the database configuration file.
+     * Attempts to find the connection line, falls back to line 1.
+     */
+    private function getDatabaseConfigLocation(string $connectionName): Location
+    {
+        $configFile = $this->getDatabaseConfigPath();
+
+        if (file_exists($configFile)) {
+            // Try to find the connection line number
+            $lineNumber = ConfigFileHelper::findNestedKeyLine(
+                $configFile,
+                'connections',
+                'driver',
+                $connectionName
+            );
+
+            if ($lineNumber < 1) {
+                // Fallback to finding the connection name
+                $lineNumber = ConfigFileHelper::findKeyLine($configFile, $connectionName, 'connections');
+                if ($lineNumber < 1) {
+                    $lineNumber = 1;
+                }
+            }
+
+            return new Location($configFile, $lineNumber);
+        }
+
+        return new Location($configFile, 1);
+    }
+
+    /**
+     * Get the driver for a database connection.
+     */
+    private function getConnectionDriver(string $connectionName): ?string
+    {
+        $driver = config('database.connections'.".{$connectionName}.driver");
+
+        return is_string($driver) ? $driver : null;
+    }
+
+    /**
+     * Get the host for a database connection.
+     */
+    private function getConnectionHost(string $connectionName): ?string
+    {
+        $host = config('database.connections'.".{$connectionName}.host");
+
+        return is_string($host) ? $host : null;
+    }
+
+    /**
+     * Get the database name for a database connection.
+     */
+    private function getConnectionDatabase(string $connectionName): ?string
+    {
+        $database = config('database.connections'.".{$connectionName}.database");
+
+        return is_string($database) ? $database : null;
+    }
+
+    /**
+     * Sanitize error message for display in recommendations.
+     */
+    private function sanitizeErrorMessage(string $error): string
+    {
+        // Limit error message length to prevent overly long recommendations
+        $maxLength = 200;
+        if (strlen($error) > $maxLength) {
+            return substr($error, 0, $maxLength).'...';
+        }
+
+        return $error;
     }
 }

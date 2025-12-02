@@ -55,7 +55,6 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
                     location: new Location($basePath, 1),
                     severity: Severity::Critical,
                     recommendation: 'Create a composer.json file in the root of your project. Run "composer init" to create one interactively.',
-                    code: FileParser::getCodeSnippet($basePath, 1),
                     metadata: []
                 )]
             );
@@ -95,7 +94,16 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
     {
         $content = FileParser::readFile($composerJsonPath);
         if ($content === null) {
-            return $this->failed('Unable to read composer.json file');
+            return $this->failed(
+                'Unable to read composer.json file',
+                [$this->createIssue(
+                    message: 'composer.json file exists but cannot be read',
+                    location: new Location($composerJsonPath, 1),
+                    severity: Severity::Critical,
+                    recommendation: 'Check file permissions on composer.json. Ensure the file is readable by the web server user.',
+                    metadata: []
+                )]
+            );
         }
 
         $decoded = json_decode($content, true);
@@ -117,15 +125,16 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        // Validate that decoded JSON is an array/object (composer.json should be an object)
-        if (! is_array($decoded)) {
+        // Validate that decoded JSON is an object (composer.json should be an object, not an array or primitive)
+        // Note: array_is_list([]) returns true, but empty objects are valid, so check non-empty arrays only
+        if (! is_array($decoded) || (! empty($decoded) && array_is_list($decoded))) {
             return $this->failed(
                 'composer.json is not a valid JSON object',
                 [$this->createIssue(
                     message: 'composer.json must be a JSON object, not a primitive value or array',
                     location: new Location($composerJsonPath, 1),
                     severity: Severity::Critical,
-                    recommendation: 'composer.json must be a valid JSON object. Ensure the root element is an object (wrapped in curly braces {}).',
+                    recommendation: 'composer.json must be a valid JSON object. Ensure the root element is an object (wrapped in curly braces {}), not an array (square brackets []).',
                     code: FileParser::getCodeSnippet($composerJsonPath, 1),
                     metadata: []
                 )]

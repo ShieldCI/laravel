@@ -87,35 +87,43 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
         $issues = [];
 
         try {
-            // Check all dependencies (including dev)
-            $allDepsOutput = $this->composer->installDryRun();
-
             // Check production dependencies only
             $prodDepsOutput = $this->composer->installDryRun(['--no-dev']);
+
+            // Check all dependencies (including dev)
+            $allDepsOutput = $this->composer->installDryRun();
 
             // Validate outputs are strings
             if (! is_string($allDepsOutput) || ! is_string($prodDepsOutput)) {
                 return $this->error('Unable to check dependency status - Composer command failed');
             }
 
-            $allDepsUpToDate = $this->isUpToDate($allDepsOutput);
             $prodDepsUpToDate = $this->isUpToDate($prodDepsOutput);
+            $allDepsUpToDate = $this->isUpToDate($allDepsOutput);
 
-            // If both all deps and prod deps need updates, create a single issue
-            if (! $allDepsUpToDate && ! $prodDepsUpToDate) {
+            // Determine what needs updates by comparing outputs
+            $hasProdUpdates = ! $prodDepsUpToDate;
+            $hasDevUpdates = ! $allDepsUpToDate && $prodDepsUpToDate;
+
+            // Check if BOTH prod and dev have updates by comparing the outputs
+            // If prod has updates AND the outputs differ, then dev also has updates
+            $hasBothUpdates = $hasProdUpdates && ($allDepsOutput !== $prodDepsOutput);
+
+            if ($hasProdUpdates && $hasBothUpdates) {
+                // Scenario 1: Both production AND dev need updates
                 $issues[] = $this->createIssue(
-                    message: 'Dependencies are not up-to-date',
+                    message: 'Production and development dependencies are not up-to-date',
                     location: new Location($composerLockPath, 1),
                     severity: Severity::Medium,
-                    recommendation: $this->getAllDepsRecommendation(),
+                    recommendation: $this->getBothDepsRecommendation(),
                     code: FileParser::getCodeSnippet($composerLockPath, 1),
                     metadata: [
-                        'scope' => 'all (production and dev)',
+                        'scope' => 'production and dev',
                         'composer_version_check' => 'install --dry-run',
                     ]
                 );
-            } elseif (! $prodDepsUpToDate) {
-                // Only production dependencies need updates
+            } elseif ($hasProdUpdates) {
+                // Scenario 2: Only production needs updates (dev is up-to-date)
                 $issues[] = $this->createIssue(
                     message: 'Production dependencies are not up-to-date',
                     location: new Location($composerLockPath, 1),
@@ -123,12 +131,12 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                     recommendation: $this->getProductionDepsRecommendation(),
                     code: FileParser::getCodeSnippet($composerLockPath, 1),
                     metadata: [
-                        'scope' => 'production only',
+                        'scope' => 'production',
                         'composer_version_check' => 'install --dry-run --no-dev',
                     ]
                 );
-            } elseif (! $allDepsUpToDate) {
-                // Only dev dependencies need updates (production is up-to-date)
+            } elseif ($hasDevUpdates) {
+                // Scenario 3: Only dev needs updates (production is up-to-date)
                 $issues[] = $this->createIssue(
                     message: 'Development dependencies are not up-to-date',
                     location: new Location($composerLockPath, 1),
@@ -136,11 +144,12 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                     recommendation: $this->getDevDepsRecommendation(),
                     code: FileParser::getCodeSnippet($composerLockPath, 1),
                     metadata: [
-                        'scope' => 'dev only',
+                        'scope' => 'dev',
                         'composer_version_check' => 'install --dry-run',
                     ]
                 );
             }
+            // Scenario 4: Everything up-to-date - no issues created
         } catch (\Throwable $e) {
             return $this->error(
                 sprintf('Unable to check dependency status: %s', $e->getMessage()),
@@ -173,13 +182,13 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
     }
 
     /**
-     * Get recommendation message for all dependencies (production and dev).
+     * Get recommendation message for both production and dev dependencies.
      */
-    private function getAllDepsRecommendation(): string
+    private function getBothDepsRecommendation(): string
     {
-        return 'Your application\'s dependencies (including production and dev) are not up-to-date. '.
+        return 'Your application\'s production and development dependencies are not up-to-date. '.
             'These may include bug fixes and/or security patches. '.
-            'Run "composer update" to update dependencies within your version constraints. '.
+            'Run "composer update" to update all dependencies within your version constraints. '.
             'Review the changes before deploying to production.';
     }
 

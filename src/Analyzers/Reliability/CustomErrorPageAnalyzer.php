@@ -13,7 +13,6 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\AnalyzesMiddleware;
@@ -102,7 +101,6 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
                 location: new Location($resourcesViewsPath, 1),
                 severity: Severity::Medium,
                 recommendation: $this->getCustomErrorPagesRecommendation(),
-                code: FileParser::getCodeSnippet($resourcesViewsPath, 1),
                 metadata: [
                     'missing_templates' => $missing,
                     'view_paths_checked' => $this->getViewPaths(),
@@ -112,16 +110,11 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
     }
 
     /**
-     * Check if custom error pages exist in any configured view path.
-     */
-    /**
      * Get the path to resources/views directory.
      */
     private function getResourcesViewsPath(): string
     {
-        $basePath = $this->getBasePath();
-
-        return $this->joinPaths($basePath, 'resources/views');
+        return $this->buildPath('resources', 'views');
     }
 
     /**
@@ -153,20 +146,6 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
                'then customize them. At minimum, create 404.blade.php, 500.blade.php, and 503.blade.php in resources/views/errors/';
     }
 
-    /**
-     * Join path segments using DIRECTORY_SEPARATOR.
-     */
-    private function joinPaths(string ...$paths): string
-    {
-        $filtered = array_filter($paths, fn ($path) => $path !== '' && $path !== null);
-
-        if (empty($filtered)) {
-            return '';
-        }
-
-        return implode(DIRECTORY_SEPARATOR, $filtered);
-    }
-
     public function setStatelessOverride(?bool $stateless): void
     {
         $this->statelessOverride = $stateless;
@@ -184,7 +163,7 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
         foreach ($required as $template) {
             $found = false;
             foreach ($paths as $path) {
-                if ($this->files->exists($this->joinPaths($path, $template))) {
+                if ($this->files->exists($path.DIRECTORY_SEPARATOR.$template)) {
                     $found = true;
                     break;
                 }
@@ -206,7 +185,7 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
         $directories = [];
 
         foreach ($this->getViewPaths() as $viewPath) {
-            $directories[] = $this->joinPaths($viewPath, 'errors');
+            $directories[] = $viewPath.DIRECTORY_SEPARATOR.'errors';
         }
 
         foreach ($this->getErrorNamespaceHints() as $hintPath) {

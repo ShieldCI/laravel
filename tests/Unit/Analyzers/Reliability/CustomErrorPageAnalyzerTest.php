@@ -88,4 +88,256 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
             $this->assertStringContainsString('stateless', $analyzer->getSkipReason());
         }
     }
+
+    // =========================================================================
+    // Partial Template Coverage Tests
+    // =========================================================================
+
+    public function test_fails_when_only_404_exists(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'resources/views/errors/404.blade.php' => '<html>404</html>',
+        ]);
+
+        config(['view.paths' => [$tempDir.'/resources/views']]);
+
+        /** @var CustomErrorPageAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('500.blade.php', $result);
+        $this->assertHasIssueContaining('503.blade.php', $result);
+    }
+
+    public function test_fails_when_only_500_exists(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'resources/views/errors/500.blade.php' => '<html>500</html>',
+        ]);
+
+        config(['view.paths' => [$tempDir.'/resources/views']]);
+
+        /** @var CustomErrorPageAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('404.blade.php', $result);
+        $this->assertHasIssueContaining('503.blade.php', $result);
+    }
+
+    public function test_fails_when_only_503_exists(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'resources/views/errors/503.blade.php' => '<html>503</html>',
+        ]);
+
+        config(['view.paths' => [$tempDir.'/resources/views']]);
+
+        /** @var CustomErrorPageAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('404.blade.php', $result);
+        $this->assertHasIssueContaining('500.blade.php', $result);
+    }
+
+    public function test_fails_when_only_404_and_500_exist(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'resources/views/errors/404.blade.php' => '<html>404</html>',
+            'resources/views/errors/500.blade.php' => '<html>500</html>',
+        ]);
+
+        config(['view.paths' => [$tempDir.'/resources/views']]);
+
+        /** @var CustomErrorPageAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('503.blade.php', $result);
+    }
+
+    // =========================================================================
+    // Edge Case Validation Tests
+    // =========================================================================
+
+    public function test_handles_empty_view_paths(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        config(['view.paths' => []]);
+
+        /** @var CustomErrorPageAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Custom error pages not configured', $result);
+    }
+
+    public function test_handles_non_array_view_paths(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        config(['view.paths' => null]);
+
+        /** @var CustomErrorPageAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    public function test_handles_invalid_view_path(): void
+    {
+        config(['view.paths' => ['/non/existent/path']]);
+
+        /** @var CustomErrorPageAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Custom error pages not configured', $result);
+    }
+
+    public function test_checks_multiple_view_paths(): void
+    {
+        $tempDir1 = $this->createTempDirectory([
+            'views1/errors/404.blade.php' => '<html>404</html>',
+        ]);
+
+        $tempDir2 = $this->createTempDirectory([
+            'views2/errors/500.blade.php' => '<html>500</html>',
+            'views2/errors/503.blade.php' => '<html>503</html>',
+        ]);
+
+        config(['view.paths' => [$tempDir1.'/views1', $tempDir2.'/views2']]);
+
+        /** @var CustomErrorPageAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false);
+        $result = $analyzer->analyze();
+
+        // Should pass because all templates exist across different paths
+        $this->assertPassed($result);
+    }
+
+    // =========================================================================
+    // Metadata Validation Tests
+    // =========================================================================
+
+    public function test_includes_missing_templates_in_metadata(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'resources/views/errors/404.blade.php' => '<html>404</html>',
+        ]);
+
+        config(['view.paths' => [$tempDir.'/resources/views']]);
+
+        /** @var CustomErrorPageAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertArrayHasKey('missing_templates', $issues[0]->metadata);
+        $missingTemplates = $issues[0]->metadata['missing_templates'];
+        $this->assertIsArray($missingTemplates);
+        $this->assertContains('500.blade.php', $missingTemplates);
+        $this->assertContains('503.blade.php', $missingTemplates);
+        $this->assertNotContains('404.blade.php', $missingTemplates);
+    }
+
+    public function test_includes_view_paths_checked_in_metadata(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        config(['view.paths' => [$tempDir.'/resources/views']]);
+
+        /** @var CustomErrorPageAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertArrayHasKey('view_paths_checked', $issues[0]->metadata);
+        $this->assertIsArray($issues[0]->metadata['view_paths_checked']);
+    }
+
+    // =========================================================================
+    // Namespace Hint Edge Cases
+    // =========================================================================
+
+    public function test_handles_multiple_namespace_hints(): void
+    {
+        $tempDir1 = $this->createTempDirectory([
+            'custom1/404.blade.php' => '<html>404</html>',
+        ]);
+
+        $tempDir2 = $this->createTempDirectory([
+            'custom2/500.blade.php' => '<html>500</html>',
+            'custom2/503.blade.php' => '<html>503</html>',
+        ]);
+
+        config(['view.paths' => []]);
+        View::addNamespace('errors', [$tempDir1.'/custom1', $tempDir2.'/custom2']);
+
+        /** @var CustomErrorPageAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false);
+        $result = $analyzer->analyze();
+
+        // Should pass because all templates exist across different namespace hints
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_namespace_hints_with_non_existent_paths(): void
+    {
+        config(['view.paths' => []]);
+        View::addNamespace('errors', ['/non/existent/path']);
+
+        /** @var CustomErrorPageAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    // =========================================================================
+    // Location Validation Tests
+    // =========================================================================
+
+    public function test_location_points_to_resources_views_directory(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        config(['view.paths' => [$tempDir.'/resources/views']]);
+
+        /** @var CustomErrorPageAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('resources', $issues[0]->location->file);
+        $this->assertStringContainsString('views', $issues[0]->location->file);
+    }
 }

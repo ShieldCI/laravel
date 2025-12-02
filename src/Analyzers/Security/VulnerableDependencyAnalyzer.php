@@ -48,12 +48,6 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $basePath = $this->getBasePath();
-
-        if ($basePath === '') {
-            return $this->error('Unable to determine base path for dependency analysis');
-        }
-
         $issues = [];
 
         $composerLock = $this->buildPath('composer.lock');
@@ -102,7 +96,12 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                 : [];
 
             foreach ($packageAdvisories as $advisory) {
-                if (! is_array($advisory)) {
+                if (! is_array($advisory) || empty($advisory)) {
+                    continue;
+                }
+
+                // Validate advisory has at least a title
+                if (! isset($advisory['title']) || ! is_string($advisory['title'])) {
                     continue;
                 }
 
@@ -111,9 +110,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                         'Package "%s" (%s) has a known vulnerability: %s',
                         $package,
                         $version,
-                        isset($advisory['title']) && is_string($advisory['title'])
-                            ? $advisory['title']
-                            : 'Security advisory'
+                        $advisory['title']
                     ),
                     location: new Location(
                         $this->getRelativePath($composerLock),
@@ -150,26 +147,13 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
      */
     private function checkAbandonedPackages(array &$issues, string $composerLock): void
     {
-        if (! file_exists($composerLock)) {
+        $lockData = $this->parseComposerLock($composerLock);
+
+        if ($lockData === null) {
             return;
         }
 
-        $content = FileParser::readFile($composerLock);
-
-        if ($content === null) {
-            return;
-        }
-
-        $lockData = json_decode($content, true);
-
-        if (json_last_error() !== JSON_ERROR_NONE || ! is_array($lockData)) {
-            return;
-        }
-
-        $packages = array_merge(
-            isset($lockData['packages']) && is_array($lockData['packages']) ? $lockData['packages'] : [],
-            isset($lockData['packages-dev']) && is_array($lockData['packages-dev']) ? $lockData['packages-dev'] : []
-        );
+        $packages = $this->getAllPackages($lockData);
 
         foreach ($packages as $package) {
             if (! is_array($package) || ! isset($package['abandoned'])) {
@@ -191,7 +175,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
             $issues[] = $this->createIssue(
                 message: sprintf('Package "%s" is abandoned and no longer maintained', $packageName),
                 location: new Location(
-                    $composerLock,
+                    $this->getRelativePath($composerLock),
                     1
                 ),
                 severity: Severity::Medium,
@@ -218,14 +202,54 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
         if (isset($advisory['affected_versions'])) {
             $affected = is_array($advisory['affected_versions'])
-                ? implode(', ', array_map('strval', $advisory['affected_versions']))
+                ? implode(', ', array_map('strval', array_filter($advisory['affected_versions'], 'is_scalar')))
                 : (is_string($advisory['affected_versions']) ? $advisory['affected_versions'] : null);
 
-            if ($affected !== null) {
+            if ($affected !== null && $affected !== '') {
                 $recommendation .= sprintf(' Affected versions: %s.', $affected);
             }
         }
 
         return trim($recommendation);
+    }
+
+    /**
+     * Parse composer.lock file and return the decoded array.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function parseComposerLock(string $composerLock): ?array
+    {
+        if (! file_exists($composerLock)) {
+            return null;
+        }
+
+        $content = FileParser::readFile($composerLock);
+
+        if ($content === null) {
+            return null;
+        }
+
+        $lockData = json_decode($content, true);
+
+        if (json_last_error() !== JSON_ERROR_NONE || ! is_array($lockData)) {
+            return null;
+        }
+
+        return $lockData;
+    }
+
+    /**
+     * Get all packages (regular and dev) from composer.lock data.
+     *
+     * @param  array<string, mixed>  $lockData
+     * @return array<int, mixed>
+     */
+    private function getAllPackages(array $lockData): array
+    {
+        return array_merge(
+            isset($lockData['packages']) && is_array($lockData['packages']) ? $lockData['packages'] : [],
+            isset($lockData['packages-dev']) && is_array($lockData['packages-dev']) ? $lockData['packages-dev'] : []
+        );
     }
 }

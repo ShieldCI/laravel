@@ -310,6 +310,767 @@ JSON;
         $this->assertHasIssueContaining('legacy/dev-package', $result);
     }
 
+    public function test_handles_multiple_vulnerabilities_for_single_package(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [
+        {
+            "name": "vendor/package",
+            "version": "1.0.0"
+        }
+    ]
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $dependencies = ['vendor/package' => ['version' => '1.0.0', 'time' => null]];
+
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
+        $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
+
+        /** @var ComposerDependencyReader&MockInterface $dependencyReader */
+        $dependencyReader = Mockery::mock(ComposerDependencyReader::class);
+        $dependencyReader->shouldReceive('read')->andReturn($dependencies);
+
+        $analysisOutput = [
+            'vendor/package' => [
+                'version' => '1.0.0',
+                'advisories' => [
+                    [
+                        'title' => 'SQL Injection',
+                        'cve' => 'CVE-2024-1111',
+                        'link' => 'https://example.com/advisory1',
+                    ],
+                    [
+                        'title' => 'XSS Vulnerability',
+                        'cve' => 'CVE-2024-2222',
+                        'link' => 'https://example.com/advisory2',
+                    ],
+                ],
+            ],
+        ];
+
+        /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
+        $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
+
+        $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+        $this->assertEquals('CVE-2024-1111', $issues[0]->metadata['cve'] ?? null);
+        $this->assertEquals('CVE-2024-2222', $issues[1]->metadata['cve'] ?? null);
+    }
+
+    public function test_handles_vulnerability_without_cve(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [
+        {
+            "name": "vendor/package",
+            "version": "1.0.0"
+        }
+    ]
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $dependencies = ['vendor/package' => ['version' => '1.0.0', 'time' => null]];
+
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
+        $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
+
+        /** @var ComposerDependencyReader&MockInterface $dependencyReader */
+        $dependencyReader = Mockery::mock(ComposerDependencyReader::class);
+        $dependencyReader->shouldReceive('read')->andReturn($dependencies);
+
+        $analysisOutput = [
+            'vendor/package' => [
+                'version' => '1.0.0',
+                'advisories' => [
+                    [
+                        'title' => 'Security Issue',
+                        'link' => 'https://example.com/advisory',
+                        // No CVE field
+                    ],
+                ],
+            ],
+        ];
+
+        /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
+        $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
+
+        $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertNull($issues[0]->metadata['cve'] ?? null);
+        $this->assertStringContainsString('Security Issue', $issues[0]->message);
+    }
+
+    public function test_handles_vulnerability_without_link(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": []
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $dependencies = ['vendor/package' => ['version' => '1.0.0', 'time' => null]];
+
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
+        $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
+
+        /** @var ComposerDependencyReader&MockInterface $dependencyReader */
+        $dependencyReader = Mockery::mock(ComposerDependencyReader::class);
+        $dependencyReader->shouldReceive('read')->andReturn($dependencies);
+
+        $analysisOutput = [
+            'vendor/package' => [
+                'version' => '1.0.0',
+                'advisories' => [
+                    [
+                        'title' => 'Security Issue',
+                        'cve' => 'CVE-2024-5555',
+                        // No link field
+                    ],
+                ],
+            ],
+        ];
+
+        /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
+        $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
+
+        $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertNull($issues[0]->metadata['link'] ?? null);
+        $this->assertStringNotContainsString('See http', $issues[0]->recommendation);
+    }
+
+    public function test_handles_advisory_with_array_affected_versions(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": []
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $dependencies = ['vendor/package' => ['version' => '1.0.0', 'time' => null]];
+
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
+        $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
+
+        /** @var ComposerDependencyReader&MockInterface $dependencyReader */
+        $dependencyReader = Mockery::mock(ComposerDependencyReader::class);
+        $dependencyReader->shouldReceive('read')->andReturn($dependencies);
+
+        $analysisOutput = [
+            'vendor/package' => [
+                'version' => '1.0.0',
+                'advisories' => [
+                    [
+                        'title' => 'Security Issue',
+                        'affected_versions' => ['<1.1.0', '>=2.0.0,<2.1.0'],
+                    ],
+                ],
+            ],
+        ];
+
+        /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
+        $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
+
+        $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('Affected versions:', $issues[0]->recommendation);
+        $this->assertStringContainsString('<1.1.0', $issues[0]->recommendation);
+    }
+
+    public function test_handles_advisory_with_string_affected_versions(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": []
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $dependencies = ['vendor/package' => ['version' => '1.0.0', 'time' => null]];
+
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
+        $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
+
+        /** @var ComposerDependencyReader&MockInterface $dependencyReader */
+        $dependencyReader = Mockery::mock(ComposerDependencyReader::class);
+        $dependencyReader->shouldReceive('read')->andReturn($dependencies);
+
+        $analysisOutput = [
+            'vendor/package' => [
+                'version' => '1.0.0',
+                'advisories' => [
+                    [
+                        'title' => 'Security Issue',
+                        'affected_versions' => '<1.1.0',
+                    ],
+                ],
+            ],
+        ];
+
+        /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
+        $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
+
+        $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('Affected versions: <1.1.0', $issues[0]->recommendation);
+    }
+
+    public function test_handles_invalid_json_in_composer_lock(): void
+    {
+        $composerLock = 'invalid json {';
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
+        $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
+
+        /** @var ComposerDependencyReader&MockInterface $dependencyReader */
+        $dependencyReader = Mockery::mock(ComposerDependencyReader::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $dependencyReader->shouldReceive('read')->andReturn([]);
+
+        /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
+        $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $advisoryAnalyzer->shouldReceive('analyze')->andReturn([]);
+
+        $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass (no abandoned packages can be read from invalid JSON)
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_both_vulnerabilities_and_abandoned_packages(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [
+        {
+            "name": "vendor/vulnerable",
+            "version": "1.0.0"
+        },
+        {
+            "name": "legacy/abandoned",
+            "version": "2.0.0",
+            "abandoned": "new/package"
+        }
+    ]
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $dependencies = ['vendor/vulnerable' => ['version' => '1.0.0', 'time' => null]];
+
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
+        $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $fetcher->shouldReceive('fetch')->andReturn(['vendor/vulnerable' => []]);
+
+        /** @var ComposerDependencyReader&MockInterface $dependencyReader */
+        $dependencyReader = Mockery::mock(ComposerDependencyReader::class);
+        $dependencyReader->shouldReceive('read')->andReturn($dependencies);
+
+        $analysisOutput = [
+            'vendor/vulnerable' => [
+                'version' => '1.0.0',
+                'advisories' => [
+                    [
+                        'title' => 'Security Issue',
+                        'cve' => 'CVE-2024-9999',
+                    ],
+                ],
+            ],
+        ];
+
+        /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
+        $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
+
+        $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+
+        // One vulnerability, one abandoned package
+        $hasVulnerability = false;
+        $hasAbandoned = false;
+
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'vulnerability')) {
+                $hasVulnerability = true;
+            }
+            if (str_contains($issue->message, 'abandoned')) {
+                $hasAbandoned = true;
+            }
+        }
+
+        $this->assertTrue($hasVulnerability);
+        $this->assertTrue($hasAbandoned);
+    }
+
+    public function test_severity_is_critical_for_vulnerabilities(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": []
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $dependencies = ['vendor/package' => ['version' => '1.0.0', 'time' => null]];
+
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
+        $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
+
+        /** @var ComposerDependencyReader&MockInterface $dependencyReader */
+        $dependencyReader = Mockery::mock(ComposerDependencyReader::class);
+        $dependencyReader->shouldReceive('read')->andReturn($dependencies);
+
+        $analysisOutput = [
+            'vendor/package' => [
+                'version' => '1.0.0',
+                'advisories' => [
+                    ['title' => 'Security Issue'],
+                ],
+            ],
+        ];
+
+        /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
+        $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
+
+        $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+    }
+
+    public function test_severity_is_medium_for_abandoned_packages(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [
+        {
+            "name": "legacy/package",
+            "version": "1.0.0",
+            "abandoned": true
+        }
+    ]
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
+        $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $fetcher->shouldReceive('fetch')->never();
+
+        /** @var ComposerDependencyReader&MockInterface $dependencyReader */
+        $dependencyReader = Mockery::mock(ComposerDependencyReader::class);
+        $dependencyReader->shouldReceive('read')->andReturn([]);
+
+        /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
+        $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $advisoryAnalyzer->shouldReceive('analyze')->andReturn([]);
+
+        $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+    }
+
+    public function test_metadata_structure(): void
+    {
+        $analyzer = $this->createAnalyzer();
+        $metadata = $analyzer->getMetadata();
+
+        $this->assertEquals('vulnerable-dependencies', $metadata->id);
+        $this->assertEquals('Vulnerable Dependency Analyzer', $metadata->name);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Security, $metadata->category);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $metadata->severity);
+        $this->assertContains('vulnerabilities', $metadata->tags);
+        $this->assertContains('cve', $metadata->tags);
+    }
+
+    public function test_recommendation_format_with_all_fields(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": []
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $dependencies = ['vendor/package' => ['version' => '1.0.0', 'time' => null]];
+
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
+        $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
+
+        /** @var ComposerDependencyReader&MockInterface $dependencyReader */
+        $dependencyReader = Mockery::mock(ComposerDependencyReader::class);
+        $dependencyReader->shouldReceive('read')->andReturn($dependencies);
+
+        $analysisOutput = [
+            'vendor/package' => [
+                'version' => '1.0.0',
+                'advisories' => [
+                    [
+                        'title' => 'Security Issue',
+                        'link' => 'https://example.com/advisory',
+                        'affected_versions' => '<1.1.0',
+                    ],
+                ],
+            ],
+        ];
+
+        /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
+        $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
+
+        $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $recommendation = $issues[0]->recommendation;
+
+        $this->assertStringContainsString('Update "vendor/package"', $recommendation);
+        $this->assertStringContainsString('https://example.com/advisory', $recommendation);
+        $this->assertStringContainsString('Affected versions: <1.1.0', $recommendation);
+    }
+
+    public function test_abandoned_package_with_empty_string_replacement(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [
+        {
+            "name": "legacy/package",
+            "version": "1.0.0",
+            "abandoned": ""
+        }
+    ]
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
+        $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $fetcher->shouldReceive('fetch')->never();
+
+        /** @var ComposerDependencyReader&MockInterface $dependencyReader */
+        $dependencyReader = Mockery::mock(ComposerDependencyReader::class);
+        $dependencyReader->shouldReceive('read')->andReturn([]);
+
+        /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
+        $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $advisoryAnalyzer->shouldReceive('analyze')->andReturn([]);
+
+        $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('Find an alternative', $issues[0]->recommendation);
+    }
+
+    public function test_handles_packages_and_packages_dev_merged(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [
+        {
+            "name": "regular/package",
+            "version": "1.0.0",
+            "abandoned": true
+        }
+    ],
+    "packages-dev": [
+        {
+            "name": "dev/package",
+            "version": "2.0.0",
+            "abandoned": "new/dev-package"
+        }
+    ]
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
+        $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $fetcher->shouldReceive('fetch')->never();
+
+        /** @var ComposerDependencyReader&MockInterface $dependencyReader */
+        $dependencyReader = Mockery::mock(ComposerDependencyReader::class);
+        $dependencyReader->shouldReceive('read')->andReturn([]);
+
+        /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
+        $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $advisoryAnalyzer->shouldReceive('analyze')->andReturn([]);
+
+        $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+    }
+
+    public function test_skips_malformed_package_in_abandoned_check(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [
+        {
+            "version": "1.0.0",
+            "abandoned": true
+        }
+    ]
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
+        $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $fetcher->shouldReceive('fetch')->never();
+
+        /** @var ComposerDependencyReader&MockInterface $dependencyReader */
+        $dependencyReader = Mockery::mock(ComposerDependencyReader::class);
+        $dependencyReader->shouldReceive('read')->andReturn([]);
+
+        /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
+        $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $advisoryAnalyzer->shouldReceive('analyze')->andReturn([]);
+
+        $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        // Should create issue but with "Unknown" package name
+        $this->assertStringContainsString('Unknown', $issues[0]->message);
+    }
+
+    public function test_skips_advisory_without_title(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": []
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $dependencies = ['vendor/package' => ['version' => '1.0.0', 'time' => null]];
+
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
+        $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
+
+        /** @var ComposerDependencyReader&MockInterface $dependencyReader */
+        $dependencyReader = Mockery::mock(ComposerDependencyReader::class);
+        $dependencyReader->shouldReceive('read')->andReturn($dependencies);
+
+        $analysisOutput = [
+            'vendor/package' => [
+                'version' => '1.0.0',
+                'advisories' => [
+                    [
+                        // No title field - should be skipped
+                        'cve' => 'CVE-2024-9999',
+                    ],
+                ],
+            ],
+        ];
+
+        /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
+        $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
+
+        $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because advisory without title is skipped
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_empty_advisory_array(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": []
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $dependencies = ['vendor/package' => ['version' => '1.0.0', 'time' => null]];
+
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
+        $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
+
+        /** @var ComposerDependencyReader&MockInterface $dependencyReader */
+        $dependencyReader = Mockery::mock(ComposerDependencyReader::class);
+        $dependencyReader->shouldReceive('read')->andReturn($dependencies);
+
+        $analysisOutput = [
+            'vendor/package' => [
+                'version' => '1.0.0',
+                'advisories' => [
+                    [], // Empty advisory array - should be skipped
+                ],
+            ],
+        ];
+
+        /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
+        $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
+        /** @phpstan-ignore-next-line Mockery fluent interface */
+        $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
+
+        $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because empty advisory is skipped
+        $this->assertPassed($result);
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();

@@ -57,14 +57,11 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
             // Test cache read
             $retrievedValue = Cache::get($testKey);
 
-            // Clean up test key (ensure cleanup even if read fails)
-            try {
-                Cache::forget($testKey);
-            } catch (\Throwable $cleanupException) {
-                // Ignore cleanup errors, but log them in metadata if needed
-            }
-
+            // Verify retrieved value matches
             if ($retrievedValue !== $testValue) {
+                // Clean up test key before returning
+                $this->cleanupTestKey($testKey);
+
                 return $this->failed(
                     'Cache storage is not working correctly - values are not being retrieved as expected',
                     [$this->createIssue(
@@ -72,7 +69,7 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
                         location: $configLocation,
                         severity: Severity::Critical,
                         recommendation: $this->getWriteReadFailureRecommendation(),
-                        code: FileParser::getCodeSnippet($configLocation->file, $configLocation->line),
+                        code: $this->getCodeSnippetSafely($configLocation),
                         metadata: [
                             'cache_driver' => $this->getCacheDriver(),
                             'expected' => $testValue,
@@ -82,14 +79,13 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
                 );
             }
 
+            // Clean up test key after successful test
+            $this->cleanupTestKey($testKey);
+
             return $this->passed('Cache is working correctly');
         } catch (\Throwable $e) {
             // Ensure cleanup on exception
-            try {
-                Cache::forget($testKey);
-            } catch (\Throwable $cleanupException) {
-                // Ignore cleanup errors
-            }
+            $this->cleanupTestKey($testKey);
 
             return $this->failed(
                 'Cache is not accessible or not functioning properly',
@@ -98,7 +94,7 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
                     location: $configLocation,
                     severity: Severity::Critical,
                     recommendation: $this->getConnectionFailureRecommendation($e),
-                    code: FileParser::getCodeSnippet($configLocation->file, $configLocation->line),
+                    code: $this->getCodeSnippetSafely($configLocation),
                     metadata: [
                         'cache_driver' => $this->getCacheDriver(),
                         'exception' => get_class($e),
@@ -185,5 +181,31 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
         }
 
         return $error;
+    }
+
+    /**
+     * Clean up test cache key.
+     * Silently ignores any cleanup errors to prevent masking the original issue.
+     */
+    private function cleanupTestKey(string $testKey): void
+    {
+        try {
+            Cache::forget($testKey);
+        } catch (\Throwable $cleanupException) {
+            // Silently ignore cleanup errors - we don't want cleanup failures
+            // to mask the actual cache issue we're testing for
+        }
+    }
+
+    /**
+     * Safely get code snippet, handling missing files.
+     */
+    private function getCodeSnippetSafely(Location $location): ?string
+    {
+        if (! file_exists($location->file)) {
+            return null;
+        }
+
+        return FileParser::getCodeSnippet($location->file, $location->line);
     }
 }

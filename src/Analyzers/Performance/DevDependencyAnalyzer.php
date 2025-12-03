@@ -104,6 +104,7 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
                 location: new Location($composerLockPath, 1),
                 severity: Severity::High,
                 recommendation: 'Always commit composer.lock to ensure consistent dependency versions across environments. Run "composer install" instead of "composer update" in production.',
+                code: null,
                 metadata: ['environment' => $this->getEnvironment()]
             );
 

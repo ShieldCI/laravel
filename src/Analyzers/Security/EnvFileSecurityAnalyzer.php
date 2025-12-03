@@ -140,7 +140,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                     ),
                     severity: Severity::Critical,
                     recommendation: 'IMMEDIATELY remove .env from public directory. It should be in the application root, one level above public/',
-                    code: FileParser::getCodeSnippet($path, 1),
+                    code: null,
                     metadata: ['path' => $path]
                 );
             }
@@ -169,7 +169,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                 ),
                 severity: Severity::Low,
                 recommendation: 'Create .env.example as a template for environment configuration (without sensitive values)',
-                code: FileParser::getCodeSnippet($envExample, 1),
+                code: null,
                 metadata: [
                     'file' => '.env.example',
                     'exists' => false,

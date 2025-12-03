@@ -55,6 +55,7 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
                     location: new Location($basePath, 1),
                     severity: Severity::Critical,
                     recommendation: 'Create a composer.json file in the root of your project. Run "composer init" to create one interactively.',
+                    code: null,
                     metadata: []
                 )]
             );

@@ -68,7 +68,7 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                 ),
                 severity: Severity::Medium,
                 recommendation: 'Run "npm install" or "yarn install" to generate lock file for dependency tracking',
-                code: FileParser::getCodeSnippet($packageJson, 1),
+                code: null,
                 metadata: [
                     'issue_type' => 'missing_lock_file',
                 ]

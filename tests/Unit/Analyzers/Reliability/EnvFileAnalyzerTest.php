@@ -174,7 +174,9 @@ DB_CONNECTION=mysql';
         $this->assertCount(1, $issues);
 
         $this->assertArrayHasKey('env_path', $issues[0]->metadata);
-        $this->assertStringContainsString('.env', $issues[0]->metadata['env_path']);
+        $envPath = $issues[0]->metadata['env_path'];
+        $this->assertIsString($envPath);
+        $this->assertStringContainsString('.env', $envPath);
     }
 
     public function test_metadata_includes_env_example_exists_flag(): void

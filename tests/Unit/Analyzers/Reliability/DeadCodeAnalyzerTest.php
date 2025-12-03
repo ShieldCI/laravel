@@ -368,7 +368,7 @@ PHP,
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertStringContainsString('Found 60 dead code issues (showing first 50)', $result->getMessage());
+        $this->assertStringContainsString('Found 60 dead code issue(s) (showing first 50)', $result->getMessage());
     }
 
     public function test_pluralization_with_single_issue(): void

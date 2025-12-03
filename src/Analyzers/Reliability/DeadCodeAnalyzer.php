@@ -8,9 +8,9 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\ParsesPHPStanResults;
 use ShieldCI\Support\PHPStanRunner;
 
 /**
@@ -24,6 +24,8 @@ use ShieldCI\Support\PHPStanRunner;
  */
 class DeadCodeAnalyzer extends AbstractFileAnalyzer
 {
+    use ParsesPHPStanResults;
+
     /**
      * PHPStan patterns for detecting dead code.
      *
@@ -102,12 +104,17 @@ class DeadCodeAnalyzer extends AbstractFileAnalyzer
             return $this->passed('No dead code detected');
         }
 
-        $issueObjects = $this->createIssuesFromPHPStanResults($issues);
+        $issueObjects = $this->createIssuesFromPHPStanResults(
+            $issues,
+            'Dead code detected',
+            Severity::Medium,
+            fn (string $message) => $this->getRecommendation($message)
+        );
 
         $totalCount = $issues->count();
         $displayedCount = count($issueObjects);
 
-        $message = $this->formatIssueCountMessage($totalCount, $displayedCount);
+        $message = $this->formatIssueCountMessage($totalCount, $displayedCount, 'dead code issue(s)');
 
         return $this->failed($message, $issueObjects);
     }
@@ -131,80 +138,5 @@ class DeadCodeAnalyzer extends AbstractFileAnalyzer
         }
 
         return 'Fix the dead code issue detected by PHPStan. PHPStan message: '.$message;
-    }
-
-    /**
-     * Create issue objects from PHPStan results.
-     *
-     * @param  \Illuminate\Support\Collection<int, array{file: string, line: int, message: string}>  $issues
-     * @return array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>
-     */
-    private function createIssuesFromPHPStanResults(\Illuminate\Support\Collection $issues): array
-    {
-        $issueObjects = [];
-
-        foreach ($issues->take(50) as $issue) {
-            // Validate issue structure
-            if (! isset($issue['file'], $issue['line'], $issue['message'])) {
-                continue;
-            }
-
-            $file = $issue['file'];
-            $line = $issue['line'];
-            $message = $issue['message'];
-
-            // Validate types
-            if (! is_string($file) || ! is_string($message)) {
-                continue;
-            }
-
-            // Validate line number
-            if (! is_int($line) || $line < 1) {
-                $line = 1;
-            }
-
-            $issueObjects[] = $this->createIssue(
-                message: 'Dead code detected',
-                location: new Location($file, $line),
-                severity: Severity::Medium,
-                recommendation: $this->getRecommendation($message),
-                code: $this->getCodeSnippetSafely($file, $line),
-                metadata: [
-                    'phpstan_message' => $message,
-                    'file' => $file,
-                    'line' => $line,
-                ]
-            );
-        }
-
-        return $issueObjects;
-    }
-
-    /**
-     * Safely get code snippet, handling missing files.
-     */
-    private function getCodeSnippetSafely(string $file, int $line): ?string
-    {
-        if (! file_exists($file)) {
-            return null;
-        }
-
-        return FileParser::getCodeSnippet($file, $line);
-    }
-
-    /**
-     * Format the issue count message.
-     */
-    private function formatIssueCountMessage(int $totalCount, int $displayedCount): string
-    {
-        if ($totalCount > $displayedCount) {
-            return sprintf(
-                'Found %d dead code issues (showing first %d)',
-                $totalCount,
-                $displayedCount
-            );
-        }
-
-        return sprintf('Found %d dead code issue(s)', $totalCount);
     }
 }

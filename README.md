@@ -235,6 +235,7 @@ Ensure application stability and correctness:
 - **Composer Validation Analyzer** - Ensures composer.json integrity
 - **Database Status Analyzer** - Monitors database connections
 - **Directory Write Permissions Analyzer** - Checks critical directory permissions
+- **Env File Analyzer** - Validates .env file existence, readability, and checks for broken symlinks
 - **Env Variable Analyzer** - Ensures all required variables from .env.example are defined in .env
 - **Env Example Analyzer** - Ensures all variables from .env are documented in .env.example
 - **Queue Timeout Analyzer** - Prevents job duplication with proper timeouts

@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Support\PHPStanRunner;
@@ -24,9 +25,11 @@ use ShieldCI\Support\PHPStanRunner;
 class DeadCodeAnalyzer extends AbstractFileAnalyzer
 {
     /**
+     * PHPStan patterns for detecting dead code.
+     *
      * @var array<string>
      */
-    private array $patterns = [
+    private const DEAD_CODE_PATTERNS = [
         '*does not do anything*',
         'Unreachable statement*',
         '* is unused*',
@@ -61,40 +64,50 @@ class DeadCodeAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $runner = new PHPStanRunner($this->basePath);
+        $basePath = $this->getBasePath();
 
-        // Run PHPStan on app directory at level 5
-        $runner->analyze('app', 5);
+        $runner = new PHPStanRunner($basePath);
 
-        // Filter for dead code issues
-        $issues = $runner->filterByPattern($this->patterns);
+        // Check if PHPStan is available
+        if (! $runner->isAvailable()) {
+            return $this->warning(
+                'PHPStan is not available',
+                [$this->createIssue(
+                    message: 'PHPStan binary not found',
+                    location: new Location($basePath, 1),
+                    severity: Severity::Medium,
+                    recommendation: 'Install PHPStan to enable dead code detection. Run: composer require --dev phpstan/phpstan',
+                    metadata: []
+                )]
+            );
+        }
+
+        try {
+            // Run PHPStan on app directory
+            $runner->analyze('app', 5);
+
+            // Filter for dead code issues
+            $issues = $runner->filterByPattern(self::DEAD_CODE_PATTERNS);
+        } catch (\Throwable $e) {
+            return $this->error(
+                sprintf('PHPStan analysis failed: %s', $e->getMessage()),
+                [
+                    'exception' => get_class($e),
+                    'error_message' => $e->getMessage(),
+                ]
+            );
+        }
 
         if ($issues->isEmpty()) {
             return $this->passed('No dead code detected');
         }
 
-        $issueObjects = [];
-
-        foreach ($issues->take(50) as $issue) {
-            $issueObjects[] = $this->createIssue(
-                message: 'Dead code detected',
-                location: new Location($issue['file'], $issue['line']),
-                severity: Severity::Medium,
-                recommendation: $this->getRecommendation($issue['message']),
-                metadata: [
-                    'phpstan_message' => $issue['message'],
-                    'file' => $issue['file'],
-                    'line' => $issue['line'],
-                ]
-            );
-        }
+        $issueObjects = $this->createIssuesFromPHPStanResults($issues);
 
         $totalCount = $issues->count();
         $displayedCount = count($issueObjects);
 
-        $message = $totalCount > $displayedCount
-            ? "Found {$totalCount} dead code issues (showing first {$displayedCount})"
-            : "Found {$totalCount} dead code issue(s)";
+        $message = $this->formatIssueCountMessage($totalCount, $displayedCount);
 
         return $this->failed($message, $issueObjects);
     }
@@ -118,5 +131,80 @@ class DeadCodeAnalyzer extends AbstractFileAnalyzer
         }
 
         return 'Fix the dead code issue detected by PHPStan. PHPStan message: '.$message;
+    }
+
+    /**
+     * Create issue objects from PHPStan results.
+     *
+     * @param  \Illuminate\Support\Collection<int, array{file: string, line: int, message: string}>  $issues
+     * @return array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>
+     */
+    private function createIssuesFromPHPStanResults(\Illuminate\Support\Collection $issues): array
+    {
+        $issueObjects = [];
+
+        foreach ($issues->take(50) as $issue) {
+            // Validate issue structure
+            if (! isset($issue['file'], $issue['line'], $issue['message'])) {
+                continue;
+            }
+
+            $file = $issue['file'];
+            $line = $issue['line'];
+            $message = $issue['message'];
+
+            // Validate types
+            if (! is_string($file) || ! is_string($message)) {
+                continue;
+            }
+
+            // Validate line number
+            if (! is_int($line) || $line < 1) {
+                $line = 1;
+            }
+
+            $issueObjects[] = $this->createIssue(
+                message: 'Dead code detected',
+                location: new Location($file, $line),
+                severity: Severity::Medium,
+                recommendation: $this->getRecommendation($message),
+                code: $this->getCodeSnippetSafely($file, $line),
+                metadata: [
+                    'phpstan_message' => $message,
+                    'file' => $file,
+                    'line' => $line,
+                ]
+            );
+        }
+
+        return $issueObjects;
+    }
+
+    /**
+     * Safely get code snippet, handling missing files.
+     */
+    private function getCodeSnippetSafely(string $file, int $line): ?string
+    {
+        if (! file_exists($file)) {
+            return null;
+        }
+
+        return FileParser::getCodeSnippet($file, $line);
+    }
+
+    /**
+     * Format the issue count message.
+     */
+    private function formatIssueCountMessage(int $totalCount, int $displayedCount): string
+    {
+        if ($totalCount > $displayedCount) {
+            return sprintf(
+                'Found %d dead code issues (showing first %d)',
+                $totalCount,
+                $displayedCount
+            );
+        }
+
+        return sprintf('Found %d dead code issue(s)', $totalCount);
     }
 }

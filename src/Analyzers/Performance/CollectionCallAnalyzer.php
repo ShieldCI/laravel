@@ -71,9 +71,6 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
 
         // Set root path for PHPStan
         $basePath = $this->getBasePath();
-        if ($basePath === '') {
-            $basePath = function_exists('base_path') ? base_path() : getcwd();
-        }
 
         if (is_string($basePath) && $basePath !== '') {
             $this->phpStan->setRootPath($basePath);
@@ -128,13 +125,6 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
 
         // Check actual Larastan installation
         $basePath = $this->getBasePath();
-        if ($basePath === '') {
-            $basePath = function_exists('base_path') ? base_path() : getcwd();
-        }
-
-        if ($basePath === '') {
-            return false;
-        }
 
         // Check multiple possible Larastan paths (current and legacy package names)
         $possiblePaths = [

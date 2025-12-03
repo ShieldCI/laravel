@@ -76,10 +76,6 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
     {
         $basePath = $this->getBasePath();
 
-        if ($basePath === '') {
-            return $this->error('Unable to determine base path for debug mode analysis');
-        }
-
         $issues = [];
 
         // Check .env files for APP_DEBUG=true

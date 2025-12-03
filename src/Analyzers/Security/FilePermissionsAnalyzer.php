@@ -53,9 +53,6 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
     public function shouldRun(): bool
     {
         $basePath = $this->getBasePath();
-        if ($basePath === '') {
-            return false;
-        }
 
         // Check if at least one configured path exists
         foreach ($this->getPathsToCheck() as $relativePath => $config) {
@@ -70,20 +67,12 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 
     public function getSkipReason(): string
     {
-        if ($this->getBasePath() === '') {
-            return 'Unable to determine base path for file permissions analysis';
-        }
-
         return 'No configured files or directories found to analyze';
     }
 
     protected function runAnalysis(): ResultInterface
     {
         $basePath = $this->getBasePath();
-
-        if ($basePath === '') {
-            return $this->error('Unable to determine base path for file permissions analysis');
-        }
 
         $issues = [];
 

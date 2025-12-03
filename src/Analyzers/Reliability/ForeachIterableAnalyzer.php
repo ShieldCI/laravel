@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\ParsesPHPStanResults;
 use ShieldCI\Support\PHPStanRunner;
 
 /**
@@ -22,14 +23,17 @@ use ShieldCI\Support\PHPStanRunner;
  */
 class ForeachIterableAnalyzer extends AbstractFileAnalyzer
 {
+    use ParsesPHPStanResults;
+
     /**
+     * PHPStan patterns for detecting invalid foreach usage.
+     *
      * @var array<string>
      */
-    private array $patterns = [
+    private const FOREACH_ITERABLE_PATTERNS = [
         'Argument of an invalid type * supplied for foreach*',
         'Cannot use * in a foreach loop*',
         'Iterating over * but * does not specify*',
-        'Argument * supplied for foreach is*',
     ];
 
     protected function metadata(): AnalyzerMetadata
@@ -48,41 +52,78 @@ class ForeachIterableAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $runner = new PHPStanRunner($this->basePath);
+        $basePath = $this->getBasePath();
 
-        // Run PHPStan on app directory at level 5
-        $runner->analyze('app', 5);
+        $runner = new PHPStanRunner($basePath);
 
-        // Filter for foreach iterable issues
-        $issues = $runner->filterByPattern($this->patterns);
+        // Check if PHPStan is available
+        if (! $runner->isAvailable()) {
+            return $this->warning(
+                'PHPStan is not available',
+                [$this->createIssue(
+                    message: 'PHPStan binary not found',
+                    location: new Location($basePath, 1),
+                    severity: Severity::Medium,
+                    recommendation: 'Install PHPStan to enable foreach iterable validation. Run: composer require --dev phpstan/phpstan',
+                    metadata: []
+                )]
+            );
+        }
+
+        try {
+            // Run PHPStan on app directory
+            $runner->analyze('app', 5);
+
+            // Filter for foreach iterable issues
+            $issues = $runner->filterByPattern(self::FOREACH_ITERABLE_PATTERNS);
+        } catch (\Throwable $e) {
+            return $this->error(
+                sprintf('PHPStan analysis failed: %s', $e->getMessage()),
+                []
+            );
+        }
 
         if ($issues->isEmpty()) {
             return $this->passed('No invalid foreach usage detected');
         }
 
-        $issueObjects = [];
-
-        foreach ($issues->take(50) as $issue) {
-            $issueObjects[] = $this->createIssue(
-                message: 'Invalid foreach usage detected',
-                location: new Location($issue['file'], $issue['line']),
-                severity: Severity::High,
-                recommendation: 'Fix the foreach loop - ensure the variable being iterated is iterable (array, Traversable, or Iterator). Check the type of the variable before using it in a foreach loop. PHPStan message: '.$issue['message'],
-                metadata: [
-                    'phpstan_message' => $issue['message'],
-                    'file' => $issue['file'],
-                    'line' => $issue['line'],
-                ]
-            );
-        }
+        // Use trait method to create issues
+        $issueObjects = $this->createIssuesFromPHPStanResults(
+            issues: $issues,
+            issueMessage: 'Invalid foreach usage detected',
+            severity: Severity::High,
+            recommendationCallback: fn (string $message) => $this->getRecommendation($message)
+        );
 
         $totalCount = $issues->count();
         $displayedCount = count($issueObjects);
 
-        $message = $totalCount > $displayedCount
-            ? "Found {$totalCount} invalid foreach usages (showing first {$displayedCount})"
-            : "Found {$totalCount} invalid foreach usage(s)";
+        $message = $this->formatIssueCountMessage(
+            totalCount: $totalCount,
+            displayedCount: $displayedCount,
+            issueType: 'invalid foreach usage(s)'
+        );
 
         return $this->failed($message, $issueObjects);
+    }
+
+    /**
+     * Get recommendation message based on PHPStan message.
+     */
+    private function getRecommendation(string $message): string
+    {
+        if (str_contains($message, 'invalid type')) {
+            return 'Fix the foreach loop - the variable being iterated is not of an iterable type. Ensure the variable is an array, Traversable, or Iterator before using it in a foreach loop. PHPStan message: '.$message;
+        }
+
+        if (str_contains($message, 'Cannot use')) {
+            return 'Fix the foreach loop - the value cannot be used in a foreach loop. Check the type of the variable and ensure it implements Traversable or is an array. PHPStan message: '.$message;
+        }
+
+        if (str_contains($message, 'does not specify')) {
+            return 'Fix the foreach loop - the type does not specify that it is iterable. Add proper type hints or ensure the variable is iterable before using it in a foreach loop. PHPStan message: '.$message;
+        }
+
+        return 'Fix the foreach loop - ensure the variable being iterated is iterable (array, Traversable, or Iterator). Check the type of the variable before using it in a foreach loop. PHPStan message: '.$message;
     }
 }

@@ -532,6 +532,7 @@ APP_ENV=local';
 
         $issues = $result->getIssues();
         $undocumentedVars = $issues[0]->metadata['undocumented_variables'];
+        $this->assertIsArray($undocumentedVars);
         $this->assertCount(1, $undocumentedVars);
         $this->assertContains('NEW_SECRET_KEY', $undocumentedVars);
     }

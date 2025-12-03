@@ -2,7 +2,7 @@
 
 > **⚠️ Initial Development Release (v0.1.x)** - This package is under active development. APIs may change between minor versions until v1.0.0 is released.
 
-Modern security and code quality analysis for Laravel applications with 102 comprehensive analyzers covering security, performance, reliability, and code quality.
+Modern security and code quality analysis for Laravel applications with 103 comprehensive analyzers covering security, performance, reliability, and code quality.
 
 Built on top of [`shieldci/analyzers-core`](https://github.com/shieldci/analyzers-core) (v0.1.x) - a shared, framework-agnostic foundation for static analysis tools.
 
@@ -148,10 +148,10 @@ Example: AutoloaderOptimizationAnalyzer only runs in production/staging environm
 
 ## Available Analyzers
 
-ShieldCI includes **102 comprehensive analyzers** across five categories:
+ShieldCI includes **103 comprehensive analyzers** across five categories:
 - **22 Security Analyzers** - Complete OWASP Top 10 2021 coverage
 - **18 Performance Analyzers** - Optimize application speed and efficiency
-- **24 Reliability Analyzers** - Ensure application stability and correctness
+- **25 Reliability Analyzers** - Ensure application stability and correctness
 - **15 Code Quality Analyzers** - Improve maintainability and code standards
 - **23 Best Practices Analyzers** - Enforce Laravel-specific best practices
 
@@ -225,18 +225,18 @@ Optimize your Laravel application for production:
 - **Unused Global Middleware Analyzer** - Detects unnecessary global middleware
 - **View Caching Analyzer** - Validates Blade view compilation caching
 
-### Reliability Analyzers (24)
+### Reliability Analyzers (25)
 
 Ensure application stability and correctness:
 
-**Configuration & Infrastructure (8):**
+**Configuration & Infrastructure (9):**
 - **Cache Prefix Analyzer** - Prevents cache collisions in shared environments
 - **Cache Status Analyzer** - Validates cache connectivity
 - **Composer Validation Analyzer** - Ensures composer.json integrity
 - **Database Status Analyzer** - Monitors database connections
 - **Directory Write Permissions Analyzer** - Checks critical directory permissions
-- **Env File Analyzer** - Validates .env file existence
-- **Env Variable Analyzer** - Ensures all required variables are defined
+- **Env Variable Analyzer** - Ensures all required variables from .env.example are defined in .env
+- **Env Example Analyzer** - Ensures all variables from .env are documented in .env.example
 - **Queue Timeout Analyzer** - Prevents job duplication with proper timeouts
 
 **PHPStan-Powered Static Analysis (13):**

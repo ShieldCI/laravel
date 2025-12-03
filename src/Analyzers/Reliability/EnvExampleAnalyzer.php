@@ -1,0 +1,252 @@
+<?php
+
+declare(strict_types=1);
+
+namespace ShieldCI\Analyzers\Reliability;
+
+use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
+use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Location;
+
+/**
+ * Checks that all environment variables from .env are documented in .env.example.
+ *
+ * Checks for:
+ * - All variables from .env are present in .env.example
+ * - Ensures .env.example serves as proper documentation
+ * - Helps with team onboarding and deployment
+ */
+class EnvExampleAnalyzer extends AbstractFileAnalyzer
+{
+    protected function metadata(): AnalyzerMetadata
+    {
+        return new AnalyzerMetadata(
+            id: 'env-example-documented',
+            name: 'Environment Example Documentation',
+            description: 'Ensures all environment variables used in .env are documented in .env.example',
+            category: Category::Reliability,
+            severity: Severity::Low,
+            tags: ['environment', 'configuration', 'documentation', 'team-collaboration'],
+            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/env-example-documented',
+            timeToFix: 10
+        );
+    }
+
+    protected function runAnalysis(): ResultInterface
+    {
+        $basePath = $this->getBasePath();
+        $envPath = $this->getEnvPath($basePath);
+        $envExamplePath = $this->getEnvExamplePath($basePath);
+
+        // Check if .env exists
+        if (! file_exists($envPath)) {
+            return $this->warning('.env file not found - cannot verify documentation');
+        }
+
+        // Check if .env.example exists
+        if (! file_exists($envExamplePath)) {
+            return $this->failed(
+                '.env.example file not found',
+                [$this->createIssue(
+                    message: '.env.example file is missing',
+                    location: new Location('.env.example', 1),
+                    severity: Severity::High,
+                    recommendation: $this->buildMissingExampleFileRecommendation(),
+                    code: null,
+                    metadata: []
+                )]
+            );
+        }
+
+        // Parse both files
+        $envVars = $this->parseEnvFile($envPath);
+        $exampleVars = $this->parseEnvFile($envExamplePath);
+
+        // Find undocumented variables (in .env but not in .env.example)
+        $undocumentedVars = array_diff_key($envVars, $exampleVars);
+
+        if (empty($undocumentedVars)) {
+            return $this->passed('All environment variables are documented in .env.example');
+        }
+
+        return $this->failed(
+            sprintf('Found %d undocumented environment variable(s)', count($undocumentedVars)),
+            [$this->createIssue(
+                message: 'Undocumented environment variables',
+                location: new Location('.env.example', 1),
+                severity: Severity::Low,
+                recommendation: $this->buildUndocumentedVariablesRecommendation($undocumentedVars),
+                code: $this->getCodeSnippetSafely($envExamplePath),
+                metadata: [
+                    'undocumented_count' => count($undocumentedVars),
+                    'undocumented_variables' => array_keys($undocumentedVars),
+                ]
+            )]
+        );
+    }
+
+    /**
+     * Get the .env file path.
+     */
+    private function getEnvPath(string $basePath): string
+    {
+        if ($basePath === '') {
+            return '.env';
+        }
+
+        return rtrim($basePath, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.'.env';
+    }
+
+    /**
+     * Get the .env.example file path.
+     */
+    private function getEnvExamplePath(string $basePath): string
+    {
+        if ($basePath === '') {
+            return '.env.example';
+        }
+
+        return rtrim($basePath, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.'.env.example';
+    }
+
+    /**
+     * Build recommendation message for missing .env.example file.
+     */
+    private function buildMissingExampleFileRecommendation(): string
+    {
+        return <<<'RECOMMENDATION'
+Create a .env.example file to document all environment variables used in your application.
+
+This file serves as:
+- Documentation for required environment variables
+- Template for new team members
+- Reference for deployment configuration
+
+To create .env.example:
+1. Copy your .env file
+2. Replace all sensitive values with placeholders
+3. Add comments explaining each variable
+
+Example:
+  # Application
+  APP_NAME=Laravel
+  APP_ENV=local
+  APP_KEY=  # Generated via: php artisan key:generate
+
+  # Database
+  DB_CONNECTION=mysql
+  DB_HOST=127.0.0.1
+  DB_PASSWORD=your_password_here
+
+Never commit real secrets to .env.example - use placeholder values only!
+RECOMMENDATION;
+    }
+
+    /**
+     * Build recommendation message for undocumented variables.
+     *
+     * @param  array<string, string>  $undocumentedVars
+     */
+    private function buildUndocumentedVariablesRecommendation(array $undocumentedVars): string
+    {
+        $undocumentedKeys = array_keys($undocumentedVars);
+        $variablesList = implode(', ', $undocumentedKeys);
+
+        // Create example entries for the first few variables
+        $exampleEntries = [];
+        $maxExamples = min(5, count($undocumentedKeys));
+        for ($i = 0; $i < $maxExamples; $i++) {
+            $key = $undocumentedKeys[$i];
+            $exampleEntries[] = sprintf('%s=your_%s_here', $key, strtolower(str_replace('_', '_', $key)));
+        }
+        $exampleEntriesText = implode("\n  ", $exampleEntries);
+
+        return sprintf(
+            <<<'RECOMMENDATION'
+Add the following environment variables to your .env.example file: %s
+
+These variables are currently used in .env but not documented in .env.example.
+This makes it harder for team members to know what variables are required.
+
+To fix:
+1. Open .env.example
+2. Add these variables with placeholder values (NOT real secrets!)
+3. Add comments explaining what each variable is for
+
+Example additions:
+  %s
+
+IMPORTANT: Use placeholder values in .env.example, never real secrets!
+Good: DB_PASSWORD=your_database_password
+Bad:  DB_PASSWORD=MyRealPassword123
+RECOMMENDATION,
+            $variablesList,
+            $exampleEntriesText
+        );
+    }
+
+    /**
+     * Parse environment file and return key-value pairs.
+     *
+     * @return array<string, string>
+     */
+    private function parseEnvFile(string $filePath): array
+    {
+        if (! file_exists($filePath) || ! is_readable($filePath)) {
+            return [];
+        }
+
+        try {
+            $lines = FileParser::getLines($filePath);
+        } catch (\Throwable $e) {
+            return [];
+        }
+
+        if (! is_array($lines) || empty($lines)) {
+            return [];
+        }
+
+        $variables = [];
+
+        foreach ($lines as $line) {
+            if (! is_string($line)) {
+                continue;
+            }
+
+            $line = trim($line);
+
+            // Skip empty lines and comments
+            if ($line === '' || str_starts_with($line, '#')) {
+                continue;
+            }
+
+            // Parse KEY=VALUE format
+            if (preg_match('/^([A-Z_][A-Z0-9_]*)\s*=/', $line, $matches)) {
+                $key = $matches[1];
+                $variables[$key] = $line;
+            }
+        }
+
+        return $variables;
+    }
+
+    /**
+     * Safely get code snippet, handling missing files.
+     */
+    private function getCodeSnippetSafely(string $file): ?string
+    {
+        if (! file_exists($file)) {
+            return null;
+        }
+
+        try {
+            return FileParser::getCodeSnippet($file, 1);
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+}

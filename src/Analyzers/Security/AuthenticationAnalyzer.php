@@ -26,12 +26,6 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class AuthenticationAnalyzer extends AbstractFileAnalyzer
 {
-    private const ROUTE_MIDDLEWARE_SEARCH_RANGE = 10;
-
-    private const ROUTE_GROUP_SEARCH_RANGE = 5;
-
-    private const NULL_CHECK_SEARCH_RANGE = 3;
-
     /**
      * @var array<string>
      */
@@ -147,7 +141,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 }
 
                 // Check if route has auth middleware
-                $searchRange = min($lineNumber + self::ROUTE_MIDDLEWARE_SEARCH_RANGE, count($lines));
+                $searchRange = min($lineNumber + 10, count($lines));
                 $hasAuthMiddleware = false;
                 $routeDefinition = '';
 
@@ -182,7 +176,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
             // Check for route groups without middleware
             if (preg_match('/Route::group\s*\(/i', $line)) {
-                $searchRange = min($lineNumber + self::ROUTE_GROUP_SEARCH_RANGE, count($lines));
+                $searchRange = min($lineNumber + 5, count($lines));
                 $hasAuthMiddleware = false;
 
                 for ($i = $lineNumber; $i < $searchRange; $i++) {
@@ -410,7 +404,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         array &$issues
     ): void {
         // Look for null checks in surrounding lines
-        $searchRange = max(0, $lineNumber - self::NULL_CHECK_SEARCH_RANGE);
+        $searchRange = max(0, $lineNumber - 3);
         $hasNullCheck = false;
 
         for ($i = $searchRange; $i <= $lineNumber; $i++) {

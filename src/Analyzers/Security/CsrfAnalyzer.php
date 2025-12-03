@@ -23,16 +23,6 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class CsrfAnalyzer extends AbstractFileAnalyzer
 {
-    private const FORM_CSRF_SEARCH_RANGE = 10;
-
-    private const AJAX_CSRF_SEARCH_RANGE = 15;
-
-    private const JS_CSRF_SEARCH_RANGE = 10;
-
-    private const MIDDLEWARE_EXCEPTION_SEARCH_RANGE = 20;
-
-    private const ROUTE_MIDDLEWARE_SEARCH_RANGE = 5;
-
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
@@ -124,7 +114,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             if (preg_match('/<form[^>]*method\s*=\s*["\'](?:POST|PUT|PATCH|DELETE)["\'][^>]*>/i', $line, $matches)) {
                 // Look ahead to check if @csrf is present in the next few lines
                 $hasCsrf = false;
-                $searchRange = min($lineNumber + self::FORM_CSRF_SEARCH_RANGE, count($lines));
+                $searchRange = min($lineNumber + 10, count($lines));
                 $method = preg_match('/method\s*=\s*["\']([^"\']+)["\']/', $matches[0], $methodMatch) ? strtoupper($methodMatch[1]) : 'POST';
 
                 for ($i = $lineNumber; $i < $searchRange; $i++) {
@@ -180,7 +170,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             // Check for jQuery AJAX with POST/PUT/PATCH/DELETE
             if (preg_match('/\$\.ajax\s*\(|fetch\s*\(/i', $line, $ajaxMatch)) {
                 // Look for method: POST/PUT/PATCH/DELETE
-                $searchRange = min($lineNumber + self::AJAX_CSRF_SEARCH_RANGE, count($lines));
+                $searchRange = min($lineNumber + 15, count($lines));
                 $hasPostMethod = false;
                 $hasCsrfToken = false;
                 $ajaxType = str_contains($ajaxMatch[0], 'fetch') ? 'fetch' : 'jQuery';
@@ -236,7 +226,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             // Check for fetch API or axios with POST methods
             if (preg_match('/fetch\s*\(|axios\.(post|put|patch|delete)|\.ajax\s*\(/i', $line, $jsMatch)) {
                 // Look for CSRF token in the next few lines
-                $searchRange = min($lineNumber + self::JS_CSRF_SEARCH_RANGE, count($lines));
+                $searchRange = min($lineNumber + 10, count($lines));
                 $hasCsrfToken = false;
                 $ajaxLibrary = str_contains($jsMatch[0], 'axios') ? 'axios' : (str_contains($jsMatch[0], 'fetch') ? 'fetch' : 'jQuery');
 
@@ -295,7 +285,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
             // Check for overly broad exceptions
             if (preg_match('/\$except\s*=\s*\[/', $line)) {
-                $searchRange = min($lineNumber + self::MIDDLEWARE_EXCEPTION_SEARCH_RANGE, count($lines));
+                $searchRange = min($lineNumber + 20, count($lines));
                 $exceptions = [];
 
                 for ($i = $lineNumber + 1; $i < $searchRange; $i++) {
@@ -484,7 +474,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 $method = strtoupper($matches[1]);
 
                 // Check if the route has middleware
-                $searchRange = min($lineNumber + self::ROUTE_MIDDLEWARE_SEARCH_RANGE, count($lines));
+                $searchRange = min($lineNumber + 5, count($lines));
                 $hasMiddleware = false;
 
                 for ($i = $lineNumber; $i < $searchRange; $i++) {

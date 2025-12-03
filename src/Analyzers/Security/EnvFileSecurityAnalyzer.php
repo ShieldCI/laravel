@@ -24,8 +24,6 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 {
-    private const MIN_SUSPICIOUS_VALUE_LENGTH = 20;
-
     private const WORLD_READABLE = 0x0004;
 
     private const WORLD_WRITABLE = 0x0002;
@@ -219,7 +217,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                     }
 
                     // If it looks like a real value (long enough and not a placeholder)
-                    if (! $isPlaceholder && strlen($value) > self::MIN_SUSPICIOUS_VALUE_LENGTH && ! str_starts_with($value, 'base64:')) {
+                    if (! $isPlaceholder && strlen($value) > 20 && ! str_starts_with($value, 'base64:')) {
                         $issues[] = $this->createIssue(
                             message: sprintf('Sensitive key "%s" may contain real credentials in .env.example', $key),
                             location: new Location(

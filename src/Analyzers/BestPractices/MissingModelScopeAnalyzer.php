@@ -20,8 +20,6 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class MissingModelScopeAnalyzer extends AbstractFileAnalyzer
 {
-    private const REPETITION_THRESHOLD = 2;
-
     public function __construct(
         private ParserInterface $parser
     ) {}
@@ -82,7 +80,7 @@ class MissingModelScopeAnalyzer extends AbstractFileAnalyzer
 
         // Second pass: report repeated patterns
         foreach ($queryPatterns as $signature => $data) {
-            if ($data['count'] >= self::REPETITION_THRESHOLD) {
+            if ($data['count'] >= 2) {
                 $firstLocation = $data['locations'][0];
                 $issues[] = $this->createIssue(
                     message: sprintf(

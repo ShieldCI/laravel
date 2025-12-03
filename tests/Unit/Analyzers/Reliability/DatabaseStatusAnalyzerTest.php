@@ -181,6 +181,304 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $this->assertSame('sqlite', $issues[1]->metadata['connection']);
     }
 
+    // =========================================================================
+    // Connection String Format Tests
+    // =========================================================================
+
+    public function test_handles_comma_separated_connection_string(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+        config()->set('shieldci.database.connections', 'mysql,sqlite');
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        /** @phpstan-ignore-next-line */
+        $checker->shouldReceive('check')->with('mysql')->andReturn(new DatabaseConnectionResult(true));
+        /** @phpstan-ignore-next-line */
+        $checker->shouldReceive('check')->with('sqlite')->andReturn(new DatabaseConnectionResult(true));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_array_with_non_string_values(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+        config()->set('shieldci.database.connections', ['mysql', null, 123, '', 'valid']);
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        /** @phpstan-ignore-next-line */
+        $checker->shouldReceive('check')->with('mysql')->times(1)->andReturn(new DatabaseConnectionResult(true));
+        /** @phpstan-ignore-next-line */
+        $checker->shouldReceive('check')->with('valid')->times(1)->andReturn(new DatabaseConnectionResult(true));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_array_with_whitespace(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+        config()->set('shieldci.database.connections', 'mysql , sqlite ');
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        /** @phpstan-ignore-next-line */
+        $checker->shouldReceive('check')->with('mysql')->andReturn(new DatabaseConnectionResult(true));
+        /** @phpstan-ignore-next-line */
+        $checker->shouldReceive('check')->with('sqlite')->andReturn(new DatabaseConnectionResult(true));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    // =========================================================================
+    // Error-Specific Recommendation Tests
+    // =========================================================================
+
+    public function test_access_denied_error_recommendation(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'Access denied for user'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('username and password', $issues[0]->recommendation);
+    }
+
+    public function test_connection_refused_error_recommendation(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'Connection refused'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('database server is running', $issues[0]->recommendation);
+    }
+
+    public function test_unknown_database_error_recommendation(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'Unknown database'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('database does not exist', $issues[0]->recommendation);
+    }
+
+    public function test_generic_error_fallback_recommendation(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'Some other error'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('Common issues:', $issues[0]->recommendation);
+    }
+
+    // =========================================================================
+    // Metadata Validation Tests
+    // =========================================================================
+
+    public function test_includes_driver_in_metadata(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'Connection failed'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertArrayHasKey('driver', $issues[0]->metadata);
+        $this->assertSame('mysql', $issues[0]->metadata['driver']);
+    }
+
+    public function test_includes_host_in_metadata(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'Connection failed'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertArrayHasKey('host', $issues[0]->metadata);
+        $this->assertSame('127.0.0.1', $issues[0]->metadata['host']);
+    }
+
+    public function test_includes_database_name_in_metadata(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'Connection failed'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertArrayHasKey('database', $issues[0]->metadata);
+        $this->assertSame('test', $issues[0]->metadata['database']);
+    }
+
+    public function test_includes_exception_class_in_metadata(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'Connection failed', 'PDOException'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertArrayHasKey('exception', $issues[0]->metadata);
+        $this->assertSame('PDOException', $issues[0]->metadata['exception']);
+    }
+
+    // =========================================================================
+    // Edge Case Tests
+    // =========================================================================
+
+    public function test_handles_missing_config_file(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'Connection failed'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        // Should not crash despite missing config file
+    }
+
+    public function test_deduplicates_connection_names(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+        // Default is 'mysql', and we configure 'mysql' again
+        config()->set('shieldci.database.connections', ['mysql']);
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        // Should only be called once for mysql (deduplicated)
+        /** @phpstan-ignore-next-line */
+        $checker->shouldReceive('check')->with('mysql')->once()->andReturn(new DatabaseConnectionResult(true));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     /**
      * @param  array<string, array<string, mixed>>  $additionalConnections
      */

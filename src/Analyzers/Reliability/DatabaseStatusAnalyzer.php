@@ -73,7 +73,7 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
                     location: $configLocation,
                     severity: Severity::Critical,
                     recommendation: $this->buildRecommendation($connectionName, $result),
-                    code: FileParser::getCodeSnippet($configLocation->file, $configLocation->line),
+                    code: $this->getCodeSnippetSafely($configLocation),
                     metadata: [
                         'connection' => $connectionName,
                         'driver' => $this->getConnectionDriver($connectionName),
@@ -98,6 +98,9 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
     /**
      * Get the list of database connections to verify.
      *
+     * Always includes the default connection first, then any additional configured connections.
+     * Duplicates are automatically removed.
+     *
      * @return list<string>
      */
     private function getConnectionsToCheck(string $defaultConnection): array
@@ -112,14 +115,13 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
             $configured = [];
         }
 
-        $connections = [];
+        $connections = [$defaultConnection];
+
         foreach ($configured as $connection) {
             if (is_string($connection) && $connection !== '') {
                 $connections[] = $connection;
             }
         }
-
-        array_unshift($connections, $defaultConnection);
 
         return array_values(array_unique($connections));
     }
@@ -198,13 +200,21 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Get a config value for a database connection.
+     */
+    private function getConnectionConfig(string $connectionName, string $key): ?string
+    {
+        $value = config("database.connections.{$connectionName}.{$key}");
+
+        return is_string($value) ? $value : null;
+    }
+
+    /**
      * Get the driver for a database connection.
      */
     private function getConnectionDriver(string $connectionName): ?string
     {
-        $driver = config('database.connections'.".{$connectionName}.driver");
-
-        return is_string($driver) ? $driver : null;
+        return $this->getConnectionConfig($connectionName, 'driver');
     }
 
     /**
@@ -212,9 +222,7 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
      */
     private function getConnectionHost(string $connectionName): ?string
     {
-        $host = config('database.connections'.".{$connectionName}.host");
-
-        return is_string($host) ? $host : null;
+        return $this->getConnectionConfig($connectionName, 'host');
     }
 
     /**
@@ -222,9 +230,7 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
      */
     private function getConnectionDatabase(string $connectionName): ?string
     {
-        $database = config('database.connections'.".{$connectionName}.database");
-
-        return is_string($database) ? $database : null;
+        return $this->getConnectionConfig($connectionName, 'database');
     }
 
     /**
@@ -239,5 +245,17 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
         }
 
         return $error;
+    }
+
+    /**
+     * Safely get code snippet, handling missing files.
+     */
+    private function getCodeSnippetSafely(Location $location): ?string
+    {
+        if (! file_exists($location->file)) {
+            return null;
+        }
+
+        return FileParser::getCodeSnippet($location->file, $location->line);
     }
 }

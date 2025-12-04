@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\ParsesPHPStanResults;
 use ShieldCI\Support\PHPStanRunner;
 
 /**
@@ -23,10 +24,14 @@ use ShieldCI\Support\PHPStanRunner;
  */
 class InvalidPropertyAccessAnalyzer extends AbstractFileAnalyzer
 {
+    use ParsesPHPStanResults;
+
     /**
+     * PHPStan patterns for detecting invalid property access.
+     *
      * @var array<string>
      */
-    private array $patterns = [
+    private const INVALID_PROPERTY_ACCESS_PATTERNS = [
         'Access to * property *',
         'Cannot access property * on *',
         'Access to an undefined property *',
@@ -56,40 +61,61 @@ class InvalidPropertyAccessAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $runner = new PHPStanRunner($this->basePath);
+        $basePath = $this->getBasePath();
 
-        // Run PHPStan on app directory at level 5
-        $runner->analyze('app', 5);
+        if ($basePath === '') {
+            return $this->error('Unable to determine base path for PHPStan analysis');
+        }
 
-        // Filter for property access issues
-        $issues = $runner->filterByPattern($this->patterns);
+        $runner = new PHPStanRunner($basePath);
+
+        // Check if PHPStan is available
+        if (! $runner->isAvailable()) {
+            return $this->warning(
+                'PHPStan is not available',
+                [$this->createIssue(
+                    message: 'PHPStan binary not found',
+                    location: new Location($basePath, 1),
+                    severity: Severity::Medium,
+                    recommendation: 'PHPStan is included with ShieldCI. If you\'re seeing this error, ensure you\'ve run `composer install` to install all dependencies. If the issue persists, verify that `vendor/bin/phpstan` exists in your project.',
+                    metadata: []
+                )]
+            );
+        }
+
+        try {
+            // Run PHPStan on app directory
+            $runner->analyze('app', 5);
+
+            // Filter for property access issues
+            $issues = $runner->filterByPattern(self::INVALID_PROPERTY_ACCESS_PATTERNS);
+        } catch (\Throwable $e) {
+            return $this->error(
+                sprintf('PHPStan analysis failed: %s', $e->getMessage()),
+                []
+            );
+        }
 
         if ($issues->isEmpty()) {
             return $this->passed('No invalid property access detected');
         }
 
-        $issueObjects = [];
-
-        foreach ($issues->take(50) as $issue) {
-            $issueObjects[] = $this->createIssue(
-                message: 'Invalid property access detected',
-                location: new Location($issue['file'], $issue['line']),
-                severity: Severity::High,
-                recommendation: $this->getRecommendation($issue['message']),
-                metadata: [
-                    'phpstan_message' => $issue['message'],
-                    'file' => $issue['file'],
-                    'line' => $issue['line'],
-                ]
-            );
-        }
+        // Use trait method to create issues
+        $issueObjects = $this->createIssuesFromPHPStanResults(
+            issues: $issues,
+            issueMessage: 'Invalid property access detected',
+            severity: Severity::High,
+            recommendationCallback: fn (string $message) => $this->getRecommendation($message)
+        );
 
         $totalCount = $issues->count();
         $displayedCount = count($issueObjects);
 
-        $message = $totalCount > $displayedCount
-            ? "Found {$totalCount} invalid property accesses (showing first {$displayedCount})"
-            : "Found {$totalCount} invalid property access(es)";
+        $message = $this->formatIssueCountMessage(
+            totalCount: $totalCount,
+            displayedCount: $displayedCount,
+            issueType: 'invalid property access(es)'
+        );
 
         return $this->failed($message, $issueObjects);
     }

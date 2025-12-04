@@ -64,7 +64,7 @@ class ForeachIterableAnalyzer extends AbstractFileAnalyzer
                     message: 'PHPStan binary not found',
                     location: new Location($basePath, 1),
                     severity: Severity::Medium,
-                    recommendation: 'Install PHPStan to enable foreach iterable validation. Run: composer require --dev phpstan/phpstan',
+                    recommendation: 'PHPStan is included with ShieldCI. If you\'re seeing this error, ensure you\'ve run `composer install` to install all dependencies. If the issue persists, verify that `vendor/bin/phpstan` exists in your project.',
                     metadata: []
                 )]
             );

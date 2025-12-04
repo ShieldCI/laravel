@@ -422,7 +422,6 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                 ),
                 severity: Severity::High,
                 recommendation: 'Run "php artisan config:clear" to clear the configuration cache and make .env changes effective. After making changes, run "php artisan config:cache" to rebuild the cache.',
-                code: null,
                 metadata: ['cached_file' => $cachedConfigPath]
             );
         }

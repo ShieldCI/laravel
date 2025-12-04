@@ -122,7 +122,6 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
                         location: new Location($this->getRelativePath($file), $phpBlockStart),
                         severity: Severity::Medium,
                         recommendation: 'Move complex PHP logic to controllers, view composers, or presenter classes. Blade templates should focus on presentation only',
-                        code: null,
                     );
                 }
                 $inPhpBlock = false;

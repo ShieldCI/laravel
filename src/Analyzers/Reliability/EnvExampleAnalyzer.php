@@ -56,7 +56,6 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
                     location: new Location('.env.example', 1),
                     severity: Severity::High,
                     recommendation: $this->buildMissingExampleFileRecommendation(),
-                    code: null,
                     metadata: []
                 )]
             );

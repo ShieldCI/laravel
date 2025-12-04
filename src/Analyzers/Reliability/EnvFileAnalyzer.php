@@ -51,7 +51,6 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                     location: new Location('.env', 1),
                     severity: Severity::Critical,
                     recommendation: sprintf('Fix the broken symlink. Target: %s', $target ?: 'unknown'),
-                    code: null,
                     metadata: [
                         'env_path' => $envPath,
                         'is_symlink' => true,
@@ -76,7 +75,6 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                     location: new Location('.env', 1),
                     severity: Severity::Critical,
                     recommendation: 'Fix file permissions to make .env readable. Run: chmod 644 .env',
-                    code: null,
                     metadata: [
                         'env_path' => $envPath,
                         'is_readable' => false,
@@ -95,7 +93,6 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                     location: new Location('.env', 1),
                     severity: Severity::High,
                     recommendation: 'Add environment variables to your .env file. At minimum, configure: APP_KEY, APP_ENV, APP_DEBUG, DB_CONNECTION',
-                    code: null,
                     metadata: [
                         'env_path' => $envPath,
                         'is_empty' => true,
@@ -122,7 +119,6 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                 location: new Location('.env', 1),
                 severity: Severity::Critical,
                 recommendation: $this->buildRecommendation($envExampleExists),
-                code: null,
                 metadata: [
                     'env_path' => $envPath,
                     'env_example_exists' => $envExampleExists,

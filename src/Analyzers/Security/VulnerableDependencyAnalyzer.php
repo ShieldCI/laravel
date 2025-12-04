@@ -58,7 +58,6 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                 location: new Location('composer.lock', 1),
                 severity: Severity::Medium,
                 recommendation: 'Run "composer install" to generate composer.lock for dependency tracking.',
-                code: null,
                 metadata: []
             );
 

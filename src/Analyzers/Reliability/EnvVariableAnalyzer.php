@@ -56,7 +56,6 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
                     location: new Location('.env', 1),
                     severity: Severity::Critical,
                     recommendation: $this->buildMissingEnvFileRecommendation(),
-                    code: null,
                     metadata: []
                 )]
             );

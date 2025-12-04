@@ -98,7 +98,6 @@ class MissingModelScopeAnalyzer extends AbstractFileAnalyzer
                         $data['count'],
                         implode(', ', array_slice(array_map(fn ($loc) => basename($loc['file']).':'.$loc['line'], $data['locations']), 0, 3))
                     ),
-                    code: null,
                 );
             }
         }

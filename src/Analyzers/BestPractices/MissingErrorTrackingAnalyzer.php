@@ -88,7 +88,6 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
                 location: new Location('composer.json', 1),
                 severity: Severity::Medium,
                 recommendation: 'Install an error tracking service like Sentry (sentry/sentry-laravel), Bugsnag, or Rollbar for production error monitoring. This provides better visibility into production errors, automatic error grouping, and faster debugging',
-                code: null,
             );
         }
 

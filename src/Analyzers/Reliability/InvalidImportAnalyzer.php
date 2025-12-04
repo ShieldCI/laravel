@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\ParsesPHPStanResults;
 use ShieldCI\Support\PHPStanRunner;
 
 /**
@@ -23,10 +24,14 @@ use ShieldCI\Support\PHPStanRunner;
  */
 class InvalidImportAnalyzer extends AbstractFileAnalyzer
 {
+    use ParsesPHPStanResults;
+
     /**
+     * PHPStan patterns for detecting invalid imports.
+     *
      * @var array<string>
      */
-    private array $patterns = [
+    private const INVALID_IMPORT_PATTERNS = [
         'Used * not found*',
         'Class * not found*',
         'Interface * not found*',
@@ -51,44 +56,64 @@ class InvalidImportAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $runner = new PHPStanRunner($this->basePath);
+        $basePath = $this->getBasePath();
 
-        // Run PHPStan on app directory at level 5
-        $runner->analyze('app', 5);
+        $runner = new PHPStanRunner($basePath);
 
-        // Filter for import issues
-        $issues = $runner->filterByPattern($this->patterns);
+        // Check if PHPStan is available
+        if (! $runner->isAvailable()) {
+            return $this->warning(
+                'PHPStan is not available',
+                [$this->createIssue(
+                    message: 'PHPStan binary not found',
+                    location: new Location($basePath, 1),
+                    severity: Severity::Medium,
+                    recommendation: 'PHPStan is included with ShieldCI. If you\'re seeing this error, ensure you\'ve run `composer install` to install all dependencies. If the issue persists, verify that `vendor/bin/phpstan` exists in your project.',
+                    metadata: []
+                )]
+            );
+        }
+
+        try {
+            // Run PHPStan on app directory
+            $runner->analyze('app', 5);
+
+            // Filter for import issues
+            $issues = $runner->filterByPattern(self::INVALID_IMPORT_PATTERNS);
+        } catch (\Throwable $e) {
+            return $this->error(
+                sprintf('PHPStan analysis failed: %s', $e->getMessage()),
+                []
+            );
+        }
 
         if ($issues->isEmpty()) {
             return $this->passed('No invalid imports detected');
         }
 
-        $issueObjects = [];
-
-        foreach ($issues->take(50) as $issue) {
-            $issueObjects[] = $this->createIssue(
-                message: 'Invalid import detected',
-                location: new Location($issue['file'], $issue['line']),
-                severity: Severity::Critical,
-                recommendation: $this->getRecommendation($issue['message']),
-                metadata: [
-                    'phpstan_message' => $issue['message'],
-                    'file' => $issue['file'],
-                    'line' => $issue['line'],
-                ]
-            );
-        }
+        // Use trait method to create issues
+        $issueObjects = $this->createIssuesFromPHPStanResults(
+            issues: $issues,
+            issueMessage: 'Invalid import detected',
+            severity: Severity::Critical,
+            recommendationCallback: fn (string $message) => $this->getRecommendation($message)
+        );
 
         $totalCount = $issues->count();
         $displayedCount = count($issueObjects);
 
-        $message = $totalCount > $displayedCount
-            ? "Found {$totalCount} invalid imports (showing first {$displayedCount})"
-            : "Found {$totalCount} invalid import(s)";
+        $message = $this->formatIssueCountMessage(
+            totalCount: $totalCount,
+            displayedCount: $displayedCount,
+            issueType: 'invalid import(s)'
+        );
 
         return $this->failed($message, $issueObjects);
     }
 
+    /**
+     * Get recommendation message based on PHPStan message.
+     */
     private function getRecommendation(string $message): string
     {
         if (str_contains($message, 'not found')) {

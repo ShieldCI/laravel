@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Reliability;
 
-use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\App;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -39,21 +38,45 @@ class MaintenanceModeAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        if (App::isDownForMaintenance()) {
+        // Check if application is in maintenance mode
+        $isDownForMaintenance = $this->isMaintenanceModeActive();
+
+        if ($isDownForMaintenance) {
+            $maintenanceFilePath = $this->getMaintenanceFilePath();
+
             return $this->failed(
                 'Application is in maintenance mode',
                 [$this->createIssue(
                     message: 'Application is currently down for maintenance',
-                    location: new Location($this->basePath.'/storage/framework/down', 1),
+                    location: new Location($maintenanceFilePath, 1),
                     severity: Severity::High,
                     recommendation: 'If maintenance is complete, bring the application back online with "php artisan up". If maintenance is ongoing, this is expected. Ensure maintenance mode was intentional and users are properly notified.',
                     metadata: [
                         'is_down' => true,
+                        'maintenance_file' => $maintenanceFilePath,
                     ]
                 )]
             );
         }
 
         return $this->passed('Application is not in maintenance mode');
+    }
+
+    /**
+     * Check if the application is in maintenance mode.
+     */
+    private function isMaintenanceModeActive(): bool
+    {
+        // Check for maintenance mode file directly
+        // This approach is more reliable than using App facade, especially in testing
+        return file_exists($this->getMaintenanceFilePath());
+    }
+
+    /**
+     * Get the maintenance mode file path.
+     */
+    private function getMaintenanceFilePath(): string
+    {
+        return $this->buildPath('storage', 'framework', 'down');
     }
 }

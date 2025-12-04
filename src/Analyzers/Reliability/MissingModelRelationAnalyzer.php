@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\ParsesPHPStanResults;
 use ShieldCI\Support\PHPStanRunner;
 
 /**
@@ -22,10 +23,14 @@ use ShieldCI\Support\PHPStanRunner;
  */
 class MissingModelRelationAnalyzer extends AbstractFileAnalyzer
 {
+    use ParsesPHPStanResults;
+
     /**
+     * PHPStan patterns for detecting missing model relations.
+     *
      * @var array<string>
      */
-    private array $patterns = [
+    private const MISSING_MODEL_RELATION_PATTERNS = [
         'Relation * is not found in * model*',
         'Call to an undefined method *Model::*',
         'Access to an undefined property *Model::$*',
@@ -47,48 +52,63 @@ class MissingModelRelationAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $runner = new PHPStanRunner($this->basePath);
+        $basePath = $this->getBasePath();
 
-        // Run PHPStan on app directory at level 5
-        $runner->analyze('app', 5);
+        $runner = new PHPStanRunner($basePath);
 
-        // Filter for model relation issues
-        $issues = $runner->filterByPattern($this->patterns);
+        // Check if PHPStan is available
+        if (! $runner->isAvailable()) {
+            return $this->warning(
+                'PHPStan is not available',
+                [$this->createIssue(
+                    message: 'PHPStan binary not found',
+                    location: new Location($basePath, 1),
+                    severity: Severity::Medium,
+                    recommendation: 'PHPStan is included with ShieldCI. If you\'re seeing this error, ensure you\'ve run `composer install` to install all dependencies. If the issue persists, verify that `vendor/bin/phpstan` exists in your project.',
+                    metadata: []
+                )]
+            );
+        }
 
-        // Additionally filter by text to catch relation-specific messages
-        $relationIssues = $runner->filterByText('relation');
+        try {
+            // Run PHPStan on app directory
+            $runner->analyze('app', 5);
 
-        // Merge unique issues
-        $allIssues = $issues->merge($relationIssues)->unique(function ($issue) {
-            return $issue['file'].$issue['line'].$issue['message'];
-        });
+            // Filter for model relation issues
+            $issues = $runner->filterByPattern(self::MISSING_MODEL_RELATION_PATTERNS);
+
+            // Additionally filter by text to catch relation-specific messages
+            $relationIssues = $runner->filterByText('relation');
+
+            // Merge unique issues
+            $allIssues = $this->mergeUniqueIssues($issues, $relationIssues);
+        } catch (\Throwable $e) {
+            return $this->error(
+                sprintf('PHPStan analysis failed: %s', $e->getMessage()),
+                []
+            );
+        }
 
         if ($allIssues->isEmpty()) {
             return $this->passed('No missing model relations detected');
         }
 
-        $issueObjects = [];
-
-        foreach ($allIssues->take(50) as $issue) {
-            $issueObjects[] = $this->createIssue(
-                message: 'Missing or invalid model relation detected',
-                location: new Location($issue['file'], $issue['line']),
-                severity: Severity::High,
-                recommendation: $this->getRecommendation($issue['message']),
-                metadata: [
-                    'phpstan_message' => $issue['message'],
-                    'file' => $issue['file'],
-                    'line' => $issue['line'],
-                ]
-            );
-        }
+        // Use trait method to create issues
+        $issueObjects = $this->createIssuesFromPHPStanResults(
+            issues: $allIssues,
+            issueMessage: 'Missing or invalid model relation detected',
+            severity: Severity::High,
+            recommendationCallback: fn (string $message) => $this->getRecommendation($message)
+        );
 
         $totalCount = $allIssues->count();
         $displayedCount = count($issueObjects);
 
-        $message = $totalCount > $displayedCount
-            ? "Found {$totalCount} missing model relations (showing first {$displayedCount})"
-            : "Found {$totalCount} missing model relation(s)";
+        $message = $this->formatIssueCountMessage(
+            totalCount: $totalCount,
+            displayedCount: $displayedCount,
+            issueType: 'missing model relation(s)'
+        );
 
         return $this->failed($message, $issueObjects);
     }
@@ -108,5 +128,37 @@ class MissingModelRelationAnalyzer extends AbstractFileAnalyzer
         }
 
         return 'Fix the model relation issue. Ensure the relationship method is defined in the Eloquent model and the name is spelled correctly. PHPStan message: '.$message;
+    }
+
+    /**
+     * Merge and deduplicate issues from pattern and text filters.
+     *
+     * @param  \Illuminate\Support\Collection<int, array{file: string, line: int, message: string}>  $patternIssues
+     * @param  \Illuminate\Support\Collection<int, array{file: string, line: int, message: string}>  $textIssues
+     * @return \Illuminate\Support\Collection<int, array{file: string, line: int, message: string}>
+     */
+    private function mergeUniqueIssues(
+        \Illuminate\Support\Collection $patternIssues,
+        \Illuminate\Support\Collection $textIssues
+    ): \Illuminate\Support\Collection {
+        $uniqueIssues = [];
+        $seenKeys = [];
+
+        foreach ($patternIssues->merge($textIssues) as $issue) {
+            // Validate issue structure
+            if (! isset($issue['file'], $issue['line'], $issue['message'])) {
+                continue;
+            }
+
+            // Create unique key
+            $key = $issue['file'].':'.$issue['line'].':'.$issue['message'];
+
+            if (! isset($seenKeys[$key])) {
+                $seenKeys[$key] = true;
+                $uniqueIssues[] = $issue;
+            }
+        }
+
+        return collect($uniqueIssues);
     }
 }

@@ -495,7 +495,7 @@ class InvalidMethodOverrideAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('invalid-method-overrides', $metadata->id);
-        $this->assertEquals('Invalid Method Overrides', $metadata->name);
+        $this->assertEquals('Invalid Method Overrides Analyzer', $metadata->name);
         $this->assertEquals(Category::Reliability, $metadata->category);
         $this->assertEquals(Severity::High, $metadata->severity);
         $this->assertEquals(20, $metadata->timeToFix);

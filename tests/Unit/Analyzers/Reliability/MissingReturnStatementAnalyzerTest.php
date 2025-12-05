@@ -360,7 +360,7 @@ class MissingReturnStatementAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertSame('missing-return-statement', $metadata->id);
-        $this->assertSame('Missing Return Statements', $metadata->name);
+        $this->assertSame('Missing Return Statements Analyzer', $metadata->name);
         $this->assertSame(Severity::High, $metadata->severity);
         $this->assertSame(10, $metadata->timeToFix);
         $this->assertContains('phpstan', $metadata->tags);

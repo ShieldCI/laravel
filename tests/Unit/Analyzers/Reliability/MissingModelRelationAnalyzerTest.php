@@ -363,7 +363,7 @@ class MissingModelRelationAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertSame('missing-model-relation', $metadata->id);
-        $this->assertSame('Missing Model Relations', $metadata->name);
+        $this->assertSame('Missing Model Relations Analyzer', $metadata->name);
         $this->assertSame(Severity::High, $metadata->severity);
         $this->assertSame(20, $metadata->timeToFix);
         $this->assertContains('phpstan', $metadata->tags);

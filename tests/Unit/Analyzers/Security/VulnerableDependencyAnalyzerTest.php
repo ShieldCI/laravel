@@ -782,7 +782,7 @@ JSON;
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('vulnerable-dependencies', $metadata->id);
-        $this->assertEquals('Vulnerable Dependency Analyzer', $metadata->name);
+        $this->assertEquals('Vulnerable Dependencies Analyzer', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Security, $metadata->category);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $metadata->severity);
         $this->assertContains('vulnerabilities', $metadata->tags);

@@ -918,7 +918,7 @@ PHP;
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('env-call-outside-config', $metadata->id);
-        $this->assertEquals('Env Calls Outside Config', $metadata->name);
+        $this->assertEquals('Env Calls Outside Config Analyzer', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $metadata->severity);
         $this->assertContains('configuration', $metadata->tags);

@@ -36,7 +36,7 @@ class ForeachIterableAnalyzerTest extends AnalyzerTestCase
         // Check recommendation contains install instructions
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertStringContainsString('Install PHPStan', $issues[0]->recommendation);
+        $this->assertStringContainsString('PHPStan is included with ShieldCI', $issues[0]->recommendation);
     }
 
     public function test_handles_phpstan_execution_failure(): void

@@ -295,7 +295,7 @@ class MysqlSingleServerAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('mysql-single-server-optimization', $metadata->id);
-        $this->assertEquals('MySQL Single Server Optimization', $metadata->name);
+        $this->assertEquals('MySQL Single Server Optimization Analyzer', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $metadata->severity);
         $this->assertContains('mysql', $metadata->tags);

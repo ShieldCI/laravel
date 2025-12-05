@@ -633,7 +633,7 @@ class FilePermissionsAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('file-permissions', $metadata->id);
-        $this->assertEquals('File Permissions Security Analyzer', $metadata->name);
+        $this->assertEquals('File Permissions Analyzer', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Security, $metadata->category);
         $this->assertEquals(Severity::Critical, $metadata->severity);
         $this->assertEquals(15, $metadata->timeToFix);

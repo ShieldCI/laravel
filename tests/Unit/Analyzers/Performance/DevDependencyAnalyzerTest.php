@@ -730,7 +730,7 @@ JSON;
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('dev-dependencies-production', $metadata->id);
-        $this->assertEquals('Dev Dependencies in Production', $metadata->name);
+        $this->assertEquals('Dev Dependencies in Production Analyzer', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $metadata->severity);
         $this->assertContains('composer', $metadata->tags);

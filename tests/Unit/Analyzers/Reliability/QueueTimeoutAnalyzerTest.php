@@ -438,7 +438,7 @@ PHP;
         $metadata = $analyzer->getMetadata();
 
         $this->assertSame('queue-timeout-configuration', $metadata->id);
-        $this->assertSame('Queue Timeout Configuration', $metadata->name);
+        $this->assertSame('Queue Timeout Configuration Analyzer', $metadata->name);
         $this->assertSame(Severity::Critical, $metadata->severity);
         $this->assertSame(10, $metadata->timeToFix);
         $this->assertContains('queue', $metadata->tags);

@@ -425,7 +425,7 @@ class UndefinedConstantAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertSame('undefined-constant', $metadata->id);
-        $this->assertSame('Undefined Constant Usage', $metadata->name);
+        $this->assertSame('Undefined Constant Usage Analyzer', $metadata->name);
         $this->assertSame(Severity::High, $metadata->severity);
         $this->assertSame(10, $metadata->timeToFix);
         $this->assertContains('phpstan', $metadata->tags);

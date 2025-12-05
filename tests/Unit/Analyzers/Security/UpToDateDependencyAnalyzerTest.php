@@ -207,7 +207,7 @@ OUTPUT;
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('up-to-date-dependencies', $metadata->id);
-        $this->assertEquals('Up-to-Date Dependency Analyzer', $metadata->name);
+        $this->assertEquals('Up-to-Date Dependencies Analyzer', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Security, $metadata->category);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $metadata->severity);
         $this->assertContains('dependencies', $metadata->tags);

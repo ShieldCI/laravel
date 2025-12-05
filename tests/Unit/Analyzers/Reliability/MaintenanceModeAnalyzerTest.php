@@ -170,7 +170,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertSame('maintenance-mode-status', $metadata->id);
-        $this->assertSame('Maintenance Mode Status', $metadata->name);
+        $this->assertSame('Maintenance Mode Status Analyzer', $metadata->name);
         $this->assertSame(Severity::High, $metadata->severity);
         $this->assertSame(5, $metadata->timeToFix);
         $this->assertContains('maintenance', $metadata->tags);

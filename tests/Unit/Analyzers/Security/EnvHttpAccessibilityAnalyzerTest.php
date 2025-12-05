@@ -330,7 +330,7 @@ HTML;
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('env-http-accessibility', $metadata->id);
-        $this->assertEquals('Environment File HTTP Accessibility Check', $metadata->name);
+        $this->assertEquals('Environment File HTTP Accessibility Analyzer', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Security, $metadata->category);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $metadata->severity);
     }

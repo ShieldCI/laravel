@@ -832,7 +832,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('opcache-enabled', $metadata->id);
-        $this->assertEquals('OPcache Enabled', $metadata->name);
+        $this->assertEquals('OPcache Enabled Analyzer', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $metadata->severity);
         $this->assertContains('opcache', $metadata->tags);

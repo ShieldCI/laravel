@@ -128,7 +128,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('config-caching', $metadata->id);
-        $this->assertEquals('Configuration Caching', $metadata->name);
+        $this->assertEquals('Configuration Caching Analyzer', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $metadata->severity);
         $this->assertContains('cache', $metadata->tags);

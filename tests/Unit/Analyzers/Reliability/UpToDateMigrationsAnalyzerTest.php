@@ -42,7 +42,7 @@ class UpToDateMigrationsAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertSame('up-to-date-migrations', $metadata->id);
-        $this->assertSame('Up-to-Date Migrations', $metadata->name);
+        $this->assertSame('Up-to-Date Migrations Analyzer', $metadata->name);
         $this->assertSame(Severity::High, $metadata->severity);
         $this->assertSame(5, $metadata->timeToFix);
         $this->assertContains('database', $metadata->tags);

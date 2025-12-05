@@ -508,7 +508,7 @@ class InvalidPropertyAccessAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('invalid-property-access', $metadata->id);
-        $this->assertEquals('Invalid Property Access', $metadata->name);
+        $this->assertEquals('Invalid Property Access Analyzer', $metadata->name);
         $this->assertEquals(Category::Reliability, $metadata->category);
         $this->assertEquals(Severity::High, $metadata->severity);
         $this->assertStringContainsString('PHPStan', $metadata->description);

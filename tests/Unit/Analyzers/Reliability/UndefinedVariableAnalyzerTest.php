@@ -360,7 +360,7 @@ class UndefinedVariableAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertSame('undefined-variable', $metadata->id);
-        $this->assertSame('Undefined Variable Usage', $metadata->name);
+        $this->assertSame('Undefined Variable Usage Analyzer', $metadata->name);
         $this->assertSame(Severity::High, $metadata->severity);
         $this->assertSame(10, $metadata->timeToFix);
         $this->assertContains('phpstan', $metadata->tags);

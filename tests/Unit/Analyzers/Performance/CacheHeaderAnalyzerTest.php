@@ -325,7 +325,7 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('asset-cache-headers', $metadata->id);
-        $this->assertEquals('Asset Cache Headers', $metadata->name);
+        $this->assertEquals('Asset Cache Headers Analyzer', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $metadata->severity);
     }

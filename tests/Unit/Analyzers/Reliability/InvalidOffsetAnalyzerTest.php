@@ -464,7 +464,7 @@ class InvalidOffsetAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('invalid-offset-access', $metadata->id);
-        $this->assertEquals('Invalid Offset Access', $metadata->name);
+        $this->assertEquals('Invalid Offset Access Analyzer', $metadata->name);
         $this->assertEquals(Category::Reliability, $metadata->category);
         $this->assertEquals(Severity::High, $metadata->severity);
         $this->assertStringContainsString('PHPStan', $metadata->description);

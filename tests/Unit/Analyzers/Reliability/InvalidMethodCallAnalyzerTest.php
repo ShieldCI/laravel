@@ -494,7 +494,7 @@ class InvalidMethodCallAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('invalid-method-calls', $metadata->id);
-        $this->assertEquals('Invalid Method Calls', $metadata->name);
+        $this->assertEquals('Invalid Method Calls Analyzer', $metadata->name);
         $this->assertEquals(Category::Reliability, $metadata->category);
         $this->assertEquals(Severity::Critical, $metadata->severity);
         $this->assertEquals(20, $metadata->timeToFix);

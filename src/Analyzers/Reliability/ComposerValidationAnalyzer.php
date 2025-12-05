@@ -31,7 +31,7 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'composer-validation',
-            name: 'Composer Validation',
+            name: 'Composer Validation Analyzer',
             description: 'Ensures composer.json file is valid and follows best practices',
             category: Category::Reliability,
             severity: Severity::Critical,

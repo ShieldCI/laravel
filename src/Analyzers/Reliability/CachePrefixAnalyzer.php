@@ -53,7 +53,7 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'cache-prefix-configuration',
-            name: 'Cache Prefix Configuration',
+            name: 'Cache Prefix Configuration Analyzer',
             description: 'Ensures cache prefix is set to avoid collisions with other applications sharing cache servers',
             category: Category::Reliability,
             severity: Severity::High,

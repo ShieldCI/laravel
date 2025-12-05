@@ -46,7 +46,7 @@ class InvalidOffsetAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'invalid-offset-access',
-            name: 'Invalid Offset Access',
+            name: 'Invalid Offset Access Analyzer',
             description: 'Detects invalid array offset access and type mismatches using PHPStan static analysis',
             category: Category::Reliability,
             severity: Severity::High,

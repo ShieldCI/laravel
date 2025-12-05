@@ -40,7 +40,7 @@ class ForeachIterableAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'foreach-iterable',
-            name: 'Foreach Iterable Validation',
+            name: 'Foreach Iterable Analyzer',
             description: 'Detects invalid foreach usage with non-iterable values using PHPStan static analysis',
             category: Category::Reliability,
             severity: Severity::High,

@@ -24,7 +24,7 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'env-file-exists',
-            name: 'Environment File Existence',
+            name: 'Environment File Existence Analyzer',
             description: 'Ensures .env file exists for application configuration',
             category: Category::Reliability,
             severity: Severity::Critical,

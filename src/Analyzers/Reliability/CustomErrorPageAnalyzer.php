@@ -54,7 +54,7 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'custom-error-pages',
-            name: 'Custom Error Pages',
+            name: 'Custom Error Pages Analyzer',
             description: 'Ensures custom error pages are configured to prevent framework fingerprinting and improve UX',
             category: Category::Reliability,
             severity: Severity::Medium,

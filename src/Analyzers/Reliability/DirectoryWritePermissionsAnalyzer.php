@@ -31,7 +31,7 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'directory-write-permissions',
-            name: 'Directory Write Permissions',
+            name: 'Directory Write Permissions Analyzer',
             description: 'Ensures critical Laravel directories have proper write permissions',
             category: Category::Reliability,
             severity: Severity::Critical,

@@ -59,7 +59,7 @@ class InvalidMethodCallAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'invalid-method-calls',
-            name: 'Invalid Method Calls',
+            name: 'Invalid Method Calls Analyzer',
             description: 'Detects invalid method calls in application code using PHPStan static analysis',
             category: Category::Reliability,
             severity: Severity::Critical,

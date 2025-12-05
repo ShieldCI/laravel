@@ -46,7 +46,7 @@ class InvalidFunctionCallAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'invalid-function-calls',
-            name: 'Invalid Function Calls',
+            name: 'Invalid Function Calls Analyzer',
             description: 'Detects invalid function calls in application code using PHPStan static analysis',
             category: Category::Reliability,
             severity: Severity::High,

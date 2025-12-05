@@ -26,7 +26,7 @@ class MaintenanceModeAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'maintenance-mode-status',
-            name: 'Maintenance Mode Status',
+            name: 'Maintenance Mode Status Analyzer',
             description: 'Checks if the application is in maintenance mode',
             category: Category::Reliability,
             severity: Severity::High,

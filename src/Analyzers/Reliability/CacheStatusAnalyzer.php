@@ -34,7 +34,7 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'cache-status',
-            name: 'Cache Status',
+            name: 'Cache Status Analyzer',
             description: 'Ensures the application cache is working properly and can store/retrieve values',
             category: Category::Reliability,
             severity: Severity::Critical,

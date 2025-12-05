@@ -54,7 +54,7 @@ class DeadCodeAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'dead-code',
-            name: 'Dead Code Detection',
+            name: 'Dead Code Analyzer',
             description: 'Detects unreachable code, unused variables, and statements that have no effect using PHPStan static analysis',
             category: Category::Reliability,
             severity: Severity::Medium,

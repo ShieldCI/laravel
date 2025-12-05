@@ -26,7 +26,7 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'env-variables-complete',
-            name: 'Environment Variables Complete',
+            name: 'Environment Variables Complete Analyzer',
             description: 'Ensures all required environment variables from .env.example are defined in .env',
             category: Category::Reliability,
             severity: Severity::High,

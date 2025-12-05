@@ -40,7 +40,7 @@ class MissingReturnStatementAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'missing-return-statement',
-            name: 'Missing Return Statements',
+            name: 'Missing Return Statements Analyzer',
             description: 'Detects missing return statements in methods and functions using PHPStan static analysis',
             category: Category::Reliability,
             severity: Severity::High,

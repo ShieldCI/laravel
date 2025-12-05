@@ -35,7 +35,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'up-to-date-migrations',
-            name: 'Up-to-Date Migrations',
+            name: 'Up-to-Date Migrations Analyzer',
             description: 'Ensures all database migrations are up to date and have been executed',
             category: Category::Reliability,
             severity: Severity::High,

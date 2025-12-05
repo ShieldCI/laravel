@@ -44,7 +44,7 @@ class InvalidImportAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'invalid-imports',
-            name: 'Invalid Imports',
+            name: 'Invalid Imports Analyzer',
             description: 'Detects invalid imports and use statements for non-existent classes using PHPStan static analysis',
             category: Category::Reliability,
             severity: Severity::Critical,

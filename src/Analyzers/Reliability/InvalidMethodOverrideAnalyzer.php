@@ -48,7 +48,7 @@ class InvalidMethodOverrideAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'invalid-method-overrides',
-            name: 'Invalid Method Overrides',
+            name: 'Invalid Method Overrides Analyzer',
             description: 'Detects incompatible method overrides with incorrect signatures using PHPStan static analysis',
             category: Category::Reliability,
             severity: Severity::High,

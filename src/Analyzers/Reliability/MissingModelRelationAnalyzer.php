@@ -40,7 +40,7 @@ class MissingModelRelationAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'missing-model-relation',
-            name: 'Missing Model Relations',
+            name: 'Missing Model Relations Analyzer',
             description: 'Detects references to non-existent Eloquent model relations using PHPStan static analysis',
             category: Category::Reliability,
             severity: Severity::High,

@@ -42,7 +42,7 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'database-status',
-            name: 'Database Status',
+            name: 'Database Status Analyzer',
             description: 'Ensures database connections are accessible and functioning properly',
             category: Category::Reliability,
             severity: Severity::Critical,

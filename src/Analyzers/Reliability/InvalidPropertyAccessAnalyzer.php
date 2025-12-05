@@ -49,7 +49,7 @@ class InvalidPropertyAccessAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'invalid-property-access',
-            name: 'Invalid Property Access',
+            name: 'Invalid Property Access Analyzer',
             description: 'Detects invalid property access and visibility violations using PHPStan static analysis',
             category: Category::Reliability,
             severity: Severity::High,

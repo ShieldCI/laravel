@@ -26,7 +26,7 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'queue-timeout-configuration',
-            name: 'Queue Timeout Configuration',
+            name: 'Queue Timeout Configuration Analyzer',
             description: 'Ensures queue timeout and retry_after values are properly configured to prevent job duplication',
             category: Category::Reliability,
             severity: Severity::Critical,

@@ -26,7 +26,7 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'env-example-documented',
-            name: 'Environment Example Documentation',
+            name: 'Environment Example Documentation Analyzer',
             description: 'Ensures all environment variables used in .env are documented in .env.example',
             category: Category::Reliability,
             severity: Severity::Low,

@@ -42,7 +42,7 @@ class UndefinedConstantAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'undefined-constant',
-            name: 'Undefined Constant Usage',
+            name: 'Undefined Constant Usage Analyzer',
             description: 'Detects references to undefined constants using PHPStan static analysis',
             category: Category::Reliability,
             severity: Severity::High,

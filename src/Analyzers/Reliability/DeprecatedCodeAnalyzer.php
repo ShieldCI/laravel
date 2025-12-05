@@ -30,7 +30,7 @@ class DeprecatedCodeAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'deprecated-code',
-            name: 'Deprecated Code Usage',
+            name: 'Deprecated Code Analyzer',
             description: 'Detects usage of deprecated methods, classes, and functions using PHPStan static analysis',
             category: Category::Reliability,
             severity: Severity::High,

@@ -40,7 +40,7 @@ class UndefinedVariableAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'undefined-variable',
-            name: 'Undefined Variable Usage',
+            name: 'Undefined Variable Usage Analyzer',
             description: 'Detects references to undefined variables using PHPStan static analysis',
             category: Category::Reliability,
             severity: Severity::High,

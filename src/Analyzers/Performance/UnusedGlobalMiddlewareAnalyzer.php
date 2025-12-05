@@ -57,7 +57,7 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'unused-global-middleware',
-            name: 'Unused Global Middleware',
+            name: 'Unused Global Middleware Analyzer',
             description: 'Detects global HTTP middleware that is registered but not being used, causing unnecessary overhead on every request',
             category: Category::Performance,
             severity: Severity::Low,

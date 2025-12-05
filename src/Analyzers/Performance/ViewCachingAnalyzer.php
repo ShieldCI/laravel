@@ -59,7 +59,7 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'view-caching',
-            name: 'View Caching',
+            name: 'View Caching Analyzer',
             description: 'Ensures Blade views are properly compiled and cached for optimal performance',
             category: Category::Performance,
             severity: Severity::Medium,

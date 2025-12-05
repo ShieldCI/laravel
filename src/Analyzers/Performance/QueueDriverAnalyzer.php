@@ -36,7 +36,7 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'queue-driver',
-            name: 'Queue Driver Configuration',
+            name: 'Queue Driver Configuration Analyzer',
             description: 'Ensures a proper queue driver is configured for optimal performance and reliability',
             category: Category::Performance,
             severity: Severity::Medium,

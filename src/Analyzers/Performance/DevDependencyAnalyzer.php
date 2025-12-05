@@ -55,7 +55,7 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'dev-dependencies-production',
-            name: 'Dev Dependencies in Production',
+            name: 'Dev Dependencies in Production Analyzer',
             description: 'Detects if development dependencies are installed in production environment',
             category: Category::Performance,
             severity: Severity::High,

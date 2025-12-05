@@ -41,7 +41,7 @@ class DebugLogAnalyzer extends AbstractAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'debug-log-level',
-            name: 'Debug Log Level',
+            name: 'Debug Log Level Analyzer',
             description: 'Ensures log level is not set to debug in production for optimal performance',
             category: Category::Performance,
             severity: Severity::High,

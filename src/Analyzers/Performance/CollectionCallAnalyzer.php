@@ -44,7 +44,7 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'collection-call-optimization',
-            name: 'Collection Call Optimization',
+            name: 'Collection Call Optimization Analyzer',
             description: 'Detects inefficient collection operations that should be performed at the database query level',
             category: Category::Performance,
             severity: Severity::High,

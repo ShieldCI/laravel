@@ -66,7 +66,7 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'mysql-single-server-optimization',
-            name: 'MySQL Single Server Optimization',
+            name: 'MySQL Single Server Optimization Analyzer',
             description: 'Ensures MySQL is configured optimally for single-server setups using Unix sockets',
             category: Category::Performance,
             severity: Severity::Medium,

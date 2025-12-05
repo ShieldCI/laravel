@@ -50,7 +50,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'xss-detection',
-            name: 'XSS Vulnerability Detector',
+            name: 'XSS Vulnerability Analyzer',
             description: 'Detects XSS vulnerabilities via code analysis and HTTP header verification (dual protection)',
             category: Category::Security,
             severity: Severity::High,

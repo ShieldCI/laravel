@@ -35,7 +35,7 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'missing-error-tracking',
-            name: 'Missing Error Tracking Detector',
+            name: 'Missing Error Tracking Analyzer',
             description: 'Detects production applications without error tracking services like Sentry',
             category: Category::BestPractices,
             severity: Severity::Medium,

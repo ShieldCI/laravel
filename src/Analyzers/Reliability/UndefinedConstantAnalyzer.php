@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\ParsesPHPStanResults;
 use ShieldCI\Support\PHPStanRunner;
 
 /**
@@ -22,10 +23,14 @@ use ShieldCI\Support\PHPStanRunner;
  */
 class UndefinedConstantAnalyzer extends AbstractFileAnalyzer
 {
+    use ParsesPHPStanResults;
+
     /**
+     * PHPStan patterns for detecting undefined constants.
+     *
      * @var array<string>
      */
-    private array $patterns = [
+    private const UNDEFINED_CONSTANT_PATTERNS = [
         '* undefined constant *',
         'Using * outside of class scope*',
         'Access to constant * on an unknown class *',
@@ -49,40 +54,57 @@ class UndefinedConstantAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $runner = new PHPStanRunner($this->basePath);
+        $basePath = $this->getBasePath();
 
-        // Run PHPStan on app directory at level 5
-        $runner->analyze('app', 5);
+        $runner = new PHPStanRunner($basePath);
 
-        // Filter for undefined constant issues
-        $issues = $runner->filterByPattern($this->patterns);
+        // Check if PHPStan is available
+        if (! $runner->isAvailable()) {
+            return $this->warning(
+                'PHPStan is not available',
+                [$this->createIssue(
+                    message: 'PHPStan binary not found',
+                    location: new Location($basePath, 1),
+                    severity: Severity::Medium,
+                    recommendation: 'Install PHPStan to enable undefined constant detection. Run: composer require --dev phpstan/phpstan',
+                    metadata: []
+                )]
+            );
+        }
+
+        try {
+            // Run PHPStan on app directory
+            $runner->analyze('app', 5);
+
+            // Filter for undefined constant issues
+            $issues = $runner->filterByPattern(self::UNDEFINED_CONSTANT_PATTERNS);
+        } catch (\Throwable $e) {
+            return $this->error(
+                sprintf('PHPStan analysis failed: %s', $e->getMessage()),
+                []
+            );
+        }
 
         if ($issues->isEmpty()) {
             return $this->passed('No undefined constants detected');
         }
 
-        $issueObjects = [];
-
-        foreach ($issues->take(50) as $issue) {
-            $issueObjects[] = $this->createIssue(
-                message: 'Undefined constant detected',
-                location: new Location($issue['file'], $issue['line']),
-                severity: Severity::High,
-                recommendation: $this->getRecommendation($issue['message']),
-                metadata: [
-                    'phpstan_message' => $issue['message'],
-                    'file' => $issue['file'],
-                    'line' => $issue['line'],
-                ]
-            );
-        }
+        // Use trait method to create issues
+        $issueObjects = $this->createIssuesFromPHPStanResults(
+            issues: $issues,
+            issueMessage: 'Undefined constant detected',
+            severity: Severity::High,
+            recommendationCallback: fn (string $message) => $this->getRecommendation($message)
+        );
 
         $totalCount = $issues->count();
         $displayedCount = count($issueObjects);
 
-        $message = $totalCount > $displayedCount
-            ? "Found {$totalCount} undefined constants (showing first {$displayedCount})"
-            : "Found {$totalCount} undefined constant(s)";
+        $message = $this->formatIssueCountMessage(
+            totalCount: $totalCount,
+            displayedCount: $displayedCount,
+            issueType: 'undefined constant(s)'
+        );
 
         return $this->failed($message, $issueObjects);
     }

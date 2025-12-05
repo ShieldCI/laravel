@@ -307,7 +307,6 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
         return array_merge([
             'whitelisted_licenses' => $this->whitelistedLicenses,
             'restrictive_licenses' => $this->restrictiveLicenses,
-            'check_dev_dependencies' => true,
         ], $config);
     }
 }

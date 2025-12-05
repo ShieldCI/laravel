@@ -40,7 +40,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'file-permissions',
-            name: 'File Permissions Security Analyzer',
+            name: 'File Permissions Analyzer',
             description: 'Validates that project files and directories use secure permissions',
             category: Category::Security,
             severity: Severity::Critical,

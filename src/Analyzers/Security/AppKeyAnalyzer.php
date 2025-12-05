@@ -33,12 +33,12 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'app-key-security',
-            name: 'Application Key Security Analyzer',
+            name: 'Application Key Analyzer',
             description: 'Validates that the application encryption key is properly configured and secure',
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['encryption', 'app-key', 'security', 'configuration'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/app-key-security',
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/app-key',
             timeToFix: 5
         );
     }

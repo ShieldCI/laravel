@@ -63,7 +63,7 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'license-compliance',
-            name: 'Dependency License Analyzer',
+            name: 'Dependency License Compliance Analyzer',
             description: 'Validates that all dependencies use legally acceptable licenses for your application type',
             category: Category::Security,
             severity: Severity::Critical,

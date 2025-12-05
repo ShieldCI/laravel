@@ -49,13 +49,13 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
-            id: 'env-file-security',
-            name: 'Environment File Security Analyzer',
+            id: 'env-file',
+            name: 'Environment File Analyzer',
             description: 'Validates .env file security, location, and prevents exposure of sensitive data',
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['env', 'environment', 'secrets', 'security', 'configuration'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/env-file-security',
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/env-file',
             timeToFix: 10
         );
     }

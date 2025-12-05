@@ -59,13 +59,13 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
-            id: 'authentication-protection',
+            id: 'authentication-authorization',
             name: 'Authentication & Authorization Analyzer',
             description: 'Detects missing authentication and authorization protection on routes and controllers',
             category: Category::Security,
             severity: Severity::High,
             tags: ['authentication', 'authorization', 'security', 'middleware'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/authentication-protection',
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/authentication-authorization',
             timeToFix: 25
         );
     }

@@ -46,7 +46,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'up-to-date-dependencies',
-            name: 'Up-to-Date Dependency Analyzer',
+            name: 'Up-to-Date Dependencies Analyzer',
             description: 'Checks if dependencies are up-to-date with available bug fixes and security patches',
             category: Category::Security,
             severity: Severity::Low,

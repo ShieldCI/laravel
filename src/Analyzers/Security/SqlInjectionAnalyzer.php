@@ -94,7 +94,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'sql-injection',
-            name: 'SQL Injection Detector',
+            name: 'SQL Injection Analyzer',
             description: 'Detects potential SQL injection vulnerabilities in database queries',
             category: Category::Security,
             severity: Severity::Critical,

@@ -26,7 +26,7 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'frontend-vulnerable-dependencies',
-            name: 'Frontend Vulnerable Dependency Analyzer',
+            name: 'Frontend Vulnerable Dependencies Analyzer',
             description: 'Scans npm/yarn dependencies for known security vulnerabilities',
             category: Category::Security,
             severity: Severity::Critical,

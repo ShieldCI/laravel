@@ -49,13 +49,13 @@ class XssAnalyzer extends AbstractFileAnalyzer
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
-            id: 'xss-detection',
-            name: 'XSS Vulnerability Analyzer',
+            id: 'xss-vulnerabilities',
+            name: 'XSS Vulnerabilities Analyzer',
             description: 'Detects XSS vulnerabilities via code analysis and HTTP header verification (dual protection)',
             category: Category::Security,
             severity: Severity::High,
             tags: ['xss', 'cross-site-scripting', 'security', 'blade', 'csp', 'headers'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/xss-detection',
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/xss-vulnerabilities',
             timeToFix: 30
         );
     }

@@ -94,13 +94,13 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
-            id: 'php-ini-security',
-            name: 'PHP Configuration Security Analyzer',
+            id: 'php-ini',
+            name: 'PHP Configuration Analyzer',
             description: 'Validates that PHP ini settings are configured securely',
             category: Category::Security,
             severity: Severity::High,
             tags: ['php', 'configuration', 'ini', 'security', 'server'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/php-ini-security',
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/php-ini',
             timeToFix: 15
         );
     }

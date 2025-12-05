@@ -27,13 +27,13 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
-            id: 'cookie-security',
-            name: 'Cookie Security Analyzer',
+            id: 'cookie',
+            name: 'Cookie Analyzer',
             description: 'Validates cookie encryption and security configuration',
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['cookies', 'encryption', 'xss', 'security', 'configuration'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/cookie-security',
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/cookie',
             timeToFix: 15
         );
     }

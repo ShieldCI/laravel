@@ -83,13 +83,13 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
-            id: 'mass-assignment',
-            name: 'Mass Assignment Vulnerability Detector',
+            id: 'mass-assignment-vulnerability',
+            name: 'Mass Assignment Vulnerability Analyzer',
             description: 'Detects mass assignment vulnerabilities in Eloquent models and query builders',
             category: Category::Security,
             severity: Severity::High,
             tags: ['mass-assignment', 'eloquent', 'security', 'models', 'sql-injection'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/mass-assignment',
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/mass-assignment-vulnerability',
             timeToFix: 25
         );
     }

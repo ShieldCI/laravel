@@ -35,7 +35,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'stable-dependencies',
-            name: 'Stable Dependency Analyzer',
+            name: 'Stable Dependencies Analyzer',
             description: 'Validates that all dependencies use stable versions rather than dev/alpha/beta releases',
             category: Category::Security,
             severity: Severity::Low,

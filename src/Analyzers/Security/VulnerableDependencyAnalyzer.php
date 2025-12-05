@@ -36,7 +36,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'vulnerable-dependencies',
-            name: 'Vulnerable Dependency Analyzer',
+            name: 'Vulnerable Dependencies Analyzer',
             description: 'Scans composer dependencies for known security vulnerabilities',
             category: Category::Security,
             severity: Severity::Critical,

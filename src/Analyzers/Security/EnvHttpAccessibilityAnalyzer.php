@@ -72,7 +72,7 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'env-http-accessibility',
-            name: 'Environment File HTTP Accessibility Check',
+            name: 'Environment File HTTP Accessibility Analyzer',
             description: 'Verifies .env file is not accessible via HTTP requests to the web server',
             category: Category::Security,
             severity: Severity::Critical,

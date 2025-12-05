@@ -131,14 +131,15 @@ class ClassLengthAnalyzer extends AbstractFileAnalyzer
         $violationCount = count($issue['violations']);
         $lineExcess = max(0, $issue['lines'] - $maxLines);
         $methodExcess = max(0, $issue['methods'] - $maxMethods);
+        $propertyExcess = max(0, $issue['properties'] - $maxProperties);
 
         // Multiple severe violations = high severity
-        if ($violationCount >= 3 || $lineExcess > 300 || $methodExcess > 15) {
+        if ($violationCount >= 3 || $lineExcess > 300 || $methodExcess > 15 || $propertyExcess > 10) {
             return Severity::High;
         }
 
         // Moderate excess = medium severity
-        if ($violationCount >= 2 || $lineExcess > 150 || $methodExcess > 10) {
+        if ($violationCount >= 2 || $lineExcess > 150 || $methodExcess > 10 || $propertyExcess > 5) {
             return Severity::Medium;
         }
 

@@ -54,7 +54,7 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'commented-code',
-            name: 'Commented Code',
+            name: 'Commented Code Analyzer',
             description: 'Detects commented-out code that should be removed in favor of version control',
             category: Category::CodeQuality,
             severity: Severity::Low,

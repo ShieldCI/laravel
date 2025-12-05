@@ -41,7 +41,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'debug-mode',
-            name: 'Debug Mode Security Analyzer',
+            name: 'Debug Mode Analyzer',
             description: 'Detects debug mode enabled and debugging functions that expose sensitive information',
             category: Category::Security,
             severity: Severity::High,

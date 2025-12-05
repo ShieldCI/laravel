@@ -37,7 +37,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'cache-driver',
-            name: 'Cache Driver Configuration',
+            name: 'Cache Driver Configuration Analyzer',
             description: 'Ensures a proper cache driver is configured for optimal performance',
             category: Category::Performance,
             severity: Severity::High,

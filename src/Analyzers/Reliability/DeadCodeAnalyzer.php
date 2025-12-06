@@ -60,7 +60,7 @@ class DeadCodeAnalyzer extends AbstractFileAnalyzer
             severity: Severity::Medium,
             tags: ['phpstan', 'static-analysis', 'dead-code', 'code-quality'],
             docsUrl: 'https://docs.shieldci.com/analyzers/reliability/dead-code',
-            timeToFix: 5
+            timeToFix: 15
         );
     }
 

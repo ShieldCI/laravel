@@ -15,7 +15,7 @@ use ShieldCI\ValueObjects\AnalysisReport;
 class AnalyzeCommand extends Command
 {
     protected $signature = 'shield:analyze
-                            {--analyzer= : Run specific analyzer}
+                            {--analyzer= : Run specific analyzer(s). Comma-separated for multiple (e.g., sql-injection,xss-detection)}
                             {--category= : Run analyzers in category}
                             {--format=console : Output format (console|json)}
                             {--output= : Save report to file}
@@ -94,11 +94,26 @@ class AnalyzeCommand extends Command
 
     protected function runAnalysis(AnalyzerManager $manager): Collection
     {
-        if ($analyzerId = $this->option('analyzer')) {
-            $this->line("Running analyzer: {$analyzerId}");
-            $result = $manager->run($analyzerId);
+        if ($analyzerOption = $this->option('analyzer')) {
+            // Support comma-separated analyzer IDs
+            $analyzerIds = array_map('trim', explode(',', $analyzerOption));
+            $analyzerIds = array_filter($analyzerIds, fn (string $id) => $id !== '');
 
-            return collect($result ? [$result] : []);
+            if (count($analyzerIds) === 1) {
+                $this->line("Running analyzer: {$analyzerIds[0]}");
+            } else {
+                $this->line('Running analyzers: '.implode(', ', $analyzerIds));
+            }
+
+            $results = [];
+            foreach ($analyzerIds as $analyzerId) {
+                $result = $manager->run($analyzerId);
+                if ($result !== null) {
+                    $results[] = $result;
+                }
+            }
+
+            return collect($results);
         }
 
         if ($category = $this->option('category')) {
@@ -564,22 +579,38 @@ class AnalyzeCommand extends Command
     protected function validateOptions(AnalyzerManager $manager): bool
     {
         // Validate analyzer option
-        $analyzerId = $this->option('analyzer');
-        if ($analyzerId !== null) {
-            if (! is_string($analyzerId) || $analyzerId === '') {
+        $analyzerOption = $this->option('analyzer');
+        if ($analyzerOption !== null) {
+            if (! is_string($analyzerOption) || $analyzerOption === '') {
                 $this->error('❌ Invalid analyzer ID provided.');
 
                 return false;
             }
 
-            // Check if analyzer exists
-            $allAnalyzers = $manager->getAnalyzers();
-            $analyzerExists = $allAnalyzers->contains(function ($analyzer) use ($analyzerId) {
-                return $analyzer->getId() === $analyzerId;
-            });
+            // Support comma-separated analyzer IDs
+            $analyzerIds = array_map('trim', explode(',', $analyzerOption));
+            $analyzerIds = array_filter($analyzerIds, fn (string $id) => $id !== '');
 
-            if (! $analyzerExists) {
-                $this->error("❌ Analyzer '{$analyzerId}' not found.");
+            if (empty($analyzerIds)) {
+                $this->error('❌ No valid analyzer IDs provided.');
+
+                return false;
+            }
+
+            // Check if all analyzers exist
+            $allAnalyzers = $manager->getAnalyzers();
+            $allAnalyzerIds = $allAnalyzers->map(fn ($analyzer) => $analyzer->getId())->toArray();
+
+            $invalidIds = [];
+            foreach ($analyzerIds as $analyzerId) {
+                if (! in_array($analyzerId, $allAnalyzerIds, true)) {
+                    $invalidIds[] = $analyzerId;
+                }
+            }
+
+            if (! empty($invalidIds)) {
+                $invalidList = implode(', ', $invalidIds);
+                $this->error("❌ Analyzer(s) not found: {$invalidList}");
                 $this->line('');
                 $this->line('Available analyzers:');
                 $allAnalyzers->each(function ($analyzer) {

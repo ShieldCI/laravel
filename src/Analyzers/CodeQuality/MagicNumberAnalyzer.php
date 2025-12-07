@@ -43,7 +43,7 @@ class MagicNumberAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'magic-number',
-            name: 'Magic Number',
+            name: 'Magic Number Analyzer',
             description: 'Detects hard-coded numbers that should be named constants for better maintainability',
             category: Category::CodeQuality,
             severity: Severity::Low,
@@ -237,16 +237,24 @@ class MagicNumberVisitor extends NodeVisitorAbstract
     {
         $parent = $node->getAttribute('parent');
 
+        // Skip numbers in += and -= operations
         if ($parent instanceof Expr\AssignOp\Plus || $parent instanceof Expr\AssignOp\Minus) {
             return true;
         }
 
+        // Skip +1 or -1 in addition/subtraction (common increment patterns)
         if ($parent instanceof Expr\BinaryOp\Plus || $parent instanceof Expr\BinaryOp\Minus) {
-            // Check if it's a simple +1 or -1 operation
+            // Already verified node is LNumber or DNumber at this point
             if (($node instanceof Scalar\LNumber || $node instanceof Scalar\DNumber) &&
                 ($node->value === 1 || $node->value === -1)) {
                 return true;
             }
+        }
+
+        // Skip numbers in ++ and -- operations
+        if ($parent instanceof Expr\PreInc || $parent instanceof Expr\PreDec ||
+            $parent instanceof Expr\PostInc || $parent instanceof Expr\PostDec) {
+            return true;
         }
 
         return false;
@@ -291,6 +299,14 @@ class MagicNumberVisitor extends NodeVisitorAbstract
 
         if ($parent instanceof Expr\BinaryOp) {
             return 'binary operation';
+        }
+
+        // Check if number is an argument to a function/method call
+        if ($parent instanceof Node\Arg) {
+            $grandparent = $parent->getAttribute('parent');
+            if ($grandparent instanceof Expr\FuncCall || $grandparent instanceof Expr\MethodCall) {
+                return 'function/method call';
+            }
         }
 
         if ($parent instanceof Expr\FuncCall || $parent instanceof Expr\MethodCall) {

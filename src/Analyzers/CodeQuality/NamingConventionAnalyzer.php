@@ -35,7 +35,7 @@ class NamingConventionAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'naming-convention',
-            name: 'Naming Convention',
+            name: 'Naming Convention Analyzer',
             description: 'Validates PSR and Laravel naming standards for better code consistency',
             category: Category::CodeQuality,
             severity: Severity::Low,
@@ -123,47 +123,22 @@ class NamingConventionVisitor extends NodeVisitorAbstract
     {
         // Check class names
         if ($node instanceof Stmt\Class_ && $node->name !== null) {
-            $className = $node->name->toString();
-            if (! $this->isPascalCase($className)) {
-                $suggestion = $this->toPascalCase($className);
-                $this->issues[] = [
-                    'message' => "Class '{$className}' does not follow PascalCase convention",
-                    'line' => $node->getStartLine(),
-                    'type' => 'class',
-                    'name' => $className,
-                    'suggestion' => $suggestion,
-                ];
-            }
+            $this->checkPascalCaseNaming($node, 'Class', $node->name->toString());
         }
 
         // Check interface names
         if ($node instanceof Stmt\Interface_ && $node->name !== null) {
-            $interfaceName = $node->name->toString();
-            if (! $this->isPascalCase($interfaceName)) {
-                $suggestion = $this->toPascalCase($interfaceName);
-                $this->issues[] = [
-                    'message' => "Interface '{$interfaceName}' does not follow PascalCase convention",
-                    'line' => $node->getStartLine(),
-                    'type' => 'class',
-                    'name' => $interfaceName,
-                    'suggestion' => $suggestion,
-                ];
-            }
+            $this->checkPascalCaseNaming($node, 'Interface', $node->name->toString());
         }
 
         // Check trait names
         if ($node instanceof Stmt\Trait_ && $node->name !== null) {
-            $traitName = $node->name->toString();
-            if (! $this->isPascalCase($traitName)) {
-                $suggestion = $this->toPascalCase($traitName);
-                $this->issues[] = [
-                    'message' => "Trait '{$traitName}' does not follow PascalCase convention",
-                    'line' => $node->getStartLine(),
-                    'type' => 'class',
-                    'name' => $traitName,
-                    'suggestion' => $suggestion,
-                ];
-            }
+            $this->checkPascalCaseNaming($node, 'Trait', $node->name->toString());
+        }
+
+        // Check enum names (PHP 8.1+)
+        if ($node instanceof Stmt\Enum_ && $node->name !== null) {
+            $this->checkPascalCaseNaming($node, 'Enum', $node->name->toString());
         }
 
         // Check method names
@@ -225,13 +200,30 @@ class NamingConventionVisitor extends NodeVisitorAbstract
     }
 
     /**
+     * Check if a type (class, interface, trait, enum) follows PascalCase naming.
+     */
+    private function checkPascalCaseNaming(Node $node, string $type, string $name): void
+    {
+        if (! $this->isPascalCase($name)) {
+            $suggestion = $this->toPascalCase($name);
+            $this->issues[] = [
+                'message' => "{$type} '{$name}' does not follow PascalCase convention",
+                'line' => $node->getStartLine(),
+                'type' => 'class',
+                'name' => $name,
+                'suggestion' => $suggestion,
+            ];
+        }
+    }
+
+    /**
      * Check if string is PascalCase.
      */
     private function isPascalCase(string $name): bool
     {
-        // PascalCase: starts with uppercase, no underscores, mixed case
-        return preg_match('/^[A-Z][a-zA-Z0-9]*$/', $name) === 1 &&
-               $name !== strtoupper($name); // Not all caps
+        // PascalCase: starts with uppercase, at least 2 characters, no underscores
+        // Allows acronyms like XMLParser, HTTPClient, APIController
+        return preg_match('/^[A-Z][a-zA-Z0-9]+$/', $name) === 1;
     }
 
     /**
@@ -239,8 +231,8 @@ class NamingConventionVisitor extends NodeVisitorAbstract
      */
     private function isCamelCase(string $name): bool
     {
-        // camelCase: starts with lowercase, no underscores, mixed case
-        return preg_match('/^[a-z][a-zA-Z0-9]*$/', $name) === 1;
+        // camelCase: starts with lowercase, at least 2 characters, no underscores
+        return preg_match('/^[a-z][a-zA-Z0-9]+$/', $name) === 1;
     }
 
     /**
@@ -248,8 +240,8 @@ class NamingConventionVisitor extends NodeVisitorAbstract
      */
     private function isScreamingSnakeCase(string $name): bool
     {
-        // SCREAMING_SNAKE_CASE: all uppercase with underscores
-        return preg_match('/^[A-Z][A-Z0-9_]*$/', $name) === 1;
+        // SCREAMING_SNAKE_CASE: all uppercase with underscores, at least 2 characters
+        return preg_match('/^[A-Z][A-Z0-9_]+$/', $name) === 1;
     }
 
     /**

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\CodeQuality;
 
+use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Analyzers\CodeQuality\MissingDocBlockAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -15,6 +16,7 @@ class MissingDocBlockAnalyzerTest extends AnalyzerTestCase
         return new MissingDocBlockAnalyzer($this->parser);
     }
 
+    #[Test]
     public function test_detects_missing_docblocks(): void
     {
         $code = <<<'PHP'
@@ -45,6 +47,7 @@ PHP;
         $this->assertHasIssueContaining('PHPDoc', $result);
     }
 
+    #[Test]
     public function test_passes_with_proper_docblocks(): void
     {
         $code = <<<'PHP'
@@ -78,6 +81,749 @@ PHP;
 
         $result = $analyzer->analyze();
 
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_excludes_getter_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    // Getter should be excluded even without docblock
+    public function getName($user)
+    {
+        return $user->name;
+    }
+
+    public function getUserId($user)
+    {
+        return $user->id;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because getters are excluded
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_excludes_setter_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    // Setter should be excluded even without docblock
+    public function setName($user, $name)
+    {
+        $user->name = $name;
+    }
+
+    public function setEmail($user, $email)
+    {
+        $user->email = $email;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because setters are excluded
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_excludes_is_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    // is* methods should be excluded
+    public function isActive($user)
+    {
+        return $user->active;
+    }
+
+    public function isAdmin($user)
+    {
+        return $user->role === 'admin';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because is* methods are excluded
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_excludes_has_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    // has* methods should be excluded
+    public function hasPermission($user, $permission)
+    {
+        return in_array($permission, $user->permissions);
+    }
+
+    public function hasRole($user, $role)
+    {
+        return $user->role === $role;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because has* methods are excluded
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_excludes_magic_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    // Magic methods should be excluded
+    public function __construct($dependency)
+    {
+        $this->dependency = $dependency;
+    }
+
+    public function __toString()
+    {
+        return 'UserService';
+    }
+
+    public function __call($method, $args)
+    {
+        return null;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because magic methods are excluded
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_detects_missing_param_tags(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Process a user action.
+     *
+     * @return User|null
+     */
+    public function processUser($userId, $action)
+    {
+        return User::find($userId);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('@param', $result);
+    }
+
+    #[Test]
+    public function test_detects_missing_return_tags(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Process a user action.
+     *
+     * @param int $userId
+     * @param string $action
+     */
+    public function processUser($userId, $action): User
+    {
+        return User::find($userId);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('@return', $result);
+    }
+
+    #[Test]
+    public function test_detects_missing_throws_tags_with_direct_throw(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Process a user action.
+     *
+     * @param int $userId
+     * @param string $action
+     * @return User|null
+     */
+    public function processUser($userId, $action): ?User
+    {
+        if (!$userId) {
+            throw new \InvalidArgumentException('User ID required');
+        }
+        return User::find($userId);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('@throws', $result);
+    }
+
+    #[Test]
+    public function test_detects_throws_in_nested_if_statement(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Process a user action.
+     *
+     * @param int $userId
+     * @return User|null
+     */
+    public function processUser($userId): ?User
+    {
+        if ($userId > 0) {
+            if ($userId > 1000) {
+                throw new \Exception('Invalid user ID');
+            }
+            return User::find($userId);
+        }
+        return null;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('@throws', $result);
+    }
+
+    #[Test]
+    public function test_detects_throws_in_foreach_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Process multiple users.
+     *
+     * @param array $userIds
+     * @return void
+     */
+    public function processUsers($userIds): void
+    {
+        foreach ($userIds as $userId) {
+            if (!$userId) {
+                throw new \Exception('Invalid ID');
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('@throws', $result);
+    }
+
+    #[Test]
+    public function test_detects_throws_in_try_catch_block(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Process a user action.
+     *
+     * @param int $userId
+     */
+    public function processUser($userId)
+    {
+        try {
+            throw new \Exception('Test exception');
+        } catch (\Exception $e) {
+            // Re-throw
+            throw $e;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('@throws', $result);
+    }
+
+    #[Test]
+    public function test_ignores_private_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    // Private method without docblock should be ignored
+    private function processUser($userId, $action)
+    {
+        return User::find($userId);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because private methods are not checked
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_ignores_protected_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    // Protected method without docblock should be ignored
+    protected function processUser($userId, $action)
+    {
+        return User::find($userId);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because protected methods are not checked
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_method_without_parameters_doesnt_require_param_tags(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Get all users.
+     *
+     * @return array
+     */
+    public function getAllUsers(): array
+    {
+        return User::all();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because no parameters means no @param required
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_method_without_return_type_doesnt_require_return_tag(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Process a user action.
+     *
+     * @param int $userId
+     */
+    public function processUser($userId)
+    {
+        User::find($userId);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because no return type means @return not strictly required
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_abstract_methods_can_be_documented(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+abstract class BaseService
+{
+    /**
+     * Process something.
+     *
+     * @param int $id
+     * @return mixed
+     */
+    abstract public function process($id);
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/BaseService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because abstract method has docblock
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_detects_multiple_issues_in_one_file(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    // No docblock
+    public function firstMethod($userId)
+    {
+        return User::find($userId);
+    }
+
+    // No docblock
+    public function secondMethod($data)
+    {
+        return $data;
+    }
+
+    /**
+     * Has docblock.
+     *
+     * @param int $id
+     * @return User
+     */
+    public function thirdMethod($id): User
+    {
+        return User::find($id);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+        $this->assertHasIssueContaining('firstMethod', $result);
+        $this->assertHasIssueContaining('secondMethod', $result);
+    }
+
+    #[Test]
+    public function test_includes_correct_metadata(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function processUser($userId)
+    {
+        return User::find($userId);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        $metadata = $issues[0]->metadata;
+        $this->assertArrayHasKey('method', $metadata);
+        $this->assertArrayHasKey('class', $metadata);
+        $this->assertArrayHasKey('issue_type', $metadata);
+        $this->assertSame('processUser', $metadata['method']);
+        $this->assertSame('UserService', $metadata['class']);
+        $this->assertSame('missing', $metadata['issue_type']);
+    }
+
+    #[Test]
+    public function test_has_correct_analyzer_metadata(): void
+    {
+        $analyzer = $this->createAnalyzer();
+        $metadata = $analyzer->getMetadata();
+
+        $this->assertSame('missing-docblock', $metadata->id);
+        $this->assertSame('Missing DocBlock Analyzer', $metadata->name);
+        $this->assertContains('documentation', $metadata->tags);
+    }
+
+    #[Test]
+    public function test_passes_with_throws_tag_when_exception_thrown(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Process a user action.
+     *
+     * @param int $userId
+     * @return User|null
+     * @throws \InvalidArgumentException
+     */
+    public function processUser($userId): ?User
+    {
+        if (!$userId) {
+            throw new \InvalidArgumentException('User ID required');
+        }
+        return User::find($userId);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because @throws tag is present
         $this->assertPassed($result);
     }
 }

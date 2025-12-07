@@ -54,7 +54,7 @@ class TodoCommentAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'todo-comment',
-            name: 'Todo Comment',
+            name: 'Todo Comment Analyzer',
             description: 'Finds TODO/FIXME/HACK comments that should be addressed or tracked in issue tracker',
             category: Category::CodeQuality,
             severity: Severity::Low,
@@ -77,8 +77,10 @@ class TodoCommentAnalyzer extends AbstractFileAnalyzer
 
             foreach ($lines as $lineNumber => $line) {
                 foreach ($this->keywords as $keyword => $config) {
-                    // Case-insensitive search for keyword
-                    if (preg_match('/\b'.$keyword.'\b/i', $line, $matches)) {
+                    // Case-insensitive search for keyword (with proper escaping)
+                    // Matches: TODO, TODO:, @TODO, // TODO, /* TODO, etc.
+                    $escapedKeyword = preg_quote($keyword, '/');
+                    if (preg_match('/'.$escapedKeyword.'/i', $line, $matches)) {
                         $context = trim($line);
 
                         // Remove comment markers for cleaner display
@@ -99,9 +101,6 @@ class TodoCommentAnalyzer extends AbstractFileAnalyzer
                                 'file' => $file,
                             ]
                         );
-
-                        // Only report first keyword found on each line
-                        break;
                     }
                 }
             }

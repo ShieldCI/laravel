@@ -44,7 +44,7 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'method-length',
-            name: 'Method Length',
+            name: 'Method Length Analyzer',
             description: 'Flags methods exceeding recommended line count for better maintainability',
             category: Category::CodeQuality,
             severity: Severity::Low,
@@ -168,10 +168,8 @@ class MethodLengthVisitor extends NodeVisitorAbstract
             }
 
             $startLine = $node->getStartLine();
-            $endLine = $node->getEndLine();
-            $lineCount = $endLine - $startLine + 1;
 
-            // Count logical lines (rough estimate by removing empty lines)
+            // Count logical lines (statements)
             $logicalLines = $this->countLogicalLines($node);
 
             if ($logicalLines > $this->threshold) {
@@ -192,8 +190,9 @@ class MethodLengthVisitor extends NodeVisitorAbstract
     private function shouldExclude(string $methodName): bool
     {
         foreach ($this->excludePatterns as $pattern) {
-            // Convert glob pattern to regex
-            $regex = '/^'.str_replace('*', '.*', $pattern).'$/i';
+            // Convert glob pattern to regex (escape special chars, then replace * with .*)
+            $escaped = preg_quote($pattern, '/');
+            $regex = '/^'.str_replace('\\*', '.*', $escaped).'$/i';
             if (preg_match($regex, $methodName)) {
                 return true;
             }

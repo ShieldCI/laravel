@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\CodeQuality;
 
+use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Analyzers\CodeQuality\CommentedCodeAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class CommentedCodeAnalyzerTest extends AnalyzerTestCase
@@ -15,7 +17,45 @@ class CommentedCodeAnalyzerTest extends AnalyzerTestCase
         return new CommentedCodeAnalyzer;
     }
 
-    public function test_detects_commented_code(): void
+    #[Test]
+    public function test_passes_without_commented_code(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Register a new user.
+     */
+    public function register($data)
+    {
+        // Validate the input data
+        $validated = $this->validate($data);
+
+        return User::create($validated);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString('No commented-out code', $result->getMessage());
+    }
+
+    #[Test]
+    public function test_detects_commented_code_with_double_slash(): void
     {
         $code = <<<'PHP'
 <?php
@@ -55,7 +95,8 @@ PHP;
         $this->assertHasIssueContaining('commented-out code', $result);
     }
 
-    public function test_passes_without_commented_code(): void
+    #[Test]
+    public function test_detects_commented_code_with_hash_comments(): void
     {
         $code = <<<'PHP'
 <?php
@@ -64,15 +105,16 @@ namespace App\Services;
 
 class UserService
 {
-    /**
-     * Register a new user.
-     */
-    public function register($data)
+    public function process()
     {
-        // Validate the input data
-        $validated = $this->validate($data);
+        $data = [];
 
-        return User::create($validated);
+        # Old code that we don't need anymore:
+        # $user = new User();
+        # $user->name = 'Test';
+        # $user->save();
+
+        return $data;
     }
 }
 PHP;
@@ -87,6 +129,650 @@ PHP;
 
         $result = $analyzer->analyze();
 
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('commented-out code', $result);
+    }
+
+    #[Test]
+    public function test_ignores_todo_comments(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class Service
+{
+    public function process()
+    {
+        // TODO: Implement caching
+        // TODO: Add validation
+        // TODO: Send notification email
+
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_ignores_fixme_comments(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class Service
+{
+    public function process()
+    {
+        // FIXME: This is broken
+        // FIXME: Performance issue here
+        // FIXME: Memory leak
+
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_ignores_prose_comments(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class Service
+{
+    public function process()
+    {
+        // This method will process the data
+        // The result should be cached
+        // This can improve performance significantly
+
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_ignores_prose_at_sentence_boundaries(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class Service
+{
+    public function process()
+    {
+        // The user registration process
+        // This validates input data
+        // Should return validated result
+
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because these are prose comments
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_minimum_consecutive_lines_threshold(): void
+    {
+        // Only 2 lines of commented code (below threshold of 3)
+        $code = <<<'PHP'
+<?php
+
+class Service
+{
+    public function process()
+    {
+        // $user = new User();
+        // $user->save();
+
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because only 2 lines (below minimum of 3)
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_detects_exactly_three_lines(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class Service
+{
+    public function process()
+    {
+        // $user = new User();
+        // $user->name = 'Test';
+        // $user->save();
+
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('3 consecutive lines', $result);
+    }
+
+    #[Test]
+    public function test_detects_variable_patterns(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class Service
+{
+    public function process()
+    {
+        // $userId = 123;
+        // $userName = 'John';
+        // $userEmail = 'john@example.com';
+
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    #[Test]
+    public function test_detects_function_patterns(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class Service
+{
+    public function process()
+    {
+        // function oldHelper() {
+        //     return true;
+        // }
+
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    #[Test]
+    public function test_detects_method_call_patterns(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class Service
+{
+    public function process()
+    {
+        // $user->getName();
+        // $user->getEmail();
+        // $user->save();
+
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    #[Test]
+    public function test_detects_static_call_patterns(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class Service
+{
+    public function process()
+    {
+        // User::find(1);
+        // User::create($data);
+        // User::all();
+
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    #[Test]
+    public function test_detects_control_structure_patterns(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class Service
+{
+    public function process()
+    {
+        // if ($condition) {
+        //     return true;
+        // }
+
+        return false;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    #[Test]
+    public function test_detects_multiple_blocks_in_one_file(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class Service
+{
+    public function method1()
+    {
+        // $user = new User();
+        // $user->name = 'Test';
+        // $user->save();
+
+        return true;
+    }
+
+    public function method2()
+    {
+        // $data = [];
+        // $data['key'] = 'value';
+        // return $data;
+
+        return false;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+    }
+
+    #[Test]
+    public function test_severity_is_low_for_small_blocks(): void
+    {
+        // 10 lines of commented code (< 20)
+        $code = <<<'PHP'
+<?php
+
+class Service
+{
+    public function process()
+    {
+        // $a = 1;
+        // $b = 2;
+        // $c = 3;
+        // $d = 4;
+        // $e = 5;
+        // $f = 6;
+        // $g = 7;
+        // $h = 8;
+        // $i = 9;
+        // $j = 10;
+
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $issue = $issues[0];
+        $this->assertEquals(Severity::Low, $issue->severity);
+    }
+
+    #[Test]
+    public function test_severity_is_medium_for_large_blocks(): void
+    {
+        // 25 lines of commented code (>= 20)
+        $lines = '';
+        for ($i = 1; $i <= 25; $i++) {
+            $lines .= "        // \$var{$i} = {$i};\n";
+        }
+
+        $code = <<<PHP
+<?php
+
+class Service
+{
+    public function process()
+    {
+{$lines}
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $issue = $issues[0];
+        $this->assertEquals(Severity::Medium, $issue->severity);
+    }
+
+    #[Test]
+    public function test_includes_proper_metadata(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class Service
+{
+    public function process()
+    {
+        // $user = new User();
+        // $user->name = 'Test';
+        // $user->email = 'test@example.com';
+        // $user->save();
+
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $issue = $issues[0];
+        $metadata = $issue->metadata;
+
+        $this->assertArrayHasKey('startLine', $metadata);
+        $this->assertArrayHasKey('endLine', $metadata);
+        $this->assertArrayHasKey('lineCount', $metadata);
+        $this->assertArrayHasKey('preview', $metadata);
+        $this->assertArrayHasKey('file', $metadata);
+
+        $this->assertEquals(4, $metadata['lineCount']);
+        $this->assertIsString($metadata['preview']);
+    }
+
+    #[Test]
+    public function test_preview_shows_first_three_lines(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class Service
+{
+    public function process()
+    {
+        // $line1 = 1;
+        // $line2 = 2;
+        // $line3 = 3;
+        // $line4 = 4;
+        // $line5 = 5;
+
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $issue = $issues[0];
+
+        $this->assertIsString($issue->metadata['preview']);
+        $preview = (string) $issue->metadata['preview'];
+
+        $this->assertStringContainsString('$line1 = 1', $preview);
+        $this->assertStringContainsString('$line2 = 2', $preview);
+        $this->assertStringContainsString('$line3 = 3', $preview);
+        $this->assertStringContainsString('(2 more lines)', $preview);
+    }
+
+    #[Test]
+    public function test_recommendation_includes_strategies(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class Service
+{
+    public function process()
+    {
+        // $user = new User();
+        // $user->name = 'Test';
+        // $user->save();
+
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $issue = $issues[0];
+
+        $this->assertStringContainsString('Delete the commented code', $issue->recommendation);
+        $this->assertStringContainsString('version control', $issue->recommendation);
+    }
+
+    #[Test]
+    public function test_has_correct_metadata(): void
+    {
+        $analyzer = $this->createAnalyzer();
+        $metadata = $analyzer->getMetadata();
+
+        $this->assertSame('commented-code', $metadata->id);
+        $this->assertSame('Commented Code Analyzer', $metadata->name);
+        $this->assertSame(Severity::Low, $metadata->severity);
+        $this->assertSame(5, $metadata->timeToFix);
+        $this->assertContains('maintainability', $metadata->tags);
+        $this->assertContains('code-quality', $metadata->tags);
+        $this->assertContains('dead-code', $metadata->tags);
+    }
+
+    #[Test]
+    public function test_handles_empty_files(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+// Empty file with just comment
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Empty.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because no commented code
         $this->assertPassed($result);
     }
 }

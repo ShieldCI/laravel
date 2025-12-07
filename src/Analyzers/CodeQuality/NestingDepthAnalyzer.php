@@ -39,7 +39,7 @@ class NestingDepthAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'nesting-depth',
-            name: 'Nesting Depth',
+            name: 'Nesting Depth Analyzer',
             description: 'Identifies deeply nested code blocks that reduce readability and maintainability',
             category: Category::CodeQuality,
             severity: Severity::Medium,
@@ -130,35 +130,7 @@ class NestingDepthAnalyzer extends AbstractFileAnalyzer
             'Invert conditional logic to eliminate else blocks',
         ];
 
-        $example = <<<'PHP'
-
-// Problem (depth 5):
-if ($user) {
-    if ($user->isActive()) {
-        foreach ($user->roles as $role) {
-            if ($role->hasPermission('edit')) {
-                if (!$resource->isLocked()) {
-                    // Deep nesting - hard to follow
-                }
-            }
-        }
-    }
-}
-
-// Solution with guard clauses (depth 2):
-if (!$user || !$user->isActive()) {
-    return;
-}
-
-foreach ($user->roles as $role) {
-    if (!$role->hasPermission('edit') || $resource->isLocked()) {
-        continue;
-    }
-    // Much clearer
-}
-PHP;
-
-        return $base.'Refactoring strategies: '.implode('; ', $strategies).". Example:{$example}";
+        return $base.'Refactoring strategies: '.implode('; ', $strategies);
     }
 }
 
@@ -182,15 +154,43 @@ class NestingDepthVisitor extends NodeVisitorAbstract
      */
     private ?string $currentContext = null;
 
+    /**
+     * Stack of contexts for nested functions/closures.
+     *
+     * @var array<string>
+     */
+    private array $contextStack = [];
+
+    /**
+     * Stack of depths for nested functions/closures.
+     *
+     * @var array<int>
+     */
+    private array $depthStack = [];
+
     public function __construct(
         private int $threshold
     ) {}
 
     public function enterNode(Node $node)
     {
-        // Track method/function entry
-        if ($node instanceof Stmt\Function_ || $node instanceof Stmt\ClassMethod) {
-            $this->currentContext = $node->name->toString();
+        // Track method/function/closure entry
+        if ($node instanceof Stmt\Function_ || $node instanceof Stmt\ClassMethod || $node instanceof Node\Expr\Closure) {
+            // Save current context and depth
+            if ($this->currentContext !== null) {
+                $this->contextStack[] = $this->currentContext;
+                $this->depthStack[] = $this->currentDepth;
+            }
+
+            // Set new context
+            if ($node instanceof Node\Expr\Closure) {
+                $this->currentContext = '{closure}';
+            } else {
+                $this->currentContext = $node->name->toString();
+            }
+
+            // Reset depth for new function scope
+            $this->currentDepth = 0;
 
             return null;
         }
@@ -219,10 +219,16 @@ class NestingDepthVisitor extends NodeVisitorAbstract
             $this->currentDepth--;
         }
 
-        // Reset context when leaving method/function
-        if ($node instanceof Stmt\Function_ || $node instanceof Stmt\ClassMethod) {
-            $this->currentContext = null;
-            $this->currentDepth = 0;
+        // Restore context when leaving method/function/closure
+        if ($node instanceof Stmt\Function_ || $node instanceof Stmt\ClassMethod || $node instanceof Node\Expr\Closure) {
+            // Restore previous context if we were in a nested function
+            if (! empty($this->contextStack)) {
+                $this->currentContext = array_pop($this->contextStack);
+                $this->currentDepth = array_pop($this->depthStack) ?? 0;
+            } else {
+                $this->currentContext = null;
+                $this->currentDepth = 0;
+            }
         }
 
         return null;
@@ -230,19 +236,21 @@ class NestingDepthVisitor extends NodeVisitorAbstract
 
     /**
      * Check if node creates nesting.
+     *
+     * Note: ElseIf and Else are NOT counted as separate nesting levels
+     * because they are continuations of the if statement, not new nesting.
+     * Similarly, Catch blocks are part of TryCatch and don't add nesting.
      */
     private function isNestingStructure(Node $node): bool
     {
         return $node instanceof Stmt\If_
-            || $node instanceof Stmt\ElseIf_
-            || $node instanceof Stmt\Else_
             || $node instanceof Stmt\While_
             || $node instanceof Stmt\Do_
             || $node instanceof Stmt\For_
             || $node instanceof Stmt\Foreach_
             || $node instanceof Stmt\Switch_
-            || $node instanceof Stmt\TryCatch
-            || $node instanceof Stmt\Catch_;
+            || $node instanceof Stmt\Case_
+            || $node instanceof Stmt\TryCatch;
     }
 
     /**

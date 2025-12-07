@@ -222,7 +222,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('debug-log-level', $metadata->id);
-        $this->assertEquals('Debug Log Level', $metadata->name);
+        $this->assertEquals('Debug Log Level Analyzer', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $metadata->severity);
         $this->assertContains('logging', $metadata->tags);

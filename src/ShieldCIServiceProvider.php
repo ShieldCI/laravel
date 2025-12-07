@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace ShieldCI;
 
+use GuzzleHttp\Client;
+use GuzzleHttp\ClientInterface;
 use Illuminate\Support\ServiceProvider;
+use Psr\Log\LoggerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
@@ -12,6 +15,12 @@ use ShieldCI\Commands\AnalyzeCommand;
 use ShieldCI\Commands\BaselineCommand;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\Support\Reporter;
+use ShieldCI\Support\SecurityAdvisories\AdvisoryAnalyzer;
+use ShieldCI\Support\SecurityAdvisories\AdvisoryAnalyzerInterface;
+use ShieldCI\Support\SecurityAdvisories\AdvisoryFetcherInterface;
+use ShieldCI\Support\SecurityAdvisories\ComposerDependencyReader;
+use ShieldCI\Support\SecurityAdvisories\HttpAdvisoryFetcher;
+use ShieldCI\Support\SecurityAdvisories\VersionConstraintMatcher;
 
 class ShieldCIServiceProvider extends ServiceProvider
 {
@@ -28,6 +37,29 @@ class ShieldCIServiceProvider extends ServiceProvider
         // Register bindings
         $this->app->singleton(ParserInterface::class, AstParser::class);
         $this->app->singleton(ReporterInterface::class, Reporter::class);
+
+        $this->app->bind(ClientInterface::class, Client::class);
+        $this->app->singleton(VersionConstraintMatcher::class);
+        $this->app->singleton(AdvisoryAnalyzerInterface::class, function ($app) {
+            return new AdvisoryAnalyzer($app->make(VersionConstraintMatcher::class));
+        });
+        $this->app->singleton(AdvisoryFetcherInterface::class, function ($app) {
+            $logger = null;
+            if ($app->bound(LoggerInterface::class)) {
+                $logger = $app->make(LoggerInterface::class);
+            } elseif ($app->bound('log')) {
+                $logger = $app->make('log');
+            }
+
+            $source = $app['config']->get('shieldci.security_advisories.source', HttpAdvisoryFetcher::DEFAULT_SOURCE);
+
+            return new HttpAdvisoryFetcher(
+                $app->make(ClientInterface::class),
+                $logger,
+                $source
+            );
+        });
+        $this->app->singleton(ComposerDependencyReader::class);
 
         // Register path filter
         $this->app->singleton(\ShieldCI\Support\PathFilter::class, function ($app) {

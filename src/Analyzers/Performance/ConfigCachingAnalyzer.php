@@ -43,7 +43,7 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'config-caching',
-            name: 'Configuration Caching',
+            name: 'Configuration Caching Analyzer',
             description: 'Ensures configuration caching is properly configured for each environment',
             category: Category::Performance,
             severity: Severity::High,

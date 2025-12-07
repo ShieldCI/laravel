@@ -26,7 +26,7 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'env-variables-complete',
-            name: 'Environment Variables Complete',
+            name: 'Environment Variables Complete Analyzer',
             description: 'Ensures all required environment variables from .env.example are defined in .env',
             category: Category::Reliability,
             severity: Severity::High,
@@ -38,8 +38,9 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $envExamplePath = $this->basePath.'/.env.example';
-        $envPath = $this->basePath.'/.env';
+        $basePath = $this->getBasePath();
+        $envExamplePath = $this->getEnvExamplePath($basePath);
+        $envPath = $this->getEnvPath($basePath);
 
         // Check if .env.example exists
         if (! file_exists($envExamplePath)) {
@@ -52,9 +53,9 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
                 '.env file not found',
                 [$this->createIssue(
                     message: '.env file is missing',
-                    location: new Location($this->basePath, 0),
+                    location: new Location('.env', 1),
                     severity: Severity::Critical,
-                    recommendation: 'Create a .env file by copying .env.example: "cp .env.example .env". Then configure the environment variables with appropriate values for your environment.',
+                    recommendation: $this->buildMissingEnvFileRecommendation(),
                     metadata: []
                 )]
             );
@@ -75,16 +76,90 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
             sprintf('Found %d missing environment variable(s)', count($missingVars)),
             [$this->createIssue(
                 message: 'Missing environment variables',
-                location: new Location($envPath, 1),
+                location: new Location('.env', 1),
                 severity: Severity::High,
-                recommendation: 'Add the following environment variables to your .env file: '.implode(', ', array_keys($missingVars)).'. '.
-                               'These variables are defined in .env.example and may be required for the application to function correctly. '.
-                               'Copy them from .env.example and set appropriate values.',
+                recommendation: $this->buildMissingVariablesRecommendation($missingVars),
+                code: FileParser::getCodeSnippet($envPath, 1),
                 metadata: [
                     'missing_count' => count($missingVars),
                     'missing_variables' => array_keys($missingVars),
                 ]
             )]
+        );
+    }
+
+    /**
+     * Get the .env file path.
+     */
+    private function getEnvPath(string $basePath): string
+    {
+        if ($basePath === '') {
+            return '.env';
+        }
+
+        return rtrim($basePath, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.'.env';
+    }
+
+    /**
+     * Get the .env.example file path.
+     */
+    private function getEnvExamplePath(string $basePath): string
+    {
+        if ($basePath === '') {
+            return '.env.example';
+        }
+
+        return rtrim($basePath, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.'.env.example';
+    }
+
+    /**
+     * Build recommendation message for missing .env file.
+     */
+    private function buildMissingEnvFileRecommendation(): string
+    {
+        return sprintf(
+            <<<'RECOMMENDATION'
+Create a .env file by copying .env.example.
+
+Unix/Linux:
+  %s
+
+Windows:
+  %s
+
+After creating the file, configure the environment variables with appropriate values for your environment.
+RECOMMENDATION,
+            'cp .env.example .env',
+            'copy .env.example .env'
+        );
+    }
+
+    /**
+     * Build recommendation message for missing environment variables.
+     *
+     * @param  array<string, string>  $missingVars
+     */
+    private function buildMissingVariablesRecommendation(array $missingVars): string
+    {
+        $missingKeys = array_keys($missingVars);
+        $variablesList = implode(', ', $missingKeys);
+
+        return sprintf(
+            <<<'RECOMMENDATION'
+Add the following environment variables to your .env file: %s
+
+These variables are defined in .env.example and may be required for the application to function correctly.
+
+To fix:
+1. Open .env.example and locate these variables
+2. Copy the variable definitions to your .env file
+3. Set appropriate values for your environment (do not use placeholder values in production)
+
+Example:
+  %s=your_value_here
+RECOMMENDATION,
+            $variablesList,
+            $missingKeys[0] ?? 'VARIABLE_NAME'
         );
     }
 
@@ -95,18 +170,31 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
      */
     private function parseEnvFile(string $filePath): array
     {
-        $lines = FileParser::getLines($filePath);
-
-        if (empty($lines)) {
+        if (! file_exists($filePath) || ! is_readable($filePath)) {
             return [];
         }
+
+        try {
+            $lines = FileParser::getLines($filePath);
+        } catch (\Throwable $e) {
+            return [];
+        }
+
+        if (! is_array($lines) || empty($lines)) {
+            return [];
+        }
+
         $variables = [];
 
         foreach ($lines as $line) {
+            if (! is_string($line)) {
+                continue;
+            }
+
             $line = trim($line);
 
             // Skip empty lines and comments
-            if (empty($line) || str_starts_with($line, '#')) {
+            if ($line === '' || str_starts_with($line, '#')) {
                 continue;
             }
 

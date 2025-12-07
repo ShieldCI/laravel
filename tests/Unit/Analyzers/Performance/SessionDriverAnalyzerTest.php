@@ -690,7 +690,7 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('session-driver', $metadata->id);
-        $this->assertEquals('Session Driver Configuration', $metadata->name);
+        $this->assertEquals('Session Driver Configuration Analyzer', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $metadata->severity);
         $this->assertContains('session', $metadata->tags);

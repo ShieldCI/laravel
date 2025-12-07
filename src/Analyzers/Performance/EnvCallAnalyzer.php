@@ -60,7 +60,7 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'env-call-outside-config',
-            name: 'Env Calls Outside Config',
+            name: 'Env Calls Outside Config Analyzer',
             description: 'Detects env() function calls outside configuration files that break when config is cached',
             category: Category::Performance,
             severity: Severity::High,

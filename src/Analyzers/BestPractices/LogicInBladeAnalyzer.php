@@ -23,8 +23,6 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class LogicInBladeAnalyzer extends AbstractFileAnalyzer
 {
-    private const MAX_PHP_BLOCK_LINES = 10;
-
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
@@ -114,17 +112,16 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
 
             // Check for @php block end
             if (preg_match('/@endphp\b/', $trimmed)) {
-                if ($phpBlockLines > self::MAX_PHP_BLOCK_LINES) {
+                if ($phpBlockLines > 10) {
                     $issues[] = $this->createIssue(
                         message: sprintf(
                             'PHP block has %d lines (max recommended: %d). Move logic to controller or view composer',
                             $phpBlockLines,
-                            self::MAX_PHP_BLOCK_LINES
+                            10
                         ),
                         location: new Location($this->getRelativePath($file), $phpBlockStart),
                         severity: Severity::Medium,
                         recommendation: 'Move complex PHP logic to controllers, view composers, or presenter classes. Blade templates should focus on presentation only',
-                        code: null,
                     );
                 }
                 $inPhpBlock = false;

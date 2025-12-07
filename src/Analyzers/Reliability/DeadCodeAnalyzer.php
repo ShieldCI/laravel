@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\ParsesPHPStanResults;
 use ShieldCI\Support\PHPStanRunner;
 
 /**
@@ -23,10 +24,14 @@ use ShieldCI\Support\PHPStanRunner;
  */
 class DeadCodeAnalyzer extends AbstractFileAnalyzer
 {
+    use ParsesPHPStanResults;
+
     /**
+     * PHPStan patterns for detecting dead code.
+     *
      * @var array<string>
      */
-    private array $patterns = [
+    private const DEAD_CODE_PATTERNS = [
         '*does not do anything*',
         'Unreachable statement*',
         '* is unused*',
@@ -49,52 +54,67 @@ class DeadCodeAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'dead-code',
-            name: 'Dead Code Detection',
+            name: 'Dead Code Analyzer',
             description: 'Detects unreachable code, unused variables, and statements that have no effect using PHPStan static analysis',
             category: Category::Reliability,
             severity: Severity::Medium,
             tags: ['phpstan', 'static-analysis', 'dead-code', 'code-quality'],
             docsUrl: 'https://docs.shieldci.com/analyzers/reliability/dead-code',
-            timeToFix: 5
+            timeToFix: 15
         );
     }
 
     protected function runAnalysis(): ResultInterface
     {
-        $runner = new PHPStanRunner($this->basePath);
+        $basePath = $this->getBasePath();
 
-        // Run PHPStan on app directory at level 5
-        $runner->analyze('app', 5);
+        $runner = new PHPStanRunner($basePath);
 
-        // Filter for dead code issues
-        $issues = $runner->filterByPattern($this->patterns);
+        // Check if PHPStan is available
+        if (! $runner->isAvailable()) {
+            return $this->warning(
+                'PHPStan is not available',
+                [$this->createIssue(
+                    message: 'PHPStan binary not found',
+                    location: new Location($basePath, 1),
+                    severity: Severity::Medium,
+                    recommendation: 'PHPStan is included with ShieldCI. If you\'re seeing this error, ensure you\'ve run `composer install` to install all dependencies. If the issue persists, verify that `vendor/bin/phpstan` exists in your project.',
+                    metadata: []
+                )]
+            );
+        }
+
+        try {
+            // Run PHPStan on app directory
+            $runner->analyze('app', 5);
+
+            // Filter for dead code issues
+            $issues = $runner->filterByPattern(self::DEAD_CODE_PATTERNS);
+        } catch (\Throwable $e) {
+            return $this->error(
+                sprintf('PHPStan analysis failed: %s', $e->getMessage()),
+                [
+                    'exception' => get_class($e),
+                    'error_message' => $e->getMessage(),
+                ]
+            );
+        }
 
         if ($issues->isEmpty()) {
             return $this->passed('No dead code detected');
         }
 
-        $issueObjects = [];
-
-        foreach ($issues->take(50) as $issue) {
-            $issueObjects[] = $this->createIssue(
-                message: 'Dead code detected',
-                location: new Location($issue['file'], $issue['line']),
-                severity: Severity::Medium,
-                recommendation: $this->getRecommendation($issue['message']),
-                metadata: [
-                    'phpstan_message' => $issue['message'],
-                    'file' => $issue['file'],
-                    'line' => $issue['line'],
-                ]
-            );
-        }
+        $issueObjects = $this->createIssuesFromPHPStanResults(
+            $issues,
+            'Dead code detected',
+            Severity::Medium,
+            fn (string $message) => $this->getRecommendation($message)
+        );
 
         $totalCount = $issues->count();
         $displayedCount = count($issueObjects);
 
-        $message = $totalCount > $displayedCount
-            ? "Found {$totalCount} dead code issues (showing first {$displayedCount})"
-            : "Found {$totalCount} dead code issue(s)";
+        $message = $this->formatIssueCountMessage($totalCount, $displayedCount, 'dead code issue(s)');
 
         return $this->failed($message, $issueObjects);
     }

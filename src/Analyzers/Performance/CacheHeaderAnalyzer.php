@@ -119,7 +119,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'asset-cache-headers',
-            name: 'Asset Cache Headers',
+            name: 'Asset Cache Headers Analyzer',
             description: 'Ensures compiled assets have appropriate cache headers for optimal browser caching',
             category: Category::Performance,
             severity: Severity::High,

@@ -43,67 +43,36 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         );
     }
 
+    public function shouldRun(): bool
+    {
+        $routePath = $this->getBasePath().DIRECTORY_SEPARATOR.'routes';
+
+        return is_dir($routePath);
+    }
+
+    public function getSkipReason(): string
+    {
+        return 'No routes directory found';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
 
-        $hasThrottling = false;
-
-        // Check for ThrottleRequests middleware in Kernel
-        if ($this->hasThrottleMiddleware()) {
-            $hasThrottling = true;
-        }
-
-        // Check for RateLimiter usage in code
-        if ($this->hasRateLimiterUsage()) {
-            $hasThrottling = true;
-        }
+        // Check for RateLimiter usage in code (global check)
+        $hasGlobalRateLimiter = $this->hasRateLimiterUsage();
 
         // Check route files for login routes without throttling
-        $this->checkRouteFiles($issues, $hasThrottling);
+        $this->checkRouteFiles($issues, $hasGlobalRateLimiter);
 
         // Check authentication controllers
         $this->checkAuthControllers($issues);
 
-        if (empty($issues)) {
-            return $this->passed('Login throttling/rate limiting is properly configured');
-        }
+        $summary = empty($issues)
+            ? 'Login throttling/rate limiting is properly configured'
+            : sprintf('Found %d login throttling issue%s', count($issues), count($issues) === 1 ? '' : 's');
 
-        return $this->failed(
-            sprintf('Found %d login throttling issues', count($issues)),
-            $issues
-        );
-    }
-
-    /**
-     * Check if ThrottleRequests middleware exists in Kernel.
-     */
-    private function hasThrottleMiddleware(): bool
-    {
-        $kernelFile = $this->basePath.'/app/Http/Kernel.php';
-
-        if (! file_exists($kernelFile)) {
-            // Check bootstrap/app.php for Laravel 11+
-            $bootstrapApp = $this->basePath.'/bootstrap/app.php';
-            if (file_exists($bootstrapApp)) {
-                $content = FileParser::readFile($bootstrapApp);
-
-                return $content !== null && (
-                    str_contains($content, 'ThrottleRequests') ||
-                    str_contains($content, 'throttle')
-                );
-            }
-
-            return false;
-        }
-
-        $content = FileParser::readFile($kernelFile);
-        if ($content === null) {
-            return false;
-        }
-
-        return str_contains($content, 'ThrottleRequests') ||
-               str_contains($content, '\\throttle');
+        return $this->resultBySeverity($summary, $issues);
     }
 
     /**
@@ -113,7 +82,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     {
         foreach ($this->getPhpFiles() as $file) {
             $content = FileParser::readFile($file);
-            if ($content === null) {
+            if ($content === null || ! is_string($content)) {
                 continue;
             }
 
@@ -131,51 +100,64 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      */
     private function checkRouteFiles(array &$issues, bool $hasGlobalThrottling): void
     {
-        $routePath = $this->basePath.'/routes';
+        $routePath = $this->getBasePath().DIRECTORY_SEPARATOR.'routes';
 
         if (! is_dir($routePath)) {
             return;
         }
 
-        foreach (new \DirectoryIterator($routePath) as $file) {
-            if (! $file->isFile() || $file->getExtension() !== 'php') {
-                continue;
-            }
+        try {
+            foreach (new \DirectoryIterator($routePath) as $file) {
+                if (! $file->isFile() || $file->getExtension() !== 'php') {
+                    continue;
+                }
 
-            // Skip API routes if they use token authentication
-            if ($file->getFilename() === 'api.php') {
-                continue;
-            }
+                // Skip API routes if they use token authentication
+                if ($file->getFilename() === 'api.php') {
+                    continue;
+                }
 
-            $content = FileParser::readFile($file->getPathname());
-            if ($content === null) {
-                continue;
-            }
+                $filePath = $file->getPathname();
+                $content = FileParser::readFile($filePath);
+                if ($content === null || ! is_string($content)) {
+                    continue;
+                }
 
-            $lines = FileParser::getLines($file->getPathname());
+                $lines = FileParser::getLines($filePath);
 
-            foreach ($lines as $lineNumber => $line) {
-                // Check for login-related routes
-                if (preg_match('/Route::(post|any)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $matches)) {
-                    $routeUri = $matches[2];
+                foreach ($lines as $lineNumber => $line) {
+                    if (! is_string($line)) {
+                        continue;
+                    }
 
-                    // Check if this route or surrounding lines have throttle middleware
-                    $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber);
+                    // Check for login-related routes (improved regex to catch GET, MATCH, RESOURCE)
+                    if (preg_match('/Route::(post|get|any|match|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $matches)) {
+                        $routeUri = $matches[2];
 
-                    if (! $hasThrottle && ! $hasGlobalThrottling) {
-                        $issues[] = $this->createIssue(
-                            message: sprintf('Login route "%s" lacks rate limiting protection', $routeUri),
-                            location: new Location(
-                                $this->getRelativePath($file->getPathname()),
-                                $lineNumber + 1
-                            ),
-                            severity: Severity::High,
-                            recommendation: 'Add ->middleware("throttle:5,1") or similar rate limiting to prevent brute force attacks',
-                            code: trim($line)
-                        );
+                        // Check if this route or surrounding lines have throttle middleware
+                        $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber);
+
+                        if (! $hasThrottle && ! $hasGlobalThrottling) {
+                            $issues[] = $this->createIssue(
+                                message: sprintf('Login route "%s" lacks rate limiting protection', $routeUri),
+                                location: new Location(
+                                    $this->getRelativePath($filePath),
+                                    $lineNumber + 1
+                                ),
+                                severity: Severity::High,
+                                recommendation: 'Add ->middleware("throttle:5,1") or similar rate limiting to prevent brute force attacks',
+                                code: FileParser::getCodeSnippet($filePath, $lineNumber + 1),
+                                metadata: [
+                                    'route' => $routeUri,
+                                    'issue_type' => 'missing_route_throttle',
+                                ]
+                            );
+                        }
                     }
                 }
             }
+        } catch (\Throwable $e) {
+            // Silently fail if directory iterator fails
         }
     }
 
@@ -188,8 +170,15 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         $searchRange = min($lineNumber + 5, count($lines));
 
         for ($i = $lineNumber; $i < $searchRange; $i++) {
-            if (preg_match('/->middleware\(["\']throttle/i', $lines[$i]) ||
-                preg_match('/->middleware\(\[.*["\']throttle/i', $lines[$i])) {
+            if (! isset($lines[$i]) || ! is_string($lines[$i])) {
+                continue;
+            }
+
+            // Improved patterns to catch more throttle variations
+            if (preg_match('/->middleware\(["\']throttle/i', $lines[$i]) ||  // Single string
+                preg_match('/->middleware\(\[.*["\']throttle/i', $lines[$i]) ||  // Array with quotes
+                preg_match('/->middleware\(["\'][^"\']*["\'],\s*["\']throttle/i', $lines[$i]) ||  // Varargs
+                preg_match('/ThrottleRequests::class/i', $lines[$i])) {  // Class reference
                 return true;
             }
 
@@ -207,10 +196,11 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      */
     private function checkAuthControllers(array &$issues): void
     {
+        $basePath = $this->getBasePath();
         $authControllers = [
-            $this->basePath.'/app/Http/Controllers/Auth/LoginController.php',
-            $this->basePath.'/app/Http/Controllers/AuthController.php',
-            $this->basePath.'/app/Http/Controllers/LoginController.php',
+            $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Controllers'.DIRECTORY_SEPARATOR.'Auth'.DIRECTORY_SEPARATOR.'LoginController.php',
+            $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Controllers'.DIRECTORY_SEPARATOR.'AuthController.php',
+            $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Controllers'.DIRECTORY_SEPARATOR.'LoginController.php',
         ];
 
         foreach ($authControllers as $controllerPath) {
@@ -218,48 +208,66 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $ast = $this->parser->parseFile($controllerPath);
-            if (empty($ast)) {
-                continue;
-            }
+            try {
+                $ast = $this->parser->parseFile($controllerPath);
+                if (empty($ast)) {
+                    continue;
+                }
 
-            $content = FileParser::readFile($controllerPath);
-            if ($content === null) {
-                continue;
-            }
+                $content = FileParser::readFile($controllerPath);
+                if ($content === null || ! is_string($content)) {
+                    continue;
+                }
 
-            // Check if controller uses throttling traits or has throttle middleware
-            $hasThrottling = str_contains($content, 'ThrottlesLogins') ||
-                           str_contains($content, 'RateLimiter') ||
-                           str_contains($content, 'throttle') ||
-                           str_contains($content, 'AuthenticatesUsers'); // Laravel UI trait includes throttling
+                // Check if controller uses throttling traits or has throttle middleware
+                $hasThrottling = str_contains($content, 'ThrottlesLogins') ||
+                               str_contains($content, 'RateLimiter') ||
+                               str_contains($content, 'throttle') ||
+                               str_contains($content, 'AuthenticatesUsers'); // Laravel UI trait includes throttling
 
-            if (! $hasThrottling) {
-                $classes = $this->parser->findClasses($ast);
+                if (! $hasThrottling) {
+                    $classes = $this->parser->findClasses($ast);
 
-                foreach ($classes as $class) {
-                    $className = $class->name ? $class->name->toString() : 'Unknown';
+                    foreach ($classes as $class) {
+                        if (! isset($class->name)) {
+                            continue;
+                        }
 
-                    // Look for login methods
-                    foreach ($class->stmts as $stmt) {
-                        if ($stmt instanceof Node\Stmt\ClassMethod) {
-                            $methodName = $stmt->name->toString();
+                        $className = $class->name->toString();
 
-                            if (in_array($methodName, ['login', 'authenticate', 'postLogin', 'attempt'])) {
-                                $issues[] = $this->createIssue(
-                                    message: sprintf('Authentication method %s::%s() lacks rate limiting', $className, $methodName),
-                                    location: new Location(
-                                        $this->getRelativePath($controllerPath),
-                                        $stmt->getLine()
-                                    ),
-                                    severity: Severity::High,
-                                    recommendation: 'Implement rate limiting using RateLimiter facade or throttle middleware to prevent brute force attacks',
-                                    code: FileParser::getCodeSnippet($controllerPath, $stmt->getLine())
-                                );
+                        // Look for login methods
+                        if (! isset($class->stmts) || ! is_array($class->stmts)) {
+                            continue;
+                        }
+
+                        foreach ($class->stmts as $stmt) {
+                            if ($stmt instanceof Node\Stmt\ClassMethod) {
+                                $methodName = $stmt->name->toString();
+
+                                if (in_array($methodName, ['login', 'authenticate', 'postLogin', 'attempt'], true)) {
+                                    $issues[] = $this->createIssue(
+                                        message: sprintf('Authentication method %s::%s() lacks rate limiting', $className, $methodName),
+                                        location: new Location(
+                                            $this->getRelativePath($controllerPath),
+                                            $stmt->getLine()
+                                        ),
+                                        severity: Severity::High,
+                                        recommendation: 'Implement rate limiting using RateLimiter facade or throttle middleware to prevent brute force attacks',
+                                        code: FileParser::getCodeSnippet($controllerPath, $stmt->getLine()),
+                                        metadata: [
+                                            'class' => $className,
+                                            'method' => $methodName,
+                                            'issue_type' => 'missing_controller_throttle',
+                                        ]
+                                    );
+                                }
                             }
                         }
                     }
                 }
+            } catch (\Throwable $e) {
+                // Silently fail if parsing fails
+                continue;
             }
         }
     }

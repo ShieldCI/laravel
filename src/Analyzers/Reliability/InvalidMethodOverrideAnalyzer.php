@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\ParsesPHPStanResults;
 use ShieldCI\Support\PHPStanRunner;
 
 /**
@@ -23,10 +24,14 @@ use ShieldCI\Support\PHPStanRunner;
  */
 class InvalidMethodOverrideAnalyzer extends AbstractFileAnalyzer
 {
+    use ParsesPHPStanResults;
+
     /**
+     * PHPStan patterns for detecting invalid method overrides.
+     *
      * @var array<string>
      */
-    private array $patterns = [
+    private const INVALID_METHOD_OVERRIDE_PATTERNS = [
         'Return type * of method *::* is not covariant with*',
         'Parameter * of method *::* is not contravariant with*',
         'Method *::* overrides method *::* but is missing parameter *',
@@ -43,7 +48,7 @@ class InvalidMethodOverrideAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'invalid-method-overrides',
-            name: 'Invalid Method Overrides',
+            name: 'Invalid Method Overrides Analyzer',
             description: 'Detects incompatible method overrides with incorrect signatures using PHPStan static analysis',
             category: Category::Reliability,
             severity: Severity::High,
@@ -55,40 +60,61 @@ class InvalidMethodOverrideAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $runner = new PHPStanRunner($this->basePath);
+        $basePath = $this->getBasePath();
 
-        // Run PHPStan on app directory at level 5
-        $runner->analyze('app', 5);
+        if ($basePath === '') {
+            return $this->error('Unable to determine base path for PHPStan analysis');
+        }
 
-        // Filter for method override issues
-        $issues = $runner->filterByPattern($this->patterns);
+        $runner = new PHPStanRunner($basePath);
+
+        // Check if PHPStan is available
+        if (! $runner->isAvailable()) {
+            return $this->warning(
+                'PHPStan is not available',
+                [$this->createIssue(
+                    message: 'PHPStan binary not found',
+                    location: new Location($basePath, 1),
+                    severity: Severity::Medium,
+                    recommendation: 'PHPStan is included with ShieldCI. If you\'re seeing this error, ensure you\'ve run `composer install` to install all dependencies. If the issue persists, verify that `vendor/bin/phpstan` exists in your project.',
+                    metadata: []
+                )]
+            );
+        }
+
+        try {
+            // Run PHPStan on app directory
+            $runner->analyze('app', 5);
+
+            // Filter for method override issues
+            $issues = $runner->filterByPattern(self::INVALID_METHOD_OVERRIDE_PATTERNS);
+        } catch (\Throwable $e) {
+            return $this->error(
+                sprintf('PHPStan analysis failed: %s', $e->getMessage()),
+                []
+            );
+        }
 
         if ($issues->isEmpty()) {
             return $this->passed('No invalid method overrides detected');
         }
 
-        $issueObjects = [];
-
-        foreach ($issues->take(50) as $issue) {
-            $issueObjects[] = $this->createIssue(
-                message: 'Invalid method override detected',
-                location: new Location($issue['file'], $issue['line']),
-                severity: Severity::High,
-                recommendation: $this->getRecommendation($issue['message']),
-                metadata: [
-                    'phpstan_message' => $issue['message'],
-                    'file' => $issue['file'],
-                    'line' => $issue['line'],
-                ]
-            );
-        }
+        // Use trait method to create issues
+        $issueObjects = $this->createIssuesFromPHPStanResults(
+            issues: $issues,
+            issueMessage: 'Invalid method override detected',
+            severity: Severity::High,
+            recommendationCallback: fn (string $message) => $this->getRecommendation($message)
+        );
 
         $totalCount = $issues->count();
         $displayedCount = count($issueObjects);
 
-        $message = $totalCount > $displayedCount
-            ? "Found {$totalCount} invalid method overrides (showing first {$displayedCount})"
-            : "Found {$totalCount} invalid method override(s)";
+        $message = $this->formatIssueCountMessage(
+            totalCount: $totalCount,
+            displayedCount: $displayedCount,
+            issueType: 'invalid method override(s)'
+        );
 
         return $this->failed($message, $issueObjects);
     }

@@ -27,15 +27,32 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
-            id: 'cookie-security',
-            name: 'Cookie Security Analyzer',
+            id: 'cookie',
+            name: 'Cookie Analyzer',
             description: 'Validates cookie encryption and security configuration',
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['cookies', 'encryption', 'xss', 'security', 'configuration'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/cookie-security',
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/cookie',
             timeToFix: 15
         );
+    }
+
+    public function shouldRun(): bool
+    {
+        // Check if there are any files to analyze
+        $sessionConfig = ConfigFileHelper::getConfigPath($this->getBasePath(), 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+        $kernelFile = $this->buildPath('app', 'Http', 'Kernel.php');
+        $bootstrapApp = $this->buildPath('bootstrap', 'app.php');
+
+        return file_exists($sessionConfig) ||
+               file_exists($kernelFile) ||
+               file_exists($bootstrapApp);
+    }
+
+    public function getSkipReason(): string
+    {
+        return 'No session configuration or middleware files found to analyze';
     }
 
     protected function runAnalysis(): ResultInterface
@@ -48,14 +65,11 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
         // Check for EncryptCookies middleware
         $this->checkEncryptCookiesMiddleware($issues);
 
-        if (empty($issues)) {
-            return $this->passed('Cookie security configuration is properly set');
-        }
+        $summary = empty($issues)
+            ? 'Cookie security configuration is properly set'
+            : sprintf('Found %d cookie security issue%s', count($issues), count($issues) === 1 ? '' : 's');
 
-        return $this->failed(
-            sprintf('Found %d cookie security issues', count($issues)),
-            $issues
-        );
+        return $this->resultBySeverity($summary, $issues);
     }
 
     /**
@@ -63,7 +77,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
      */
     private function checkSessionConfig(array &$issues): void
     {
-        $sessionConfig = ConfigFileHelper::getConfigPath($this->basePath, 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+        $sessionConfig = ConfigFileHelper::getConfigPath($this->getBasePath(), 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
         if (! file_exists($sessionConfig)) {
             return;
@@ -77,8 +91,17 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
         $lines = FileParser::getLines($sessionConfig);
 
         foreach ($lines as $lineNumber => $line) {
+            if (! is_string($line)) {
+                continue;
+            }
+
+            // Skip commented lines
+            if (preg_match('/^\s*\/\//', $line)) {
+                continue;
+            }
+
             // Check HttpOnly flag
-            if (preg_match('/["\']http_only["\']\s*=>\s*(false|0)/i', $line)) {
+            if (preg_match('/["\']http_only["\']\s*=>\s*(false|0)/i', $line, $matches)) {
                 $issues[] = $this->createIssue(
                     message: 'Session cookies are not secured with HttpOnly flag',
                     location: new Location(
@@ -87,12 +110,17 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                     ),
                     severity: Severity::Critical,
                     recommendation: 'Set "http_only" => true in config/session.php to protect against XSS attacks',
-                    code: trim($line)
+                    code: FileParser::getCodeSnippet($sessionConfig, $lineNumber + 1),
+                    metadata: [
+                        'file' => 'session.php',
+                        'config_key' => 'http_only',
+                        'current_value' => $matches[1],
+                    ]
                 );
             }
 
             // Check Secure flag (should be true for HTTPS sites)
-            if (preg_match('/["\']secure["\']\s*=>\s*(false|0)/i', $line)) {
+            if (preg_match('/["\']secure["\']\s*=>\s*(false|0)/i', $line, $matches)) {
                 $issues[] = $this->createIssue(
                     message: 'Session cookies are not restricted to HTTPS (secure flag disabled)',
                     location: new Location(
@@ -101,12 +129,17 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                     ),
                     severity: Severity::High,
                     recommendation: 'Set "secure" => env("SESSION_SECURE_COOKIE", true) for HTTPS-only applications',
-                    code: trim($line)
+                    code: FileParser::getCodeSnippet($sessionConfig, $lineNumber + 1),
+                    metadata: [
+                        'file' => 'session.php',
+                        'config_key' => 'secure',
+                        'current_value' => $matches[1],
+                    ]
                 );
             }
 
             // Check SameSite attribute
-            if (preg_match('/["\']same_site["\']\s*=>\s*["\']?(?:null|none)["\']?/i', $line)) {
+            if (preg_match('/["\']same_site["\']\s*=>\s*["\']?(null|none)["\']?/i', $line, $matches)) {
                 $issues[] = $this->createIssue(
                     message: 'Session cookies have weak SameSite protection',
                     location: new Location(
@@ -115,7 +148,12 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                     ),
                     severity: Severity::Medium,
                     recommendation: 'Use "same_site" => "lax" or "strict" to protect against CSRF attacks',
-                    code: trim($line)
+                    code: FileParser::getCodeSnippet($sessionConfig, $lineNumber + 1),
+                    metadata: [
+                        'file' => 'session.php',
+                        'config_key' => 'same_site',
+                        'current_value' => $matches[1],
+                    ]
                 );
             }
         }
@@ -126,11 +164,11 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
      */
     private function checkEncryptCookiesMiddleware(array &$issues): void
     {
-        $kernelFile = $this->basePath.'/app/Http/Kernel.php';
+        $kernelFile = $this->buildPath('app', 'Http', 'Kernel.php');
 
         if (! file_exists($kernelFile)) {
             // Check bootstrap/app.php for Laravel 11+
-            $bootstrapApp = $this->basePath.'/bootstrap/app.php';
+            $bootstrapApp = $this->buildPath('bootstrap', 'app.php');
             if (file_exists($bootstrapApp)) {
                 $this->checkBootstrapApp($bootstrapApp, $issues);
             }
@@ -139,7 +177,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
         }
 
         $content = FileParser::readFile($kernelFile);
-        if ($content === null) {
+        if ($content === null || ! is_string($content)) {
             return;
         }
 
@@ -153,13 +191,22 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                 ),
                 severity: Severity::Critical,
                 recommendation: 'Add \\App\\Http\\Middleware\\EncryptCookies::class to $middleware array in app/Http/Kernel.php',
-                code: 'Missing EncryptCookies middleware'
+                code: FileParser::getCodeSnippet($kernelFile, 1),
+                metadata: [
+                    'file' => 'Kernel.php',
+                    'middleware' => 'EncryptCookies',
+                    'status' => 'missing',
+                ]
             );
         }
 
         // Check if it's commented out
         $lines = FileParser::getLines($kernelFile);
         foreach ($lines as $lineNumber => $line) {
+            if (! is_string($line)) {
+                continue;
+            }
+
             if (str_contains($line, 'EncryptCookies') &&
                 preg_match('/^\s*\/\//', $line)) {
                 $issues[] = $this->createIssue(
@@ -170,7 +217,13 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                     ),
                     severity: Severity::Critical,
                     recommendation: 'Uncomment the EncryptCookies middleware to enable cookie encryption',
-                    code: trim($line)
+                    code: FileParser::getCodeSnippet($kernelFile, $lineNumber + 1),
+                    metadata: [
+                        'file' => 'Kernel.php',
+                        'middleware' => 'EncryptCookies',
+                        'status' => 'commented',
+                        'line' => $lineNumber + 1,
+                    ]
                 );
             }
         }
@@ -182,7 +235,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
     private function checkBootstrapApp(string $file, array &$issues): void
     {
         $content = FileParser::readFile($file);
-        if ($content === null) {
+        if ($content === null || ! is_string($content)) {
             return;
         }
 
@@ -195,7 +248,12 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                 ),
                 severity: Severity::High,
                 recommendation: 'Ensure cookie encryption is enabled in your middleware configuration',
-                code: 'EncryptCookies middleware not found in bootstrap/app.php'
+                code: FileParser::getCodeSnippet($file, 1),
+                metadata: [
+                    'file' => 'bootstrap/app.php',
+                    'laravel_version' => '11+',
+                    'middleware' => 'EncryptCookies',
+                ]
             );
         }
     }

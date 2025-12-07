@@ -489,7 +489,7 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('route-caching', $metadata->id);
-        $this->assertEquals('Route Caching', $metadata->name);
+        $this->assertEquals('Route Caching Analyzer', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $metadata->severity);
         $this->assertContains('cache', $metadata->tags);

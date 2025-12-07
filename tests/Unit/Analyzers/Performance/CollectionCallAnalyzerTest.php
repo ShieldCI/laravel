@@ -131,7 +131,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('collection-call-optimization', $metadata->id);
-        $this->assertEquals('Collection Call Optimization', $metadata->name);
+        $this->assertEquals('Collection Call Optimization Analyzer', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $metadata->severity);
         $this->assertContains('phpstan', $metadata->tags);

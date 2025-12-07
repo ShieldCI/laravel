@@ -6,6 +6,7 @@ namespace ShieldCI\Analyzers\CodeQuality;
 
 use PhpParser\Comment\Doc;
 use PhpParser\Node;
+use PhpParser\Node\Expr;
 use PhpParser\Node\Stmt;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
@@ -40,7 +41,7 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'missing-docblock',
-            name: 'Missing DocBlock',
+            name: 'Missing DocBlock Analyzer',
             description: 'Flags public methods without proper PHPDoc documentation for better code maintainability',
             category: Category::CodeQuality,
             severity: Severity::Low,
@@ -118,24 +119,7 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
             'Use descriptive parameter and return descriptions',
         ];
 
-        $example = <<<PHP
-
-/**
- * Process the given order and update inventory.
- *
- * @param Order \$order The order to process
- * @param User \$user The user placing the order
- * @return ProcessedOrder The processed order details
- * @throws InsufficientInventoryException When inventory is insufficient
- * @throws PaymentFailedException When payment processing fails
- */
-public function {$method}(Order \$order, User \$user): ProcessedOrder
-{
-    // Implementation
-}
-PHP;
-
-        return $base.'Documentation guidelines: '.implode('; ', $guidelines).". Example:{$example}";
+        return $base.'Documentation guidelines: '.implode('; ', $guidelines);
     }
 }
 
@@ -225,7 +209,9 @@ class DocBlockVisitor extends NodeVisitorAbstract
     private function shouldExclude(string $methodName): bool
     {
         foreach ($this->excludePatterns as $pattern) {
-            $regex = '/^'.str_replace('*', '.*', $pattern).'$/i';
+            // Convert glob pattern to regex (escape special chars, then replace * with .*)
+            $escaped = preg_quote($pattern, '/');
+            $regex = '/^'.str_replace('\\*', '.*', $escaped).'$/i';
             if (preg_match($regex, $methodName)) {
                 return true;
             }
@@ -284,14 +270,77 @@ class DocBlockVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // Simple heuristic: check for throw statements or try-catch blocks
-        foreach ($node->stmts as $stmt) {
+        return $this->hasThrowStatement($node->stmts);
+    }
+
+    /**
+     * Recursively check for throw statements in statement list.
+     *
+     * @param  array<Node\Stmt>  $stmts
+     */
+    private function hasThrowStatement(array $stmts): bool
+    {
+        foreach ($stmts as $stmt) {
+            // Direct throw statement (PHP < 8)
             if ($stmt instanceof Stmt\Throw_) {
                 return true;
             }
 
-            if ($stmt instanceof Stmt\TryCatch) {
+            // Throw expression wrapped in Expression statement (PHP 8+)
+            if ($stmt instanceof Stmt\Expression && $stmt->expr instanceof Expr\Throw_) {
                 return true;
+            }
+
+            // Check nested blocks
+            if ($stmt instanceof Stmt\If_) {
+                if ($this->hasThrowStatement($stmt->stmts)) {
+                    return true;
+                }
+                foreach ($stmt->elseifs as $elseif) {
+                    if ($this->hasThrowStatement($elseif->stmts)) {
+                        return true;
+                    }
+                }
+                if ($stmt->else !== null && $this->hasThrowStatement($stmt->else->stmts)) {
+                    return true;
+                }
+            } elseif ($stmt instanceof Stmt\While_) {
+                if ($this->hasThrowStatement($stmt->stmts)) {
+                    return true;
+                }
+            } elseif ($stmt instanceof Stmt\Do_) {
+                if ($this->hasThrowStatement($stmt->stmts)) {
+                    return true;
+                }
+            } elseif ($stmt instanceof Stmt\For_) {
+                if ($this->hasThrowStatement($stmt->stmts)) {
+                    return true;
+                }
+            } elseif ($stmt instanceof Stmt\Foreach_) {
+                if ($this->hasThrowStatement($stmt->stmts)) {
+                    return true;
+                }
+            } elseif ($stmt instanceof Stmt\Switch_) {
+                foreach ($stmt->cases as $case) {
+                    if ($this->hasThrowStatement($case->stmts)) {
+                        return true;
+                    }
+                }
+            } elseif ($stmt instanceof Stmt\TryCatch) {
+                // Check try block for throws
+                if ($this->hasThrowStatement($stmt->stmts)) {
+                    return true;
+                }
+                // Check catch blocks for re-throws or new throws
+                foreach ($stmt->catches as $catch) {
+                    if ($this->hasThrowStatement($catch->stmts)) {
+                        return true;
+                    }
+                }
+                // Check finally block
+                if ($stmt->finally !== null && $this->hasThrowStatement($stmt->finally->stmts)) {
+                    return true;
+                }
             }
         }
 

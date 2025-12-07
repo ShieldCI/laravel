@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Support\ComposerValidator;
 
 /**
  * Validates composer.json file integrity.
@@ -22,11 +23,15 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class ComposerValidationAnalyzer extends AbstractFileAnalyzer
 {
+    public function __construct(
+        private ComposerValidator $composerValidator = new ComposerValidator
+    ) {}
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
             id: 'composer-validation',
-            name: 'Composer Validation',
+            name: 'Composer Validation Analyzer',
             description: 'Ensures composer.json file is valid and follows best practices',
             category: Category::Reliability,
             severity: Severity::Critical,
@@ -38,14 +43,16 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $composerJsonPath = $this->basePath.'/composer.json';
+        $composerJsonPath = $this->buildPath('composer.json');
 
         if (! file_exists($composerJsonPath)) {
+            $basePath = $this->getBasePath();
+
             return $this->failed(
                 'composer.json file not found',
                 [$this->createIssue(
                     message: 'composer.json file is missing',
-                    location: new Location($this->basePath, 0),
+                    location: new Location($basePath, 1),
                     severity: Severity::Critical,
                     recommendation: 'Create a composer.json file in the root of your project. Run "composer init" to create one interactively.',
                     metadata: []
@@ -54,13 +61,55 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
         }
 
         // Check if composer.json is valid JSON
-        $content = FileParser::readFile($composerJsonPath);
-        if ($content === null) {
-            return $this->failed('Unable to read composer.json file');
+        $jsonValidationResult = $this->validateJsonSyntax($composerJsonPath);
+        if ($jsonValidationResult !== null) {
+            return $jsonValidationResult;
         }
 
-        json_decode($content);
-        if (json_last_error() !== JSON_ERROR_NONE) {
+        $basePath = $this->getBasePath();
+        $result = $this->composerValidator->validate($basePath);
+
+        if (! $result->successful) {
+            return $this->failed(
+                'composer.json validation failed',
+                [$this->createIssue(
+                    message: 'composer validate command reported issues',
+                    location: new Location($composerJsonPath, 1),
+                    severity: Severity::High,
+                    recommendation: 'Run "composer validate" to see full details and resolve the reported issues. Ensure version constraints and schema match Composer expectations.',
+                    code: FileParser::getCodeSnippet($composerJsonPath, 1),
+                    metadata: ['composer_output' => trim($result->output)],
+                )]
+            );
+        }
+
+        return $this->passed('composer.json is valid');
+    }
+
+    /**
+     * Validate JSON syntax of composer.json file.
+     * Returns null if valid, or a ResultInterface with error if invalid.
+     */
+    private function validateJsonSyntax(string $composerJsonPath): ?ResultInterface
+    {
+        $content = FileParser::readFile($composerJsonPath);
+        if ($content === null) {
+            return $this->failed(
+                'Unable to read composer.json file',
+                [$this->createIssue(
+                    message: 'composer.json file exists but cannot be read',
+                    location: new Location($composerJsonPath, 1),
+                    severity: Severity::Critical,
+                    recommendation: 'Check file permissions on composer.json. Ensure the file is readable by the web server user.',
+                    metadata: []
+                )]
+            );
+        }
+
+        $decoded = json_decode($content, true);
+        $jsonError = json_last_error();
+
+        if ($jsonError !== JSON_ERROR_NONE) {
             return $this->failed(
                 'composer.json contains invalid JSON',
                 [$this->createIssue(
@@ -68,6 +117,7 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
                     location: new Location($composerJsonPath, 1),
                     severity: Severity::Critical,
                     recommendation: 'Fix the JSON syntax errors in composer.json. Use a JSON validator or run "composer validate" to see specific errors. Common issues: missing commas, trailing commas, unescaped quotes.',
+                    code: FileParser::getCodeSnippet($composerJsonPath, 1),
                     metadata: [
                         'json_error' => json_last_error_msg(),
                     ]
@@ -75,38 +125,22 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        // Run composer validate command
-        $currentDir = getcwd();
-        if ($currentDir === false) {
-            return $this->warning('Unable to determine current directory');
-        }
-
-        chdir($this->basePath);
-
-        $output = shell_exec('composer validate --no-check-publish 2>&1');
-
-        chdir($currentDir);
-
-        if ($output === null || $output === false) {
-            return $this->warning('Unable to run composer validate command');
-        }
-
-        // Check if validation passed
-        if (! str_contains((string) $output, 'is valid')) {
+        // Validate that decoded JSON is an object (composer.json should be an object, not an array or primitive)
+        // Note: array_is_list([]) returns true, but empty objects are valid, so check non-empty arrays only
+        if (! is_array($decoded) || (! empty($decoded) && array_is_list($decoded))) {
             return $this->failed(
-                'composer.json validation failed',
+                'composer.json is not a valid JSON object',
                 [$this->createIssue(
-                    message: 'composer validate command reported issues',
+                    message: 'composer.json must be a JSON object, not a primitive value or array',
                     location: new Location($composerJsonPath, 1),
-                    severity: Severity::High,
-                    recommendation: 'Run "composer validate" to see detailed validation errors. Fix the reported issues in composer.json. Common issues: invalid version constraints, deprecated fields, missing required fields.',
-                    metadata: [
-                        'composer_output' => trim($output),
-                    ]
+                    severity: Severity::Critical,
+                    recommendation: 'composer.json must be a valid JSON object. Ensure the root element is an object (wrapped in curly braces {}), not an array (square brackets []).',
+                    code: FileParser::getCodeSnippet($composerJsonPath, 1),
+                    metadata: []
                 )]
             );
         }
 
-        return $this->passed('composer.json is valid');
+        return null;
     }
 }

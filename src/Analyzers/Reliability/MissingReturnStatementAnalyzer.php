@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\ParsesPHPStanResults;
 use ShieldCI\Support\PHPStanRunner;
 
 /**
@@ -22,10 +23,14 @@ use ShieldCI\Support\PHPStanRunner;
  */
 class MissingReturnStatementAnalyzer extends AbstractFileAnalyzer
 {
+    use ParsesPHPStanResults;
+
     /**
+     * PHPStan patterns for detecting missing return statements.
+     *
      * @var array<string>
      */
-    private array $patterns = [
+    private const MISSING_RETURN_STATEMENT_PATTERNS = [
         '* return statement is missing*',
         'Method * should return * but return statement is missing*',
         'Function * should return * but return statement is missing*',
@@ -35,7 +40,7 @@ class MissingReturnStatementAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'missing-return-statement',
-            name: 'Missing Return Statements',
+            name: 'Missing Return Statements Analyzer',
             description: 'Detects missing return statements in methods and functions using PHPStan static analysis',
             category: Category::Reliability,
             severity: Severity::High,
@@ -47,40 +52,57 @@ class MissingReturnStatementAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $runner = new PHPStanRunner($this->basePath);
+        $basePath = $this->getBasePath();
 
-        // Run PHPStan on app directory at level 5
-        $runner->analyze('app', 5);
+        $runner = new PHPStanRunner($basePath);
 
-        // Filter for missing return statement issues
-        $issues = $runner->filterByPattern($this->patterns);
+        // Check if PHPStan is available
+        if (! $runner->isAvailable()) {
+            return $this->warning(
+                'PHPStan is not available',
+                [$this->createIssue(
+                    message: 'PHPStan binary not found',
+                    location: new Location($basePath, 1),
+                    severity: Severity::Medium,
+                    recommendation: 'Install PHPStan to enable missing return statement detection. Run: composer require --dev phpstan/phpstan',
+                    metadata: []
+                )]
+            );
+        }
+
+        try {
+            // Run PHPStan on app directory
+            $runner->analyze('app', 5);
+
+            // Filter for missing return statement issues
+            $issues = $runner->filterByPattern(self::MISSING_RETURN_STATEMENT_PATTERNS);
+        } catch (\Throwable $e) {
+            return $this->error(
+                sprintf('PHPStan analysis failed: %s', $e->getMessage()),
+                []
+            );
+        }
 
         if ($issues->isEmpty()) {
             return $this->passed('No missing return statements detected');
         }
 
-        $issueObjects = [];
-
-        foreach ($issues->take(50) as $issue) {
-            $issueObjects[] = $this->createIssue(
-                message: 'Missing return statement detected',
-                location: new Location($issue['file'], $issue['line']),
-                severity: Severity::High,
-                recommendation: $this->getRecommendation($issue['message']),
-                metadata: [
-                    'phpstan_message' => $issue['message'],
-                    'file' => $issue['file'],
-                    'line' => $issue['line'],
-                ]
-            );
-        }
+        // Use trait method to create issues
+        $issueObjects = $this->createIssuesFromPHPStanResults(
+            issues: $issues,
+            issueMessage: 'Missing return statement detected',
+            severity: Severity::High,
+            recommendationCallback: fn (string $message) => $this->getRecommendation($message)
+        );
 
         $totalCount = $issues->count();
         $displayedCount = count($issueObjects);
 
-        $message = $totalCount > $displayedCount
-            ? "Found {$totalCount} missing return statements (showing first {$displayedCount})"
-            : "Found {$totalCount} missing return statement(s)";
+        $message = $this->formatIssueCountMessage(
+            totalCount: $totalCount,
+            displayedCount: $displayedCount,
+            issueType: 'missing return statement(s)'
+        );
 
         return $this->failed($message, $issueObjects);
     }

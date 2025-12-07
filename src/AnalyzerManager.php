@@ -37,12 +37,9 @@ class AnalyzerManager
         $disabledAnalyzers = is_array($disabledAnalyzersConfig) ? $disabledAnalyzersConfig : [];
 
         $analyzersConfigRaw = $this->config->get('shieldci.analyzers', []);
-        /** @var array<string, bool> $analyzersConfig */
+        /** @var array<string, array<string, mixed>> $analyzersConfig */
         $analyzersConfig = is_array($analyzersConfigRaw) ? $analyzersConfigRaw : [];
-        $enabledCategories = collect($analyzersConfig)
-            ->filter(fn ($enabled) => $enabled === true)
-            ->keys()
-            ->toArray();
+        $enabledCategories = $this->getEnabledCategories($analyzersConfig);
 
         // CI mode configuration
         $isCiMode = $this->config->get('shieldci.ci_mode', false);
@@ -205,12 +202,9 @@ class AnalyzerManager
         $disabledAnalyzers = is_array($disabledAnalyzersConfig) ? $disabledAnalyzersConfig : [];
 
         $analyzersConfigRaw = $this->config->get('shieldci.analyzers', []);
-        /** @var array<string, bool> $analyzersConfig */
+        /** @var array<string, array<string, mixed>> $analyzersConfig */
         $analyzersConfig = is_array($analyzersConfigRaw) ? $analyzersConfigRaw : [];
-        $enabledCategories = collect($analyzersConfig)
-            ->filter(fn ($enabled) => $enabled === true)
-            ->keys()
-            ->toArray();
+        $enabledCategories = $this->getEnabledCategories($analyzersConfig);
 
         // CI mode configuration
         $isCiMode = $this->config->get('shieldci.ci_mode', false);
@@ -347,12 +341,9 @@ class AnalyzerManager
         $disabledAnalyzers = is_array($disabledAnalyzersConfig) ? $disabledAnalyzersConfig : [];
 
         $analyzersConfigRaw = $this->config->get('shieldci.analyzers', []);
-        /** @var array<string, bool> $analyzersConfig */
+        /** @var array<string, array<string, mixed>> $analyzersConfig */
         $analyzersConfig = is_array($analyzersConfigRaw) ? $analyzersConfigRaw : [];
-        $enabledCategories = collect($analyzersConfig)
-            ->filter(fn ($enabled) => $enabled === true)
-            ->keys()
-            ->toArray();
+        $enabledCategories = $this->getEnabledCategories($analyzersConfig);
 
         $isCiMode = $this->config->get('shieldci.ci_mode', false);
         $ciAnalyzersConfig = $this->config->get('shieldci.ci_mode_analyzers', []);
@@ -447,5 +438,53 @@ class AnalyzerManager
     public function enabledCount(): int
     {
         return $this->getAnalyzers()->count();
+    }
+
+    /**
+     * Extract enabled categories from analyzer configuration.
+     *
+     * @param  array<string, array<string, mixed>>  $analyzersConfig
+     * @return array<string>
+     */
+    private function getEnabledCategories(array $analyzersConfig): array
+    {
+        $enabled = [];
+
+        foreach ($analyzersConfig as $category => $config) {
+            if (is_array($config) && ($config['enabled'] ?? true) === true) {
+                $enabled[] = $category;
+            }
+        }
+
+        return $enabled;
+    }
+
+    /**
+     * Get analyzer-specific configuration for a category.
+     *
+     * @param  array<string, mixed>  $defaults
+     * @return array<string, mixed>
+     */
+    public function getAnalyzerConfig(string $category, string $analyzerId, array $defaults = []): array
+    {
+        $analyzersConfigRaw = $this->config->get('shieldci.analyzers', []);
+        /** @var array<string, array<string, mixed>> $analyzersConfig */
+        $analyzersConfig = is_array($analyzersConfigRaw) ? $analyzersConfigRaw : [];
+
+        $categoryConfig = $analyzersConfig[$category] ?? [];
+
+        if (! is_array($categoryConfig)) {
+            return $defaults;
+        }
+
+        // Get analyzer-specific config from category config
+        $analyzerConfig = $categoryConfig[$analyzerId] ?? [];
+
+        if (! is_array($analyzerConfig)) {
+            return $defaults;
+        }
+
+        // Merge with defaults
+        return array_merge($defaults, $analyzerConfig);
     }
 }

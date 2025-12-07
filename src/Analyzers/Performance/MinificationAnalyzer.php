@@ -80,7 +80,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'asset-minification',
-            name: 'Asset Minification',
+            name: 'Asset Minification Analyzer',
             description: 'Ensures JavaScript and CSS assets are minified in production',
             category: Category::Performance,
             severity: Severity::Medium,

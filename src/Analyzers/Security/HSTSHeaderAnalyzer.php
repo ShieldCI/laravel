@@ -18,9 +18,10 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  *
  * Checks for:
  * - HSTS header in middleware
- * - Proper max-age configuration
+ * - Proper max-age configuration (>= 6 months)
  * - includeSubDomains directive
- * - preload directive
+ * - preload directive (optional)
+ * - Secure cookie configuration for HTTPS apps
  */
 class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
 {
@@ -61,17 +62,11 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
         // Check session configuration
         $this->checkSessionConfiguration($issues);
 
-        // Check for security middleware packages
-        $hasSecurityMiddleware = $this->checkSecurityMiddlewarePackages();
+        $summary = empty($issues)
+            ? 'HSTS header configuration is properly set'
+            : sprintf('Found %d HSTS header configuration issue%s', count($issues), count($issues) === 1 ? '' : 's');
 
-        if (empty($issues) || $hasSecurityMiddleware) {
-            return $this->passed('HSTS header configuration is properly set');
-        }
-
-        return $this->failed(
-            sprintf('Found %d HSTS header configuration issues', count($issues)),
-            $issues
-        );
+        return $this->resultBySeverity($summary, $issues);
     }
 
     /**
@@ -80,7 +75,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
     private function isHttpsOnlyApp(): bool
     {
         // Check session configuration
-        $sessionConfig = ConfigFileHelper::getConfigPath($this->basePath, 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+        $sessionConfig = ConfigFileHelper::getConfigPath($this->getBasePath(), 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
         if (file_exists($sessionConfig)) {
             $content = FileParser::readFile($sessionConfig);
@@ -90,14 +85,35 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
         }
 
         // Check .env for FORCE_HTTPS or APP_URL with https
-        $envFile = $this->basePath.'/.env';
+        $envFile = $this->getBasePath().DIRECTORY_SEPARATOR.'.env';
         if (file_exists($envFile)) {
             $content = FileParser::readFile($envFile);
-            if ($content !== null) {
+            if ($content !== null && is_string($content)) {
                 if (preg_match('/^APP_URL\s*=\s*https:/im', $content) ||
                     preg_match('/^FORCE_HTTPS\s*=\s*true/im', $content)) {
                     return true;
                 }
+            }
+        }
+
+        // Check config/app.php for force_https
+        $appConfig = ConfigFileHelper::getConfigPath($this->getBasePath(), 'app.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+        if (file_exists($appConfig)) {
+            $content = FileParser::readFile($appConfig);
+            if ($content !== null && preg_match('/["\']force_https["\']\s*=>\s*true/i', $content)) {
+                return true;
+            }
+        }
+
+        // Check for HTTPS enforcement middleware in Kernel.php
+        $kernelFile = $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Kernel.php';
+        if (file_exists($kernelFile)) {
+            $content = FileParser::readFile($kernelFile);
+            if ($content !== null && (
+                str_contains($content, 'ForceHttps') ||
+                str_contains($content, 'HttpsProtocol')
+            )) {
+                return true;
             }
         }
 
@@ -109,18 +125,21 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
      */
     private function checkMiddlewareConfiguration(array &$issues): void
     {
-        $middlewarePaths = [
-            $this->basePath.'/app/Http/Middleware',
-            $this->basePath.'/app/Http/Middleware/Security',
-        ];
-
         $hasHSTSMiddleware = false;
+        $config = $this->getConfiguration();
+
+        // Scan middleware directories directly
+        $middlewarePaths = [
+            $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Middleware',
+            $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Middleware'.DIRECTORY_SEPARATOR.'Security',
+        ];
 
         foreach ($middlewarePaths as $path) {
             if (! is_dir($path)) {
                 continue;
             }
 
+            /** @var \SplFileInfo $file */
             foreach (new \RecursiveIteratorIterator(
                 new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
             ) as $file) {
@@ -128,8 +147,22 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
+                // Check if this file is in ignored list
+                $relativePath = $this->getRelativePath($file->getPathname());
+                $shouldIgnore = false;
+                foreach ($config['ignored_middleware'] as $ignoredPath) {
+                    if (is_string($ignoredPath) && str_contains($relativePath, $ignoredPath)) {
+                        $shouldIgnore = true;
+                        break;
+                    }
+                }
+
+                if ($shouldIgnore) {
+                    continue;
+                }
+
                 $content = FileParser::readFile($file->getPathname());
-                if ($content === null) {
+                if ($content === null || ! is_string($content)) {
                     continue;
                 }
 
@@ -144,16 +177,24 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        if (! $hasHSTSMiddleware) {
+        // Check for security packages that might handle HSTS
+        $hasSecurityPackage = $this->checkSecurityMiddlewarePackages();
+
+        if (! $hasHSTSMiddleware && ! $hasSecurityPackage) {
+            $middlewarePath = $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Middleware';
             $issues[] = $this->createIssue(
                 message: 'HTTPS-only application missing HSTS (Strict-Transport-Security) header',
                 location: new Location(
-                    'app/Http/Middleware',
+                    $middlewarePath,
                     1
                 ),
                 severity: Severity::High,
                 recommendation: 'Add middleware to set Strict-Transport-Security header: "max-age=31536000; includeSubDomains; preload"',
-                code: 'Missing HSTS header protection'
+                code: FileParser::getCodeSnippet($middlewarePath, 1),
+                metadata: [
+                    'issue_type' => 'missing_hsts',
+                    'https_only' => true,
+                ]
             );
         }
     }
@@ -164,39 +205,79 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
     private function validateHSTSConfiguration(string $file, string $content, array &$issues): void
     {
         $lines = FileParser::getLines($file);
+        $config = $this->getConfiguration();
 
         foreach ($lines as $lineNumber => $line) {
+            if (! is_string($line)) {
+                continue;
+            }
+
             if (str_contains($line, 'Strict-Transport-Security')) {
                 // Check max-age value
                 if (preg_match('/max-age\s*=\s*(\d+)/i', $line, $matches)) {
                     $maxAge = (int) $matches[1];
 
-                    // Recommended minimum is 6 months (15768000 seconds), ideally 1 year (31536000)
-                    if ($maxAge < 15768000) {
+                    // Check against configured minimum
+                    /** @var int $minMaxAge */
+                    $minMaxAge = $config['min_max_age'];
+
+                    if ($maxAge < $minMaxAge) {
+                        $daysVulnerable = ($minMaxAge - $maxAge) / 86400;
+
                         $issues[] = $this->createIssue(
-                            message: sprintf('HSTS max-age (%d seconds) is below recommended minimum of 6 months', $maxAge),
+                            message: sprintf('HSTS max-age (%d seconds) is below recommended minimum of %d seconds', $maxAge, $minMaxAge),
                             location: new Location(
                                 $this->getRelativePath($file),
                                 $lineNumber + 1
                             ),
-                            severity: Severity::Medium,
-                            recommendation: 'Set HSTS max-age to at least 15768000 (6 months) or 31536000 (1 year)',
-                            code: trim($line)
+                            severity: Severity::High,
+                            recommendation: sprintf('Set HSTS max-age to at least %d (6 months) or 31536000 (1 year)', $minMaxAge),
+                            code: FileParser::getCodeSnippet($file, $lineNumber + 1),
+                            metadata: [
+                                'issue_type' => 'weak_max_age',
+                                'max_age' => $maxAge,
+                                'min_recommended' => $minMaxAge,
+                                'days_vulnerable' => (int) $daysVulnerable,
+                            ]
                         );
                     }
                 }
 
                 // Check for includeSubDomains
-                if (! str_contains($line, 'includeSubDomains')) {
+                if ($config['require_include_subdomains'] && ! str_contains($line, 'includeSubDomains')) {
                     $issues[] = $this->createIssue(
                         message: 'HSTS header missing "includeSubDomains" directive',
                         location: new Location(
                             $this->getRelativePath($file),
                             $lineNumber + 1
                         ),
-                        severity: Severity::Low,
+                        severity: Severity::Medium,
                         recommendation: 'Add "includeSubDomains" to HSTS header for complete subdomain protection',
-                        code: trim($line)
+                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
+                        metadata: [
+                            'issue_type' => 'missing_directive',
+                            'missing_directive' => 'includeSubDomains',
+                            'current_header' => trim($line),
+                        ]
+                    );
+                }
+
+                // Check for preload (if required by configuration)
+                if ($config['require_preload'] && ! str_contains($line, 'preload')) {
+                    $issues[] = $this->createIssue(
+                        message: 'HSTS header missing "preload" directive',
+                        location: new Location(
+                            $this->getRelativePath($file),
+                            $lineNumber + 1
+                        ),
+                        severity: Severity::Low,
+                        recommendation: 'Add "preload" to HSTS header and submit to https://hstspreload.org/ for browser preload list inclusion',
+                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
+                        metadata: [
+                            'issue_type' => 'missing_directive',
+                            'missing_directive' => 'preload',
+                            'current_header' => trim($line),
+                        ]
                     );
                 }
             }
@@ -208,7 +289,13 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
      */
     private function checkSessionConfiguration(array &$issues): void
     {
-        $sessionConfig = ConfigFileHelper::getConfigPath($this->basePath, 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+        $config = $this->getConfiguration();
+
+        if (! $config['check_session_secure']) {
+            return;
+        }
+
+        $sessionConfig = ConfigFileHelper::getConfigPath($this->getBasePath(), 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
         if (! file_exists($sessionConfig)) {
             return;
@@ -222,6 +309,10 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
         $lines = FileParser::getLines($sessionConfig);
 
         foreach ($lines as $lineNumber => $line) {
+            if (! is_string($line)) {
+                continue;
+            }
+
             // If app is HTTPS-only but secure cookies are disabled
             if (preg_match('/["\']secure["\']\s*=>\s*(false|0)/i', $line)) {
                 $issues[] = $this->createIssue(
@@ -232,7 +323,11 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
                     ),
                     severity: Severity::High,
                     recommendation: 'Set "secure" => true in config/session.php for HTTPS-only applications',
-                    code: trim($line)
+                    code: FileParser::getCodeSnippet($sessionConfig, $lineNumber + 1),
+                    metadata: [
+                        'issue_type' => 'insecure_cookies',
+                        'https_only' => true,
+                    ]
                 );
             }
         }
@@ -243,14 +338,14 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
      */
     private function checkSecurityMiddlewarePackages(): bool
     {
-        $composerJson = $this->basePath.'/composer.json';
+        $composerJson = $this->getBasePath().DIRECTORY_SEPARATOR.'composer.json';
 
         if (! file_exists($composerJson)) {
             return false;
         }
 
         $content = FileParser::readFile($composerJson);
-        if ($content === null) {
+        if ($content === null || ! is_string($content)) {
             return false;
         }
 
@@ -268,5 +363,24 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
         }
 
         return false;
+    }
+
+    /**
+     * Get analyzer configuration.
+     *
+     * @return array<string, mixed>
+     */
+    private function getConfiguration(): array
+    {
+        /** @var array<string, mixed> $config */
+        $config = config('shieldci.hsts_header', []);
+
+        return array_merge([
+            'min_max_age' => 15768000,  // 6 months in seconds
+            'require_include_subdomains' => true,
+            'require_preload' => false,  // Optional by default
+            'ignored_middleware' => [],
+            'check_session_secure' => true,
+        ], $config);
     }
 }

@@ -68,7 +68,7 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('horizon-suggestion', $metadata->id);
-        $this->assertEquals('Horizon Suggestion', $metadata->name);
+        $this->assertEquals('Horizon Suggestion Analyzer', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $metadata->severity);
         $this->assertContains('queue', $metadata->tags);

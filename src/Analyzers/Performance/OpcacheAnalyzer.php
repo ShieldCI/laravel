@@ -80,7 +80,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'opcache-enabled',
-            name: 'OPcache Enabled',
+            name: 'OPcache Enabled Analyzer',
             description: 'Ensures OPcache is enabled for PHP bytecode caching and performance',
             category: Category::Performance,
             severity: Severity::High,

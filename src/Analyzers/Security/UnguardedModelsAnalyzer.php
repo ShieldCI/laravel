@@ -49,7 +49,13 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
 
         // Check all PHP files for unguard() calls
         foreach ($this->getPhpFiles() as $file) {
-            $this->checkFileForUnguard($file, $issues);
+            $relativePath = $this->getRelativePath($file);
+
+            if ($this->shouldSkipFile($relativePath)) {
+                continue;
+            }
+
+            $this->checkFileForUnguard($file, $relativePath, $issues);
         }
 
         if (empty($issues)) {
@@ -65,7 +71,7 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
     /**
      * Check a file for unguard() usage.
      */
-    private function checkFileForUnguard(string $file, array &$issues): void
+    private function checkFileForUnguard(string $file, string $relativePath, array &$issues): void
     {
         $ast = $this->parser->parseFile($file);
         if (empty($ast)) {
@@ -82,114 +88,170 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $this->traverseNodes($ast, $file, $issues);
+        $this->evaluateStaticCalls($ast, $file, $relativePath, $issues);
     }
 
     /**
-     * Traverse AST nodes looking for unguard() calls.
+     * Normalize path for comparison (lowercase, forward slashes).
      */
-    private function traverseNodes(array $nodes, string $file, array &$issues): void
+    private function normalizePath(string $path): string
     {
-        foreach ($nodes as $node) {
-            if (! $node instanceof Node) {
-                continue;
-            }
-
-            // Check for static method calls
-            if ($node instanceof Node\Expr\StaticCall) {
-                $this->checkStaticCall($node, $file, $issues);
-            }
-
-            // Recursively check child nodes
-            if (property_exists($node, 'stmts') && is_array($node->stmts)) {
-                $this->traverseNodes($node->stmts, $file, $issues);
-            }
-
-            // Check expressions
-            if ($node instanceof Node\Stmt\Expression && $node->expr instanceof Node) {
-                $this->traverseNodes([$node->expr], $file, $issues);
-            }
-
-            // Check other node types that may contain expressions
-            foreach (get_object_vars($node) as $property) {
-                if (is_array($property)) {
-                    $this->traverseNodes($property, $file, $issues);
-                }
-            }
-        }
-    }
-
-    /**
-     * Check static call for unguard() usage.
-     */
-    private function checkStaticCall(Node\Expr\StaticCall $node, string $file, array &$issues): void
-    {
-        // Get the method name
-        $methodName = $node->name instanceof Node\Identifier
-            ? $node->name->toString()
-            : null;
-
-        if ($methodName !== 'unguard') {
-            return;
-        }
-
-        // Get the class name
-        $className = null;
-        if ($node->class instanceof Node\Name) {
-            $className = $node->class->toString();
-        }
-
-        // Check if it's Model::unguard() or Eloquent::unguard()
-        $isModelUnguard = in_array($className, ['Model', 'Eloquent']) ||
-                         str_ends_with($className ?? '', 'Model') ||
-                         str_ends_with($className ?? '', 'Eloquent');
-
-        if ($isModelUnguard || $className === null) {
-            $lineNumber = $node->getLine();
-
-            $issues[] = $this->createIssue(
-                message: sprintf(
-                    'Model mass assignment protection disabled with %s::unguard()',
-                    $className ?? 'Model'
-                ),
-                location: new Location(
-                    $this->getRelativePath($file),
-                    $lineNumber
-                ),
-                severity: $this->getSeverityForContext($file),
-                recommendation: 'Remove Model::unguard() and use $fillable or forceFill() instead. Unguarding models opens mass assignment vulnerabilities.',
-                code: FileParser::getCodeSnippet($file, $lineNumber)
-            );
-        }
+        return strtolower(str_replace('\\', '/', $path));
     }
 
     /**
      * Get severity based on file context.
      */
-    private function getSeverityForContext(string $file): Severity
+    private function getSeverityForContext(string $relativePath): Severity
     {
-        $relativePath = $this->getRelativePath($file);
+        $normalized = $this->normalizePath($relativePath);
 
-        // Critical if in production code
-        if (str_contains($relativePath, '/app/Http/Controllers') ||
-            str_contains($relativePath, '/app/Models') ||
-            str_contains($relativePath, '/app/Services')) {
+        if ($this->containsAny($normalized, ['app/http/controllers', 'http/controllers', 'app/models', 'models/', 'app/services', 'services/'])) {
             return Severity::Critical;
         }
 
-        // High if in seeders (still concerning but common)
-        if (str_contains($relativePath, '/database/seeders') ||
-            str_contains($relativePath, '/database/seeds')) {
+        if ($this->containsAny($normalized, ['database/seeders', 'database/seeds'])) {
             return Severity::Medium;
         }
 
-        // Medium for tests
-        if (str_contains($relativePath, '/tests/') ||
-            str_contains($relativePath, '/Test.php')) {
+        if ($this->containsAny($normalized, ['tests/', '/tests', 'test.php'])) {
             return Severity::Low;
         }
 
-        // High by default
         return Severity::High;
+    }
+
+    /**
+     * @param  array<string>  $needles
+     */
+    private function containsAny(string $haystack, array $needles): bool
+    {
+        foreach ($needles as $needle) {
+            if ($needle === '') {
+                continue;
+            }
+
+            if (str_contains($haystack, rtrim($needle, '/'))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function shouldSkipFile(string $relativePath): bool
+    {
+        $normalized = $this->normalizePath($relativePath);
+
+        return str_starts_with($normalized, 'vendor/') || str_contains($normalized, '/vendor/');
+    }
+
+    private function evaluateStaticCalls(array $ast, string $file, string $relativePath, array &$issues): void
+    {
+        /** @var array<Node\Expr\StaticCall> $staticCalls */
+        $staticCalls = $this->parser->findNodes($ast, Node\Expr\StaticCall::class);
+
+        if (empty($staticCalls)) {
+            return;
+        }
+
+        $unguardCalls = [];
+        $reguardLines = [];
+
+        foreach ($staticCalls as $call) {
+            // Only process static calls with Identifier method names
+            if (! ($call->name instanceof Node\Identifier)) {
+                continue;
+            }
+
+            $method = $call->name->toString();
+            $className = $call->class instanceof Node\Name ? $call->class->toString() : null;
+
+            if (! $this->isEloquentClass($className)) {
+                continue;
+            }
+
+            if ($method === 'unguard') {
+                $unguardCalls[] = $call;
+            }
+
+            if ($method === 'reguard') {
+                $reguardLines[] = $call->getLine();
+            }
+        }
+
+        if (empty($unguardCalls)) {
+            return;
+        }
+
+        sort($reguardLines);
+        usort($unguardCalls, fn (Node\Expr\StaticCall $a, Node\Expr\StaticCall $b) => $a->getLine() <=> $b->getLine());
+
+        foreach ($unguardCalls as $call) {
+            $lineNumber = $call->getLine();
+
+            if ($this->consumeReguardAfterLine($reguardLines, $lineNumber)) {
+                continue;
+            }
+
+            $classLabel = $call->class instanceof Node\Name ? $call->class->toString() : 'Model';
+
+            $issues[] = $this->createIssue(
+                message: sprintf(
+                    'Model mass assignment protection disabled without re-guarding (%s::unguard())',
+                    $classLabel
+                ),
+                location: new Location(
+                    $relativePath,
+                    $lineNumber
+                ),
+                severity: $this->getSeverityForContext($relativePath),
+                recommendation: 'Call Model::reguard() immediately after importing or use $fillable/forceFill() instead of globally unguarding models.',
+                code: FileParser::getCodeSnippet($file, $lineNumber)
+            );
+        }
+    }
+
+    private function isEloquentClass(?string $className): bool
+    {
+        if ($className === null) {
+            return true;
+        }
+
+        $normalized = ltrim(strtolower($className), '\\');
+
+        return in_array($normalized, [
+            'model',
+            'eloquent',
+            'illuminate\\database\\eloquent\\model',
+            'illuminate\\database\\eloquent\\eloquent',
+        ], true);
+    }
+
+    /**
+     * Check if there's a reguard() call after this unguard() and consume it.
+     * Also removes any reguard() calls that appear before this unguard() (they belong to previous unguards).
+     *
+     * @param  array<int>  $reguardLines
+     */
+    private function consumeReguardAfterLine(array &$reguardLines, int $lineNumber): bool
+    {
+        // Remove all reguards at or before this unguard (they belong to previous unguards)
+        foreach ($reguardLines as $index => $reguardLine) {
+            if ($reguardLine <= $lineNumber) {
+                unset($reguardLines[$index]);
+            }
+        }
+        $reguardLines = array_values($reguardLines);
+
+        // Now check if there's a reguard after this unguard
+        if (! empty($reguardLines)) {
+            // Consume the first reguard after this unguard
+            array_shift($reguardLines);
+
+            return true;
+        }
+
+        return false;
     }
 }

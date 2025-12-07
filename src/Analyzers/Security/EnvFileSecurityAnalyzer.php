@@ -24,6 +24,14 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 {
+    private const WORLD_READABLE = 0x0004;
+
+    private const WORLD_WRITABLE = 0x0002;
+
+    private const GROUP_READABLE = 0x0020;
+
+    private const GROUP_WRITABLE = 0x0040;
+
     private array $sensitiveKeys = [
         'APP_KEY',
         'DB_PASSWORD',
@@ -36,18 +44,55 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
         'PUSHER_APP_SECRET',
     ];
 
+    private array $placeholderKeywords = ['null', '""', "''", 'your-', 'change-', 'example'];
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
-            id: 'env-file-security',
-            name: 'Environment File Security Analyzer',
+            id: 'env-file',
+            name: 'Environment File Analyzer',
             description: 'Validates .env file security, location, and prevents exposure of sensitive data',
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['env', 'environment', 'secrets', 'security', 'configuration'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/env-file-security',
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/env-file',
             timeToFix: 10
         );
+    }
+
+    public function shouldRun(): bool
+    {
+        $envFile = $this->buildPath('.env');
+        $envExample = $this->buildPath('.env.example');
+        $gitignore = $this->buildPath('.gitignore');
+        $gitDir = $this->buildPath('.git');
+
+        // Check for public directories
+        $publicDirs = [
+            $this->buildPath('public'),
+            $this->buildPath('public_html'),
+            $this->buildPath('www'),
+            $this->buildPath('html'),
+        ];
+
+        $hasPublicDir = false;
+        foreach ($publicDirs as $dir) {
+            if (is_dir($dir)) {
+                $hasPublicDir = true;
+                break;
+            }
+        }
+
+        return file_exists($envFile) ||
+               file_exists($envExample) ||
+               file_exists($gitignore) ||
+               is_dir($gitDir) ||
+               $hasPublicDir;
+    }
+
+    public function getSkipReason(): string
+    {
+        return 'No environment files, git repository, or public directories found to analyze';
     }
 
     protected function runAnalysis(): ResultInterface
@@ -66,14 +111,11 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
         // Check .env file permissions
         $this->checkEnvPermissions($issues);
 
-        if (empty($issues)) {
-            return $this->passed('Environment files are properly secured');
-        }
+        $summary = empty($issues)
+            ? 'Environment files are properly secured'
+            : sprintf('Found %d environment file security issue%s', count($issues), count($issues) === 1 ? '' : 's');
 
-        return $this->failed(
-            sprintf('Found %d environment file security issues', count($issues)),
-            $issues
-        );
+        return $this->resultBySeverity($summary, $issues);
     }
 
     /**
@@ -82,10 +124,10 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
     private function checkPublicEnvFile(array &$issues): void
     {
         $publicEnvPaths = [
-            $this->basePath.'/public/.env',
-            $this->basePath.'/public_html/.env',
-            $this->basePath.'/www/.env',
-            $this->basePath.'/html/.env',
+            $this->buildPath('public', '.env'),
+            $this->buildPath('public_html', '.env'),
+            $this->buildPath('www', '.env'),
+            $this->buildPath('html', '.env'),
         ];
 
         foreach ($publicEnvPaths as $path) {
@@ -98,7 +140,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                     ),
                     severity: Severity::Critical,
                     recommendation: 'IMMEDIATELY remove .env from public directory. It should be in the application root, one level above public/',
-                    code: 'Critical security risk: .env file is publicly accessible'
+                    metadata: ['path' => $path]
                 );
             }
         }
@@ -109,9 +151,14 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
      */
     private function checkEnvExample(array &$issues): void
     {
-        $envExample = $this->basePath.'/.env.example';
+        $envExample = $this->buildPath('.env.example');
+        $envFile = $this->buildPath('.env');
 
         if (! file_exists($envExample)) {
+            // Only flag missing .env.example if .env exists
+            if (! file_exists($envFile)) {
+                return;
+            }
             // While not critical, it's good practice to have .env.example
             $issues[] = $this->createIssue(
                 message: 'Missing .env.example file',
@@ -121,7 +168,11 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                 ),
                 severity: Severity::Low,
                 recommendation: 'Create .env.example as a template for environment configuration (without sensitive values)',
-                code: 'Best practice: provide .env.example for team members'
+                metadata: [
+                    'file' => '.env.example',
+                    'exists' => false,
+                    'env_file_exists' => true,
+                ]
             );
 
             return;
@@ -135,17 +186,29 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
         $lines = FileParser::getLines($envExample);
 
         foreach ($lines as $lineNumber => $line) {
+            if (! is_string($line)) {
+                continue;
+            }
+
             foreach ($this->sensitiveKeys as $key) {
                 // Check if sensitive key has a real value (not placeholder)
-                if (preg_match('/^'.preg_quote($key, '/').'\s*=\s*(.+)$/i', trim($line), $matches)) {
+                $pattern = '/^'.preg_quote($key, '/').'\s*=\s*(.+)$/i';
+                if (preg_match($pattern, trim($line), $matches)) {
+                    if (! isset($matches[1]) || ! is_string($matches[1])) {
+                        continue;
+                    }
+
                     $value = trim($matches[1]);
 
-                    // Skip if it's a common placeholder
-                    $placeholders = ['', 'null', '""', "''", 'your-', 'change-', 'example', 'secret', 'password'];
-                    $isPlaceholder = false;
+                    // Skip if empty or it's a common placeholder
+                    if ($value === '') {
+                        continue;
+                    }
 
-                    foreach ($placeholders as $placeholder) {
-                        if (empty($value) || str_contains(strtolower($value), $placeholder)) {
+                    $isPlaceholder = false;
+                    $lowerValue = strtolower($value);
+                    foreach ($this->placeholderKeywords as $placeholder) {
+                        if (str_contains($lowerValue, $placeholder)) {
                             $isPlaceholder = true;
                             break;
                         }
@@ -161,7 +224,12 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                             ),
                             severity: Severity::High,
                             recommendation: 'Replace with placeholder value. .env.example should not contain real credentials',
-                            code: sprintf('%s=***REDACTED***', $key)
+                            code: FileParser::getCodeSnippet($envExample, $lineNumber + 1),
+                            metadata: [
+                                'key' => $key,
+                                'value_length' => strlen($value),
+                                'file' => '.env.example',
+                            ]
                         );
                     }
                 }
@@ -174,14 +242,14 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
      */
     private function checkGitignore(array &$issues): void
     {
-        $gitignorePath = $this->basePath.'/.gitignore';
+        $gitignorePath = $this->buildPath('.gitignore');
 
         if (! file_exists($gitignorePath)) {
             return; // No git repo
         }
 
         $content = FileParser::readFile($gitignorePath);
-        if ($content === null) {
+        if ($content === null || ! is_string($content)) {
             return;
         }
 
@@ -195,12 +263,17 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                 ),
                 severity: Severity::Critical,
                 recommendation: 'Add ".env" to .gitignore to prevent accidentally committing secrets to version control',
-                code: 'Missing .env in .gitignore'
+                code: FileParser::getCodeSnippet($gitignorePath, 1),
+                metadata: [
+                    'file' => '.gitignore',
+                    'missing_pattern' => '.env',
+                ]
             );
         }
 
         // Check if .env is actually committed (presence in git)
-        if (file_exists($this->basePath.'/.git')) {
+        $gitPath = $this->buildPath('.git');
+        if (is_dir($gitPath)) {
             $this->checkIfEnvCommitted($issues);
         }
     }
@@ -210,19 +283,38 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
      */
     private function checkIfEnvCommitted(array &$issues): void
     {
-        $envPath = $this->basePath.'/.env';
+        $envPath = $this->buildPath('.env');
 
         if (! file_exists($envPath)) {
             return;
         }
 
-        // Check if .env is tracked by git
-        $output = shell_exec(sprintf(
-            'cd %s && git ls-files --error-unmatch .env 2>/dev/null',
-            escapeshellarg($this->basePath)
-        ));
+        // Check if .env is tracked by git using proc_open for security
+        $descriptorspec = [
+            0 => ['pipe', 'r'],  // stdin
+            1 => ['pipe', 'w'],  // stdout
+            2 => ['pipe', 'w'],  // stderr
+        ];
 
-        if (! empty($output) && str_contains($output, '.env')) {
+        $process = proc_open(
+            ['git', 'ls-files', '--error-unmatch', '.env'],
+            $descriptorspec,
+            $pipes,
+            $this->getBasePath()
+        );
+
+        if (! is_resource($process)) {
+            return;
+        }
+
+        $output = stream_get_contents($pipes[1]);
+        fclose($pipes[0]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $returnCode = proc_close($process);
+
+        // Return code 0 means file is tracked by git
+        if ($returnCode === 0 && is_string($output) && str_contains($output, '.env')) {
             $issues[] = $this->createIssue(
                 message: '.env file is committed to git repository',
                 location: new Location(
@@ -231,7 +323,11 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                 ),
                 severity: Severity::Critical,
                 recommendation: 'Remove .env from git: "git rm --cached .env" and ensure it\'s in .gitignore',
-                code: 'Critical: Secrets are in version control history'
+                code: FileParser::getCodeSnippet($envPath, 1),
+                metadata: [
+                    'file' => '.env',
+                    'git_tracked' => true,
+                ]
             );
         }
     }
@@ -241,17 +337,22 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
      */
     private function checkEnvPermissions(array &$issues): void
     {
-        $envPath = $this->basePath.'/.env';
+        $envPath = $this->buildPath('.env');
 
         if (! file_exists($envPath)) {
             return;
         }
 
-        $perms = fileperms($envPath);
-        $octal = substr(sprintf('%o', $perms), -3);
+        $perms = @fileperms($envPath);
+        if ($perms === false) {
+            return;
+        }
 
-        // Check if file is world-readable or world-writable
-        if (($perms & 0x0004) || ($perms & 0x0002)) {
+        $octal = substr(sprintf('%o', $perms), -3);
+        $numericPerms = octdec($octal);
+
+        // Check if file is world-readable or world-writable (Critical)
+        if (($perms & self::WORLD_READABLE) || ($perms & self::WORLD_WRITABLE)) {
             $issues[] = $this->createIssue(
                 message: sprintf('.env file has insecure permissions (%s)', $octal),
                 location: new Location(
@@ -260,13 +361,19 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                 ),
                 severity: Severity::Critical,
                 recommendation: 'Restrict .env permissions: chmod 600 .env',
-                code: sprintf('Current permissions: %s (should be 600)', $octal)
+                code: FileParser::getCodeSnippet($envPath, 1),
+                metadata: [
+                    'permissions' => $octal,
+                    'world_readable' => (bool) ($perms & self::WORLD_READABLE),
+                    'world_writable' => (bool) ($perms & self::WORLD_WRITABLE),
+                ]
             );
+
+            return; // Don't check for less severe issues if Critical issue exists
         }
 
-        // Check if file is group-readable (could be okay but not ideal)
-        $numericPerms = octdec($octal);
-        if ($numericPerms > 600 && $numericPerms !== 644) {
+        // Check if file is group-readable or group-writable (Medium)
+        if (($perms & self::GROUP_READABLE) || ($perms & self::GROUP_WRITABLE)) {
             $issues[] = $this->createIssue(
                 message: sprintf('.env file has overly permissive permissions (%s)', $octal),
                 location: new Location(
@@ -275,7 +382,12 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                 ),
                 severity: Severity::Medium,
                 recommendation: 'Consider restricting .env permissions: chmod 600 .env (readable only by owner)',
-                code: sprintf('Current permissions: %s', $octal)
+                code: FileParser::getCodeSnippet($envPath, 1),
+                metadata: [
+                    'permissions' => $octal,
+                    'group_readable' => (bool) ($perms & self::GROUP_READABLE),
+                    'group_writable' => (bool) ($perms & self::GROUP_WRITABLE),
+                ]
             );
         }
     }

@@ -25,6 +25,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class DebugModeAnalyzer extends AbstractFileAnalyzer
 {
+    private const HIGH_SEVERITY_FUNCTIONS = ['dd', 'dump', 'var_dump', 'print_r'];
+
     private array $debugFunctions = [
         'dd',
         'dump',
@@ -39,7 +41,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'debug-mode',
-            name: 'Debug Mode Security Analyzer',
+            name: 'Debug Mode Analyzer',
             description: 'Detects debug mode enabled and debugging functions that expose sensitive information',
             category: Category::Security,
             severity: Severity::High,
@@ -49,8 +51,31 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
         );
     }
 
+    public function shouldRun(): bool
+    {
+        $envFile = $this->buildPath('.env');
+        $envProduction = $this->buildPath('.env.production');
+        $envProd = $this->buildPath('.env.prod');
+        $configDir = $this->buildPath('config');
+        $composerFile = $this->buildPath('composer.json');
+
+        return file_exists($envFile) ||
+               file_exists($envProduction) ||
+               file_exists($envProd) ||
+               is_dir($configDir) ||
+               file_exists($composerFile) ||
+               ! empty($this->getPhpFiles());
+    }
+
+    public function getSkipReason(): string
+    {
+        return 'No configuration files, environment files, or PHP code found to analyze';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
+        $basePath = $this->getBasePath();
+
         $issues = [];
 
         // Check .env files for APP_DEBUG=true
@@ -65,14 +90,11 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
         // Check for debug packages in composer.json
         $this->checkDebugPackages($issues);
 
-        if (empty($issues)) {
-            return $this->passed('No debug mode security issues detected');
-        }
+        $summary = empty($issues)
+            ? 'No debug mode security issues detected'
+            : sprintf('Found %d debug mode security issue%s', count($issues), count($issues) === 1 ? '' : 's');
 
-        return $this->failed(
-            sprintf('Found %d debug mode security issues', count($issues)),
-            $issues
-        );
+        return $this->resultBySeverity($summary, $issues);
     }
 
     /**
@@ -81,9 +103,9 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
     private function checkEnvFiles(array &$issues): void
     {
         $envFiles = [
-            $this->basePath.'/.env',
-            $this->basePath.'/.env.production',
-            $this->basePath.'/.env.prod',
+            $this->buildPath('.env'),
+            $this->buildPath('.env.production'),
+            $this->buildPath('.env.prod'),
         ];
 
         foreach ($envFiles as $envFile) {
@@ -94,6 +116,10 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
             $lines = FileParser::getLines($envFile);
 
             foreach ($lines as $lineNumber => $line) {
+                if (! is_string($line)) {
+                    continue;
+                }
+
                 // Check for APP_DEBUG=true
                 if (preg_match('/^APP_DEBUG\s*=\s*true/i', trim($line))) {
                     $severity = str_contains($envFile, 'production') || str_contains($envFile, 'prod')
@@ -108,7 +134,12 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                         ),
                         severity: $severity,
                         recommendation: 'Set APP_DEBUG=false in production environments to prevent information disclosure',
-                        code: trim($line)
+                        code: FileParser::getCodeSnippet($envFile, $lineNumber + 1),
+                        metadata: [
+                            'file' => basename($envFile),
+                            'env_var' => 'APP_DEBUG',
+                            'value' => 'true',
+                        ]
                     );
                 }
             }
@@ -120,12 +151,18 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
      */
     private function checkConfigFiles(array &$issues): void
     {
+        $basePath = $this->getBasePath();
+
         // Check app.php for hardcoded debug=true
-        $appConfig = ConfigFileHelper::getConfigPath($this->basePath, 'app.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+        $appConfig = ConfigFileHelper::getConfigPath($basePath, 'app.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
         if (file_exists($appConfig)) {
             $lines = FileParser::getLines($appConfig);
 
             foreach ($lines as $lineNumber => $line) {
+                if (! is_string($line)) {
+                    continue;
+                }
+
                 if (preg_match('/["\']debug["\']\s*=>\s*true/i', $line)) {
                     $issues[] = $this->createIssue(
                         message: 'Debug mode hardcoded to true in config/app.php',
@@ -135,32 +172,18 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                         ),
                         severity: Severity::Critical,
                         recommendation: 'Use env("APP_DEBUG", false) instead of hardcoded true',
-                        code: trim($line)
+                        code: FileParser::getCodeSnippet($appConfig, $lineNumber + 1),
+                        metadata: [
+                            'file' => 'app.php',
+                            'config_key' => 'debug',
+                            'value' => 'true',
+                        ]
                     );
                 }
             }
 
             // Check for missing debug_hide or debug_blacklist when debug is enabled
             $this->checkDebugHideConfiguration($appConfig, $lines, $issues);
-        }
-
-        // Check logging.php for debug channels
-        $loggingConfig = ConfigFileHelper::getConfigPath($this->basePath, 'logging.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
-        if (file_exists($loggingConfig)) {
-            $content = FileParser::readFile($loggingConfig);
-
-            if ($content !== null && preg_match('/["\']level["\']\s*=>\s*["\']debug["\']/i', $content)) {
-                $issues[] = $this->createIssue(
-                    message: 'Debug logging level configured in logging.php',
-                    location: new Location(
-                        $this->getRelativePath($loggingConfig),
-                        1
-                    ),
-                    severity: Severity::Low,
-                    recommendation: 'Use environment variables for log levels: env("LOG_LEVEL", "error")',
-                    code: 'Debug logging configured'
-                );
-            }
         }
     }
 
@@ -178,6 +201,10 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
             $lines = FileParser::getLines($file);
 
             foreach ($lines as $lineNumber => $line) {
+                if (! is_string($line)) {
+                    continue;
+                }
+
                 // Skip comments
                 if (preg_match('/^\s*\/\/|^\s*\/\*|^\s*\*/', $line)) {
                     continue;
@@ -186,19 +213,23 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                 foreach ($this->debugFunctions as $func) {
                     // Match function calls
                     if (preg_match('/\b'.preg_quote($func, '/').'\s*\(/i', $line)) {
-                        $severity = in_array($func, ['dd', 'dump', 'var_dump', 'print_r'])
+                        $severity = in_array($func, self::HIGH_SEVERITY_FUNCTIONS, true)
                             ? Severity::High
                             : Severity::Medium;
 
                         $issues[] = $this->createIssue(
-                            message: "Debug function {$func}() found in production code",
+                            message: sprintf('Debug function %s() found in production code', $func),
                             location: new Location(
                                 $this->getRelativePath($file),
                                 $lineNumber + 1
                             ),
                             severity: $severity,
-                            recommendation: "Remove {$func}() calls before deploying to production or use proper logging instead",
-                            code: trim($line)
+                            recommendation: sprintf('Remove %s() calls before deploying to production or use proper logging instead', $func),
+                            code: FileParser::getCodeSnippet($file, $lineNumber + 1),
+                            metadata: [
+                                'function' => $func,
+                                'file' => basename($file),
+                            ]
                         );
 
                         break; // One issue per line
@@ -213,9 +244,13 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                             $this->getRelativePath($file),
                             $lineNumber + 1
                         ),
-                        severity: Severity::Medium,
+                        severity: Severity::High,
                         recommendation: 'Remove ray() calls before deploying to production',
-                        code: trim($line)
+                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
+                        metadata: [
+                            'function' => 'ray',
+                            'file' => basename($file),
+                        ]
                     );
                 }
 
@@ -229,7 +264,11 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                         ),
                         severity: Severity::Medium,
                         recommendation: 'Let Laravel handle error reporting through APP_DEBUG configuration',
-                        code: trim($line)
+                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
+                        metadata: [
+                            'function' => 'error_reporting',
+                            'file' => basename($file),
+                        ]
                     );
                 }
 
@@ -243,7 +282,12 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                         ),
                         severity: Severity::High,
                         recommendation: 'Remove ini_set("display_errors") and use Laravel\'s error handling',
-                        code: trim($line)
+                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
+                        metadata: [
+                            'function' => 'ini_set',
+                            'parameter' => 'display_errors',
+                            'file' => basename($file),
+                        ]
                     );
                 }
             }
@@ -262,20 +306,20 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
         foreach ($lines as $lineNumber => $line) {
             // Check if debug is enabled
-            if (preg_match('/["\']debug["\']\s*=>\s*(?:true|env\(["\']APP_DEBUG["\']\s*,\s*true\))/i', $line)) {
+            if (preg_match('/["\']debug["\']\s*=>\s*(?:true|env\s*\(\s*["\']APP_DEBUG["\']\s*,\s*true\s*\))/i', $line)) {
                 $hasDebugEnabled = true;
             }
 
             // Check APP_ENV
-            if (preg_match('/["\']env["\']\s*=>\s*env\(["\']APP_ENV["\']\s*,\s*["\'](\w+)["\']/i', $line, $matches)) {
+            if (preg_match('/["\']env["\']\s*=>\s*env\s*\(\s*["\']APP_ENV["\']\s*,\s*["\'](\w+)["\']\s*\)/i', $line, $matches)) {
                 $appEnv = $matches[1];
             }
 
-            // Check for debug_hide or debug_blacklist
-            if (preg_match('/["\']debug_hide["\']\s*=>\s*\[/i', $line)) {
+            // Check for debug_hide or debug_blacklist (handle multi-line arrays)
+            if (preg_match('/["\']debug_hide["\']\s*=>/i', $line)) {
                 $hasDebugHide = true;
             }
-            if (preg_match('/["\']debug_blacklist["\']\s*=>\s*\[/i', $line)) {
+            if (preg_match('/["\']debug_blacklist["\']\s*=>/i', $line)) {
                 $hasDebugBlacklist = true;
             }
         }
@@ -290,7 +334,12 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                 ),
                 severity: Severity::Critical,
                 recommendation: 'Add "debug_hide" or "debug_blacklist" configuration to hide sensitive variables like passwords, API keys, etc.',
-                code: 'Missing debug_hide or debug_blacklist configuration'
+                code: FileParser::getCodeSnippet($appConfig, 1),
+                metadata: [
+                    'file' => 'app.php',
+                    'config_key' => 'debug_hide',
+                    'app_env' => $appEnv,
+                ]
             );
         }
     }
@@ -300,7 +349,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
      */
     private function checkDebugPackages(array &$issues): void
     {
-        $composerFile = $this->basePath.'/composer.json';
+        $composerFile = $this->buildPath('composer.json');
 
         if (! file_exists($composerFile)) {
             return;
@@ -318,35 +367,40 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
             'beyondcode/laravel-dump-server' => 'Laravel Dump Server',
         ];
 
+        // Use json_decode for more reliable parsing
+        $composerData = json_decode($content, true);
+
+        if (! is_array($composerData) || ! isset($composerData['require']) || ! is_array($composerData['require'])) {
+            return;
+        }
+
         $lines = FileParser::getLines($composerFile);
-        $inRequireSection = false;
 
-        foreach ($lines as $lineNumber => $line) {
-            if (preg_match('/^\s*"require"\s*:\s*{/', $line)) {
-                $inRequireSection = true;
-
-                continue;
-            }
-
-            if ($inRequireSection && preg_match('/^\s*}/', $line)) {
-                $inRequireSection = false;
-            }
-
-            if ($inRequireSection) {
-                foreach ($debugPackages as $package => $name) {
-                    if (str_contains($line, $package)) {
-                        $issues[] = $this->createIssue(
-                            message: "{$name} package in 'require' section (should be in 'require-dev')",
-                            location: new Location(
-                                $this->getRelativePath($composerFile),
-                                $lineNumber + 1
-                            ),
-                            severity: Severity::Medium,
-                            recommendation: "Move {$package} to 'require-dev' section to exclude from production",
-                            code: trim($line)
-                        );
+        foreach ($debugPackages as $package => $name) {
+            if (array_key_exists($package, $composerData['require'])) {
+                // Find the line number where this package appears
+                $lineNumber = 0;
+                foreach ($lines as $idx => $line) {
+                    if (is_string($line) && str_contains($line, $package)) {
+                        $lineNumber = $idx;
+                        break;
                     }
                 }
+
+                $issues[] = $this->createIssue(
+                    message: sprintf("%s package in 'require' section (should be in 'require-dev')", $name),
+                    location: new Location(
+                        $this->getRelativePath($composerFile),
+                        $lineNumber + 1
+                    ),
+                    severity: Severity::Medium,
+                    recommendation: sprintf("Move %s to 'require-dev' section to exclude from production", $package),
+                    code: FileParser::getCodeSnippet($composerFile, $lineNumber + 1),
+                    metadata: [
+                        'package' => $package,
+                        'package_name' => $name,
+                    ]
+                );
             }
         }
     }

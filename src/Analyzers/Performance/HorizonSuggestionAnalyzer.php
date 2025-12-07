@@ -38,7 +38,7 @@ class HorizonSuggestionAnalyzer extends AbstractAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'horizon-suggestion',
-            name: 'Horizon Suggestion',
+            name: 'Horizon Suggestion Analyzer',
             description: 'Recommends using Laravel Horizon when Redis queues are configured',
             category: Category::Performance,
             severity: Severity::Low,

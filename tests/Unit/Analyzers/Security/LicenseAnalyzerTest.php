@@ -27,8 +27,9 @@ class LicenseAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
-        $this->assertStringContainsString('No composer.lock found', $result->getMessage());
+        // shouldRun() returns false, so result is skipped
+        $this->assertSkipped($result);
+        $this->assertStringContainsString('No composer.lock file found', $result->getMessage());
     }
 
     public function test_passes_with_all_mit_licensed_packages(): void
@@ -172,7 +173,8 @@ class LicenseAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        // Missing license is Medium severity → Warning
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('no license information', $result);
     }
 
@@ -198,7 +200,8 @@ class LicenseAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        // Non-standard license is Low severity → Warning
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('non-standard license', $result);
         $this->assertHasIssueContaining('Custom-Proprietary', $result);
     }
@@ -283,8 +286,8 @@ class LicenseAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        // Should flag GPL in dev dependencies but with lower severity
-        $this->assertFailed($result);
+        // GPL in dev dependencies is Low severity → Warning
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Dev package', $result);
     }
 
@@ -376,7 +379,263 @@ class LicenseAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        // Missing license is Medium severity → Warning
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('no license information', $result);
+    }
+
+    public function test_handles_invalid_json_in_composer_lock(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => 'invalid json {{{',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass gracefully (not crash)
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_composer_lock_without_packages_key(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => json_encode(['some' => 'data']),
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_malformed_package_entries(): void
+    {
+        $composerLock = json_encode([
+            'packages' => [
+                'not-an-array',  // Invalid entry
+                ['name' => 'vendor/valid', 'license' => ['MIT']],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - only valid package matters
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_dual_license_with_gpl_and_safe_license(): void
+    {
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'vendor/dual-mit-gpl',
+                    'version' => '1.0.0',
+                    'license' => ['MIT', 'GPL-3.0'],
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because MIT is whitelisted (dual-licensing allows choice)
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_dev_dependencies_without_licenses(): void
+    {
+        $composerLock = json_encode([
+            'packages' => [
+                ['name' => 'vendor/prod', 'license' => ['MIT']],
+            ],
+            'packages-dev' => [
+                ['name' => 'vendor/dev-no-license', 'license' => []],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - dev without license is ignored
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_all_gpl_variants(): void
+    {
+        $gplVariants = [
+            'GPL-2.0',
+            'GPL-2.0-only',
+            'GPL-2.0-or-later',
+            'GPL-3.0-only',
+            'GPL-3.0-or-later',
+            'AGPL-3.0-only',
+            'AGPL-3.0-or-later',
+        ];
+
+        foreach ($gplVariants as $license) {
+            $composerLock = json_encode([
+                'packages' => [
+                    ['name' => 'vendor/gpl', 'version' => '1.0.0', 'license' => [$license]],
+                ],
+            ]);
+
+            $tempDir = $this->createTempDirectory([
+                'composer.lock' => $composerLock,
+            ]);
+
+            $analyzer = $this->createAnalyzer();
+            $analyzer->setBasePath($tempDir);
+            $analyzer->setPaths(['.']);
+
+            $result = $analyzer->analyze();
+
+            $this->assertFailed($result);
+            $this->assertHasIssueContaining('restrictive license', $result);
+        }
+    }
+
+    public function test_accepts_all_whitelisted_licenses(): void
+    {
+        $whitelistedLicenses = [
+            'Apache2',
+            'BSD-2-Clause',
+            'LGPL-2.1-only',
+            'LGPL-2.1',
+            'LGPL-2.1-or-later',
+            'LGPL-3.0-only',
+            'LGPL-3.0-or-later',
+            'CC0-1.0',
+            'Unlicense',
+            'WTFPL',
+        ];
+
+        foreach ($whitelistedLicenses as $license) {
+            $composerLock = json_encode([
+                'packages' => [
+                    ['name' => 'vendor/package', 'version' => '1.0.0', 'license' => [$license]],
+                ],
+            ]);
+
+            $tempDir = $this->createTempDirectory([
+                'composer.lock' => $composerLock,
+            ]);
+
+            $analyzer = $this->createAnalyzer();
+            $analyzer->setBasePath($tempDir);
+            $analyzer->setPaths(['.']);
+
+            $result = $analyzer->analyze();
+
+            $this->assertPassed($result);
+        }
+    }
+
+    public function test_handles_license_as_string(): void
+    {
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'vendor/string-license',
+                    'version' => '1.0.0',
+                    'license' => 'MIT',  // String, not array
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - license string should be normalized to array
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_gpl_license_as_string(): void
+    {
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'vendor/gpl-string',
+                    'version' => '1.0.0',
+                    'license' => 'GPL-3.0',  // String, not array
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - GPL license (even as string) should be detected
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('restrictive license', $result);
+    }
+
+    public function test_non_standard_license_has_low_severity(): void
+    {
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'vendor/proprietary',
+                    'version' => '1.0.0',
+                    'license' => ['Proprietary'],
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should show as warning (low severity), not failed
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('non-standard license', $result);
     }
 }

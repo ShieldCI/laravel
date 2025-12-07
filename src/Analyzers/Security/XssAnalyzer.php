@@ -7,6 +7,7 @@ namespace ShieldCI\Analyzers\Security;
 use GuzzleHttp\Client;
 use Illuminate\Routing\Router;
 use Illuminate\Support\Str;
+use Psr\Http\Message\ResponseInterface;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -16,6 +17,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\AnalyzesHeaders;
 use ShieldCI\Concerns\FindsLoginRoute;
+use SplFileInfo;
+use Throwable;
 
 /**
  * Detects XSS vulnerabilities through dual analysis:
@@ -46,13 +49,13 @@ class XssAnalyzer extends AbstractFileAnalyzer
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
-            id: 'xss-detection',
-            name: 'XSS Vulnerability Detector',
+            id: 'xss-vulnerabilities',
+            name: 'XSS Vulnerabilities Analyzer',
             description: 'Detects XSS vulnerabilities via code analysis and HTTP header verification (dual protection)',
             category: Category::Security,
             severity: Severity::High,
             tags: ['xss', 'cross-site-scripting', 'security', 'blade', 'csp', 'headers'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/xss-detection',
+            docsUrl: 'https://docs.shieldci.com/analyzers/security/xss-vulnerabilities',
             timeToFix: 30
         );
     }
@@ -101,13 +104,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
     {
         $issues = [];
 
-        // Get all PHP and Blade files
-        $files = $this->getPhpFiles();
-
-        // Also scan blade files
-        $bladeFiles = $this->getBladeFiles();
-
-        foreach (array_merge($files, $bladeFiles) as $file) {
+        foreach ($this->getAnalyzableFiles() as $file) {
             $content = FileParser::readFile($file);
             if ($content === null) {
                 continue;
@@ -117,13 +114,31 @@ class XssAnalyzer extends AbstractFileAnalyzer
             $inScriptTag = false;
 
             foreach ($lines as $lineNumber => $line) {
-                // Track if we're inside a script tag
-                if (preg_match('/<script[^>]*>/', $line)) {
+                if (! is_string($line)) {
+                    continue;
+                }
+
+                // Track if we're inside a script tag (handle single-line and multiline)
+                $hasOpeningTag = preg_match('/<script[^>]*>/', $line);
+                $hasClosingTag = str_contains($line, '</script>');
+
+                if ($hasOpeningTag && $hasClosingTag) {
+                    // Single-line <script>...</script> - treat content as inside script
+                    // (will be checked in the inScriptTag section)
                     $inScriptTag = true;
+                } elseif ($hasOpeningTag) {
+                    // Opening tag without closing - enter script block
+                    $inScriptTag = true;
+
+                    continue; // Skip the opening tag line itself
+                } elseif ($hasClosingTag) {
+                    // Closing tag - exit script block AFTER processing this line
+                    // (set flag to exit after checks)
+                    $exitScriptAfterLine = true;
+                } else {
+                    $exitScriptAfterLine = false;
                 }
-                if (str_contains($line, '</script>')) {
-                    $inScriptTag = false;
-                }
+
                 // Check for unescaped blade output {!! !!}
                 if (preg_match('/\{!!.*?!!\}/', $line)) {
                     // Check if the variable might contain user input
@@ -136,7 +151,8 @@ class XssAnalyzer extends AbstractFileAnalyzer
                             ),
                             severity: Severity::High,
                             recommendation: 'Use {{ $var }} instead of {!! $var !!} or sanitize with e() helper or Purifier',
-                            code: trim($line)
+                            code: FileParser::getCodeSnippet($file, $lineNumber + 1),
+                            metadata: []
                         );
                     }
                 }
@@ -151,7 +167,8 @@ class XssAnalyzer extends AbstractFileAnalyzer
                         ),
                         severity: Severity::Critical,
                         recommendation: 'Always escape output: echo htmlspecialchars($_GET["var"], ENT_QUOTES, "UTF-8")',
-                        code: trim($line)
+                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
+                        metadata: []
                     );
                 }
 
@@ -165,7 +182,8 @@ class XssAnalyzer extends AbstractFileAnalyzer
                         ),
                         severity: Severity::High,
                         recommendation: 'Use e() helper or htmlspecialchars() to escape output',
-                        code: trim($line)
+                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
+                        metadata: []
                     );
                 }
 
@@ -183,7 +201,8 @@ class XssAnalyzer extends AbstractFileAnalyzer
                             ),
                             severity: Severity::High,
                             recommendation: 'Escape user input before rendering or use response()->json() for JSON responses',
-                            code: trim($line)
+                            code: FileParser::getCodeSnippet($file, $lineNumber + 1),
+                            metadata: []
                         );
                     }
                 }
@@ -201,9 +220,15 @@ class XssAnalyzer extends AbstractFileAnalyzer
                             ),
                             severity: Severity::High,
                             recommendation: 'Use @json() directive for variables or json_encode() with JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP flags',
-                            code: trim($line)
+                            code: FileParser::getCodeSnippet($file, $lineNumber + 1),
+                            metadata: []
                         );
                     }
+                }
+
+                // Exit script tag after processing closing tag line
+                if (isset($exitScriptAfterLine) && $exitScriptAfterLine) {
+                    $inScriptTag = false;
                 }
             }
         }
@@ -211,44 +236,14 @@ class XssAnalyzer extends AbstractFileAnalyzer
         return $issues;
     }
 
-    /**
-     * Get all Blade template files.
-     */
-    private function getBladeFiles(): array
+    protected function shouldAnalyzeFile(SplFileInfo $file): bool
     {
-        $files = [];
-
-        foreach ($this->getFilesToAnalyze() as $file) {
-            if ($file->getExtension() === 'blade' || str_ends_with($file->getFilename(), '.blade.php')) {
-                $files[] = $file->getPathname();
-            }
-        }
-
-        return $files;
-    }
-
-    /**
-     * Override to include blade files.
-     */
-    protected function shouldAnalyzeFile(\SplFileInfo $file): bool
-    {
-        // Include PHP files
-        if ($file->getExtension() === 'php') {
+        if ($file->getExtension() === 'php' && ! $this->isBladeFile($file)) {
             return parent::shouldAnalyzeFile($file);
         }
 
-        // Include blade files
-        if (str_ends_with($file->getFilename(), '.blade.php')) {
-            $path = $file->getPathname();
-
-            // Check against exclude patterns
-            foreach ($this->excludePatterns as $pattern) {
-                if ($this->matchesPattern($path, $pattern)) {
-                    return false;
-                }
-            }
-
-            return true;
+        if ($this->isBladeFile($file)) {
+            return ! $this->isExcludedPath($file->getPathname());
         }
 
         return false;
@@ -259,24 +254,28 @@ class XssAnalyzer extends AbstractFileAnalyzer
      */
     private function mightContainUserInput(string $line): bool
     {
-        $userInputIndicators = [
-            'request',
-            '$_GET',
-            '$_POST',
-            '$_REQUEST',
-            '$_COOKIE',
-            'Input::',
-            'Request::',
-            '->input(',
-            '->get(',
-            '->post(',
-            '->query(',
-        ];
-
-        foreach ($userInputIndicators as $indicator) {
-            if (str_contains($line, $indicator)) {
+        // Superglobals - always user input
+        $superglobals = ['$_GET', '$_POST', '$_REQUEST', '$_COOKIE'];
+        foreach ($superglobals as $superglobal) {
+            if (str_contains($line, $superglobal)) {
                 return true;
             }
+        }
+
+        // Laravel Request/Input facades
+        if (str_contains($line, 'Input::') || str_contains($line, 'Request::')) {
+            return true;
+        }
+
+        // request() helper function
+        if (preg_match('/\brequest\s*\(/', $line)) {
+            return true;
+        }
+
+        // Request object methods (context-aware)
+        // Only flag ->get(), ->post(), etc. if preceded by $request or request context
+        if (preg_match('/(\$request|request\(.*?\))\s*->\s*(input|get|post|query|cookie)\s*\(/', $line)) {
+            return true;
         }
 
         return false;
@@ -309,13 +308,19 @@ class XssAnalyzer extends AbstractFileAnalyzer
             return [];
         }
 
-        // Get Content-Security-Policy headers
-        $cspHeaders = $this->getHeadersOnUrl($url, 'Content-Security-Policy');
+        $response = $this->fetchHttpResponse($url);
+
+        if ($response === null) {
+            return [];
+        }
+
+        $body = (string) $response->getBody();
+        $cspHeaders = $response->getHeader('Content-Security-Policy');
 
         // Check if CSP is set
         if (empty($cspHeaders)) {
             // Try meta tags as fallback
-            $metaPolicy = $this->getCspFromMetaTags($url);
+            $metaPolicy = $this->extractCspFromMetaTags($body);
 
             if (empty($metaPolicy)) {
                 $issues[] = $this->createIssue(
@@ -331,10 +336,6 @@ class XssAnalyzer extends AbstractFileAnalyzer
             $cspHeaders = [$metaPolicy];
         }
 
-        // Ensure $cspHeaders is array<string> for type safety
-        /** @var array<string> $cspHeaders */
-        $cspHeaders = is_array($cspHeaders) ? $cspHeaders : [];
-
         // Validate CSP headers
         $hasValidPolicy = false;
         foreach ($cspHeaders as $policy) {
@@ -345,12 +346,14 @@ class XssAnalyzer extends AbstractFileAnalyzer
         }
 
         if (! $hasValidPolicy) {
+            $cspString = implode('; ', array_filter($cspHeaders, 'is_string'));
+
             $issues[] = $this->createIssue(
                 message: 'HTTP XSS: Content-Security-Policy header is inadequate for XSS protection',
                 location: new Location('HTTP Headers', 0),
                 severity: Severity::High,
                 recommendation: 'Set a "script-src" or "default-src" policy directive without "unsafe-eval" or "unsafe-inline". Current policy may allow inline scripts which defeats XSS protection.',
-                code: 'Current CSP: '.implode('; ', array_filter($cspHeaders, 'is_string'))
+                metadata: ['current_csp' => $cspString]
             );
         }
 
@@ -378,25 +381,63 @@ class XssAnalyzer extends AbstractFileAnalyzer
     /**
      * Get CSP from meta tags (fallback).
      */
-    private function getCspFromMetaTags(string $url): string
+    private function extractCspFromMetaTags(string $html): string
+    {
+        // Try double quotes first (most common)
+        if (preg_match('/<meta[^>]+http-equiv="Content-Security-Policy"[^>]+content="([^"]+)"/', $html, $matches)) {
+            return $matches[1];
+        }
+
+        // Try single quotes
+        if (preg_match('/<meta[^>]+http-equiv=\'Content-Security-Policy\'[^>]+content=\'([^\']+)\'/', $html, $matches)) {
+            return $matches[1];
+        }
+
+        return '';
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function getAnalyzableFiles(): array
+    {
+        $files = [];
+
+        foreach ($this->getFilesToAnalyze() as $file) {
+            if ($this->shouldAnalyzeFile($file)) {
+                $files[$file->getPathname()] = $file->getPathname();
+            }
+        }
+
+        return array_values($files);
+    }
+
+    private function isBladeFile(SplFileInfo $file): bool
+    {
+        return str_ends_with($file->getFilename(), '.blade.php');
+    }
+
+    private function isExcludedPath(string $path): bool
+    {
+        foreach ($this->excludePatterns as $pattern) {
+            if ($this->matchesPattern($path, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function fetchHttpResponse(string $url): ?ResponseInterface
     {
         try {
-            $response = $this->getClient()->get($url, [
+            return $this->getClient()->get($url, [
                 'timeout' => 5,
                 'http_errors' => false,
                 'verify' => false,
             ]);
-
-            $html = $response->getBody()->getContents();
-
-            // Parse meta tags for CSP
-            if (preg_match('/<meta[^>]+http-equiv=["\']Content-Security-Policy["\'][^>]+content=["\']([^"\']+)["\']/', $html, $matches)) {
-                return $matches[1];
-            }
-
-            return '';
-        } catch (\Exception $e) {
-            return '';
+        } catch (Throwable) {
+            return null;
         }
     }
 }

@@ -293,7 +293,7 @@ CSS;
         $metadata = $analyzer->getMetadata();
 
         $this->assertEquals('asset-minification', $metadata->id);
-        $this->assertEquals('Asset Minification', $metadata->name);
+        $this->assertEquals('Asset Minification Analyzer', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $metadata->severity);
         $this->assertContains('minification', $metadata->tags);

@@ -26,7 +26,7 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'queue-timeout-configuration',
-            name: 'Queue Timeout Configuration',
+            name: 'Queue Timeout Configuration Analyzer',
             description: 'Ensures queue timeout and retry_after values are properly configured to prevent job duplication',
             category: Category::Reliability,
             severity: Severity::Critical,
@@ -38,6 +38,8 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
+        $basePath = $this->getBasePath();
+
         $issues = [];
         $queueConfig = $this->getQueueConfig();
 
@@ -72,10 +74,12 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
 
             // Timeout should be at least several seconds shorter than retry_after
             if ($timeout >= $retryAfter) {
-                $configFile = ConfigFileHelper::getConfigPath($this->basePath, 'queue.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+                $configFile = $this->getQueueConfigPath($basePath);
+                $location = $this->getConnectionLocation($configFile, $name);
+
                 $issues[] = $this->createIssue(
                     message: "Queue connection '{$name}' has improper timeout configuration",
-                    location: new Location($configFile, ConfigFileHelper::findKeyLine($configFile, $name, 'connections')),
+                    location: $location,
                     severity: Severity::Critical,
                     recommendation: $this->getRecommendation($name, $timeout, $retryAfter),
                     metadata: [
@@ -99,6 +103,8 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Get retry_after value from connection config.
+     *
      * @param  array<string, mixed>  $connection
      */
     private function getRetryAfter(array $connection): int
@@ -109,73 +115,141 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Get timeout value from connection config or Horizon config.
+     *
      * @param  array<string, mixed>  $connection
      */
     private function getTimeout(array $connection, string $driver): int
     {
+        // For non-Redis drivers, use default timeout
+        if ($driver !== 'redis') {
+            return 60;
+        }
+
         // For Redis with Horizon, check Horizon config
-        if ($driver === 'redis' && config('horizon')) {
-            $horizonDefaults = config('horizon.defaults', []);
-            $horizonEnvironments = config('horizon.environments', []);
+        if (! function_exists('config')) {
+            return 60;
+        }
 
-            /** @var array<int> $timeouts */
-            $timeouts = [];
+        try {
+            // Get all timeout values from Horizon configuration
+            $defaultTimeouts = $this->getArrayValues(config('horizon.defaults', []), 'timeout');
+            $envTimeouts = $this->getArrayValues(config('horizon.environments', []), 'timeout');
 
-            // Get timeouts from defaults
-            if (is_array($horizonDefaults)) {
-                foreach ($horizonDefaults as $key => $value) {
-                    if (is_array($value) && isset($value['timeout']) && is_numeric($value['timeout'])) {
-                        $timeouts[] = (int) $value['timeout'];
-                    }
+            $allTimeouts = array_merge($defaultTimeouts, $envTimeouts);
+
+            // Use maximum timeout from Horizon config, fallback to 60
+            return ! empty($allTimeouts) ? max($allTimeouts) : 60;
+        } catch (\Throwable $e) {
+            return 60;
+        }
+    }
+
+    /**
+     * Recursively extract numeric values for a specific key from nested arrays.
+     *
+     * @param  mixed  $data
+     * @return array<int>
+     */
+    private function getArrayValues($data, string $key): array
+    {
+        $values = [];
+
+        if (! is_array($data)) {
+            return $values;
+        }
+
+        foreach ($data as $item) {
+            if (is_array($item)) {
+                if (isset($item[$key]) && is_numeric($item[$key])) {
+                    $values[] = (int) $item[$key];
                 }
-            }
-
-            // Get timeouts from environments
-            if (is_array($horizonEnvironments)) {
-                foreach ($horizonEnvironments as $env => $supervisors) {
-                    if (is_array($supervisors)) {
-                        foreach ($supervisors as $supervisor => $config) {
-                            if (is_array($config) && isset($config['timeout']) && is_numeric($config['timeout'])) {
-                                $timeouts[] = (int) $config['timeout'];
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (! empty($timeouts)) {
-                return max($timeouts);
+                // Recursively search nested arrays
+                $values = array_merge($values, $this->getArrayValues($item, $key));
             }
         }
 
-        // Default queue worker timeout
-        return 60;
+        return $values;
     }
 
+    /**
+     * Get recommendation message for timeout configuration issue.
+     */
     private function getRecommendation(string $connection, int $timeout, int $retryAfter): string
     {
         $suggestedRetryAfter = $timeout + 30;
 
-        return 'The queue timeout value must be at least several seconds shorter than the retry_after value. '.
-               "Your '{$connection}' queue connection's retry_after is set to {$retryAfter} seconds while ".
-               "your timeout is {$timeout} seconds. This can cause jobs to be processed twice or the queue worker to crash. ".
-               "Solution: Either increase retry_after to at least {$suggestedRetryAfter} seconds, or decrease the timeout to less than {$retryAfter} seconds. ".
-               'The retry_after should be: max(timeout) + buffer (e.g., 30 seconds).';
+        return sprintf(
+            'The queue timeout value must be at least several seconds shorter than the retry_after value. '.
+            "Your '%s' queue connection's retry_after is set to %d seconds while ".
+            'your timeout is %d seconds. This can cause jobs to be processed twice or the queue worker to crash. '.
+            'Solution: Either increase retry_after to at least %d seconds, or decrease the timeout to less than %d seconds. '.
+            'The retry_after should be: max(timeout) + buffer (e.g., %d seconds).',
+            $connection,
+            $retryAfter,
+            $timeout,
+            $suggestedRetryAfter,
+            $retryAfter,
+            30
+        );
     }
 
     /**
+     * Get the queue configuration array.
+     *
      * @return array<string, mixed>
      */
     private function getQueueConfig(): array
     {
-        $configFile = ConfigFileHelper::getConfigPath($this->basePath, 'queue.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+        $basePath = $this->getBasePath();
+
+        if ($basePath === '') {
+            return [];
+        }
+
+        $configFile = $this->getQueueConfigPath($basePath);
 
         if (! file_exists($configFile)) {
             return [];
         }
 
-        $config = include $configFile;
+        try {
+            $config = include $configFile;
 
-        return is_array($config) ? $config : [];
+            return is_array($config) ? $config : [];
+        } catch (\Throwable $e) {
+            // Config file may have syntax errors or other issues
+            return [];
+        }
+    }
+
+    /**
+     * Get the path to the queue configuration file.
+     */
+    private function getQueueConfigPath(string $basePath): string
+    {
+        return ConfigFileHelper::getConfigPath(
+            $basePath,
+            'queue.php',
+            fn ($file) => function_exists('config_path') ? config_path($file) : null
+        );
+    }
+
+    /**
+     * Get the location for a queue connection in the config file.
+     */
+    private function getConnectionLocation(string $configFile, string $connectionName): Location
+    {
+        if (! file_exists($configFile)) {
+            return new Location($configFile, 1);
+        }
+
+        $lineNumber = ConfigFileHelper::findKeyLine($configFile, $connectionName, 'connections');
+
+        if ($lineNumber < 1) {
+            $lineNumber = 1;
+        }
+
+        return new Location($configFile, $lineNumber);
     }
 }

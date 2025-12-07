@@ -43,7 +43,7 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'session-driver',
-            name: 'Session Driver Configuration',
+            name: 'Session Driver Configuration Analyzer',
             description: 'Ensures a proper session driver is configured for scalability and performance',
             category: Category::Performance,
             severity: Severity::Medium,

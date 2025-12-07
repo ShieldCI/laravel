@@ -43,7 +43,7 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'route-caching',
-            name: 'Route Caching',
+            name: 'Route Caching Analyzer',
             description: 'Ensures route caching is properly configured for optimal performance',
             category: Category::Performance,
             severity: Severity::High,

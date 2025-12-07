@@ -44,7 +44,7 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'shared-cache-lock',
-            name: 'Shared Cache Lock Store',
+            name: 'Shared Cache Lock Store Analyzer',
             description: 'Detects cache lock usage on the default cache store, which can cause locks to be cleared when cache is flushed',
             category: Category::Performance,
             severity: Severity::Low,

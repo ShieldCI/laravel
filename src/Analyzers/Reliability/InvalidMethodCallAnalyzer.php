@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\ParsesPHPStanResults;
 use ShieldCI\Support\PHPStanRunner;
 
 /**
@@ -23,10 +24,14 @@ use ShieldCI\Support\PHPStanRunner;
  */
 class InvalidMethodCallAnalyzer extends AbstractFileAnalyzer
 {
+    use ParsesPHPStanResults;
+
     /**
+     * PHPStan patterns for detecting invalid method calls.
+     *
      * @var array<string>
      */
-    private array $patterns = [
+    private const INVALID_METHOD_CALL_PATTERNS = [
         'Method * invoked with *',
         'Parameter * of method * is passed by reference, so *',
         'Unable to resolve the template *',
@@ -54,7 +59,7 @@ class InvalidMethodCallAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'invalid-method-calls',
-            name: 'Invalid Method Calls',
+            name: 'Invalid Method Calls Analyzer',
             description: 'Detects invalid method calls in application code using PHPStan static analysis',
             category: Category::Reliability,
             severity: Severity::Critical,
@@ -66,44 +71,68 @@ class InvalidMethodCallAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $runner = new PHPStanRunner($this->basePath);
+        $basePath = $this->getBasePath();
 
-        // Run PHPStan on app directory at level 5 (good balance)
-        $runner->analyze('app', 5);
+        if ($basePath === '') {
+            return $this->error('Unable to determine base path for PHPStan analysis');
+        }
 
-        // Filter for method call issues
-        $issues = $runner->filterByPattern($this->patterns);
+        $runner = new PHPStanRunner($basePath);
+
+        // Check if PHPStan is available
+        if (! $runner->isAvailable()) {
+            return $this->warning(
+                'PHPStan is not available',
+                [$this->createIssue(
+                    message: 'PHPStan binary not found',
+                    location: new Location($basePath, 1),
+                    severity: Severity::Medium,
+                    recommendation: 'PHPStan is included with ShieldCI. If you\'re seeing this error, ensure you\'ve run `composer install` to install all dependencies. If the issue persists, verify that `vendor/bin/phpstan` exists in your project.',
+                    metadata: []
+                )]
+            );
+        }
+
+        try {
+            // Run PHPStan on app directory
+            $runner->analyze('app', 5);
+
+            // Filter for method call issues
+            $issues = $runner->filterByPattern(self::INVALID_METHOD_CALL_PATTERNS);
+        } catch (\Throwable $e) {
+            return $this->error(
+                sprintf('PHPStan analysis failed: %s', $e->getMessage()),
+                []
+            );
+        }
 
         if ($issues->isEmpty()) {
             return $this->passed('No invalid method calls detected');
         }
 
-        $issueObjects = [];
-
-        foreach ($issues->take(50) as $issue) {
-            $issueObjects[] = $this->createIssue(
-                message: 'Invalid method call detected',
-                location: new Location($issue['file'], $issue['line']),
-                severity: Severity::High,
-                recommendation: $this->getRecommendation($issue['message']),
-                metadata: [
-                    'phpstan_message' => $issue['message'],
-                    'file' => $issue['file'],
-                    'line' => $issue['line'],
-                ]
-            );
-        }
+        // Use trait method to create issues
+        $issueObjects = $this->createIssuesFromPHPStanResults(
+            issues: $issues,
+            issueMessage: 'Invalid method call detected',
+            severity: Severity::Critical,
+            recommendationCallback: fn (string $message) => $this->getRecommendation($message)
+        );
 
         $totalCount = $issues->count();
         $displayedCount = count($issueObjects);
 
-        $message = $totalCount > $displayedCount
-            ? "Found {$totalCount} invalid method calls (showing first {$displayedCount})"
-            : "Found {$totalCount} invalid method call(s)";
+        $message = $this->formatIssueCountMessage(
+            totalCount: $totalCount,
+            displayedCount: $displayedCount,
+            issueType: 'invalid method call(s)'
+        );
 
         return $this->failed($message, $issueObjects);
     }
 
+    /**
+     * Get recommendation message based on PHPStan message.
+     */
     private function getRecommendation(string $message): string
     {
         if (str_contains($message, 'undefined method')) {

@@ -35,7 +35,7 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'missing-error-tracking',
-            name: 'Missing Error Tracking Detector',
+            name: 'Missing Error Tracking Analyzer',
             description: 'Detects production applications without error tracking services like Sentry',
             category: Category::BestPractices,
             severity: Severity::Medium,
@@ -88,7 +88,6 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
                 location: new Location('composer.json', 1),
                 severity: Severity::Medium,
                 recommendation: 'Install an error tracking service like Sentry (sentry/sentry-laravel), Bugsnag, or Rollbar for production error monitoring. This provides better visibility into production errors, automatic error grouping, and faster debugging',
-                code: null,
             );
         }
 

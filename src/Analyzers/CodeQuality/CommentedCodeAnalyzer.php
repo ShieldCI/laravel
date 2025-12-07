@@ -54,7 +54,7 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'commented-code',
-            name: 'Commented Code',
+            name: 'Commented Code Analyzer',
             description: 'Detects commented-out code that should be removed in favor of version control',
             category: Category::CodeQuality,
             severity: Severity::Low,
@@ -192,9 +192,15 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
      */
     private function looksLikeCode(string $content): bool
     {
-        // Empty or very short content
-        if (strlen($content) < 5) {
+        // Empty content
+        if (strlen($content) === 0) {
             return false;
+        }
+
+        // Short structural code elements (braces, semicolons, etc.)
+        if (strlen($content) < 5) {
+            // Allow structural characters that indicate code
+            return preg_match('/^[{};\[\]\(\)]$/', trim($content)) === 1;
         }
 
         // Exclude common documentation patterns
@@ -210,7 +216,7 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        // If multiple patterns match, likely code
+        // If code patterns match, likely code
         return $matches >= 1;
     }
 
@@ -245,7 +251,8 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
         // Check if it's prose (contains common English words)
         $proseWords = ['the', 'this', 'that', 'with', 'from', 'should', 'will', 'can', 'may'];
         foreach ($proseWords as $word) {
-            if (stripos($content, ' '.$word.' ') !== false) {
+            // Use word boundaries to match at sentence boundaries too
+            if (preg_match('/\b'.preg_quote($word, '/').'\b/i', $content)) {
                 return true;
             }
         }
@@ -297,54 +304,6 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
             'Use blame/annotate to find when code was changed and why',
         ];
 
-        $example = <<<'PHP'
-
-// Problem - Commented code:
-class UserService
-{
-    public function register($data)
-    {
-        $user = User::create($data);
-
-        // Old implementation:
-        // $validator = new UserValidator();
-        // if (!$validator->validate($data)) {
-        //     throw new ValidationException();
-        // }
-        // $user = new User();
-        // $user->name = $data['name'];
-        // $user->email = $data['email'];
-        // $user->save();
-
-        $this->sendWelcomeEmail($user);
-
-        // Don't forget to uncomment this later:
-        // $this->trackRegistration($user);
-
-        return $user;
-    }
-}
-
-// Solution - Clean code with version control:
-class UserService
-{
-    public function register($data)
-    {
-        $user = User::create($data);
-        $this->sendWelcomeEmail($user);
-
-        // TODO: Add registration tracking (see ticket #123)
-
-        return $user;
-    }
-}
-
-// If you need to reference old implementation, use commit message:
-// commit abc123: Refactored user registration to use Eloquent mass assignment
-// Previous implementation used manual property assignment for better control
-// Changed because: mass assignment is more concise and Laravel protects against it
-PHP;
-
-        return $base.'Best practices: '.implode('; ', $strategies).". Example:{$example}";
+        return $base.'Best practices: '.implode('; ', $strategies);
     }
 }

@@ -51,7 +51,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'autoloader-optimization',
-            name: 'Composer Autoloader Optimization',
+            name: 'Composer Autoloader Optimization Analyzer',
             description: 'Ensures Composer autoloader is optimized for production performance',
             category: Category::Performance,
             severity: Severity::High,

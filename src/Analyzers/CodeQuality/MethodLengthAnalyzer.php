@@ -38,7 +38,35 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
 
     public function __construct(
         private ParserInterface $parser
-    ) {}
+    ) {
+        $this->loadConfiguration();
+    }
+
+    /**
+     * Load configuration from shieldci config.
+     */
+    private function loadConfiguration(): void
+    {
+        if (function_exists('config')) {
+            $categoryConfig = config('shieldci.analyzers.code_quality', []);
+
+            if (is_array($categoryConfig)) {
+                $analyzerConfig = $categoryConfig['method_length'] ?? [];
+
+                if (is_array($analyzerConfig)) {
+                    // Load threshold
+                    if (isset($analyzerConfig['threshold']) && is_int($analyzerConfig['threshold'])) {
+                        $this->threshold = $analyzerConfig['threshold'];
+                    }
+
+                    // Load excluded patterns
+                    if (isset($analyzerConfig['exclude_patterns']) && is_array($analyzerConfig['exclude_patterns'])) {
+                        $this->excludedPatterns = $analyzerConfig['exclude_patterns'];
+                    }
+                }
+            }
+        }
+    }
 
     protected function metadata(): AnalyzerMetadata
     {

@@ -33,7 +33,27 @@ class NestingDepthAnalyzer extends AbstractFileAnalyzer
 
     public function __construct(
         private ParserInterface $parser
-    ) {}
+    ) {
+        $this->loadConfiguration();
+    }
+
+    /**
+     * Load configuration from shieldci config.
+     */
+    private function loadConfiguration(): void
+    {
+        if (function_exists('config')) {
+            $categoryConfig = config('shieldci.analyzers.code_quality', []);
+
+            if (is_array($categoryConfig)) {
+                $analyzerConfig = $categoryConfig['nesting_depth'] ?? [];
+
+                if (is_array($analyzerConfig) && isset($analyzerConfig['threshold']) && is_int($analyzerConfig['threshold'])) {
+                    $this->threshold = $analyzerConfig['threshold'];
+                }
+            }
+        }
+    }
 
     protected function metadata(): AnalyzerMetadata
     {

@@ -364,8 +364,6 @@ CUSTOM_VAR=value';
 
         $recommendation = $issues[0]->recommendation;
         $this->assertStringContainsString('Create a .env.example file', $recommendation);
-        $this->assertStringContainsString('placeholder', $recommendation);
-        $this->assertStringContainsString('Never commit real secrets', $recommendation);
     }
 
     public function test_recommendation_for_undocumented_variables(): void
@@ -393,8 +391,6 @@ STRIPE_SECRET=sk_test';
         $recommendation = $issues[0]->recommendation;
         $this->assertStringContainsString('NEW_API_KEY', $recommendation);
         $this->assertStringContainsString('STRIPE_SECRET', $recommendation);
-        $this->assertStringContainsString('Open .env.example', $recommendation);
-        $this->assertStringContainsString('placeholder values', $recommendation);
     }
 
     // =========================================================================

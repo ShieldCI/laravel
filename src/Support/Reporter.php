@@ -6,6 +6,7 @@ namespace ShieldCI\Support;
 
 use DateTimeImmutable;
 use Illuminate\Support\Collection;
+use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\ValueObjects\AnalysisReport;
@@ -50,12 +51,34 @@ class Reporter implements ReporterInterface
 
         // Group results by category
         $byCategory = $this->groupByCategory($report->results);
-        $total = $report->results->count();
+
+        // Filter out categories that only have skipped analyzers (disabled categories)
+        // Only show categories that have at least one analyzer that actually ran
+        $filteredCategories = [];
+        foreach ($byCategory as $category => $results) {
+            $hasNonSkipped = false;
+            foreach ($results as $result) {
+                if ($result->getStatus()->value !== 'skipped') {
+                    $hasNonSkipped = true;
+                    break;
+                }
+            }
+            if ($hasNonSkipped) {
+                $filteredCategories[$category] = $results;
+            }
+        }
+
+        // Calculate total from filtered categories only
+        $total = 0;
+        foreach ($filteredCategories as $results) {
+            $total += count($results);
+        }
+
         $current = 0;
 
-        foreach ($byCategory as $category => $results) {
+        foreach ($filteredCategories as $category => $results) {
             $output[] = '|------------------------------------------';
-            $output[] = "| Running {$category} Checks";
+            $output[] = "| Running {$category} Analyzers";
             $output[] = '|------------------------------------------';
             $output[] = '';
 
@@ -148,7 +171,7 @@ class Reporter implements ReporterInterface
         $output[] = $this->color('Report Card', 'bright_yellow');
         $output[] = $this->color('===========', 'bright_yellow');
         $output[] = '';
-        $output[] = $this->generateReportCard($report, $byCategory);
+        $output[] = $this->generateReportCard($report, $filteredCategories);
         $output[] = '';
 
         return implode(PHP_EOL, $output);
@@ -171,20 +194,24 @@ class Reporter implements ReporterInterface
             $category = $metadata['category'] ?? 'Unknown';
 
             // If category is an enum, get its value
-            if (is_object($category) && method_exists($category, '__toString')) {
-                $category = (string) $category;
-            } elseif (is_object($category) && isset($category->value)) {
-                $category = $category->value;
+            $categoryValue = null;
+            if (is_object($category) && isset($category->value)) {
+                $categoryValue = $category->value;
+            } elseif (is_string($category)) {
+                $categoryValue = $category;
             }
 
-            // Ensure category is a string before formatting
-            if (! is_string($category)) {
+            // Use Category enum label for human-readable name
+            if ($categoryValue !== null) {
+                try {
+                    $category = Category::from($categoryValue)->label();
+                } catch (\ValueError $e) {
+                    // If category value doesn't match any enum case, fall back to formatted string
+                    $category = ucfirst(str_replace('_', ' ', $categoryValue));
+                }
+            } else {
                 $category = 'Unknown';
             }
-
-            // Format category name
-            $category = ucfirst($category);
-            $category = str_replace('_', ' ', $category);
 
             if (! isset($grouped[$category])) {
                 $grouped[$category] = [];
@@ -326,8 +353,29 @@ class Reporter implements ReporterInterface
     {
         $table = [];
 
+        // Filter out categories that only have skipped analyzers (disabled categories)
+        // Only show categories that have at least one analyzer that actually ran
+        $filteredCategories = [];
+        foreach ($byCategory as $category => $results) {
+            $hasNonSkipped = false;
+            foreach ($results as $result) {
+                if ($result->getStatus()->value !== 'skipped') {
+                    $hasNonSkipped = true;
+                    break;
+                }
+            }
+            if ($hasNonSkipped) {
+                $filteredCategories[$category] = $results;
+            }
+        }
+
+        // If no categories have non-skipped analyzers, show all categories (edge case)
+        if (empty($filteredCategories)) {
+            $filteredCategories = $byCategory;
+        }
+
         // Header
-        $categories = array_keys($byCategory);
+        $categories = array_keys($filteredCategories);
         $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';
 
         // Build header row with colored labels
@@ -342,7 +390,7 @@ class Reporter implements ReporterInterface
 
         // Calculate stats per category
         $stats = [];
-        foreach ($byCategory as $category => $results) {
+        foreach ($filteredCategories as $category => $results) {
             $stats[$category] = [
                 'passed' => 0,
                 'failed' => 0,
@@ -362,6 +410,12 @@ class Reporter implements ReporterInterface
             }
         }
 
+        // Calculate total from filtered categories only
+        $totalAll = 0;
+        foreach ($filteredCategories as $results) {
+            $totalAll += count($results);
+        }
+
         // Passed row
         $passedRow = '| Passed         |';
         $totalPassed = 0;
@@ -372,7 +426,6 @@ class Reporter implements ReporterInterface
             $passedRow .= str_pad("   {$passed}  ({$pct}%)", 16).'|';
             $totalPassed += $passed;
         }
-        $totalAll = $report->results->count();
         $totalPct = $totalAll > 0 ? round(($totalPassed / $totalAll) * 100) : 0;
         $passedRow .= str_pad(" {$totalPassed}  ({$totalPct}%)", 12).'|';
         $table[] = $passedRow;

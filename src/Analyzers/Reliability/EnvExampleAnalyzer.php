@@ -119,29 +119,6 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
     {
         return <<<'RECOMMENDATION'
 Create a .env.example file to document all environment variables used in your application.
-
-This file serves as:
-- Documentation for required environment variables
-- Template for new team members
-- Reference for deployment configuration
-
-To create .env.example:
-1. Copy your .env file
-2. Replace all sensitive values with placeholders
-3. Add comments explaining each variable
-
-Example:
-  # Application
-  APP_NAME=Laravel
-  APP_ENV=local
-  APP_KEY=  # Generated via: php artisan key:generate
-
-  # Database
-  DB_CONNECTION=mysql
-  DB_HOST=127.0.0.1
-  DB_PASSWORD=your_password_here
-
-Never commit real secrets to .env.example - use placeholder values only!
 RECOMMENDATION;
     }
 
@@ -155,36 +132,14 @@ RECOMMENDATION;
         $undocumentedKeys = array_keys($undocumentedVars);
         $variablesList = implode(', ', $undocumentedKeys);
 
-        // Create example entries for the first few variables
-        $exampleEntries = [];
-        $maxExamples = min(5, count($undocumentedKeys));
-        for ($i = 0; $i < $maxExamples; $i++) {
-            $key = $undocumentedKeys[$i];
-            $exampleEntries[] = sprintf('%s=your_%s_here', $key, strtolower(str_replace('_', '_', $key)));
-        }
-        $exampleEntriesText = implode("\n  ", $exampleEntries);
-
         return sprintf(
             <<<'RECOMMENDATION'
 Add the following environment variables to your .env.example file: %s
 
 These variables are currently used in .env but not documented in .env.example.
 This makes it harder for team members to know what variables are required.
-
-To fix:
-1. Open .env.example
-2. Add these variables with placeholder values (NOT real secrets!)
-3. Add comments explaining what each variable is for
-
-Example additions:
-  %s
-
-IMPORTANT: Use placeholder values in .env.example, never real secrets!
-Good: DB_PASSWORD=your_database_password
-Bad:  DB_PASSWORD=MyRealPassword123
 RECOMMENDATION,
             $variablesList,
-            $exampleEntriesText
         );
     }
 

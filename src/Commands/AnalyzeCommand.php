@@ -148,7 +148,6 @@ class AnalyzeCommand extends Command
             $categoryLabel = Category::from($normalizedCategory)->label();
 
             $analyzers = $manager->getByCategory($normalizedCategory);
-            $totalCount = $manager->count(); // Total registered analyzers
             $enabledCount = $analyzers->count();
             // Get actual skipped count (may differ from calculated due to instantiation failures)
             $skippedCount = $manager->getSkippedAnalyzers()
@@ -162,6 +161,9 @@ class AnalyzeCommand extends Command
                     return is_string($resultCategory) && strtolower($resultCategory) === $normalizedCategory;
                 })
                 ->count();
+            // Total count for this specific category (enabled + skipped)
+            $totalCount = $enabledCount + $skippedCount;
+            
             if ($skippedCount > 0) {
                 $this->line("Running {$categoryLabel} analyzers... ({$enabledCount} running, {$skippedCount} skipped, {$totalCount} total)");
             } else {

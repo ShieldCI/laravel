@@ -444,9 +444,29 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
             };
         }
 
-        $recommendation = isset($advisory['recommendation']) && is_string($advisory['recommendation'])
-            ? $advisory['recommendation']
-            : sprintf('Update package "%s" to a patched version', $package);
+        // Build recommendation with fix information if available
+        $recommendation = null;
+
+        if (isset($advisory['recommendation']) && is_string($advisory['recommendation'])) {
+            $recommendation = $advisory['recommendation'];
+        } elseif (isset($advisory['fixAvailable']) && is_array($advisory['fixAvailable'])) {
+            // Use fixAvailable information from npm audit
+            $fixName = $advisory['fixAvailable']['name'] ?? null;
+            $fixVersion = $advisory['fixAvailable']['version'] ?? null;
+
+            if ($fixName && $fixVersion) {
+                if ($fixName === $package) {
+                    $recommendation = sprintf('Update "%s" to version %s or later', $package, $fixVersion);
+                } else {
+                    $recommendation = sprintf('Update "%s" to version %s to fix vulnerability in "%s"', $fixName, $fixVersion, $package);
+                }
+            }
+        }
+
+        // Fallback recommendation
+        if ($recommendation === null) {
+            $recommendation = sprintf('Update package "%s" to a patched version', $package);
+        }
 
         // Extract metadata
         $metadata = [

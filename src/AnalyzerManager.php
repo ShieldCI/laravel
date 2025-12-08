@@ -95,7 +95,7 @@ class AnalyzerManager
                 /** @var AnalyzerInterface $analyzer */
                 return $analyzer;
             })
-            ->filter(function (AnalyzerInterface $analyzer) use ($disabledAnalyzers, $enabledCategories, $isCiMode, $ciAnalyzers, $ciExcludeAnalyzers): bool {
+            ->filter(function (AnalyzerInterface $analyzer) use ($disabledAnalyzers, $enabledCategories, $isCiMode, $ciAnalyzers, $ciExcludeAnalyzers, $analyzersConfig): bool {
                 // Filter by disabled analyzers
                 if (in_array($analyzer->getId(), $disabledAnalyzers, true)) {
                     return false;
@@ -123,9 +123,13 @@ class AnalyzerManager
                 }
 
                 // Filter by enabled categories
-                $category = $analyzer->getMetadata()->category->value;
-                if (! empty($enabledCategories) && ! in_array($category, $enabledCategories, true)) {
-                    return false;
+                // If analyzers config exists but no categories are enabled, filter out all analyzers
+                // If analyzers config is empty (not configured), allow all categories (default behavior)
+                if (! empty($analyzersConfig)) {
+                    $category = $analyzer->getMetadata()->category->value;
+                    if (! in_array($category, $enabledCategories, true)) {
+                        return false;
+                    }
                 }
 
                 return $analyzer->shouldRun();

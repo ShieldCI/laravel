@@ -123,10 +123,13 @@ class AnalyzerManager
                 }
 
                 // Filter by enabled categories
-                // If analyzers config exists but no categories are enabled, filter out all analyzers
-                // If analyzers config is empty (not configured), allow all categories (default behavior)
                 if (! empty($analyzersConfig)) {
                     $category = $analyzer->getMetadata()->category->value;
+                    // If no categories are enabled, filter out all analyzers
+                    if (empty($enabledCategories)) {
+                        return false;
+                    }
+                    // Only allow analyzers from enabled categories
                     if (! in_array($category, $enabledCategories, true)) {
                         return false;
                     }

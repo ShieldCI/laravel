@@ -163,7 +163,7 @@ class AnalyzeCommand extends Command
                 ->count();
             // Total count for this specific category (enabled + skipped)
             $totalCount = $enabledCount + $skippedCount;
-            
+
             if ($skippedCount > 0) {
                 $this->line("Running {$categoryLabel} analyzers... ({$enabledCount} running, {$skippedCount} skipped, {$totalCount} total)");
             } else {
@@ -171,14 +171,40 @@ class AnalyzeCommand extends Command
             }
         } else {
             $analyzers = $manager->getAnalyzers();
-            $totalCount = $manager->count(); // Total registered analyzers
             $enabledCount = $analyzers->count();
 
-            // Get actual skipped count (may differ from calculated due to instantiation failures)
-            // Note: The final Report Card may show more "Not Applicable" than this count because
-            // some analyzers may return Status::Skipped at runtime (via shouldRun() or conditional logic).
-            // This count only reflects analyzers pre-filtered before execution.
-            $skippedCount = $manager->getSkippedAnalyzers()->count();
+            // Get enabled categories to filter skipped analyzers
+            $analyzersConfig = config('shieldci.analyzers', []);
+            $analyzersConfig = is_array($analyzersConfig) ? $analyzersConfig : [];
+            $enabledCategories = [];
+            foreach ($analyzersConfig as $category => $config) {
+                if (is_array($config) && ($config['enabled'] ?? true) === true) {
+                    $enabledCategories[] = $category;
+                }
+            }
+
+            // Get skipped analyzers only from enabled categories
+            $allSkipped = $manager->getSkippedAnalyzers();
+            $skippedCount = 0;
+            if (! empty($enabledCategories)) {
+                $skippedCount = $allSkipped
+                    ->filter(function (ResultInterface $result) use ($enabledCategories): bool {
+                        $metadata = $result->getMetadata();
+                        $resultCategory = $metadata['category'] ?? 'Unknown';
+                        if (is_object($resultCategory) && isset($resultCategory->value)) {
+                            $resultCategory = $resultCategory->value;
+                        }
+
+                        return is_string($resultCategory) && in_array($resultCategory, $enabledCategories, true);
+                    })
+                    ->count();
+            } else {
+                // If no categories are configured, count all skipped
+                $skippedCount = $allSkipped->count();
+            }
+
+            // Total count for enabled categories only (enabled + skipped from enabled categories)
+            $totalCount = $enabledCount + $skippedCount;
 
             if ($skippedCount > 0) {
                 $this->line("Running {$enabledCount} of {$totalCount} analyzers ({$skippedCount} skipped)...");

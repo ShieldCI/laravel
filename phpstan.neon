@@ -62,7 +62,6 @@ parameters:
 
         # Console command option/argument handling
         - '#Parameter .* expects string, array\|string\|true given#'
-        - '#Part .* \(.*\) of encapsed string cannot be cast to string#'
 
         # Collection return types (generic type specifications not needed)
         - '#return type with generic class Illuminate\\Support\\Collection does not specify its types#'

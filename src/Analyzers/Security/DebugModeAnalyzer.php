@@ -191,7 +191,11 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                if (preg_match('/["\']debug["\']\s*=>\s*true/i', $line)) {
+                if (preg_match('/["\']debug["\']\s*=>\s*env\s*\(/i', $line)) {
+                    continue;
+                }
+
+                if (preg_match('/["\']debug["\']\s*=>\s*true\b/i', $line)) {
                     $issues[] = $this->createIssue(
                         message: 'Debug mode hardcoded to true in config/app.php',
                         location: new Location(
@@ -262,7 +266,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                 }
 
                 // Check for Ray debugging tool
-                if (preg_match('/\bray\s*\(/i', $line)) {
+                if (preg_match('/(?<!->)\bray\s*\(/i', $line)) {
                     $issues[] = $this->createIssue(
                         message: 'Ray debugging function found in code',
                         location: new Location(

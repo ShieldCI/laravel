@@ -6,6 +6,7 @@ namespace ShieldCI\Support;
 
 use DateTimeImmutable;
 use Illuminate\Support\Collection;
+use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\ValueObjects\AnalysisReport;
@@ -55,7 +56,7 @@ class Reporter implements ReporterInterface
 
         foreach ($byCategory as $category => $results) {
             $output[] = '|------------------------------------------';
-            $output[] = "| Running {$category} Checks";
+            $output[] = "| Running {$category} Analyzers";
             $output[] = '|------------------------------------------';
             $output[] = '';
 
@@ -171,20 +172,24 @@ class Reporter implements ReporterInterface
             $category = $metadata['category'] ?? 'Unknown';
 
             // If category is an enum, get its value
-            if (is_object($category) && method_exists($category, '__toString')) {
-                $category = (string) $category;
-            } elseif (is_object($category) && isset($category->value)) {
-                $category = $category->value;
+            $categoryValue = null;
+            if (is_object($category) && isset($category->value)) {
+                $categoryValue = $category->value;
+            } elseif (is_string($category)) {
+                $categoryValue = $category;
             }
 
-            // Ensure category is a string before formatting
-            if (! is_string($category)) {
+            // Use Category enum label for human-readable name
+            if ($categoryValue !== null) {
+                try {
+                    $category = Category::from($categoryValue)->label();
+                } catch (\ValueError $e) {
+                    // If category value doesn't match any enum case, fall back to formatted string
+                    $category = ucfirst(str_replace('_', ' ', $categoryValue));
+                }
+            } else {
                 $category = 'Unknown';
             }
-
-            // Format category name
-            $category = ucfirst($category);
-            $category = str_replace('_', ' ', $category);
 
             if (! isset($grouped[$category])) {
                 $grouped[$category] = [];

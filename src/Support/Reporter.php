@@ -137,18 +137,17 @@ class Reporter implements ReporterInterface
                             $output[] = $this->color("... and {$remaining} more issue(s).", 'magenta');
                         }
 
-                        // Show one recommendation for all issues (if recommendations are enabled)
+                        // Show all unique recommendations from displayed issues (if recommendations are enabled)
                         if ($showRecommendations) {
-                            // Get the first non-empty recommendation
-                            $recommendation = null;
-                            foreach ($issues as $issue) {
-                                if (! empty($issue->recommendation)) {
-                                    $recommendation = $issue->recommendation;
-                                    break;
+                            // Collect all unique recommendations from the displayed issues only
+                            $recommendations = [];
+                            foreach (array_slice($issues, 0, $displayCount) as $issue) {
+                                if (! empty($issue->recommendation) && ! in_array($issue->recommendation, $recommendations, true)) {
+                                    $recommendations[] = $issue->recommendation;
                                 }
                             }
 
-                            if ($recommendation !== null) {
+                            foreach ($recommendations as $recommendation) {
                                 // Use italic for recommendations
                                 $output[] = $this->italic($recommendation);
                             }

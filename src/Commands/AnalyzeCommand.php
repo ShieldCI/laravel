@@ -45,15 +45,19 @@ class AnalyzeCommand extends Command
             set_time_limit($timeout);
         }
 
-        $this->info('🛡️  ShieldCI Analysis Starting...');
-        $this->newLine();
-
         // Check if enabled
         if (! config('shieldci.enabled')) {
             $this->warn('ShieldCI is disabled in configuration.');
 
             return self::SUCCESS;
         }
+
+        // Determine if we should use streaming output (console format only)
+        $format = $this->option('format') ?: config('shieldci.report.format', 'console');
+        $useStreaming = $format === 'console';
+
+        // Validate ignore_errors config early (before analysis starts)
+        $this->validateIgnoreErrorsConfig($manager);
 
         // Check if any categories are enabled
         $analyzersConfig = config('shieldci.analyzers', []);
@@ -77,8 +81,10 @@ class AnalyzeCommand extends Command
             }
         }
 
-        // Run analysis
-        $results = $this->runAnalysis($manager);
+        // Run analysis (with optional streaming)
+        $results = $useStreaming
+            ? $this->runAnalysisWithStreaming($manager, $reporter)
+            : $this->runAnalysis($manager);
 
         if ($results->isEmpty()) {
             $this->error('No analyzers were run.');
@@ -89,8 +95,7 @@ class AnalyzeCommand extends Command
         // Generate report
         $report = $reporter->generate($results);
 
-        // Validate and filter against ignore_errors config (always applied)
-        $this->validateIgnoreErrorsConfig($manager);
+        // Filter against ignore_errors config (already applied in streaming, but needed for non-streaming)
         $report = $this->filterAgainstIgnoreErrors($report);
 
         // Filter against baseline if requested
@@ -98,8 +103,18 @@ class AnalyzeCommand extends Command
             $report = $this->filterAgainstBaseline($report);
         }
 
-        // Output report
-        $this->outputReport($report, $reporter);
+        // Output report (skip if already streamed)
+        if (! $useStreaming) {
+            $this->outputReport($report, $reporter);
+        } else {
+            // For streaming mode, just output the report card
+            $this->newLine();
+            $this->line($this->color('Report Card', 'bright_yellow'));
+            $this->line($this->color('===========', 'bright_yellow'));
+            $this->newLine();
+            $this->outputReportCard($report);
+            $this->newLine();
+        }
 
         // Save to file if requested (CLI option or config default)
         $output = $this->option('output');
@@ -114,6 +129,234 @@ class AnalyzeCommand extends Command
 
         // Determine exit code
         return $this->determineExitCode($report);
+    }
+
+    /**
+     * Run analysis with streaming output (results displayed as they complete).
+     */
+    protected function runAnalysisWithStreaming(AnalyzerManager $manager, ReporterInterface $reporter): Collection
+    {
+        // Output header
+        $this->line($reporter->streamHeader());
+
+        $results = collect();
+        $category = $this->option('category');
+        $analyzerOption = $this->option('analyzer');
+
+        if ($analyzerOption) {
+            // Support comma-separated analyzer IDs
+            $analyzerIds = array_map('trim', explode(',', $analyzerOption));
+            $analyzerIds = array_filter($analyzerIds, fn (string $id) => $id !== '');
+
+            if (count($analyzerIds) === 1) {
+                $this->line("Running analyzer: {$analyzerIds[0]}");
+            } else {
+                $this->line('Running analyzers: '.implode(', ', $analyzerIds));
+            }
+            $this->newLine();
+
+            $current = 0;
+            $total = count($analyzerIds);
+
+            foreach ($analyzerIds as $analyzerId) {
+                $analyzer = $manager->getAnalyzers()->first(fn ($a) => $a->getId() === $analyzerId);
+                if ($analyzer === null) {
+                    continue;
+                }
+
+                $current++;
+
+                // Run analyzer
+                $result = $analyzer->analyze();
+                $metadata = $analyzer->getMetadata();
+
+                // Enrich result with metadata
+                $enrichedResult = new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
+                    analyzerId: $result->getAnalyzerId(),
+                    status: $result->getStatus(),
+                    message: $result->getMessage(),
+                    issues: $result->getIssues(),
+                    executionTime: $result->getExecutionTime(),
+                    metadata: [
+                        'id' => $metadata->id,
+                        'name' => $metadata->name,
+                        'description' => $metadata->description,
+                        'category' => $metadata->category,
+                        'severity' => $metadata->severity,
+                        'docsUrl' => $metadata->docsUrl,
+                        'timeToFix' => $metadata->timeToFix,
+                    ],
+                );
+
+                // Apply ignore_errors filtering before streaming
+                $filteredResult = $this->filterSingleResultAgainstIgnoreErrors($enrichedResult);
+
+                $results->push($filteredResult);
+
+                // Stream output immediately
+                $categoryLabel = $metadata->category->label();
+                $this->line($reporter->streamResult($filteredResult, $current, $total, $categoryLabel));
+            }
+
+            return $results;
+        }
+
+        // Get analyzers (by category or all)
+        $normalizedCategory = null;
+        if ($category) {
+            $normalizedCategory = strtolower($category);
+            $analyzers = $manager->getByCategory($normalizedCategory);
+        } else {
+            $analyzers = $manager->getAnalyzers();
+        }
+
+        $enabledCount = $analyzers->count();
+
+        // Calculate skipped count
+        $skippedCount = 0;
+        if ($normalizedCategory) {
+            $skippedCount = $manager->getSkippedAnalyzers()
+                ->filter(function (\ShieldCI\AnalyzersCore\Contracts\ResultInterface $result) use ($normalizedCategory): bool {
+                    $metadata = $result->getMetadata();
+                    $resultCategory = $metadata['category'] ?? 'Unknown';
+                    if (is_object($resultCategory) && isset($resultCategory->value)) {
+                        $resultCategory = $resultCategory->value;
+                    }
+
+                    return is_string($resultCategory) && strtolower($resultCategory) === $normalizedCategory;
+                })
+                ->count();
+        } else {
+            // Get enabled categories to filter skipped analyzers
+            $analyzersConfig = config('shieldci.analyzers', []);
+            $analyzersConfig = is_array($analyzersConfig) ? $analyzersConfig : [];
+            $enabledCategories = [];
+            foreach ($analyzersConfig as $cat => $config) {
+                if (is_array($config) && ($config['enabled'] ?? true) === true) {
+                    $enabledCategories[] = $cat;
+                }
+            }
+
+            $allSkipped = $manager->getSkippedAnalyzers();
+            if (! empty($enabledCategories)) {
+                $skippedCount = $allSkipped
+                    ->filter(function (\ShieldCI\AnalyzersCore\Contracts\ResultInterface $result) use ($enabledCategories): bool {
+                        $metadata = $result->getMetadata();
+                        $resultCategory = $metadata['category'] ?? 'Unknown';
+                        if (is_object($resultCategory) && isset($resultCategory->value)) {
+                            $resultCategory = $resultCategory->value;
+                        }
+
+                        return is_string($resultCategory) && in_array($resultCategory, $enabledCategories, true);
+                    })
+                    ->count();
+            } else {
+                $skippedCount = $allSkipped->count();
+            }
+        }
+
+        $totalCount = $enabledCount + $skippedCount;
+
+        if ($skippedCount > 0) {
+            $this->line("Running {$enabledCount} of {$totalCount} analyzers ({$skippedCount} skipped)...");
+        } else {
+            $this->line("Running all {$enabledCount} analyzers...");
+        }
+        $this->newLine(2);
+
+        // Group analyzers by category for organized output
+        $byCategory = [];
+        foreach ($analyzers as $analyzer) {
+            $metadata = $analyzer->getMetadata();
+            $cat = $metadata->category->value;
+            if (! isset($byCategory[$cat])) {
+                $byCategory[$cat] = [];
+            }
+            $byCategory[$cat][] = $analyzer;
+        }
+
+        $current = 0;
+        $total = $totalCount;
+
+        // Run analyzers by category
+        foreach ($byCategory as $cat => $categoryAnalyzers) {
+            $categoryLabel = Category::from($cat)->label();
+
+            // Output category header
+            $this->line($reporter->streamCategoryHeader($categoryLabel));
+
+            foreach ($categoryAnalyzers as $analyzer) {
+                $current++;
+
+                // Run analyzer
+                $result = $analyzer->analyze();
+                $metadata = $analyzer->getMetadata();
+
+                // Enrich result with metadata
+                $enrichedResult = new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
+                    analyzerId: $result->getAnalyzerId(),
+                    status: $result->getStatus(),
+                    message: $result->getMessage(),
+                    issues: $result->getIssues(),
+                    executionTime: $result->getExecutionTime(),
+                    metadata: [
+                        'id' => $metadata->id,
+                        'name' => $metadata->name,
+                        'description' => $metadata->description,
+                        'category' => $metadata->category,
+                        'severity' => $metadata->severity,
+                        'docsUrl' => $metadata->docsUrl,
+                        'timeToFix' => $metadata->timeToFix,
+                    ],
+                );
+
+                // Apply ignore_errors filtering before streaming
+                $filteredResult = $this->filterSingleResultAgainstIgnoreErrors($enrichedResult);
+
+                $results->push($filteredResult);
+
+                // Stream output immediately
+                $this->line($reporter->streamResult($filteredResult, $current, $total, $categoryLabel));
+            }
+        }
+
+        // Add skipped analyzers to results and stream them
+        if ($normalizedCategory) {
+            $skippedResults = $manager->getSkippedAnalyzers()
+                ->filter(function (\ShieldCI\AnalyzersCore\Contracts\ResultInterface $result) use ($normalizedCategory): bool {
+                    $metadata = $result->getMetadata();
+                    $resultCategory = $metadata['category'] ?? 'Unknown';
+                    if (is_object($resultCategory) && isset($resultCategory->value)) {
+                        $resultCategory = $resultCategory->value;
+                    }
+
+                    return is_string($resultCategory) && strtolower($resultCategory) === $normalizedCategory;
+                });
+        } else {
+            $skippedResults = $manager->getSkippedAnalyzers();
+        }
+
+        // Stream skipped analyzers
+        foreach ($skippedResults as $skippedResult) {
+            $current++;
+            $metadata = $skippedResult->getMetadata();
+
+            // Get category label
+            $resultCategory = $metadata['category'] ?? 'Unknown';
+            if (is_object($resultCategory) && isset($resultCategory->value)) {
+                $categoryLabel = Category::from($resultCategory->value)->label();
+            } else {
+                $categoryLabel = 'Unknown';
+            }
+
+            // Stream output immediately
+            $this->line($reporter->streamResult($skippedResult, $current, $total, $categoryLabel));
+        }
+
+        // Merge results
+        $allResults = collect(array_merge($results->all(), $skippedResults->all()));
+
+        return $allResults;
     }
 
     protected function runAnalysis(AnalyzerManager $manager): Collection
@@ -277,6 +520,198 @@ class AnalyzeCommand extends Command
         }
     }
 
+    /**
+     * Output just the report card (used in streaming mode).
+     */
+    protected function outputReportCard(AnalysisReport $report): void
+    {
+        // Group results by category
+        $byCategory = [];
+        foreach ($report->results as $result) {
+            $metadata = $result->getMetadata();
+            $category = $metadata['category'] ?? 'Unknown';
+
+            // Extract category value
+            $categoryValue = null;
+            if (is_object($category) && isset($category->value)) {
+                $categoryValue = $category->value;
+            } elseif (is_string($category)) {
+                $categoryValue = $category;
+            }
+
+            // Use Category enum label for human-readable name
+            if ($categoryValue !== null) {
+                try {
+                    $category = Category::from($categoryValue)->label();
+                } catch (\ValueError $e) {
+                    $category = ucfirst(str_replace('_', ' ', $categoryValue));
+                }
+            } else {
+                $category = 'Unknown';
+            }
+
+            if (! isset($byCategory[$category])) {
+                $byCategory[$category] = [];
+            }
+
+            $byCategory[$category][] = $result;
+        }
+
+        // Filter out categories that only have skipped analyzers
+        $filteredCategories = [];
+        foreach ($byCategory as $category => $results) {
+            $hasNonSkipped = false;
+            foreach ($results as $result) {
+                if ($result->getStatus()->value !== 'skipped') {
+                    $hasNonSkipped = true;
+                    break;
+                }
+            }
+            if ($hasNonSkipped) {
+                $filteredCategories[$category] = $results;
+            }
+        }
+
+        if (empty($filteredCategories)) {
+            $filteredCategories = $byCategory;
+        }
+
+        // Calculate stats per category
+        $stats = [];
+        foreach ($filteredCategories as $category => $results) {
+            $stats[$category] = [
+                'passed' => 0,
+                'failed' => 0,
+                'warning' => 0,
+                'skipped' => 0,
+                'error' => 0,
+                'total' => count($results),
+            ];
+
+            foreach ($results as $result) {
+                $status = $result->getStatus()->value;
+                if ($status === 'skipped') {
+                    $stats[$category]['skipped']++;
+                } else {
+                    $stats[$category][$status]++;
+                }
+            }
+        }
+
+        // Calculate total
+        $totalAll = 0;
+        foreach ($filteredCategories as $results) {
+            $totalAll += count($results);
+        }
+
+        $categories = array_keys($filteredCategories);
+        $table = [];
+
+        // Header
+        $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';
+
+        // Build header row
+        $statusCell = str_pad(' Status', 16);
+        $categoryCells = array_map(fn ($c) => str_pad(' '.$c, 16), $categories);
+        $totalCell = str_pad('     Total', 12);
+
+        $table[] = '|'.$statusCell.'|'.implode('|', $categoryCells).'|'.$totalCell.'|';
+        $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';
+
+        // Passed row
+        $passedRow = '| Passed         |';
+        $totalPassed = 0;
+        foreach ($categories as $category) {
+            $passed = $stats[$category]['passed'];
+            $total = $stats[$category]['total'];
+            $pct = $total > 0 ? round(($passed / $total) * 100) : 0;
+            $passedRow .= str_pad("   {$passed}  ({$pct}%)", 16).'|';
+            $totalPassed += $passed;
+        }
+        $totalPct = $totalAll > 0 ? round(($totalPassed / $totalAll) * 100) : 0;
+        $passedRow .= str_pad(" {$totalPassed}  ({$totalPct}%)", 12).'|';
+        $table[] = $passedRow;
+
+        // Failed row
+        $failedRow = '| Failed         |';
+        $totalFailed = 0;
+        foreach ($categories as $category) {
+            $failed = $stats[$category]['failed'];
+            $total = $stats[$category]['total'];
+            $pct = $total > 0 ? round(($failed / $total) * 100) : 0;
+            $failedRow .= str_pad("    {$failed}   ({$pct}%)", 16).'|';
+            $totalFailed += $failed;
+        }
+        $totalPct = $totalAll > 0 ? round(($totalFailed / $totalAll) * 100) : 0;
+        $failedRow .= str_pad("  {$totalFailed}  ({$totalPct}%)", 12).'|';
+        $table[] = $failedRow;
+
+        // Warning row
+        $warningRow = '| Warning        |';
+        $totalWarnings = 0;
+        foreach ($categories as $category) {
+            $warnings = $stats[$category]['warning'];
+            $total = $stats[$category]['total'];
+            $pct = $total > 0 ? round(($warnings / $total) * 100) : 0;
+            $warningRow .= str_pad("    {$warnings}   ({$pct}%)", 16).'|';
+            $totalWarnings += $warnings;
+        }
+        $totalPct = $totalAll > 0 ? round(($totalWarnings / $totalAll) * 100) : 0;
+        $warningRow .= str_pad("  {$totalWarnings}  ({$totalPct}%)", 12).'|';
+        $table[] = $warningRow;
+
+        // Not Applicable row
+        $skippedRow = '| Not Applicable |';
+        $totalSkipped = 0;
+        foreach ($categories as $category) {
+            $skipped = $stats[$category]['skipped'];
+            $total = $stats[$category]['total'];
+            $pct = $total > 0 ? round(($skipped / $total) * 100) : 0;
+            $skippedRow .= str_pad("    {$skipped}   ({$pct}%)", 16).'|';
+            $totalSkipped += $skipped;
+        }
+        $totalPct = $totalAll > 0 ? round(($totalSkipped / $totalAll) * 100) : 0;
+        $skippedRow .= str_pad("  {$totalSkipped}   ({$totalPct}%)", 12).'|';
+        $table[] = $skippedRow;
+
+        // Error row
+        $errorRow = '| Error          |';
+        $totalErrors = 0;
+        foreach ($categories as $category) {
+            $errors = $stats[$category]['error'];
+            $total = $stats[$category]['total'];
+            $pct = $total > 0 ? round(($errors / $total) * 100) : 0;
+            $errorRow .= str_pad("    {$errors}   ({$pct}%)", 16).'|';
+            $totalErrors += $errors;
+        }
+        $totalPct = $totalAll > 0 ? round(($totalErrors / $totalAll) * 100) : 0;
+        $errorRow .= str_pad("  {$totalErrors}   ({$totalPct}%)", 12).'|';
+        $table[] = $errorRow;
+
+        // Footer
+        $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';
+
+        $this->line(implode(PHP_EOL, $table));
+    }
+
+    /**
+     * Apply ANSI color to text.
+     */
+    protected function color(string $text, string $color): string
+    {
+        $colors = [
+            'bright_yellow' => '1;33',
+        ];
+
+        if (! isset($colors[$color])) {
+            return $text;
+        }
+
+        $code = $colors[$color];
+
+        return "\033[{$code}m{$text}\033[0m";
+    }
+
     protected function saveReport(AnalysisReport $report, ReporterInterface $reporter, string $path): void
     {
         $content = $this->option('format') === 'json'
@@ -437,6 +872,81 @@ class AnalyzeCommand extends Command
             }
             $this->newLine();
         }
+    }
+
+    /**
+     * Filter a single result against ignore_errors config.
+     * Used in streaming mode to filter results before displaying them.
+     */
+    protected function filterSingleResultAgainstIgnoreErrors(\ShieldCI\AnalyzersCore\Results\AnalysisResult $result): \ShieldCI\AnalyzersCore\Results\AnalysisResult
+    {
+        $configIgnoreErrors = config('shieldci.ignore_errors', []);
+        $configIgnoreErrors = is_array($configIgnoreErrors) ? $configIgnoreErrors : [];
+
+        if (empty($configIgnoreErrors)) {
+            return $result;
+        }
+
+        $analyzerId = $result->getAnalyzerId();
+
+        // If no ignore_errors for this analyzer, return as-is
+        if (! isset($configIgnoreErrors[$analyzerId])) {
+            return $result;
+        }
+
+        $currentIssues = $result->getIssues();
+
+        // Filter out issues that match ignore_errors config
+        $newIssues = collect($currentIssues)->filter(function ($issue) use ($configIgnoreErrors, $analyzerId) {
+            if ($this->matchesIgnoreError($issue, $configIgnoreErrors[$analyzerId])) {
+                return false; // Issue matches ignore_errors, filter it out
+            }
+
+            return true; // Keep issue
+        });
+
+        // Create new result with filtered issues
+        $status = $newIssues->isEmpty()
+            ? \ShieldCI\AnalyzersCore\Enums\Status::Passed
+            : $result->getStatus();
+
+        // Update message to reflect filtered count
+        $message = $result->getMessage();
+        if ($newIssues->isEmpty()) {
+            $message = 'All issues are ignored via config';
+        } elseif ($newIssues->count() !== count($currentIssues)) {
+            // Some (but not all) issues were filtered - update the count in the message
+            $originalCount = count($currentIssues);
+            $filteredCount = $newIssues->count();
+
+            // Update numeric counts in the message
+            $updatedMessage = preg_replace('/\b'.$originalCount.'\b/', (string) $filteredCount, $message, 1);
+            $message = is_string($updatedMessage) ? $updatedMessage : $message;
+
+            // Fix singular/plural grammar
+            if ($filteredCount === 1) {
+                $message = preg_replace_callback('/\b(issues|errors|warnings|problems|vulnerabilities)\b/', function ($matches) {
+                    $singular = [
+                        'issues' => 'issue',
+                        'errors' => 'error',
+                        'warnings' => 'warning',
+                        'problems' => 'problem',
+                        'vulnerabilities' => 'vulnerability',
+                    ];
+
+                    return $singular[strtolower($matches[1])] ?? $matches[1];
+                }, $message, 1) ?? $message;
+            }
+        }
+
+        return new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
+            analyzerId: $result->getAnalyzerId(),
+            status: $status,
+            message: $message,
+            issues: $newIssues->all(),
+            executionTime: $result->getExecutionTime(),
+            metadata: $result->getMetadata(),
+        );
     }
 
     /**

@@ -511,4 +511,139 @@ class Reporter implements ReporterInterface
 
         return 'dev';
     }
+
+    /**
+     * Output the header for streaming mode.
+     */
+    public function streamHeader(): string
+    {
+        $output = [];
+
+        // ASCII Header with color
+        $output[] = '';
+        $output[] = $this->color('   _____ __    _      __    __________', 'green');
+        $output[] = $this->color('  / ___// /_  (_)__  / /___/ / ____/  _/', 'green');
+        $output[] = $this->color('  \__ \/ __ \/ / _ \/ / __  / /    / /  ', 'green');
+        $output[] = $this->color(' ___/ / / / / /  __/ / /_/ / /____/ /   ', 'green');
+        $output[] = $this->color('/____/_/ /_/_/\___/_/\__,_/\____/___/   ', 'green');
+        $output[] = '';
+        $output[] = '';
+        $output[] = 'Please wait while ShieldCI scans your code base...';
+        $output[] = '';
+
+        return implode(PHP_EOL, $output);
+    }
+
+    /**
+     * Output a category header for streaming mode.
+     */
+    public function streamCategoryHeader(string $category): string
+    {
+        $output = [];
+        $output[] = '|------------------------------------------';
+        $output[] = "| Running {$category} Analyzers";
+        $output[] = '|------------------------------------------';
+        $output[] = '';
+
+        return implode(PHP_EOL, $output);
+    }
+
+    /**
+     * Stream a single result to console as it completes.
+     */
+    public function streamResult(
+        \ShieldCI\AnalyzersCore\Contracts\ResultInterface $result,
+        int $current,
+        int $total,
+        string $category
+    ): string {
+        $showRecommendations = config('shieldci.report.show_recommendations', true);
+        $showCodeSnippets = config('shieldci.report.show_code_snippets', true);
+        $maxIssuesPerCheckRaw = config('shieldci.report.max_issues_per_check', 5);
+        $maxIssuesPerCheck = is_int($maxIssuesPerCheckRaw) ? $maxIssuesPerCheckRaw : 5;
+
+        $output = [];
+
+        $status = $this->getColoredStatusLabel($result->getStatus());
+        $metadata = $result->getMetadata();
+
+        // Get name from metadata
+        $name = $metadata['name'] ?? $result->getAnalyzerId();
+
+        // Build status line with optional timeToFix
+        $statusLine = "{$name}. {$status}";
+        $timeToFix = $metadata['timeToFix'] ?? null;
+        if ($timeToFix !== null && is_int($timeToFix) && ($result->getStatus()->value === 'failed' || $result->getStatus()->value === 'warning')) {
+            $timeLabel = $timeToFix === 1 ? '1 min' : "{$timeToFix} mins";
+            $statusLine .= ' '.$this->color("({$timeLabel} to fix)", 'gray');
+        }
+
+        $output[] = $this->color("Analyzer {$current}/{$total}: ", 'yellow').$statusLine;
+
+        // Show skip reason for skipped analyzers
+        if ($result->getStatus()->value === 'skipped') {
+            $output[] = $this->color("  ⊝ {$result->getMessage()}", 'gray');
+            $output[] = '';
+
+            return implode(PHP_EOL, $output);
+        }
+
+        // Show detailed info for failed/warning analyzers
+        if ($result->getStatus()->value === 'failed' || $result->getStatus()->value === 'warning') {
+            // Use bold for critical failures
+            $isCritical = $result->getStatus()->value === 'failed';
+            $message = $isCritical
+                ? $this->bold($this->color($result->getMessage(), 'red'))
+                : $this->color($result->getMessage(), 'red');
+
+            $output[] = $message;
+
+            $issues = $result->getIssues();
+            if (! empty($issues)) {
+                $displayCount = $maxIssuesPerCheck;
+
+                // Show issue locations
+                foreach (array_slice($issues, 0, $displayCount) as $issue) {
+                    // Highlight critical issues with background color
+                    if (isset($issue->severity) && $issue->severity->value === 'critical') {
+                        $output[] = $this->color("At {$issue->location}.", 'white', 'bg_red');
+                    } else {
+                        $output[] = $this->color("At {$issue->location}.", 'magenta');
+                    }
+                }
+
+                if (count($issues) > $displayCount) {
+                    $remaining = count($issues) - $displayCount;
+                    $output[] = $this->color("... and {$remaining} more issue(s).", 'magenta');
+                }
+
+                // Show all unique recommendations from displayed issues (if recommendations are enabled)
+                if ($showRecommendations) {
+                    // Collect all unique recommendations from the displayed issues only
+                    $recommendations = [];
+                    foreach (array_slice($issues, 0, $displayCount) as $issue) {
+                        if (! empty($issue->recommendation) && ! in_array($issue->recommendation, $recommendations, true)) {
+                            $recommendations[] = $issue->recommendation;
+                        }
+                    }
+
+                    foreach ($recommendations as $recommendation) {
+                        // Use italic for recommendations
+                        $output[] = $this->italic($recommendation);
+                    }
+                }
+            }
+
+            // Documentation URL if available (with hyperlink support)
+            $docsUrl = $metadata['docsUrl'] ?? null;
+            if (! empty($docsUrl) && is_string($docsUrl)) {
+                $linkText = $this->hyperlink($docsUrl, $docsUrl);
+                $output[] = $this->color('Documentation URL: ', 'cyan').$this->color($linkText, 'cyan');
+            }
+        }
+
+        $output[] = '';
+
+        return implode(PHP_EOL, $output);
+    }
 }

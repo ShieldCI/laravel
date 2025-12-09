@@ -576,7 +576,14 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
         array $metadata = []
     ): Issue {
         $line = $this->getSettingLine($phpIniPath, $setting);
-        $snippet = FileParser::getCodeSnippet($phpIniPath, $line);
+
+        // Try to get code snippet, but handle open_basedir restrictions gracefully
+        try {
+            $snippet = FileParser::getCodeSnippet($phpIniPath, $line);
+        } catch (\Throwable $e) {
+            // If we can't read the file (e.g., due to open_basedir restrictions), use empty snippet
+            $snippet = '';
+        }
 
         return $this->createIssue(
             message: $message,
@@ -631,7 +638,13 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
         }
 
         if ($this->phpIniLinesCache === null) {
-            $this->phpIniLinesCache = FileParser::getLines($phpIniPath);
+            // Try to read the file, but handle open_basedir restrictions gracefully
+            try {
+                $this->phpIniLinesCache = FileParser::getLines($phpIniPath);
+            } catch (\Throwable $e) {
+                // If we can't read the file (e.g., due to open_basedir restrictions), return empty array
+                $this->phpIniLinesCache = [];
+            }
         }
 
         return $this->phpIniLinesCache ?? [];

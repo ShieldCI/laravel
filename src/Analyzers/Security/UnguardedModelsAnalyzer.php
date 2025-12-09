@@ -62,7 +62,7 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             return $this->passed('No unguarded models detected');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d instances of unguarded models', count($issues)),
             $issues
         );

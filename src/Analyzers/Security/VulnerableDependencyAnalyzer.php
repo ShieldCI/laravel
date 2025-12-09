@@ -139,7 +139,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         return $this->failed(
-            sprintf('Found %d dependency security issues', count($issues)),
+            sprintf('Found %d dependency security issue(s)', count($issues)),
             $issues
         );
     }

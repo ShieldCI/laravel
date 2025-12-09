@@ -102,7 +102,7 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
 
         $summary = empty($issues)
             ? "Route caching is properly configured for {$environment} environment"
-            : sprintf('Found %d route caching issues', count($issues));
+            : sprintf('Found %d route caching issue(s)', count($issues));
 
         return $this->resultBySeverity($summary, $issues);
     }

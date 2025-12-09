@@ -102,7 +102,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         return $this->failed(
-            sprintf('Found %d dependency stability issues', count($issues)),
+            sprintf('Found %d dependency stability issue(s)', count($issues)),
             $issues
         );
     }

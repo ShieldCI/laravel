@@ -253,7 +253,7 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertStringContainsString('route caching issues', $result->getMessage());
+        $this->assertStringContainsString('route caching issue(s)', $result->getMessage());
 
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
@@ -270,7 +270,7 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertWarning($result);
-        $this->assertStringContainsString('route caching issues', $result->getMessage());
+        $this->assertStringContainsString('route caching issue(s)', $result->getMessage());
 
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);

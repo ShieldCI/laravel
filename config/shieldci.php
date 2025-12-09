@@ -142,7 +142,14 @@ return [
     |--------------------------------------------------------------------------
     |
     | Analyzers listed here will run but won't affect the exit code.
+    | They will still appear in the report output.
     | Useful for informational checks that shouldn't fail CI/CD.
+    |
+    | Behavior:
+    | - Analyzers run normally and show in report
+    | - Issues are displayed in console/JSON output
+    | - Exit code is not affected (won't fail CI/CD)
+    | - Useful for gradual adoption or informational analyzers
     |
     | This can be manually configured here, or auto-populated by running
     | 'php artisan shield:baseline'. Analyzers that fail but have no
@@ -266,6 +273,12 @@ return [
     | Manually ignore specific errors by analyzer ID, path, and message.
     | This works alongside the baseline file and is always applied.
     |
+    | Behavior:
+    | - Filtered issues are completely removed from the report
+    | - Does not appear in console/JSON output
+    | - Does not affect exit code
+    | - Applied before baseline filtering
+    |
     | Structure: analyzer_id => array of error definitions
     |
     | Each error definition can include:
@@ -274,9 +287,17 @@ return [
     | - 'message': Exact error message or pattern (e.g., '*XSS*')
     | - 'message_pattern': Explicit pattern for message matching (Laravel Str::is)
     |
+    | Matching Rules:
+    | - Path matching is case-sensitive on case-sensitive filesystems
+    | - Message matching is case-sensitive for exact matches
+    | - Patterns use Laravel Str::is() (supports *, ?, [abc])
+    | - Both path AND message must match if both are specified
+    | - If only path is specified, all issues in that path are ignored
+    | - If only message is specified, all issues with that message are ignored
+    |
     | Examples:
     |
-    | // Ignore specific file and message
+    | // Example 1: Ignore specific file and message
     | 'ignore_errors' => [
     |     'xss-detection' => [
     |         [
@@ -286,7 +307,7 @@ return [
     |     ],
     | ],
     |
-    | // Ignore all XSS issues in legacy directory
+    | // Example 2: Ignore all XSS issues in legacy directory
     | 'ignore_errors' => [
     |     'xss-detection' => [
     |         [
@@ -296,10 +317,36 @@ return [
     |     ],
     | ],
     |
-    | // Ignore all issues in a specific file
+    | // Example 3: Ignore all issues in a specific file
     | 'ignore_errors' => [
     |     'sql-injection' => [
     |         ['path' => 'app/Models/OldModel.php'],
+    |     ],
+    | ],
+    |
+    | // Example 4: Ignore specific message across all files
+    | 'ignore_errors' => [
+    |     'debug-mode' => [
+    |         ['message_pattern' => '*Ray debugging*'],
+    |     ],
+    | ],
+    |
+    | // Example 5: Multiple rules for same analyzer
+    | 'ignore_errors' => [
+    |     'xss-detection' => [
+    |         ['path_pattern' => 'app/Legacy/*.php'],
+    |         ['path_pattern' => 'app/Admin/Old*.php'],
+    |         ['message' => 'Known safe usage in template'],
+    |     ],
+    | ],
+    |
+    | // Example 6: Combine path and message patterns
+    | 'ignore_errors' => [
+    |     'sql-injection' => [
+    |         [
+    |             'path_pattern' => 'app/Reports/*.php',
+    |             'message_pattern' => '*raw query*',
+    |         ],
     |     ],
     | ],
     |

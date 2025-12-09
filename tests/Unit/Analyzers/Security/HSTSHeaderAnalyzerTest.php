@@ -20,7 +20,7 @@ class HSTSHeaderAnalyzerTest extends AnalyzerTestCase
     // Basic Functionality Tests
     // ============================================
 
-    public function test_passes_for_non_https_applications(): void
+    public function test_skips_for_non_https_applications(): void
     {
         $sessionConfig = <<<'PHP'
 <?php
@@ -37,7 +37,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        $this->assertSkipped($result);
     }
 
     // ============================================

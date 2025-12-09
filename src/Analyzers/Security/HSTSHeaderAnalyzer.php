@@ -53,7 +53,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
 
         if (! $isHttpsOnly) {
             // Skip HSTS check if not HTTPS-only
-            return $this->passed('HSTS not required for non-HTTPS-only applications');
+            return $this->skipped('HSTS not required for non-HTTPS-only applications');
         }
 
         // Check for HSTS configuration in middleware

@@ -101,7 +101,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             return $this->passed('All dependencies are using stable versions');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d dependency stability issue(s)', count($issues)),
             $issues
         );

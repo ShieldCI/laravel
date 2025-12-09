@@ -591,25 +591,33 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
     private function getSettingLine(string $phpIniPath, string $setting): int
     {
         $lines = $this->getPhpIniLines($phpIniPath);
+        $commentedLine = null;
 
         foreach ($lines as $index => $line) {
             if (! is_string($line)) {
                 continue;
             }
 
-            // Strip comments (;, //, #)
+            // First, check for active (uncommented) settings
             $lineWithoutComments = preg_replace('/[;#].*$/', '', $line);
             $lineWithoutComments = preg_replace('/\/\/.*$/', '', $lineWithoutComments ?? '');
 
-            // Look for pattern: setting = value (with optional spaces)
-            // This ensures we match actual settings, not just strings in comments
             $pattern = '/^\s*'.preg_quote($setting, '/').'\s*=/i';
             if (preg_match($pattern, $lineWithoutComments ?? '') === 1) {
                 return $index + 1;
             }
+
+            // Also check for commented settings (as fallback)
+            if ($commentedLine === null) {
+                $commentedPattern = '/^\s*[;#]\s*'.preg_quote($setting, '/').'\s*=/i';
+                if (preg_match($commentedPattern, $line) === 1) {
+                    $commentedLine = $index + 1;
+                }
+            }
         }
 
-        return 1;
+        // Return commented line if found, otherwise default to 1
+        return $commentedLine ?? 1;
     }
 
     /**

@@ -76,15 +76,16 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
         try {
             $preferStableOutput = $this->composer->updateDryRun(['--prefer-stable']);
             if ($this->preferStableRunChangesDependencies($preferStableOutput)) {
+                $filePath = file_exists($composerLock) ? $composerLock : $composerJson;
                 $issues[] = $this->createIssue(
                     message: 'Composer update --prefer-stable would modify installed packages',
                     location: new Location(
-                        file_exists($composerLock) ? 'composer.lock' : 'composer.json',
+                        $this->getRelativePath($filePath),
                         1
                     ),
                     severity: Severity::Low,
                     recommendation: 'Run "composer update --prefer-stable" and ensure all dependencies resolve to stable releases.',
-                    code: FileParser::getCodeSnippet(file_exists($composerLock) ? $composerLock : $composerJson, 1),
+                    code: FileParser::getCodeSnippet($filePath, 1),
                     metadata: [
                         'composer_version_check' => 'update --dry-run --prefer-stable',
                     ]
@@ -150,7 +151,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             $issues[] = $this->createIssue(
                 message: sprintf('Composer minimum-stability is set to "%s" instead of "stable"', $minimumStability),
                 location: new Location(
-                    $composerJson,
+                    $this->getRelativePath($composerJson),
                     $line
                 ),
                 severity: Severity::Medium,
@@ -166,7 +167,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             $issues[] = $this->createIssue(
                 message: 'Composer prefer-stable is not enabled',
                 location: new Location(
-                    $composerJson,
+                    $this->getRelativePath($composerJson),
                     $line
                 ),
                 severity: Severity::Low,
@@ -244,7 +245,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                 $issues[] = $this->createIssue(
                     message: sprintf('Package "%s" in %s requires unstable dev version: %s', $package, $section, $version),
                     location: new Location(
-                        $composerJson,
+                        $this->getRelativePath($composerJson),
                         $line
                     ),
                     severity: Severity::Medium,
@@ -263,7 +264,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                 $issues[] = $this->createIssue(
                     message: sprintf('Package "%s" in %s requires unstable version: %s', $package, $section, $version),
                     location: new Location(
-                        $composerJson,
+                        $this->getRelativePath($composerJson),
                         $line
                     ),
                     severity: Severity::Medium,
@@ -322,7 +323,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             $issues[] = $this->createIssue(
                 message: sprintf('Found %d unstable package versions installed', $count),
                 location: new Location(
-                    'composer.lock',
+                    $this->getRelativePath($composerLock),
                     1
                 ),
                 severity: Severity::Low,

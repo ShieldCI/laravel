@@ -282,22 +282,27 @@ return [
     | Structure: analyzer_id => array of error definitions
     |
     | Each error definition can include:
-    | - 'path': Exact file path or glob pattern (e.g., 'app/Legacy/*.php')
-    | - 'path_pattern': Explicit glob pattern for path matching
-    | - 'message': Exact error message or pattern (e.g., '*XSS*')
-    | - 'message_pattern': Explicit pattern for message matching (Laravel Str::is)
+    | - 'path': Exact file path match (e.g., 'app/Models/User.php')
+    | - 'path_pattern': Glob pattern for path matching (e.g., 'app/Legacy/**.php')
+    | - 'message': Exact error message match (case-sensitive)
+    | - 'message_pattern': Wildcard pattern for message matching (e.g., 'XSS')
+    |
+    | Important: Do NOT use both 'path' and 'path_pattern' in the same rule.
+    |            Do NOT use both 'message' and 'message_pattern' in the same rule.
+    |            The system will warn you if you mix them.
     |
     | Matching Rules:
-    | - Path matching is case-sensitive on case-sensitive filesystems
-    | - Message matching is case-sensitive for exact matches
-    | - Patterns use Laravel Str::is() (supports *, ?, [abc])
+    | - 'path': Exact match only (normalized for Windows/Unix compatibility)
+    | - 'path_pattern': Glob pattern using fnmatch (supports wildcards and globstars)
+    | - 'message': Exact match only (case-sensitive)
+    | - 'message_pattern': Laravel Str::is() wildcards (supports wildcards and character sets)
     | - Both path AND message must match if both are specified
-    | - If only path is specified, all issues in that path are ignored
-    | - If only message is specified, all issues with that message are ignored
+    | - If only path is specified, matches ANY message in that path
+    | - If only message is specified, matches ANY path with that message
     |
     | Examples:
     |
-    | // Example 1: Ignore specific file and message
+    | // Example 1: Ignore exact file and exact message
     | 'ignore_errors' => [
     |     'xss-detection' => [
     |         [
@@ -307,27 +312,24 @@ return [
     |     ],
     | ],
     |
-    | // Example 2: Ignore all XSS issues in legacy directory
+    | // Example 2: Ignore all issues in legacy directory (using path pattern)
     | 'ignore_errors' => [
     |     'xss-detection' => [
-    |         [
-    |             'path_pattern' => 'app/Legacy/*.php',
-    |             'message_pattern' => '*XSS*',
-    |         ],
+    |         ['path_pattern' => 'app/Legacy/*.php'],
     |     ],
     | ],
     |
-    | // Example 3: Ignore all issues in a specific file
+    | // Example 3: Ignore all issues in a specific file (any message)
     | 'ignore_errors' => [
     |     'sql-injection' => [
     |         ['path' => 'app/Models/OldModel.php'],
     |     ],
     | ],
     |
-    | // Example 4: Ignore specific message across all files
+    | // Example 4: Ignore specific message across all files (using message pattern)
     | 'ignore_errors' => [
     |     'debug-mode' => [
-    |         ['message_pattern' => '*Ray debugging*'],
+    |         ['message_pattern' => 'Ray debugging*'],
     |     ],
     | ],
     |
@@ -340,13 +342,12 @@ return [
     |     ],
     | ],
     |
-    | // Example 6: Combine path and message patterns
+    | // Example 6: Glob pattern examples (recursive with globstar)
     | 'ignore_errors' => [
-    |     'sql-injection' => [
-    |         [
-    |             'path_pattern' => 'app/Reports/*.php',
-    |             'message_pattern' => '*raw query*',
-    |         ],
+    |     'code-quality' => [
+    |         ['path_pattern' => 'tests/*.php'],                   // All PHP files directly in tests
+    |         ['path_pattern' => 'app/Legacy/*.php'],              // Only PHP files directly in app/Legacy
+    |         ['path_pattern' => 'database/migrations/*.php'],     // All migration files
     |     ],
     | ],
     |

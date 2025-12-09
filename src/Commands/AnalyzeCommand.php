@@ -478,9 +478,24 @@ class AnalyzeCommand extends Command
                 $originalCount = count($currentIssues);
                 $filteredCount = $newIssues->count();
 
-                // Try to update numeric counts in the message
+                // Update numeric counts in the message
                 $updatedMessage = preg_replace('/\b'.$originalCount.'\b/', (string) $filteredCount, $message, 1);
                 $message = is_string($updatedMessage) ? $updatedMessage : $message;
+
+                // Fix singular/plural grammar (e.g., "1 dependency stability issues" -> "1 dependency stability issue")
+                if ($filteredCount === 1) {
+                    $message = preg_replace_callback('/\b(issues|errors|warnings|problems|vulnerabilities)\b/', function ($matches) {
+                        $singular = [
+                            'issues' => 'issue',
+                            'errors' => 'error',
+                            'warnings' => 'warning',
+                            'problems' => 'problem',
+                            'vulnerabilities' => 'vulnerability',
+                        ];
+
+                        return $singular[strtolower($matches[1])] ?? $matches[1];
+                    }, $message, 1) ?? $message;
+                }
             }
 
             return new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
@@ -585,9 +600,24 @@ class AnalyzeCommand extends Command
                 $originalCount = count($currentIssues);
                 $filteredCount = $newIssues->count();
 
-                // Try to update numeric counts in the message
+                // Update numeric counts in the message
                 $updatedMessage = preg_replace('/\b'.$originalCount.'\b/', (string) $filteredCount, $message, 1);
                 $message = is_string($updatedMessage) ? $updatedMessage : $message;
+
+                // Fix singular/plural grammar (e.g., "1 dependency stability issues" -> "1 dependency stability issue")
+                if ($filteredCount === 1) {
+                    $message = preg_replace_callback('/\b(issues|errors|warnings|problems|vulnerabilities)\b/', function ($matches) {
+                        $singular = [
+                            'issues' => 'issue',
+                            'errors' => 'error',
+                            'warnings' => 'warning',
+                            'problems' => 'problem',
+                            'vulnerabilities' => 'vulnerability',
+                        ];
+
+                        return $singular[strtolower($matches[1])] ?? $matches[1];
+                    }, $message, 1) ?? $message;
+                }
             }
 
             return new \ShieldCI\AnalyzersCore\Results\AnalysisResult(

@@ -52,8 +52,6 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        $basePath = $this->getBasePath();
-
         // Check if at least one configured path exists
         foreach ($this->getPathsToCheck() as $relativePath => $config) {
             $path = $this->buildPath($relativePath);
@@ -72,8 +70,6 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $basePath = $this->getBasePath();
-
         $issues = [];
 
         foreach ($this->getPathsToCheck() as $relativePath => $config) {

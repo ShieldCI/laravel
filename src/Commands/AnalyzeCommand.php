@@ -89,7 +89,8 @@ class AnalyzeCommand extends Command
         // Generate report
         $report = $reporter->generate($results);
 
-        // Filter against ignore_errors config (always applied)
+        // Validate and filter against ignore_errors config (always applied)
+        $this->validateIgnoreErrorsConfig($manager);
         $report = $this->filterAgainstIgnoreErrors($report);
 
         // Filter against baseline if requested
@@ -345,6 +346,93 @@ class AnalyzeCommand extends Command
     }
 
     /**
+     * Validate ignore_errors configuration.
+     */
+    protected function validateIgnoreErrorsConfig(AnalyzerManager $manager): void
+    {
+        $configIgnoreErrors = config('shieldci.ignore_errors', []);
+
+        if (! is_array($configIgnoreErrors) || empty($configIgnoreErrors)) {
+            return;
+        }
+
+        $warnings = [];
+
+        // Get all registered analyzer IDs
+        $allAnalyzers = $manager->getAnalyzers();
+        $allAnalyzerIds = [];
+        foreach ($allAnalyzers as $analyzer) {
+            $metadata = $analyzer->getMetadata();
+            $allAnalyzerIds[] = $metadata->id;
+        }
+
+        foreach ($configIgnoreErrors as $analyzerId => $rules) {
+            // Check if analyzer exists
+            if (! in_array($analyzerId, $allAnalyzerIds, true)) {
+                $warnings[] = "Unknown analyzer ID in ignore_errors: '{$analyzerId}'";
+            }
+
+            if (! is_array($rules)) {
+                $warnings[] = "Invalid rules for analyzer '{$analyzerId}': expected array";
+
+                continue;
+            }
+
+            foreach ($rules as $index => $rule) {
+                if (! is_array($rule)) {
+                    $warnings[] = "Invalid rule #{$index} for analyzer '{$analyzerId}': expected array";
+
+                    continue;
+                }
+
+                // Validate rule structure
+                $validKeys = ['path', 'path_pattern', 'message', 'message_pattern'];
+                $ruleKeys = array_keys($rule);
+                $invalidKeys = array_diff($ruleKeys, $validKeys);
+
+                if (! empty($invalidKeys)) {
+                    $warnings[] = "Invalid keys in rule #{$index} for analyzer '{$analyzerId}': ".implode(', ', $invalidKeys);
+                }
+
+                // Check if rule has at least one matching criterion
+                if (empty($rule['path']) && empty($rule['path_pattern']) &&
+                    empty($rule['message']) && empty($rule['message_pattern'])) {
+                    $warnings[] = "Empty rule #{$index} for analyzer '{$analyzerId}': must specify at least one matching criterion";
+                }
+
+                // Validate that path and path_pattern are not both specified
+                if (isset($rule['path']) && isset($rule['path_pattern'])) {
+                    $warnings[] = "Conflicting keys in rule #{$index} for analyzer '{$analyzerId}': use either 'path' (exact match) or 'path_pattern' (glob), not both";
+                }
+
+                // Validate that message and message_pattern are not both specified
+                if (isset($rule['message']) && isset($rule['message_pattern'])) {
+                    $warnings[] = "Conflicting keys in rule #{$index} for analyzer '{$analyzerId}': use either 'message' (exact match) or 'message_pattern' (wildcard), not both";
+                }
+
+                // Validate glob patterns
+                if (isset($rule['path_pattern']) && is_string($rule['path_pattern'])) {
+                    $pattern = $rule['path_pattern'];
+
+                    // Check for invalid double-star usage (e.g., '**test' instead of '**/test')
+                    if (preg_match('/\*\*[^\/]/', $pattern) || preg_match('/[^\/]\*\*/', $pattern)) {
+                        $warnings[] = "Invalid glob pattern in rule #{$index} for analyzer '{$analyzerId}': '**' must be used as '**/' or '/**' (e.g., 'src/**/test' or 'tests/**/*.php')";
+                    }
+                }
+            }
+        }
+
+        // Display warnings
+        if (! empty($warnings)) {
+            $this->warn('⚠️  Configuration Warnings:');
+            foreach ($warnings as $warning) {
+                $this->line("   • {$warning}");
+            }
+            $this->newLine();
+        }
+    }
+
+    /**
      * Filter report against ignore_errors config.
      */
     protected function filterAgainstIgnoreErrors(AnalysisReport $report): AnalysisReport
@@ -381,10 +469,23 @@ class AnalyzeCommand extends Command
                 ? \ShieldCI\AnalyzersCore\Enums\Status::Passed
                 : $result->getStatus();
 
+            // Update message to reflect filtered count
+            $message = $result->getMessage();
+            if ($newIssues->isEmpty()) {
+                $message = 'All issues are ignored via config';
+            } elseif ($newIssues->count() !== count($currentIssues)) {
+                // Some (but not all) issues were filtered - update the count in the message
+                $originalCount = count($currentIssues);
+                $filteredCount = $newIssues->count();
+
+                // Try to update numeric counts in the message
+                $message = preg_replace('/\b'.$originalCount.'\b/', (string) $filteredCount, $message, 1);
+            }
+
             return new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
                 analyzerId: $result->getAnalyzerId(),
                 status: $status,
-                message: $newIssues->isEmpty() ? 'All issues are ignored via config' : $result->getMessage(),
+                message: $message,
                 issues: $newIssues->all(),
                 executionTime: $result->getExecutionTime(),
                 metadata: $result->getMetadata(),
@@ -497,6 +598,15 @@ class AnalyzeCommand extends Command
     /**
      * Check if an issue matches an ignore_errors config entry.
      *
+     * Matching logic:
+     * - If rule specifies 'path': exact path match required
+     * - If rule specifies 'path_pattern': glob pattern match required
+     * - If rule specifies 'message': exact message match required
+     * - If rule specifies 'message_pattern': wildcard pattern match required
+     * - If rule specifies only path criteria: matches ANY message
+     * - If rule specifies only message criteria: matches ANY path
+     * - If rule specifies both: BOTH must match
+     *
      * @param  array<int, array<string, mixed>>  $ignoreErrors
      */
     private function matchesIgnoreError(\ShieldCI\AnalyzersCore\ValueObjects\Issue $issue, array $ignoreErrors): bool
@@ -513,56 +623,50 @@ class AnalyzeCommand extends Command
                 continue;
             }
 
+            // Default to true - if a criterion is not specified, it matches everything
+            // This allows rules like { "path": "foo.php" } to match any message in that file
             $pathMatches = true;
             $messageMatches = true;
 
-            // Check path (supports exact match or pattern)
+            // Check path (exact match only)
             if (isset($ignoreError['path']) && is_string($ignoreError['path'])) {
                 $ignorePath = $ignoreError['path'];
                 $normalizedIssuePath = str_replace('\\', '/', $issuePath);
                 $normalizedIgnorePath = str_replace('\\', '/', $ignorePath);
 
-                // Try exact match first
-                if ($ignorePath === $issuePath || $normalizedIgnorePath === $normalizedIssuePath) {
-                    $pathMatches = true;
-                } elseif ((isset($ignoreError['path_pattern']) && is_string($ignoreError['path_pattern'])) || str_contains($ignorePath, '*')) {
-                    // Pattern matching (glob or Str::is)
-                    $pattern = (isset($ignoreError['path_pattern']) && is_string($ignoreError['path_pattern']))
-                        ? $ignoreError['path_pattern']
-                        : $ignorePath;
-                    if (is_string($pattern)) {
-                        $pathMatches = fnmatch($pattern, $issuePath) ||
-                                     fnmatch($pattern, $normalizedIssuePath) ||
-                                     \Illuminate\Support\Str::is($pattern, $issuePath);
-                    } else {
-                        $pathMatches = false;
-                    }
-                } else {
-                    $pathMatches = false;
-                }
+                // Exact match only (normalized for cross-platform compatibility)
+                $pathMatches = $ignorePath === $issuePath || $normalizedIgnorePath === $normalizedIssuePath;
             }
 
-            // Check message (supports exact match or pattern)
+            // Check path_pattern (glob pattern match)
+            if (isset($ignoreError['path_pattern']) && is_string($ignoreError['path_pattern'])) {
+                $pattern = $ignoreError['path_pattern'];
+                $normalizedIssuePath = str_replace('\\', '/', $issuePath);
+
+                // Use fnmatch for glob patterns (cross-platform)
+                $pathMatches = fnmatch($pattern, $issuePath) ||
+                              fnmatch($pattern, $normalizedIssuePath) ||
+                              \Illuminate\Support\Str::is($pattern, $issuePath);
+            }
+
+            // Check message (exact match only)
             if (isset($ignoreError['message']) && is_string($ignoreError['message'])) {
                 $ignoreMessage = $ignoreError['message'];
-                if ($ignoreMessage === $issueMessage) {
-                    $messageMatches = true;
-                } elseif ((isset($ignoreError['message_pattern']) && is_string($ignoreError['message_pattern'])) || str_contains($ignoreMessage, '*')) {
-                    // Pattern matching (Laravel Str::is)
-                    $pattern = (isset($ignoreError['message_pattern']) && is_string($ignoreError['message_pattern']))
-                        ? $ignoreError['message_pattern']
-                        : $ignoreMessage;
-                    if (is_string($pattern)) {
-                        $messageMatches = \Illuminate\Support\Str::is($pattern, $issueMessage);
-                    } else {
-                        $messageMatches = false;
-                    }
-                } else {
-                    $messageMatches = false;
-                }
+
+                // Exact match only
+                $messageMatches = $ignoreMessage === $issueMessage;
             }
 
-            // Both path and message must match (if both are specified)
+            // Check message_pattern (wildcard pattern match)
+            if (isset($ignoreError['message_pattern']) && is_string($ignoreError['message_pattern'])) {
+                $pattern = $ignoreError['message_pattern'];
+
+                // Use Laravel Str::is for wildcard matching
+                $messageMatches = \Illuminate\Support\Str::is($pattern, $issueMessage);
+            }
+
+            // Both path and message criteria must match
+            // (if a criterion is not specified, it defaults to true)
             if ($pathMatches && $messageMatches) {
                 return true;
             }

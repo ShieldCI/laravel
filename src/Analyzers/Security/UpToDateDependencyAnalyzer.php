@@ -113,7 +113,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                 // Scenario 1: Both production AND dev need updates
                 $issues[] = $this->createIssue(
                     message: 'Production and development dependencies are not up-to-date',
-                    location: new Location($composerLockPath, 1),
+                    location: new Location($this->getRelativePath($composerLockPath), 1),
                     severity: Severity::Medium,
                     recommendation: $this->getBothDepsRecommendation(),
                     code: FileParser::getCodeSnippet($composerLockPath, 1),
@@ -126,7 +126,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                 // Scenario 2: Only production needs updates (dev is up-to-date)
                 $issues[] = $this->createIssue(
                     message: 'Production dependencies are not up-to-date',
-                    location: new Location($composerLockPath, 1),
+                    location: new Location($this->getRelativePath($composerLockPath), 1),
                     severity: Severity::Medium,
                     recommendation: $this->getProductionDepsRecommendation(),
                     code: FileParser::getCodeSnippet($composerLockPath, 1),
@@ -139,7 +139,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                 // Scenario 3: Only dev needs updates (production is up-to-date)
                 $issues[] = $this->createIssue(
                     message: 'Development dependencies are not up-to-date',
-                    location: new Location($composerLockPath, 1),
+                    location: new Location($this->getRelativePath($composerLockPath), 1),
                     severity: Severity::Low,
                     recommendation: $this->getDevDepsRecommendation(),
                     code: FileParser::getCodeSnippet($composerLockPath, 1),
@@ -212,5 +212,27 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
         return 'Your application\'s development dependencies are not up-to-date. '.
             'While these don\'t affect production, keeping them updated helps maintain a healthy development environment. '.
             'Run "composer update" to update all dependencies.';
+    }
+
+    /**
+     * Get relative path from base path.
+     */
+    private function getRelativePath(string $file): string
+    {
+        $basePath = $this->getBasePath();
+
+        if ($basePath === '' || $basePath === '.') {
+            return $file;
+        }
+
+        $basePath = rtrim($basePath, '/\\').'/';
+        $normalizedFile = str_replace('\\', '/', $file);
+        $normalizedBasePath = str_replace('\\', '/', $basePath);
+
+        if (str_starts_with($normalizedFile, $normalizedBasePath)) {
+            return substr($normalizedFile, strlen($normalizedBasePath));
+        }
+
+        return $file;
     }
 }

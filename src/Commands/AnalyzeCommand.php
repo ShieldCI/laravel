@@ -378,6 +378,13 @@ class AnalyzeCommand extends Command
                 continue;
             }
 
+            // Warn if rules array is empty (has no effect)
+            if (empty($rules)) {
+                $warnings[] = "Empty rules array for analyzer '{$analyzerId}': specify at least one rule or remove this entry";
+
+                continue;
+            }
+
             foreach ($rules as $index => $rule) {
                 if (! is_array($rule)) {
                     $warnings[] = "Invalid rule #{$index} for analyzer '{$analyzerId}': expected array";
@@ -666,6 +673,16 @@ class AnalyzeCommand extends Command
         foreach ($ignoreErrors as $ignoreError) {
             if (! is_array($ignoreError)) {
                 continue;
+            }
+
+            // Skip empty rules - they should not match anything
+            $hasAtLeastOneCriterion = isset($ignoreError['path']) ||
+                                     isset($ignoreError['path_pattern']) ||
+                                     isset($ignoreError['message']) ||
+                                     isset($ignoreError['message_pattern']);
+
+            if (! $hasAtLeastOneCriterion) {
+                continue; // Empty rule, skip it
             }
 
             // Default to true - if a criterion is not specified, it matches everything

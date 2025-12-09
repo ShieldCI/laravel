@@ -44,7 +44,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
             name: 'Debug Mode Analyzer',
             description: 'Detects debug mode enabled and debugging functions that expose sensitive information',
             category: Category::Security,
-            severity: Severity::High,
+            severity: Severity::Critical,
             tags: ['debug', 'information-disclosure', 'security', 'configuration'],
             docsUrl: 'https://docs.shieldci.com/analyzers/security/debug-mode',
             timeToFix: 5
@@ -54,14 +54,10 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
     public function shouldRun(): bool
     {
         $envFile = $this->buildPath('.env');
-        $envProduction = $this->buildPath('.env.production');
-        $envProd = $this->buildPath('.env.prod');
         $configDir = $this->buildPath('config');
         $composerFile = $this->buildPath('composer.json');
 
         return file_exists($envFile) ||
-               file_exists($envProduction) ||
-               file_exists($envProd) ||
                is_dir($configDir) ||
                file_exists($composerFile) ||
                ! empty($this->getPhpFiles());
@@ -102,48 +98,80 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
      */
     private function checkEnvFiles(array &$issues): void
     {
-        $envFiles = [
-            $this->buildPath('.env'),
-            $this->buildPath('.env.production'),
-            $this->buildPath('.env.prod'),
-        ];
+        $envFile = $this->buildPath('.env');
 
-        foreach ($envFiles as $envFile) {
-            if (! file_exists($envFile)) {
+        if (! file_exists($envFile)) {
+            return;
+        }
+
+        $lines = FileParser::getLines($envFile);
+
+        // First, determine the APP_ENV value
+        $appEnv = $this->getEnvValue($lines, 'APP_ENV');
+
+        // Skip check for development environments
+        if ($this->isLocalEnvironment($appEnv)) {
+            return;
+        }
+
+        // Check for APP_DEBUG=true
+        foreach ($lines as $lineNumber => $line) {
+            if (! is_string($line)) {
                 continue;
             }
 
-            $lines = FileParser::getLines($envFile);
-
-            foreach ($lines as $lineNumber => $line) {
-                if (! is_string($line)) {
-                    continue;
-                }
-
-                // Check for APP_DEBUG=true
-                if (preg_match('/^APP_DEBUG\s*=\s*true/i', trim($line))) {
-                    $severity = str_contains($envFile, 'production') || str_contains($envFile, 'prod')
-                        ? Severity::Critical
-                        : Severity::High;
-
-                    $issues[] = $this->createIssue(
-                        message: 'Debug mode is enabled (APP_DEBUG=true)',
-                        location: new Location(
-                            $this->getRelativePath($envFile),
-                            $lineNumber + 1
-                        ),
-                        severity: $severity,
-                        recommendation: 'Set APP_DEBUG=false in production environments to prevent information disclosure',
-                        code: FileParser::getCodeSnippet($envFile, $lineNumber + 1),
-                        metadata: [
-                            'file' => basename($envFile),
-                            'env_var' => 'APP_DEBUG',
-                            'value' => 'true',
-                        ]
-                    );
-                }
+            if (preg_match('/^APP_DEBUG\s*=\s*true/i', trim($line))) {
+                $issues[] = $this->createIssue(
+                    message: 'Debug mode is enabled (APP_DEBUG=true) in '.($appEnv ?: 'unknown').' environment',
+                    location: new Location(
+                        $this->getRelativePath($envFile),
+                        $lineNumber + 1
+                    ),
+                    severity: Severity::Critical,
+                    recommendation: 'Set APP_DEBUG=false in production/staging environments to prevent information disclosure',
+                    code: FileParser::getCodeSnippet($envFile, $lineNumber + 1),
+                    metadata: [
+                        'file' => basename($envFile),
+                        'env_var' => 'APP_DEBUG',
+                        'value' => 'true',
+                        'app_env' => $appEnv,
+                    ]
+                );
             }
         }
+    }
+
+    /**
+     * Get environment variable value from .env lines.
+     *
+     * @param  array<int, string>  $lines
+     */
+    private function getEnvValue(array $lines, string $varName): ?string
+    {
+        foreach ($lines as $line) {
+            if (! is_string($line)) {
+                continue;
+            }
+
+            // Match: APP_ENV=production or APP_ENV="production" or APP_ENV='production'
+            if (preg_match('/^'.preg_quote($varName, '/').'\\s*=\\s*["\']?([^"\'\s]+)["\']?/i', trim($line), $matches)) {
+                return $matches[1];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Check if environment is local/development.
+     */
+    private function isLocalEnvironment(?string $env): bool
+    {
+        if ($env === null) {
+            return false;
+        }
+
+        return in_array(strtolower($env), ['local', 'development', 'testing'], true);
     }
 
     /**
@@ -163,7 +191,11 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                if (preg_match('/["\']debug["\']\s*=>\s*true/i', $line)) {
+                if (preg_match('/["\']debug["\']\s*=>\s*env\s*\(/i', $line)) {
+                    continue;
+                }
+
+                if (preg_match('/["\']debug["\']\s*=>\s*true\b/i', $line)) {
                     $issues[] = $this->createIssue(
                         message: 'Debug mode hardcoded to true in config/app.php',
                         location: new Location(
@@ -181,9 +213,6 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                     );
                 }
             }
-
-            // Check for missing debug_hide or debug_blacklist when debug is enabled
-            $this->checkDebugHideConfiguration($appConfig, $lines, $issues);
         }
     }
 
@@ -237,7 +266,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                 }
 
                 // Check for Ray debugging tool
-                if (preg_match('/\bray\s*\(/i', $line)) {
+                if (preg_match('/(?<!->)\bray\s*\(/i', $line)) {
                     $issues[] = $this->createIssue(
                         message: 'Ray debugging function found in code',
                         location: new Location(
@@ -291,56 +320,6 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                     );
                 }
             }
-        }
-    }
-
-    /**
-     * Check for missing debug_hide or debug_blacklist configuration.
-     */
-    private function checkDebugHideConfiguration(string $appConfig, array $lines, array &$issues): void
-    {
-        $hasDebugEnabled = false;
-        $hasDebugHide = false;
-        $hasDebugBlacklist = false;
-        $appEnv = 'production'; // Default assumption
-
-        foreach ($lines as $lineNumber => $line) {
-            // Check if debug is enabled
-            if (preg_match('/["\']debug["\']\s*=>\s*(?:true|env\s*\(\s*["\']APP_DEBUG["\']\s*,\s*true\s*\))/i', $line)) {
-                $hasDebugEnabled = true;
-            }
-
-            // Check APP_ENV
-            if (preg_match('/["\']env["\']\s*=>\s*env\s*\(\s*["\']APP_ENV["\']\s*,\s*["\'](\w+)["\']\s*\)/i', $line, $matches)) {
-                $appEnv = $matches[1];
-            }
-
-            // Check for debug_hide or debug_blacklist (handle multi-line arrays)
-            if (preg_match('/["\']debug_hide["\']\s*=>/i', $line)) {
-                $hasDebugHide = true;
-            }
-            if (preg_match('/["\']debug_blacklist["\']\s*=>/i', $line)) {
-                $hasDebugBlacklist = true;
-            }
-        }
-
-        // If debug is enabled in non-local environments without hiding sensitive vars
-        if ($hasDebugEnabled && $appEnv !== 'local' && ! $hasDebugHide && ! $hasDebugBlacklist) {
-            $issues[] = $this->createIssue(
-                message: 'Debug mode enabled without hiding sensitive environment variables',
-                location: new Location(
-                    $this->getRelativePath($appConfig),
-                    1
-                ),
-                severity: Severity::Critical,
-                recommendation: 'Add "debug_hide" or "debug_blacklist" configuration to hide sensitive variables like passwords, API keys, etc.',
-                code: FileParser::getCodeSnippet($appConfig, 1),
-                metadata: [
-                    'file' => 'app.php',
-                    'config_key' => 'debug_hide',
-                    'app_env' => $appEnv,
-                ]
-            );
         }
     }
 

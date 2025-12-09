@@ -312,7 +312,7 @@ ENV;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('does not follow the expected format or is too short', $result);
+        $this->assertHasIssueContaining('is set to a placeholder/example value', $result);
     }
 
     public function test_fails_when_base64_content_is_invalid(): void
@@ -527,46 +527,6 @@ ENV;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
-    }
-
-    // ==================== MULTIPLE ENV FILES TESTS ====================
-
-    public function test_fails_when_env_production_has_weak_key(): void
-    {
-        $envProductionContent = <<<'ENV'
-APP_KEY=short
-ENV;
-
-        $tempDir = $this->createTempDirectory([
-            '.env.production' => $envProductionContent,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('does not follow the expected format or is too short', $result);
-    }
-
-    public function test_fails_when_env_prod_missing_key(): void
-    {
-        $envProdContent = <<<'ENV'
-APP_NAME=Laravel
-ENV;
-
-        $tempDir = $this->createTempDirectory([
-            '.env.prod' => $envProdContent,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('APP_KEY is not defined', $result);
     }
 
     // ==================== CIPHER CASE VARIATIONS ====================
@@ -789,103 +749,6 @@ ENV;
         $this->assertCount(2, $duplicateIssues);
     }
 
-    // ==================== CROSS-FILE KEY CONSISTENCY TESTS ====================
-
-    public function test_fails_when_env_and_env_production_have_different_keys(): void
-    {
-        $envContent = <<<'ENV'
-APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=
-ENV;
-
-        $envProductionContent = <<<'ENV'
-APP_KEY=base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-ENV;
-
-        $tempDir = $this->createTempDirectory([
-            '.env' => $envContent,
-            '.env.production' => $envProductionContent,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('Inconsistent APP_KEY values', $result);
-    }
-
-    public function test_passes_when_env_files_have_same_key(): void
-    {
-        $key = 'base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=';
-        $envContent = <<<ENV
-APP_KEY=$key
-ENV;
-
-        $tempDir = $this->createTempDirectory([
-            '.env' => $envContent,
-            '.env.production' => $envContent,
-            '.env.prod' => $envContent,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertPassed($result);
-    }
-
-    public function test_ignores_env_example_in_consistency_check(): void
-    {
-        $envContent = <<<'ENV'
-APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=
-ENV;
-
-        $envExampleContent = <<<'ENV'
-APP_KEY=base64:5jIQITq0dF4pGlRzzvExUkqoGtkl9mvEE/Y+Itia/fM=
-ENV;
-
-        $tempDir = $this->createTempDirectory([
-            '.env' => $envContent,
-            '.env.example' => $envExampleContent,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertPassed($result);
-    }
-
-    public function test_ignores_placeholder_keys_in_consistency_check(): void
-    {
-        $validKey = 'base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=';
-
-        $envContent = <<<ENV
-APP_KEY=$validKey
-ENV;
-
-        $envProdContent = <<<'ENV'
-APP_KEY=SomeRandomString
-ENV;
-
-        $tempDir = $this->createTempDirectory([
-            '.env' => $envContent,
-            '.env.prod' => $envProdContent,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        // Should fail for placeholder, not for inconsistency
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('placeholder/example value', $result);
-    }
-
     // ==================== BASE64 PADDING VALIDATION TESTS ====================
 
     public function test_fails_with_too_many_padding_equals(): void
@@ -993,54 +856,6 @@ ENV;
 
         $tempDir = $this->createTempDirectory([
             '.env' => $envContent,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $this->assertTrue($analyzer->shouldRun());
-    }
-
-    public function test_should_run_when_env_production_exists(): void
-    {
-        $envContent = <<<'ENV'
-APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=
-ENV;
-
-        $tempDir = $this->createTempDirectory([
-            '.env.production' => $envContent,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $this->assertTrue($analyzer->shouldRun());
-    }
-
-    public function test_should_run_when_env_prod_exists(): void
-    {
-        $envContent = <<<'ENV'
-APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=
-ENV;
-
-        $tempDir = $this->createTempDirectory([
-            '.env.prod' => $envContent,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $this->assertTrue($analyzer->shouldRun());
-    }
-
-    public function test_should_run_when_env_example_exists(): void
-    {
-        $envContent = <<<'ENV'
-APP_KEY=
-ENV;
-
-        $tempDir = $this->createTempDirectory([
-            '.env.example' => $envContent,
         ]);
 
         $analyzer = $this->createAnalyzer();

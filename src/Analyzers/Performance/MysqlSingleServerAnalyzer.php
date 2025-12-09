@@ -204,7 +204,7 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
 
             return $this->createIssue(
                 message: "MySQL connection '{$connectionName}' uses TCP on localhost instead of Unix socket",
-                location: new Location($configFile, $lineNumber),
+                location: new Location($this->getRelativePath($configFile), $lineNumber),
                 severity: $severity,
                 recommendation: $this->getRecommendation($connectionName),
                 metadata: [

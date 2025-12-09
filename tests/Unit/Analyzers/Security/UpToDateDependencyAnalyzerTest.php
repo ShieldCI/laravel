@@ -133,7 +133,7 @@ OUTPUT;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Production and development dependencies are not up-to-date', $result);
 
         // Check metadata contains scope information
@@ -162,7 +162,7 @@ OUTPUT;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Production dependencies are not up-to-date', $result);
 
         // Check metadata contains scope information
@@ -191,7 +191,7 @@ OUTPUT;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Development dependencies are not up-to-date', $result);
 
         // Dev dependencies should be low severity
@@ -244,7 +244,7 @@ OUTPUT;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
@@ -302,7 +302,7 @@ OUTPUT;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Production and development dependencies are not up-to-date', $result);
     }
 
@@ -330,7 +330,7 @@ OUTPUT;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Production dependencies are not up-to-date', $result);
     }
 
@@ -354,7 +354,7 @@ OUTPUT;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Development dependencies are not up-to-date', $result);
     }
 
@@ -407,7 +407,7 @@ OUTPUT;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
@@ -434,7 +434,7 @@ OUTPUT;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
@@ -456,7 +456,7 @@ OUTPUT;
         $result = $analyzer->analyze();
 
         // Empty output means something to update (doesn't match "Nothing to install" pattern)
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_handles_composer_output_with_warnings(): void
@@ -530,7 +530,7 @@ OUTPUT;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);

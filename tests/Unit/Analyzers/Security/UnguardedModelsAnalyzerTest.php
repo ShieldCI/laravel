@@ -175,7 +175,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Model::unguard()', $result);
 
         $issues = $result->getIssues();
@@ -215,7 +215,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Model::unguard()', $result);
 
         $issues = $result->getIssues();

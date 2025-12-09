@@ -99,7 +99,7 @@ class HorizonSuggestionAnalyzer extends AbstractAnalyzer
 
         $issues[] = $this->createIssue(
             message: 'Laravel Horizon is not installed for Redis queue management',
-            location: new Location($configPath, $lineNumber),
+            location: new Location($this->getRelativePath($configPath), $lineNumber),
             severity: Severity::Low,
             recommendation: 'Install Laravel Horizon for Redis queue management. Horizon provides a beautiful dashboard for monitoring queues and jobs, configurable provisioning plans for workers, load balancing strategies, and advanced memory management features. Install with: composer require laravel/horizon && php artisan horizon:install',
             metadata: [

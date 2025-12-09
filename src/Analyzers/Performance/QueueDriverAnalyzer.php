@@ -76,7 +76,7 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
                 [
                     $this->createIssue(
                         message: 'Queue default connection is not configured',
-                        location: new Location($configFile, $lineNumber),
+                        location: new Location($this->getRelativePath($configFile), $lineNumber),
                         severity: Severity::High,
                         recommendation: 'Set QUEUE_CONNECTION in your .env file or define queue.default in config/queue.php',
                         metadata: [
@@ -102,7 +102,7 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
                 [
                     $this->createIssue(
                         message: "Queue connection '{$defaultConnection}' is not defined in queue configuration",
-                        location: new Location($configFile, $lineNumber),
+                        location: new Location($this->getRelativePath($configFile), $lineNumber),
                         severity: Severity::High,
                         recommendation: 'Define the queue connection in config/queue.php or change the default connection to a valid queue connection.',
                         metadata: [
@@ -148,7 +148,7 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
 
         $issues[] = $this->createIssue(
             message: "Queue driver is set to 'null'",
-            location: new Location($configFile, $lineNumber),
+            location: new Location($this->getRelativePath($configFile), $lineNumber),
             severity: Severity::Critical,
             recommendation: "The 'null' queue driver silently discards all jobs, mails, notifications, and events sent to the queue without processing them. This can be very dangerous and cause data loss. It is only suitable for specific testing scenarios. Use 'redis', 'sqs', or 'database' for production environments.",
             metadata: [
@@ -176,7 +176,7 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
         if ($this->isLocalEnvironment($environment)) {
             $issues[] = $this->createIssue(
                 message: "Queue driver is set to 'sync' in {$environment} environment",
-                location: new Location($configFile, $lineNumber),
+                location: new Location($this->getRelativePath($configFile), $lineNumber),
                 severity: Severity::Low,
                 recommendation: "The 'sync' driver processes all jobs, mails, notifications, and event listeners immediately in a synchronous manner. While acceptable for development, consider using 'redis' or 'database' to accurately simulate production behavior and test queue functionality properly.",
                 metadata: [
@@ -191,7 +191,7 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
 
         $issues[] = $this->createIssue(
             message: "Queue driver is set to 'sync' in {$environment} environment",
-            location: new Location($configFile, $lineNumber),
+            location: new Location($this->getRelativePath($configFile), $lineNumber),
             severity: Severity::High,
             recommendation: "The 'sync' driver processes all jobs, mails, notifications, and event listeners immediately in a synchronous manner, defeating the purpose of queuing. These time-consuming tasks will slow down web requests and severely impact response times and user experience. This driver is not suitable for production environments. Use 'redis', 'sqs', or 'database' instead.",
             metadata: [
@@ -219,7 +219,7 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
 
         $issues[] = $this->createIssue(
             message: "Queue driver is set to 'database' in {$environment} environment",
-            location: new Location($configFile, $lineNumber),
+            location: new Location($this->getRelativePath($configFile), $lineNumber),
             severity: Severity::Low,
             recommendation: "The 'database' queue driver is not suitable for production environments and is known to have issues such as deadlocks and slowing down your database during peak queue backlogs. While it works, Redis or SQS provide significantly better performance, reliability, and throughput. It is strongly recommended to shift to 'redis', 'sqs', or 'beanstalkd' for production use.",
             metadata: [

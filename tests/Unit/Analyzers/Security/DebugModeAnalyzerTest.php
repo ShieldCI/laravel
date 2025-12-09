@@ -19,7 +19,7 @@ class DebugModeAnalyzerTest extends AnalyzerTestCase
     // .env File Tests
     // =================================================================
 
-    public function test_detects_app_debug_true_in_regular_env(): void
+    public function test_passes_when_app_env_is_local(): void
     {
         $envContent = <<<'ENV'
 APP_DEBUG=true
@@ -33,20 +33,17 @@ ENV;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('APP_DEBUG=true', $result);
-        $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+        $this->assertPassed($result);
     }
 
-    public function test_detects_app_debug_true_in_env_production(): void
+    public function test_detects_app_debug_true_in_production_env(): void
     {
         $envContent = <<<'ENV'
 APP_DEBUG=true
 APP_ENV=production
 ENV;
 
-        $tempDir = $this->createTempDirectory(['.env.production' => $envContent]);
+        $tempDir = $this->createTempDirectory(['.env' => $envContent]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -59,14 +56,14 @@ ENV;
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
     }
 
-    public function test_detects_app_debug_true_in_env_prod(): void
+    public function test_detects_app_debug_true_in_staging_env(): void
     {
         $envContent = <<<'ENV'
 APP_DEBUG=true
-APP_ENV=production
+APP_ENV=staging
 ENV;
 
-        $tempDir = $this->createTempDirectory(['.env.prod' => $envContent]);
+        $tempDir = $this->createTempDirectory(['.env' => $envContent]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -113,28 +110,29 @@ ENV;
         $this->assertHasIssueContaining('APP_DEBUG', $result);
     }
 
-    public function test_detects_multiple_env_files_with_debug(): void
+    public function test_passes_when_app_env_is_development(): void
     {
-        $envContent = 'APP_DEBUG=true';
+        $envContent = <<<'ENV'
+APP_DEBUG=true
+APP_ENV=development
+ENV;
 
-        $tempDir = $this->createTempDirectory([
-            '.env' => $envContent,
-            '.env.production' => $envContent,
-        ]);
+        $tempDir = $this->createTempDirectory(['.env' => $envContent]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $issues = $result->getIssues();
-        $this->assertCount(2, $issues);
+        $this->assertPassed($result);
     }
 
     public function test_includes_metadata_for_env_issues(): void
     {
-        $envContent = 'APP_DEBUG=true';
+        $envContent = <<<'ENV'
+APP_DEBUG=true
+APP_ENV=production
+ENV;
 
         $tempDir = $this->createTempDirectory(['.env' => $envContent]);
 
@@ -147,7 +145,9 @@ ENV;
         $issues = $result->getIssues();
         $this->assertArrayHasKey('file', $issues[0]->metadata);
         $this->assertArrayHasKey('env_var', $issues[0]->metadata);
+        $this->assertArrayHasKey('app_env', $issues[0]->metadata);
         $this->assertEquals('APP_DEBUG', $issues[0]->metadata['env_var']);
+        $this->assertEquals('production', $issues[0]->metadata['app_env']);
     }
 
     public function test_handles_missing_env_files(): void
@@ -181,9 +181,12 @@ ENV;
 
     public function test_severity_critical_for_production_env(): void
     {
-        $envContent = 'APP_DEBUG=true';
+        $envContent = <<<'ENV'
+APP_DEBUG=true
+APP_ENV=production
+ENV;
 
-        $tempDir = $this->createTempDirectory(['.env.production' => $envContent]);
+        $tempDir = $this->createTempDirectory(['.env' => $envContent]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -192,6 +195,38 @@ ENV;
 
         $issues = $result->getIssues();
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+    }
+
+    public function test_passes_when_app_env_is_testing(): void
+    {
+        $envContent = <<<'ENV'
+APP_DEBUG=true
+APP_ENV=testing
+ENV;
+
+        $tempDir = $this->createTempDirectory(['.env' => $envContent]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_app_debug_without_app_env(): void
+    {
+        $envContent = 'APP_DEBUG=true';
+
+        $tempDir = $this->createTempDirectory(['.env' => $envContent]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('APP_DEBUG', $result);
     }
 
     // =================================================================
@@ -243,78 +278,6 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_detects_missing_debug_hide_in_production(): void
-    {
-        $appConfig = <<<'PHP'
-<?php
-return [
-    'debug' => env('APP_DEBUG', true),
-    'env' => env('APP_ENV', 'production'),
-];
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'config/app.php' => $appConfig,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('sensitive environment variables', $result);
-    }
-
-    public function test_detects_missing_debug_blacklist(): void
-    {
-        $appConfig = <<<'PHP'
-<?php
-return [
-    'debug' => true,
-    'env' => env('APP_ENV', 'staging'),
-];
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'config/app.php' => $appConfig,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('sensitive environment variables', $result);
-    }
-
-    public function test_passes_with_debug_hide_configured(): void
-    {
-        $appConfig = <<<'PHP'
-<?php
-return [
-    'debug' => env('APP_DEBUG', true),
-    'env' => env('APP_ENV', 'production'),
-    'debug_hide' => [
-        'password',
-        'api_key',
-    ],
-];
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'config/app.php' => $appConfig,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertPassed($result);
-    }
-
     public function test_handles_missing_config_files(): void
     {
         $tempDir = $this->createTempDirectory([]);
@@ -351,38 +314,13 @@ PHP;
         $this->assertEquals('debug', $issues[0]->metadata['config_key']);
     }
 
-    public function test_detects_app_env_production_without_debug_hide(): void
+    public function test_ignores_env_debug_with_false_default_in_production(): void
     {
         $appConfig = <<<'PHP'
 <?php
 return [
-    'debug' => env('APP_DEBUG', true),
+    'debug' => env('APP_DEBUG', false),
     'env' => env('APP_ENV', 'production'),
-];
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'config/app.php' => $appConfig,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $issues = $result->getIssues();
-        $this->assertArrayHasKey('app_env', $issues[0]->metadata);
-        $this->assertEquals('production', $issues[0]->metadata['app_env']);
-    }
-
-    public function test_ignores_debug_hide_check_for_local_env(): void
-    {
-        $appConfig = <<<'PHP'
-<?php
-return [
-    'debug' => env('APP_DEBUG', true),
-    'env' => env('APP_ENV', 'local'),
 ];
 PHP;
 
@@ -398,15 +336,13 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_debug_hide_multi_line_array_detection(): void
+    public function test_ignores_debug_hide_check_for_local_env(): void
     {
         $appConfig = <<<'PHP'
 <?php
 return [
     'debug' => env('APP_DEBUG', true),
-    'env' => env('APP_ENV', 'production'),
-    'debug_hide' =>
-        ['password', 'secret'],
+    'env' => env('APP_ENV', 'local'),
 ];
 PHP;
 

@@ -77,7 +77,7 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
         if ($this->isLocalEnvironment($environment) && $routesAreCached) {
             $issues[] = $this->createIssue(
                 message: "Routes are cached in {$environment} environment",
-                location: new Location($this->getCachedRoutesPath(), 1),
+                location: new Location($this->getRelativePath($this->getCachedRoutesPath()), 1),
                 severity: Severity::Low,
                 recommendation: 'Route caching is not recommended for development. Run "php artisan route:clear" to clear the cache. Route changes won\'t be reflected until you clear the cache.',
                 metadata: [
@@ -89,7 +89,7 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
         } elseif ($this->isProductionOrStaging($environment) && ! $routesAreCached) {
             $issues[] = $this->createIssue(
                 message: "Routes are not cached in {$environment} environment",
-                location: new Location($this->getRoutesDirectory(), 1),
+                location: new Location($this->getRelativePath($this->getRoutesDirectory()), 1),
                 severity: Severity::High,
                 recommendation: 'Route caching provides significant performance improvements (up to 5x faster). Add "php artisan route:cache" to your deployment script. Remember to regenerate the cache every time you deploy.',
                 metadata: [
@@ -102,7 +102,7 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
 
         $summary = empty($issues)
             ? "Route caching is properly configured for {$environment} environment"
-            : sprintf('Found %d route caching issues', count($issues));
+            : sprintf('Found %d route caching issue(s)', count($issues));
 
         return $this->resultBySeverity($summary, $issues);
     }

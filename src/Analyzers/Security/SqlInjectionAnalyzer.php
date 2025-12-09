@@ -241,7 +241,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             return $this->passed('No SQL injection vulnerabilities detected');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d potential SQL injection vulnerabilities', count($issues)),
             $issues
         );

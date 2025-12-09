@@ -44,17 +44,27 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
         );
     }
 
-    protected function runAnalysis(): ResultInterface
+    public function shouldRun(): bool
     {
-        $issues = [];
-
         // Check if app is configured for HTTPS
         $isHttpsOnly = $this->isHttpsOnlyApp();
 
         if (! $isHttpsOnly) {
-            // Skip HSTS check if not HTTPS-only
-            return $this->passed('HSTS not required for non-HTTPS-only applications');
+            return false;
         }
+
+        return true;
+    }
+
+    public function getSkipReason(): string
+    {
+        // Skip HSTS check if not HTTPS-only
+        return 'HSTS not required for non-HTTPS-only applications';
+    }
+
+    protected function runAnalysis(): ResultInterface
+    {
+        $issues = [];
 
         // Check for HSTS configuration in middleware
         $this->checkMiddlewareConfiguration($issues);

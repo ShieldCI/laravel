@@ -110,7 +110,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('minimum-stability', $result);
         $this->assertHasIssueContaining('dev', $result);
     }
@@ -135,7 +135,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('prefer-stable', $result);
     }
 
@@ -160,7 +160,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('prefer-stable', $result);
     }
 
@@ -186,7 +186,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('dev-master', $result);
     }
 
@@ -212,7 +212,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('@alpha', $result);
     }
 
@@ -238,7 +238,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('@beta', $result);
     }
 
@@ -264,7 +264,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('@RC', $result);
     }
 
@@ -325,7 +325,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('unstable', $result);
     }
 
@@ -360,7 +360,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('unstable', $result);
     }
 
@@ -403,7 +403,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('3 unstable', $result);
     }
 
@@ -438,7 +438,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('unstable', $result);
     }
 
@@ -511,7 +511,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('prefer-stable', $result);
     }
 
@@ -616,7 +616,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('2.0.x-dev', $result);
     }
 
@@ -642,7 +642,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('v1.0.0-beta1', $result);
     }
 
@@ -670,7 +670,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('dev-master', $result);
         $this->assertHasIssueContaining('require-dev', $result);
     }
@@ -737,7 +737,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('prefer-stable', $result);
     }
 
@@ -846,7 +846,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
 
         // Find the issue for vendor/unstable-package

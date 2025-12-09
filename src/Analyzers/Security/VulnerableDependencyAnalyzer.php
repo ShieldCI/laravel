@@ -105,6 +105,8 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
+                $lineNumber = $this->findPackageLineNumber($composerLock, $package);
+
                 $issues[] = $this->createIssue(
                     message: sprintf(
                         'Package "%s" (%s) has a known vulnerability: %s',
@@ -114,11 +116,11 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                     ),
                     location: new Location(
                         $this->getRelativePath($composerLock),
-                        1
+                        $lineNumber
                     ),
                     severity: Severity::Critical,
                     recommendation: $this->formatRecommendation($package, $advisory),
-                    code: FileParser::getCodeSnippet($composerLock, 1),
+                    code: FileParser::getCodeSnippet($composerLock, $lineNumber),
                     metadata: [
                         'package' => $package,
                         'version' => $version,
@@ -136,8 +138,8 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
             return $this->passed('No vulnerable dependencies detected');
         }
 
-        return $this->failed(
-            sprintf('Found %d dependency security issues', count($issues)),
+        return $this->resultBySeverity(
+            sprintf('Found %d dependency security issue(s)', count($issues)),
             $issues
         );
     }
@@ -172,15 +174,17 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                 ? sprintf('Replace with "%s": composer require %s', $replacement, $replacement)
                 : sprintf('Find an alternative package and remove "%s"', $packageName);
 
+            $lineNumber = $this->findPackageLineNumber($composerLock, $packageName);
+
             $issues[] = $this->createIssue(
                 message: sprintf('Package "%s" is abandoned and no longer maintained', $packageName),
                 location: new Location(
                     $this->getRelativePath($composerLock),
-                    1
+                    $lineNumber
                 ),
                 severity: Severity::Medium,
                 recommendation: $recommendation,
-                code: FileParser::getCodeSnippet($composerLock, 1),
+                code: FileParser::getCodeSnippet($composerLock, $lineNumber),
                 metadata: [
                     'package' => $packageName,
                     'replacement' => $replacement,
@@ -237,6 +241,30 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         return $lockData;
+    }
+
+    /**
+     * Find the line number where a package is defined in composer.lock.
+     */
+    private function findPackageLineNumber(string $composerLock, string $package): int
+    {
+        $lines = FileParser::getLines($composerLock);
+        if (empty($lines)) {
+            return 1;
+        }
+
+        foreach ($lines as $lineNumber => $line) {
+            if (! is_string($line)) {
+                continue;
+            }
+
+            // Look for package name in composer.lock format: "name": "vendor/package"
+            if (preg_match('/"name":\s*"'.preg_quote($package, '/').'"/i', $line)) {
+                return $lineNumber + 1;
+            }
+        }
+
+        return 1;
     }
 
     /**

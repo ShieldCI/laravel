@@ -109,7 +109,7 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
         foreach (array_values($this->lockUsages) as $usage) {
             $issues[] = $this->createIssue(
                 message: 'Cache lock usage detected on default cache store',
-                location: new Location($usage['file'], $usage['line']),
+                location: new Location($this->getRelativePath($usage['file']), $usage['line']),
                 severity: Severity::Low,
                 recommendation: $this->getRecommendation(),
                 code: FileParser::getCodeSnippet($usage['file'], $usage['line']),

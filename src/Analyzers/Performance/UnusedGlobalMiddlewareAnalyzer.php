@@ -86,7 +86,7 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
         foreach ($this->unusedMiddleware as $middleware) {
             $issues[] = $this->createIssue(
                 message: "Unused global middleware detected: {$middleware['name']}",
-                location: new Location($kernelPath, $middlewareLine),
+                location: new Location($this->getRelativePath($kernelPath), $middlewareLine),
                 severity: Severity::Low,
                 recommendation: $middleware['recommendation'],
                 code: FileParser::getCodeSnippet($kernelPath, $middlewareLine),

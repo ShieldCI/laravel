@@ -38,6 +38,14 @@ class ShieldCIServiceProvider extends ServiceProvider
         $this->app->singleton(ParserInterface::class, AstParser::class);
         $this->app->singleton(ReporterInterface::class, Reporter::class);
 
+        // Register Composer with correct working path
+        $this->app->singleton(\ShieldCI\Support\Composer::class, function ($app) {
+            return new \ShieldCI\Support\Composer(
+                $app['files'],
+                $app->basePath()
+            );
+        });
+
         $this->app->bind(ClientInterface::class, Client::class);
         $this->app->singleton(VersionConstraintMatcher::class);
         $this->app->singleton(AdvisoryAnalyzerInterface::class, function ($app) {

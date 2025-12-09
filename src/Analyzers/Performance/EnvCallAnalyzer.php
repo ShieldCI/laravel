@@ -120,7 +120,7 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
 
             $issues[] = $this->createIssue(
                 message: $message,
-                location: new Location($filePath, $line),
+                location: new Location($this->getRelativePath($filePath), $line),
                 severity: Severity::High,
                 recommendation: ConfigSuggester::getRecommendation($varNameString),
                 code: FileParser::getCodeSnippet($filePath, $line),

@@ -187,7 +187,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         if (! empty($unminifiedFiles)) {
             $issues[] = $this->createIssue(
                 message: sprintf('Found %d unminified assets in production', count($unminifiedFiles)),
-                location: new Location($publicPath, 1),
+                location: new Location($this->getRelativePath($publicPath), 1),
                 severity: Severity::Medium,
                 recommendation: 'Minify your JavaScript and CSS assets using a build tool like Laravel Mix, Vite, or Webpack. Minification reduces file sizes by 50-70% and improves page load times significantly. Consider using Laravel Vite for modern asset bundling.',
                 metadata: [
@@ -245,7 +245,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         if (! empty($unminifiedAssets)) {
             $issues[] = $this->createIssue(
                 message: 'Laravel Mix assets are not minified',
-                location: new Location($manifestPath, 1),
+                location: new Location($this->getRelativePath($manifestPath), 1),
                 severity: Severity::Medium,
                 recommendation: 'Run "npm run production" instead of "npm run dev" when building assets for production. The production build minifies JS and CSS. Update your deployment script to use the production build command.',
                 metadata: [
@@ -288,7 +288,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         if (! empty($largeAssets)) {
             $issues[] = $this->createIssue(
                 message: 'Vite assets may not be properly minified',
-                location: new Location($buildPath, 1),
+                location: new Location($this->getRelativePath($buildPath), 1),
                 severity: Severity::Low,
                 recommendation: 'Ensure you\'re running "npm run build" (not "npm run dev") for production. Vite automatically minifies assets in production mode. Verify your vite.config.js has the correct build settings.',
                 metadata: [

@@ -479,7 +479,8 @@ class AnalyzeCommand extends Command
                 $filteredCount = $newIssues->count();
 
                 // Try to update numeric counts in the message
-                $message = preg_replace('/\b'.$originalCount.'\b/', (string) $filteredCount, $message, 1);
+                $updatedMessage = preg_replace('/\b'.$originalCount.'\b/', (string) $filteredCount, $message, 1);
+                $message = is_string($updatedMessage) ? $updatedMessage : $message;
             }
 
             return new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
@@ -575,10 +576,24 @@ class AnalyzeCommand extends Command
                 ? \ShieldCI\AnalyzersCore\Enums\Status::Passed
                 : $result->getStatus();
 
+            // Update message to reflect filtered count
+            $message = $result->getMessage();
+            if ($newIssues->isEmpty()) {
+                $message = 'All issues are in baseline';
+            } elseif ($newIssues->count() !== count($currentIssues)) {
+                // Some (but not all) issues were filtered - update the count in the message
+                $originalCount = count($currentIssues);
+                $filteredCount = $newIssues->count();
+
+                // Try to update numeric counts in the message
+                $updatedMessage = preg_replace('/\b'.$originalCount.'\b/', (string) $filteredCount, $message, 1);
+                $message = is_string($updatedMessage) ? $updatedMessage : $message;
+            }
+
             return new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
                 analyzerId: $result->getAnalyzerId(),
                 status: $status,
-                message: $newIssues->isEmpty() ? 'All issues are in baseline' : $result->getMessage(),
+                message: $message,
                 issues: $newIssues->all(),
                 executionTime: $result->getExecutionTime(),
                 metadata: $result->getMetadata(),

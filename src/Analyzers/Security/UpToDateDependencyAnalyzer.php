@@ -161,7 +161,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
             return $this->passed('All dependencies are up-to-date');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d dependency update issue(s)', count($issues)),
             $issues
         );

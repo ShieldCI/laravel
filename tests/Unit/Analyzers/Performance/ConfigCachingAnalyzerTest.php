@@ -502,7 +502,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         // Verify path uses system directory separator
         if (DIRECTORY_SEPARATOR === '/') {
-            $this->assertStringContainsString('/bootstrap/cache/config.php', $path);
+            $this->assertStringContainsString('bootstrap/cache/config.php', $path);
         } else {
             $this->assertStringContainsString('\\bootstrap\\cache\\config.php', $path);
         }

@@ -213,26 +213,4 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
             'While these don\'t affect production, keeping them updated helps maintain a healthy development environment. '.
             'Run "composer update" to update all dependencies.';
     }
-
-    /**
-     * Get relative path from base path.
-     */
-    private function getRelativePath(string $file): string
-    {
-        $basePath = $this->getBasePath();
-
-        if ($basePath === '' || $basePath === '.') {
-            return $file;
-        }
-
-        $basePath = rtrim($basePath, '/\\').'/';
-        $normalizedFile = str_replace('\\', '/', $file);
-        $normalizedBasePath = str_replace('\\', '/', $basePath);
-
-        if (str_starts_with($normalizedFile, $normalizedBasePath)) {
-            return substr($normalizedFile, strlen($normalizedBasePath));
-        }
-
-        return $file;
-    }
 }

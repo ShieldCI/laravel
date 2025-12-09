@@ -98,7 +98,7 @@ class Reporter implements ReporterInterface
                     $statusLine .= ' '.$this->color("({$timeLabel} to fix)", 'gray');
                 }
 
-                $output[] = $this->color("Check {$current}/{$total}: ", 'yellow').$statusLine;
+                $output[] = $this->color("Analyzer {$current}/{$total}: ", 'yellow').$statusLine;
 
                 // Show skip reason for skipped analyzers
                 if ($result->getStatus()->value === 'skipped') {

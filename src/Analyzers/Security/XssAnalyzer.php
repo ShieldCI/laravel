@@ -82,7 +82,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d XSS issue(s)', count($issues)),
             $issues
         );

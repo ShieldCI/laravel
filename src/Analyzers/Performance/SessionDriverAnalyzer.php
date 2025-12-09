@@ -279,6 +279,6 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
             $lineNumber = 1;
         }
 
-        return new Location($configPath, $lineNumber);
+        return new Location($this->getRelativePath($configPath), $lineNumber);
     }
 }

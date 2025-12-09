@@ -247,12 +247,12 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
                 $lineNumber = 1;
             }
 
-            return new Location($configPath, $lineNumber);
+            return new Location($this->getRelativePath($configPath), $lineNumber);
         }
 
         // Fallback to artisan file if config not found
         $artisanPath = $basePath.DIRECTORY_SEPARATOR.'artisan';
 
-        return new Location($artisanPath, 1);
+        return new Location($this->getRelativePath($artisanPath), 1);
     }
 }

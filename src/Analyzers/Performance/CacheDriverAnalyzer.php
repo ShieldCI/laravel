@@ -87,7 +87,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
         if ($driver === null) {
             $issues[] = $this->createIssue(
                 message: "Cache store '{$defaultStore}' is not defined in cache configuration",
-                location: new Location($configFile, ConfigFileHelper::findKeyLine($configFile, 'default')),
+                location: new Location($this->getRelativePath($configFile), ConfigFileHelper::findKeyLine($configFile, 'default')),
                 severity: Severity::Critical,
                 recommendation: 'Define the cache store in config/cache.php or change the default store in your .env file (CACHE_DRIVER)',
                 metadata: ['store' => $defaultStore, 'environment' => $environment]
@@ -148,7 +148,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
 
         $issues[] = $this->createIssue(
             message: 'Cache driver is set to null - caching is disabled',
-            location: new Location($configFile, $lineNumber),
+            location: new Location($this->getRelativePath($configFile), $lineNumber),
             severity: Severity::Critical,
             recommendation: 'Set CACHE_DRIVER to redis, memcached, or dynamodb in your .env file for production. Null driver means all cache operations will be no-ops.',
             metadata: ['driver' => 'null', 'store' => $defaultStore, 'environment' => $environment]
@@ -168,7 +168,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
 
         $issues[] = $this->createIssue(
             message: 'Cache driver is set to array - cache not persisted',
-            location: new Location($configFile, $lineNumber),
+            location: new Location($this->getRelativePath($configFile), $lineNumber),
             severity: Severity::Critical,
             recommendation: 'Array driver only caches within a single request and is only suitable for testing. Use redis, memcached, or dynamodb for production.',
             metadata: ['driver' => 'array', 'store' => $defaultStore, 'environment' => $environment]
@@ -188,7 +188,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
 
         $issues[] = $this->createIssue(
             message: "File cache driver in {$environment} environment",
-            location: new Location($configFile, $lineNumber),
+            location: new Location($this->getRelativePath($configFile), $lineNumber),
             severity: Severity::High,
             recommendation: 'File cache is only suitable for single-server setups and causes significant performance degradation in production. Use Redis or Memcached with unix sockets for 10-100x better performance and proper multi-server support.',
             metadata: ['driver' => 'file', 'store' => $defaultStore, 'environment' => $environment]
@@ -208,7 +208,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
 
         $issues[] = $this->createIssue(
             message: "Database cache driver in {$environment} environment",
-            location: new Location($configFile, $lineNumber),
+            location: new Location($this->getRelativePath($configFile), $lineNumber),
             severity: Severity::High,
             recommendation: 'Database cache driver defeats the purpose of caching by adding load to your database server. This creates a performance bottleneck and can cause cascading failures under high load. Use Redis or Memcached for proper production caching.',
             metadata: ['driver' => 'database', 'store' => $defaultStore, 'environment' => $environment]
@@ -223,7 +223,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
     {
         $issues[] = $this->createIssue(
             message: "Cache driver '{$driver}' is unsupported by ShieldCI",
-            location: new Location($configFile, $lineNumber),
+            location: new Location($this->getRelativePath($configFile), $lineNumber),
             severity: Severity::Low,
             recommendation: 'Ensure your custom cache driver uses a persistent backend suitable for production workloads. ShieldCI cannot automatically verify custom drivers.',
             metadata: ['driver' => $driver, 'store' => $defaultStore, 'environment' => $environment]
@@ -243,7 +243,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
 
         $issues[] = $this->createIssue(
             message: "APC cache driver in {$environment} environment",
-            location: new Location($configFile, $lineNumber),
+            location: new Location($this->getRelativePath($configFile), $lineNumber),
             severity: Severity::High,
             recommendation: 'APCu storage only works on a single server and will cause cache inconsistency in load-balanced or containerized environments. Use Redis or Memcached for proper distributed caching.',
             metadata: ['driver' => 'apc', 'store' => $defaultStore, 'environment' => $environment]
@@ -257,7 +257,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
         if (! is_string($table) || trim($table) === '') {
             $issues[] = $this->createIssue(
                 message: 'DynamoDB cache driver is missing a table configuration',
-                location: new Location($configFile, $lineNumber),
+                location: new Location($this->getRelativePath($configFile), $lineNumber),
                 severity: Severity::High,
                 recommendation: 'Set cache.stores.dynamodb.table (CACHE_DYNAMODB_TABLE) so cache items can be persisted.',
                 metadata: ['driver' => 'dynamodb', 'store' => $defaultStore, 'environment' => $environment]
@@ -275,7 +275,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
 
         $issues[] = $this->createIssue(
             message: 'Octane cache driver requires Laravel Octane runtime',
-            location: new Location($configFile, $lineNumber),
+            location: new Location($this->getRelativePath($configFile), $lineNumber),
             severity: Severity::High,
             recommendation: 'Install laravel/octane and ensure Octane workers are running before using the octane cache driver. Otherwise, switch to redis or memcached.',
             metadata: ['driver' => 'octane', 'store' => $defaultStore, 'environment' => $environment]

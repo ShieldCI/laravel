@@ -101,7 +101,7 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
         if (! file_exists($composerLockPath)) {
             $issues[] = $this->createIssue(
                 message: 'composer.lock file not found in production',
-                location: new Location($composerLockPath, 1),
+                location: new Location($this->getRelativePath($composerLockPath), 1),
                 severity: Severity::High,
                 recommendation: 'Always commit composer.lock to ensure consistent dependency versions across environments. Run "composer install" instead of "composer update" in production.',
                 metadata: ['environment' => $this->getEnvironment()]
@@ -195,7 +195,7 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
 
             return $this->createIssue(
                 message: 'Dev dependencies are installed in production environment',
-                location: new Location($composerJsonPath, 1),
+                location: new Location($this->getRelativePath($composerJsonPath), 1),
                 severity: Severity::High,
                 recommendation: 'Use "composer install --no-dev" in production to exclude development dependencies. Dev packages like Ignition and Debugbar can cause memory leaks and slow down your application. Add --no-dev flag to your deployment script.',
                 metadata: [
@@ -295,7 +295,7 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
 
         return $this->createIssue(
             message: sprintf('Found %d dev dependencies installed in production', count($installedDevPackages)),
-            location: new Location($composerJsonPath, 1),
+            location: new Location($this->getRelativePath($composerJsonPath), 1),
             severity: Severity::High,
             recommendation: 'Use "composer install --no-dev" in production to exclude development dependencies. Dev packages like Ignition and Debugbar can cause memory leaks and slow down your application. Add --no-dev flag to your deployment script.',
             metadata: [

@@ -138,7 +138,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
             return $this->passed('No vulnerable dependencies detected');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d dependency security issue(s)', count($issues)),
             $issues
         );

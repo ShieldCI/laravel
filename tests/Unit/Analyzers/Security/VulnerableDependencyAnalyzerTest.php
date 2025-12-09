@@ -264,7 +264,7 @@ JSON;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('legacy/package', $result);
         $this->assertStringContainsString('new/package', $result->getIssues()[0]->recommendation);
     }
@@ -306,7 +306,7 @@ JSON;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('legacy/dev-package', $result);
     }
 
@@ -880,7 +880,7 @@ JSON;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertStringContainsString('Find an alternative', $issues[0]->recommendation);
     }
@@ -929,7 +929,7 @@ JSON;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(2, $issues);
     }
@@ -970,7 +970,7 @@ JSON;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         // Should create issue but with "Unknown" package name
         $this->assertStringContainsString('Unknown', $issues[0]->message);

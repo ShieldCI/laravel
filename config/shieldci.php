@@ -279,7 +279,10 @@ return [
     | - Does not affect exit code
     | - Applied before baseline filtering
     |
-    | Structure: analyzer_id => array of error definitions
+    | Structure: analyzer_id => array of error definitions (must not be empty)
+    |
+    | Note: An empty array [] has no effect and will trigger a warning.
+    |       Either specify at least one rule or remove the analyzer entry entirely.
     |
     | Each error definition can include:
     | - 'path': Exact file path match (e.g., 'app/Models/User.php')

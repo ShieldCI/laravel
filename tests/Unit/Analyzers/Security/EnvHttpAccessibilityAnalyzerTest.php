@@ -26,6 +26,7 @@ class EnvHttpAccessibilityAnalyzerTest extends AnalyzerTestCase
         // configure the URL generator from app.url
         $appUrl = config('app.url');
         if ($appUrl && is_string($appUrl)) {
+            /** @phpstan-ignore-next-line */
             URL::forceRootUrl($appUrl);
         }
 

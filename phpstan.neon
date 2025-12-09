@@ -28,7 +28,6 @@ parameters:
         - '#Parameter \#[0-9]+ \$(config|container) of class ShieldCI\\AnalyzerManager constructor expects .*, Mockery\\MockInterface given#'
         - '#Parameter \#2 \$array of method PHPUnit\\Framework\\Assert::assertArrayHasKey\(\) expects array\|ArrayAccess, mixed given#'
         - '#Parameter \#1 \$array of function array_diff expects array, array<int, string>\|false given#'
-        - '#Cannot call method set\(\) on mixed#'
 
         # AstParser has extended methods beyond ParserInterface
         - '#Call to an undefined method ShieldCI\\AnalyzersCore\\Contracts\\ParserInterface::findClasses\(\)#'

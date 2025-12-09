@@ -178,7 +178,9 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             return $this->passed('All compiled assets have appropriate cache headers');
         }
 
-        $firstSource = $this->uncachedAssets->first()['source'] ?? 'mix';
+        /** @var array{path: string, source: string} $firstAsset */
+        $firstAsset = $this->uncachedAssets->first();
+        $firstSource = $firstAsset['source'];
         $issueLocation = $firstSource === 'vite' ? 'public/build/manifest.json' : 'public/mix-manifest.json';
 
         $issues = [$this->createIssue(

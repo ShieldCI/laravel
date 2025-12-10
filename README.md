@@ -148,11 +148,11 @@ Example: AutoloaderOptimizationAnalyzer only runs in production/staging environm
 
 ## Available Analyzers
 
-ShieldCI includes **95 comprehensive analyzers** across five categories:
+ShieldCI includes **93 comprehensive analyzers** across five categories:
 - **22 Security Analyzers** - Complete OWASP Top 10 2021 coverage
 - **18 Performance Analyzers** - Optimize application speed and efficiency
 - **25 Reliability Analyzers** - Ensure application stability and correctness
-- **7 Code Quality Analyzers** - Improve maintainability and code standards
+- **5 Code Quality Analyzers** - Improve maintainability and code standards
 - **23 Best Practices Analyzers** - Enforce Laravel-specific best practices
 
 ### Security Analyzers (22)
@@ -260,17 +260,15 @@ Ensure application stability and correctness:
 - **Maintenance Mode Analyzer** - Checks maintenance status
 - **Up-to-Date Migrations Analyzer** - Detects pending migrations
 
-### Code Quality Analyzers (7)
+### Code Quality Analyzers (5)
 
 Improve code maintainability and enforce best practices:
 
 - **Commented Code Analyzer** - Detects commented-out code that should be removed
-- **Magic Number Analyzer** - Finds hard-coded numbers that should be named constants
 - **Method Length Analyzer** - Flags overly long methods that should be refactored
 - **Missing DocBlock Analyzer** - Checks for missing PHPDoc blocks on classes and methods
 - **Naming Convention Analyzer** - Enforces PSR naming conventions (classes, methods, properties)
 - **Nesting Depth Analyzer** - Detects excessive nesting levels that reduce readability
-- **Todo Comment Analyzer** - Finds TODO/FIXME/HACK comments in codebase
 
 ### Best Practices Analyzers (23)
 

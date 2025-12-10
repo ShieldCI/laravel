@@ -64,15 +64,12 @@ class UpToDateMigrationsAnalyzerTest extends AnalyzerTestCase
         // Create a test instance to access protected methods via reflection
         $analyzer = $this->createAnalyzer();
 
+        // Actual format from Laravel's migrate:status --pending command
         $output = <<<'OUTPUT'
-+------+--------------------------------------------------------------+-------+
-| Ran? | Migration                                                    | Batch |
-+------+--------------------------------------------------------------+-------+
-| Yes  | 2014_10_12_000000_create_users_table                         | 1     |
-+------+--------------------------------------------------------------+-------+
 
-  Pending  2024_01_15_000000_create_posts_table
-  Pending  2024_01_16_000000_create_comments_table
+  Migration name .............................................. Batch / Status
+  2024_01_15_000000_create_posts_table ........................... Pending
+  2024_01_16_000000_create_comments_table ........................ Pending
 
 OUTPUT;
 
@@ -257,8 +254,8 @@ OUTPUT;
     {
         $analyzer = $this->createAnalyzer();
 
-        // Output with empty matches (edge case)
-        $output = "  Pending  \n  Pending  \n";
+        // Output with malformed migration names (edge case)
+        $output = "  ................................. Pending  \n";
 
         $reflection = new \ReflectionClass($analyzer);
         $method = $reflection->getMethod('parsePendingMigrations');
@@ -266,7 +263,7 @@ OUTPUT;
 
         $result = $method->invoke($analyzer, $output);
 
-        // Should filter out empty migration names
+        // Should filter out empty/invalid migration names
         $this->assertIsArray($result);
         $this->assertEmpty($result);
     }

@@ -89,7 +89,7 @@ class NestingDepthAnalyzer extends AbstractFileAnalyzer
             foreach ($visitor->getIssues() as $issue) {
                 $issues[] = $this->createIssue(
                     message: "Code block has nesting depth of {$issue['depth']} (threshold: {$threshold}) in '{$issue['context']}'",
-                    location: new Location($file, $issue['line']),
+                    location: new Location($this->getRelativePath($file), $issue['line']),
                     severity: $this->getSeverityForDepth($issue['depth'], $threshold),
                     recommendation: $this->getRecommendation($issue['depth'], $threshold),
                     metadata: [

@@ -59,9 +59,6 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
     {
         $issues = [];
 
-        // Check for cached config (must be first to warn about effectiveness of changes)
-        $this->checkCachedConfig($issues);
-
         // Check .env file for APP_KEY
         $this->checkEnvFile($issues);
 
@@ -425,28 +422,5 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
         }
 
         return true;
-    }
-
-    /**
-     * Check for cached config files.
-     *
-     * @param  array<int, mixed>  &$issues
-     */
-    private function checkCachedConfig(array &$issues): void
-    {
-        $cachedConfigPath = $this->buildPath('bootstrap', 'cache', 'config.php');
-
-        if (file_exists($cachedConfigPath)) {
-            $issues[] = $this->createIssue(
-                message: 'Configuration is cached - .env changes will not take effect',
-                location: new Location(
-                    'bootstrap/cache/config.php',
-                    1
-                ),
-                severity: Severity::High,
-                recommendation: 'Run "php artisan config:clear" to clear the configuration cache and make .env changes effective. After making changes, run "php artisan config:cache" to rebuild the cache.',
-                metadata: ['cached_file' => $cachedConfigPath]
-            );
-        }
     }
 }

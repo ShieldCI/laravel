@@ -16,7 +16,8 @@ class PathFilter
     public function __construct(
         private array $analyzePaths,
         private array $excludedPaths
-    ) {}
+    ) {
+    }
 
     /**
      * Check if a file path should be analyzed.

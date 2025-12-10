@@ -47,7 +47,8 @@ class QueryBuilderInControllerAnalyzer extends AbstractFileAnalyzer
 
     public function __construct(
         private ParserInterface $parser
-    ) {}
+    ) {
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -244,7 +245,8 @@ class QueryBuilderVisitor extends NodeVisitorAbstract
      */
     public function __construct(
         private array $allowedMethods = []
-    ) {}
+    ) {
+    }
 
     public function enterNode(Node $node)
     {

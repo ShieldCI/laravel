@@ -10,5 +10,6 @@ final class DatabaseConnectionResult
         public readonly bool $successful,
         public readonly ?string $message = null,
         public readonly ?string $exceptionClass = null,
-    ) {}
+    ) {
+    }
 }

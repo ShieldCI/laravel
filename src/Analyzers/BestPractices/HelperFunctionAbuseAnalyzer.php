@@ -49,7 +49,8 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
 
     public function __construct(
         private ParserInterface $parser
-    ) {}
+    ) {
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -242,7 +243,8 @@ class HelperFunctionVisitor extends NodeVisitorAbstract
     public function __construct(
         private array $helperFunctions,
         private int $threshold
-    ) {}
+    ) {
+    }
 
     public function enterNode(Node $node)
     {

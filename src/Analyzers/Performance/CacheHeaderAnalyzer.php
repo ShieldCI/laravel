@@ -74,7 +74,8 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
 
     public function __construct(
         private Filesystem $files
-    ) {}
+    ) {
+    }
 
     /**
      * Set the public path (for testing).

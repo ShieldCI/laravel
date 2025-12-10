@@ -25,7 +25,8 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
 {
     public function __construct(
         private Filesystem $files
-    ) {}
+    ) {
+    }
 
     protected function metadata(): AnalyzerMetadata
     {

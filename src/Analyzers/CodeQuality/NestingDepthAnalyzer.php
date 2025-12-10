@@ -190,7 +190,8 @@ class NestingDepthVisitor extends NodeVisitorAbstract
 
     public function __construct(
         private int $threshold
-    ) {}
+    ) {
+    }
 
     public function enterNode(Node $node)
     {

@@ -48,7 +48,8 @@ class FacadeUsageAnalyzer extends AbstractFileAnalyzer
 
     public function __construct(
         private ParserInterface $parser
-    ) {}
+    ) {
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -225,7 +226,8 @@ class FacadeUsageVisitor extends NodeVisitorAbstract
     public function __construct(
         private array $facades,
         private int $threshold
-    ) {}
+    ) {
+    }
 
     public function enterNode(Node $node)
     {

@@ -25,7 +25,8 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
 {
     public function __construct(
         private ComposerValidator $composerValidator = new ComposerValidator
-    ) {}
+    ) {
+    }
 
     protected function metadata(): AnalyzerMetadata
     {

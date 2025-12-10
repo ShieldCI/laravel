@@ -183,7 +183,8 @@ class MethodLengthVisitor extends NodeVisitorAbstract
     public function __construct(
         private int $threshold,
         private array $excludePatterns = []
-    ) {}
+    ) {
+    }
 
     public function enterNode(Node $node)
     {

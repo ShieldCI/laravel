@@ -29,7 +29,8 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
 {
     public function __construct(
         private ParserInterface $parser
-    ) {}
+    ) {
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -160,7 +161,9 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      */
     private array $eagerLoadedRelationships = [];
 
-    public function __construct() {}
+    public function __construct()
+    {
+    }
 
     public function enterNode(Node $node)
     {
@@ -215,7 +218,6 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     is_string($node->var->name) &&
                     $node->var->name === $this->loopVariable &&
                     $node->name instanceof Node\Identifier) {
-
                     $propertyName = $node->name->toString();
 
                     // Check if this looks like a relationship (not typical model properties)
@@ -239,7 +241,6 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     is_string($node->var->name) &&
                     $node->var->name === $this->loopVariable &&
                     $node->name instanceof Node\Identifier) {
-
                     $methodName = $node->name->toString();
 
                     // Check if this looks like a relationship method

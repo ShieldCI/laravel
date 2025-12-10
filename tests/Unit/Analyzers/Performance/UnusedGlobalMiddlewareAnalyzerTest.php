@@ -219,7 +219,9 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $kernel = new class extends \Illuminate\Foundation\Http\Kernel
         {
-            public function __construct() {}
+            public function __construct()
+            {
+            }
 
             /** @var array<int, string> */
             protected $middleware = [
@@ -262,7 +264,9 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $kernel = new class extends \Illuminate\Foundation\Http\Kernel
         {
-            public function __construct() {}
+            public function __construct()
+            {
+            }
 
             /** @var array<int, string> */
             protected $middleware = [
@@ -292,7 +296,9 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $kernel = new class extends \Illuminate\Foundation\Http\Kernel
         {
-            public function __construct() {}
+            public function __construct()
+            {
+            }
 
             /** @var array<int, string> */
             protected $middleware = [
@@ -322,7 +328,9 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $kernel = new class extends \Illuminate\Foundation\Http\Kernel
         {
-            public function __construct() {}
+            public function __construct()
+            {
+            }
 
             /** @var array<int, string> */
             protected $middleware = [
@@ -375,7 +383,9 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $kernel = new class extends \Illuminate\Foundation\Http\Kernel
         {
-            public function __construct() {}
+            public function __construct()
+            {
+            }
 
             /** @var array<int, string> */
             protected $middleware = [
@@ -415,7 +425,9 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $kernel = new class extends \Illuminate\Foundation\Http\Kernel
         {
-            public function __construct() {}
+            public function __construct()
+            {
+            }
 
             /** @var array<int, string> */
             protected $middleware = [
@@ -443,7 +455,9 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $kernel = new class extends \Illuminate\Foundation\Http\Kernel
         {
-            public function __construct() {}
+            public function __construct()
+            {
+            }
 
             /** @var array<int, string> */
             protected $middleware = [
@@ -486,7 +500,9 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $kernel = new class extends \Illuminate\Foundation\Http\Kernel
         {
-            public function __construct() {}
+            public function __construct()
+            {
+            }
 
             /** @var array<int, string> */
             protected $middleware = [
@@ -530,7 +546,9 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $kernel = new class extends \Illuminate\Foundation\Http\Kernel
         {
-            public function __construct() {}
+            public function __construct()
+            {
+            }
 
             /** @var array<int, string> */
             protected $middleware = [
@@ -565,7 +583,9 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $kernel = new class extends \Illuminate\Foundation\Http\Kernel
         {
-            public function __construct() {}
+            public function __construct()
+            {
+            }
 
             /** @var array<int, string> */
             protected $middleware = [
@@ -611,7 +631,9 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $kernel = new class extends \Illuminate\Foundation\Http\Kernel
         {
-            public function __construct() {}
+            public function __construct()
+            {
+            }
 
             /** @var array<int, string> */
             protected $middleware = [
@@ -657,7 +679,9 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $kernel = new class extends \Illuminate\Foundation\Http\Kernel
         {
-            public function __construct() {}
+            public function __construct()
+            {
+            }
 
             /** @var array<int, string> */
             protected $middleware = [
@@ -708,7 +732,9 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $kernel = new class extends \Illuminate\Foundation\Http\Kernel
         {
-            public function __construct() {}
+            public function __construct()
+            {
+            }
 
             /** @var array<int, string> */
             protected $middleware = [
@@ -758,7 +784,9 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $kernel = new class extends \Illuminate\Foundation\Http\Kernel
         {
-            public function __construct() {}
+            public function __construct()
+            {
+            }
 
             /** @var array<int, string> */
             protected $middleware = [
@@ -811,7 +839,9 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $kernel = new class extends \Illuminate\Foundation\Http\Kernel
         {
-            public function __construct() {}
+            public function __construct()
+            {
+            }
 
             /** @var array<int, string> */
             protected $middleware = [
@@ -854,7 +884,9 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $kernel = new class extends \Illuminate\Foundation\Http\Kernel
         {
-            public function __construct() {}
+            public function __construct()
+            {
+            }
 
             /** @var array<int, string> */
             protected $middleware = [
@@ -900,7 +932,9 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $kernel = new class extends \Illuminate\Foundation\Http\Kernel
         {
-            public function __construct() {}
+            public function __construct()
+            {
+            }
 
             /** @var array<int, string> */
             protected $middleware = [

@@ -227,26 +227,40 @@ class DocBlockVisitor extends NodeVisitorAbstract
     {
         $docText = $docComment->getText();
 
-        // Check for @param tags if method has parameters
+        // Check for @param tags if method has parameters with generic types
         if (! empty($node->params) && ! str_contains($docText, '@param')) {
-            $this->issues[] = [
-                'message' => "Public method '{$methodName}' is missing @param documentation",
-                'line' => $node->getStartLine(),
-                'type' => 'missing_param',
-                'method' => $methodName,
-                'class' => $this->currentClass ?? 'Unknown',
-            ];
+            // Only require @param if any parameter has a generic type or no type
+            $requiresParamDoc = false;
+            foreach ($node->params as $param) {
+                if ($param->type === null || $this->isGenericType($param->type)) {
+                    $requiresParamDoc = true;
+                    break;
+                }
+            }
+
+            if ($requiresParamDoc) {
+                $this->issues[] = [
+                    'message' => "Public method '{$methodName}' is missing @param documentation",
+                    'line' => $node->getStartLine(),
+                    'type' => 'missing_param',
+                    'method' => $methodName,
+                    'class' => $this->currentClass ?? 'Unknown',
+                ];
+            }
         }
 
-        // Check for @return tag if method has return type or returns value
+        // Check for @return tag only if method has generic return type or no return type
         if ($node->returnType !== null && ! str_contains($docText, '@return')) {
-            $this->issues[] = [
-                'message' => "Public method '{$methodName}' is missing @return documentation",
-                'line' => $node->getStartLine(),
-                'type' => 'missing_return',
-                'method' => $methodName,
-                'class' => $this->currentClass ?? 'Unknown',
-            ];
+            // Only require @return if return type is generic
+            if ($this->isGenericType($node->returnType)) {
+                $this->issues[] = [
+                    'message' => "Public method '{$methodName}' is missing @return documentation",
+                    'line' => $node->getStartLine(),
+                    'type' => 'missing_return',
+                    'method' => $methodName,
+                    'class' => $this->currentClass ?? 'Unknown',
+                ];
+            }
         }
 
         // Check for @throws tag if method might throw exceptions
@@ -259,6 +273,67 @@ class DocBlockVisitor extends NodeVisitorAbstract
                 'class' => $this->currentClass ?? 'Unknown',
             ];
         }
+    }
+
+    /**
+     * Check if a type requires documentation.
+     *
+     * Returns false only for scalar native types (void, string, int, bool, float, etc.)
+     * which are self-documenting. Returns true for:
+     * - Generic types (array, iterable, object, mixed, callable) - need to specify structure
+     * - Class names - may need additional context/documentation
+     * - No type hint - definitely needs documentation
+     */
+    private function isGenericType(Node $typeNode): bool
+    {
+        // Handle identifier types (e.g., array, string, int, void, class names)
+        if ($typeNode instanceof Node\Identifier) {
+            $typeName = strtolower($typeNode->toString());
+
+            // Only scalar native types don't need documentation (they're self-documenting)
+            $scalarTypes = ['void', 'string', 'int', 'float', 'bool', 'true', 'false', 'null', 'never'];
+            if (in_array($typeName, $scalarTypes)) {
+                return false;
+            }
+
+            // Everything else needs documentation:
+            // - Generic types (array, iterable, object, mixed, callable) need structure specified
+            // - self, parent, static need context
+            return true;
+        }
+
+        // Handle name types (e.g., fully qualified class names)
+        if ($typeNode instanceof Node\Name) {
+            // Class names should have documentation for additional context
+            return true;
+        }
+
+        // Handle nullable types (e.g., ?string, ?array)
+        if ($typeNode instanceof Node\NullableType) {
+            return $this->isGenericType($typeNode->type);
+        }
+
+        // Handle union types (e.g., string|int, array|null)
+        if ($typeNode instanceof Node\UnionType) {
+            // If all types are scalar, no documentation needed
+            // If any type needs documentation, require it
+            foreach ($typeNode->types as $type) {
+                if ($this->isGenericType($type)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // Handle intersection types (e.g., Countable&Traversable)
+        if ($typeNode instanceof Node\IntersectionType) {
+            // Intersection types should have documentation
+            return true;
+        }
+
+        // Default to requiring documentation for unknown types
+        return true;
     }
 
     /**

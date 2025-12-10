@@ -237,6 +237,7 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
                 'indicators_found' => [],
                 'status_code' => $statusCode,
             ];
+
         } catch (RequestException $e) {
             // Network errors, timeouts, DNS failures, etc.
             // We'll assume the file is not accessible (could be blocked, which is good)

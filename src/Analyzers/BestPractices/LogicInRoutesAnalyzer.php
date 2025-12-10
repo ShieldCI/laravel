@@ -27,8 +27,7 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
 
     public function __construct(
         private ParserInterface $parser
-    ) {
-    }
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -184,9 +183,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
         $visitor = new class($hasQuery) extends NodeVisitorAbstract
         {
-            public function __construct(private bool &$hasQuery)
-            {
-            }
+            public function __construct(private bool &$hasQuery) {}
 
             public function enterNode(Node $node): ?Node
             {
@@ -230,9 +227,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
         $visitor = new class($hasLogic) extends NodeVisitorAbstract
         {
-            public function __construct(private bool &$hasLogic)
-            {
-            }
+            public function __construct(private bool &$hasLogic) {}
 
             public function enterNode(Node $node): ?Node
             {

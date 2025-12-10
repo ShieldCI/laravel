@@ -30,8 +30,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         private AdvisoryFetcherInterface $advisoryFetcher,
         private AdvisoryAnalyzerInterface $advisoryAnalyzer,
         private ComposerDependencyReader $dependencyReader
-    ) {
-    }
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {

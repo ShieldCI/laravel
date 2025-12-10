@@ -30,8 +30,7 @@ class MvcStructureViolationAnalyzer extends AbstractFileAnalyzer
 
     public function __construct(
         private ParserInterface $parser
-    ) {
-    }
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {

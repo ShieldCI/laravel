@@ -33,8 +33,7 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
 
     public function __construct(
         private ParserInterface $parser
-    ) {
-    }
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -285,9 +284,7 @@ class FatModelVisitor extends NodeVisitorAbstract
 
         $visitor = new class($complexity) extends NodeVisitorAbstract
         {
-            public function __construct(private int &$complexity)
-            {
-            }
+            public function __construct(private int &$complexity) {}
 
             public function enterNode(Node $node): ?Node
             {

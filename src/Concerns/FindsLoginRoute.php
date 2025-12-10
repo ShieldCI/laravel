@@ -10,7 +10,7 @@ use Illuminate\Routing\Router;
 use Illuminate\Support\Str;
 
 /**
- * Trait FindsLoginRoute.
+ * Trait FindsLoginRoute
  *
  * Provides functionality to discover a guest-accessible URL for HTTP inspection.
  */

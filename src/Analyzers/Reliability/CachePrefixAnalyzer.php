@@ -249,7 +249,7 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
      */
     private function getEmptyPrefixRecommendation(): string
     {
-        return 'Set a unique cache prefix in config/cache.php to avoid collisions with other applications sharing the same cache server. Use your application name or a unique identifier. Example: \'prefix\' => env(\'CACHE_PREFIX\', Str::slug(env(\'APP_NAME\', \'laravel\'), \'_\').\'_cache\')';
+        return 'Set a unique cache prefix in config/cache.php to avoid collisions with other applications sharing the same cache server. Use your application name or a unique identifier.';
     }
 
     /**
@@ -258,7 +258,6 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
     private function getGenericPrefixRecommendation(string $prefix): string
     {
         return "The cache prefix '{$prefix}' is generic and may collide with other applications using the same cache server. ".
-               'Use a unique prefix based on your application name. Example: \'myapp_cache\' or use env(\'APP_NAME\') to generate it dynamically. '.
-               'In config/cache.php, set: \'prefix\' => env(\'CACHE_PREFIX\', Str::slug(env(\'APP_NAME\', \'laravel\'), \'_\').\'_cache\')';
+               'Use a unique prefix based on your application name. ';
     }
 }

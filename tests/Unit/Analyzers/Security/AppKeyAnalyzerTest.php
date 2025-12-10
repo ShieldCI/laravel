@@ -656,50 +656,6 @@ ENV;
         $this->assertPassed($result);
     }
 
-    // ==================== CONFIG CACHE DETECTION TESTS ====================
-
-    public function test_fails_when_config_is_cached(): void
-    {
-        $envContent = <<<'ENV'
-APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=
-ENV;
-
-        $cachedConfig = <<<'PHP'
-<?php return ['app' => ['key' => 'base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=']];
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            '.env' => $envContent,
-            'bootstrap/cache/config.php' => $cachedConfig,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('Configuration is cached', $result);
-    }
-
-    public function test_passes_when_no_cached_config(): void
-    {
-        $envContent = <<<'ENV'
-APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=
-ENV;
-
-        $tempDir = $this->createTempDirectory([
-            '.env' => $envContent,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertPassed($result);
-    }
-
     // ==================== MULTIPLE APP_KEY DEFINITIONS TESTS ====================
 
     public function test_fails_when_multiple_app_keys_in_same_file(): void

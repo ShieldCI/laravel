@@ -134,10 +134,10 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
                 $lineNumber = 1;
             }
 
-            return new Location($configFile, $lineNumber);
+            return new Location($this->getRelativePath($configFile), $lineNumber);
         }
 
-        return new Location($configFile, 1);
+        return new Location($this->getRelativePath($configFile), 1);
     }
 
     /**

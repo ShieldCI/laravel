@@ -48,7 +48,7 @@ class MaintenanceModeAnalyzer extends AbstractFileAnalyzer
                 'Application is in maintenance mode',
                 [$this->createIssue(
                     message: 'Application is currently down for maintenance',
-                    location: new Location($maintenanceFilePath, 1),
+                    location: new Location($this->getRelativePath($maintenanceFilePath), 1),
                     severity: Severity::High,
                     recommendation: 'If maintenance is complete, bring the application back online with "php artisan up". If maintenance is ongoing, this is expected. Ensure maintenance mode was intentional and users are properly notified.',
                     metadata: [

@@ -8,7 +8,9 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
@@ -128,6 +130,11 @@ class OpcacheAnalyzer extends AbstractAnalyzer
     private ?array $configurationOverride = null;
 
     private ?bool $extensionLoadedOverride = null;
+
+    private ?string $cachedPhpIniPath = null;
+
+    /** @var array<int, string>|null */
+    private ?array $phpIniLinesCache = null;
 
     protected function runAnalysis(): ResultInterface
     {
@@ -261,9 +268,10 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         }
 
         $currentValue = $directives['opcache.validate_timestamps'];
-        $issues[] = $this->createIssue(
+        $issues[] = $this->createOpcacheIssue(
+            phpIniPath: $phpIniPath,
+            setting: 'opcache.validate_timestamps',
             message: 'opcache.validate_timestamps is enabled in production',
-            location: new Location($phpIniPath, 1),
             severity: Severity::Low,
             recommendation: 'Set "opcache.validate_timestamps=0" in production for maximum performance. This disables checking for file changes on every request. You\'ll need to restart PHP after code changes.',
             metadata: [
@@ -288,9 +296,10 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         $memoryConsumption = (int) $directives['opcache.memory_consumption'];
 
         if ($memoryConsumption >= 0 && $memoryConsumption < self::MIN_MEMORY_CONSUMPTION) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createOpcacheIssue(
+                phpIniPath: $phpIniPath,
+                setting: 'opcache.memory_consumption',
                 message: 'OPcache memory consumption is low',
-                location: new Location($phpIniPath, 1),
                 severity: Severity::Low,
                 recommendation: sprintf(
                     'Increase "opcache.memory_consumption" to at least %dMB (recommended: %dMB for Laravel apps). Current: %dMB. This ensures all your application code can be cached.',
@@ -321,9 +330,10 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         $internedStringsBuffer = (int) $directives['opcache.interned_strings_buffer'];
 
         if ($internedStringsBuffer >= 0 && $internedStringsBuffer < self::MIN_INTERNED_STRINGS_BUFFER) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createOpcacheIssue(
+                phpIniPath: $phpIniPath,
+                setting: 'opcache.interned_strings_buffer',
                 message: 'OPcache interned strings buffer is low',
-                location: new Location($phpIniPath, 1),
                 severity: Severity::Low,
                 recommendation: sprintf(
                     'Increase "opcache.interned_strings_buffer" to at least %dMB. Current: %dMB. This caches common strings and improves memory efficiency.',
@@ -353,9 +363,10 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         $maxAcceleratedFiles = (int) $directives['opcache.max_accelerated_files'];
 
         if ($maxAcceleratedFiles >= 0 && $maxAcceleratedFiles < self::MIN_MAX_ACCELERATED_FILES) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createOpcacheIssue(
+                phpIniPath: $phpIniPath,
+                setting: 'opcache.max_accelerated_files',
                 message: 'OPcache max accelerated files is low',
-                location: new Location($phpIniPath, 1),
                 severity: Severity::Low,
                 recommendation: sprintf(
                     'Increase "opcache.max_accelerated_files" to at least %d (recommended: %d for Laravel apps). Current: %d. This ensures all your application files can be cached.',
@@ -389,9 +400,10 @@ class OpcacheAnalyzer extends AbstractAnalyzer
             && isset($directives['opcache.validate_timestamps'])
             && $directives['opcache.validate_timestamps'] === false
         ) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createOpcacheIssue(
+                phpIniPath: $phpIniPath,
+                setting: 'opcache.revalidate_freq',
                 message: 'opcache.revalidate_freq should be 0 when validate_timestamps is disabled',
-                location: new Location($phpIniPath, 1),
                 severity: Severity::Low,
                 recommendation: sprintf(
                     'Set "opcache.revalidate_freq=0" when "opcache.validate_timestamps=0" for maximum performance. Current: %d seconds.',
@@ -432,9 +444,10 @@ class OpcacheAnalyzer extends AbstractAnalyzer
             $currentValueString = 'invalid value';
         }
 
-        $issues[] = $this->createIssue(
+        $issues[] = $this->createOpcacheIssue(
+            phpIniPath: $phpIniPath,
+            setting: 'opcache.fast_shutdown',
             message: 'opcache.fast_shutdown is disabled',
-            location: new Location($phpIniPath, 1),
             severity: Severity::Low,
             recommendation: sprintf(
                 'Enable "opcache.fast_shutdown=1" for faster PHP shutdown and better performance. Current: %s.',
@@ -445,5 +458,98 @@ class OpcacheAnalyzer extends AbstractAnalyzer
                 'recommended_value' => 1,
             ]
         );
+    }
+
+    /**
+     * Create an issue for an OPcache setting with automatic location and code snippet.
+     *
+     * @param  array<string, mixed>  $metadata
+     */
+    private function createOpcacheIssue(
+        string $phpIniPath,
+        string $setting,
+        string $message,
+        string $recommendation,
+        Severity $severity,
+        array $metadata = []
+    ): Issue {
+        $line = $this->getSettingLine($phpIniPath, $setting);
+
+        // Try to get code snippet, but handle open_basedir restrictions gracefully
+        try {
+            $snippet = FileParser::getCodeSnippet($phpIniPath, $line);
+        } catch (\Throwable $e) {
+            // If we can't read the file (e.g., due to open_basedir restrictions), use empty snippet
+            $snippet = '';
+        }
+
+        return $this->createIssue(
+            message: $message,
+            location: new Location($phpIniPath, $line),
+            severity: $severity,
+            recommendation: $recommendation,
+            code: $snippet,
+            metadata: $metadata
+        );
+    }
+
+    /**
+     * Get the line number where a setting is defined in php.ini.
+     */
+    private function getSettingLine(string $phpIniPath, string $setting): int
+    {
+        $lines = $this->getPhpIniLines($phpIniPath);
+        $commentedLine = null;
+
+        foreach ($lines as $index => $line) {
+            if (! is_string($line)) {
+                continue;
+            }
+
+            // First, check for active (uncommented) settings
+            $lineWithoutComments = preg_replace('/[;#].*$/', '', $line);
+            $lineWithoutComments = preg_replace('/\/\/.*$/', '', $lineWithoutComments ?? '');
+
+            $pattern = '/^\s*'.preg_quote($setting, '/').'\s*=/i';
+            if (preg_match($pattern, $lineWithoutComments ?? '') === 1) {
+                return $index + 1;
+            }
+
+            // Also check for commented settings (as fallback)
+            if ($commentedLine === null) {
+                $commentedPattern = '/^\s*[;#]\s*'.preg_quote($setting, '/').'\s*=/i';
+                if (preg_match($commentedPattern, $line) === 1) {
+                    $commentedLine = $index + 1;
+                }
+            }
+        }
+
+        // Return commented line if found, otherwise default to 1
+        return $commentedLine ?? 1;
+    }
+
+    /**
+     * Get the lines of the php.ini file with caching.
+     *
+     * @return array<int, string>
+     */
+    private function getPhpIniLines(string $phpIniPath): array
+    {
+        if ($this->cachedPhpIniPath !== $phpIniPath) {
+            $this->phpIniLinesCache = null;
+            $this->cachedPhpIniPath = $phpIniPath;
+        }
+
+        if ($this->phpIniLinesCache === null) {
+            // Try to read the file, but handle open_basedir restrictions gracefully
+            try {
+                $this->phpIniLinesCache = FileParser::getLines($phpIniPath);
+            } catch (\Throwable $e) {
+                // If we can't read the file (e.g., due to open_basedir restrictions), return empty array
+                $this->phpIniLinesCache = [];
+            }
+        }
+
+        return $this->phpIniLinesCache ?? [];
     }
 }

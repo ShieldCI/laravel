@@ -91,7 +91,7 @@ class TodoCommentAnalyzer extends AbstractFileAnalyzer
 
                         $issues[] = $this->createIssue(
                             message: "{$keyword} comment found: {$context}",
-                            location: new Location($file, $lineNumber + 1),
+                            location: new Location($this->getRelativePath($file), $lineNumber + 1),
                             severity: $this->mapSeverity($config['severity']),
                             recommendation: $this->getRecommendation($keyword, $context, $config['description']),
                             metadata: [

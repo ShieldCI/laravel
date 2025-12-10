@@ -81,7 +81,7 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
             foreach ($commentedBlocks as $block) {
                 $issues[] = $this->createIssue(
                     message: "Found {$block['lineCount']} consecutive lines of commented-out code",
-                    location: new Location($file, $block['startLine']),
+                    location: new Location($this->getRelativePath($file), $block['startLine']),
                     severity: $this->getSeverityForBlock($block['lineCount']),
                     recommendation: $this->getRecommendation($block['lineCount']),
                     metadata: [

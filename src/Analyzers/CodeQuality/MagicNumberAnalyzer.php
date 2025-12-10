@@ -74,7 +74,7 @@ class MagicNumberAnalyzer extends AbstractFileAnalyzer
             foreach ($visitor->getIssues() as $issue) {
                 $issues[] = $this->createIssue(
                     message: "Magic number '{$issue['value']}' found in {$issue['context']}",
-                    location: new Location($file, $issue['line']),
+                    location: new Location($this->getRelativePath($file), $issue['line']),
                     severity: $issue['count'] > 2 ? Severity::Medium : Severity::Low,
                     recommendation: $this->getRecommendation($issue['value'], $issue['count']),
                     metadata: [

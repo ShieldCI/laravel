@@ -64,7 +64,7 @@ class NamingConventionAnalyzer extends AbstractFileAnalyzer
             foreach ($visitor->getIssues() as $issue) {
                 $issues[] = $this->createIssue(
                     message: $issue['message'],
-                    location: new Location($file, $issue['line']),
+                    location: new Location($this->getRelativePath($file), $issue['line']),
                     severity: Severity::Low,
                     recommendation: $this->getRecommendation($issue['type'], $issue['name'], $issue['suggestion']),
                     metadata: [

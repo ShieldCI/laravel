@@ -28,7 +28,7 @@ class ChunkMissingAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'chunk-missing',
-            name: 'Missing Chunk Detector',
+            name: 'Missing Chunk Analyzer',
             description: 'Detects queries on large datasets without chunk() or cursor() for memory efficiency',
             category: Category::BestPractices,
             severity: Severity::High,
@@ -73,10 +73,14 @@ class ChunkMissingAnalyzer extends AbstractFileAnalyzer
             return $this->passed('Large dataset queries use chunking appropriately');
         }
 
-        return $this->failed(
-            sprintf('Found %d query/queries that should use chunking', count($issues)),
-            $issues
+        $count = count($issues);
+        $message = sprintf(
+            'Found %d %s that should use chunking',
+            $count,
+            $count === 1 ? 'query' : 'queries'
         );
+
+        return $this->failed($message, $issues);
     }
 }
 
@@ -84,21 +88,45 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
 {
     private array $issues = [];
 
+    /** @var array<string, Node\Expr> Track variable assignments */
+    private array $variableAssignments = [];
+
     public function enterNode(Node $node): ?Node
     {
+        // Track variable assignments with ->all() or ->get()
+        if ($node instanceof Node\Expr\Assign) {
+            if ($node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
+                if ($this->isAllOrGetCall($node->expr)) {
+                    $this->variableAssignments[$node->var->name] = $node->expr;
+                }
+            }
+        }
+
         // Check foreach loops for ->all() or ->get() calls without chunking
         if ($node instanceof Node\Stmt\Foreach_) {
             $loopIterator = $node->expr;
 
-            // Check if iterator is a ->all() or ->get() call without chunk/cursor
+            // Check if iterator is a direct ->all() or ->get() call
             if ($this->isAllOrGetCall($loopIterator)) {
                 $this->issues[] = [
                     'message' => 'Looping over ->all() or ->get() without chunk() can cause memory issues on large datasets',
                     'line' => $node->getLine(),
                     'severity' => Severity::High,
                     'recommendation' => 'Use Model::chunk(200, function($records) { ... }) or Model::cursor() for memory-efficient iteration over large datasets. chunk() processes records in batches, cursor() uses a generator',
-                    'code' => null,
+                    'code' => $this->getCodeSnippet($loopIterator),
                 ];
+            }
+            // Check if iterator is a variable that was assigned with ->all() or ->get()
+            elseif ($loopIterator instanceof Node\Expr\Variable && is_string($loopIterator->name)) {
+                if (isset($this->variableAssignments[$loopIterator->name])) {
+                    $this->issues[] = [
+                        'message' => 'Looping over a variable assigned with ->all() or ->get() can cause memory issues on large datasets',
+                        'line' => $node->getLine(),
+                        'severity' => Severity::High,
+                        'recommendation' => 'Use Model::chunk(200, function($records) { ... }) or Model::cursor() for memory-efficient iteration. Alternatively, use Model::lazy() which returns a generator',
+                        'code' => $this->getCodeSnippet($loopIterator),
+                    ];
+                }
             }
         }
 
@@ -107,6 +135,10 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
 
     private function isAllOrGetCall(?Node\Expr $expr): bool
     {
+        if ($expr === null) {
+            return false;
+        }
+
         if (! $expr instanceof Node\Expr\MethodCall && ! $expr instanceof Node\Expr\StaticCall) {
             return false;
         }
@@ -114,11 +146,21 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         // Check method chain for ->all() or ->get()
         $methods = $this->getMethodChain($expr);
 
-        // If chain ends with all() or get() and doesn't have chunk/cursor
-        $endsWithFetch = in_array(end($methods), ['all', 'get'], true);
-        $hasChunking = in_array('chunk', $methods, true) || in_array('cursor', $methods, true) || in_array('lazy', $methods, true);
+        if (empty($methods)) {
+            return false;
+        }
 
-        return $endsWithFetch && ! $hasChunking;
+        // If chain ends with all() or get() and doesn't have chunk/cursor/lazy/lazyById/chunkById
+        $endsWithFetch = in_array(end($methods), ['all', 'get'], true);
+        $safeChunkingMethods = ['chunk', 'cursor', 'lazy', 'lazyById', 'chunkById'];
+        $hasChunking = ! empty(array_intersect($methods, $safeChunkingMethods));
+
+        // Check if query has explicit limit/take/first (small dataset)
+        $hasSmallDatasetModifier = in_array('limit', $methods, true)
+            || in_array('take', $methods, true)
+            || in_array('first', $methods, true);
+
+        return $endsWithFetch && ! $hasChunking && ! $hasSmallDatasetModifier;
     }
 
     private function getMethodChain(Node\Expr $expr): array
@@ -133,12 +175,42 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
 
             if ($current instanceof Node\Expr\MethodCall) {
                 $current = $current->var;
+            } elseif ($current instanceof Node\Expr\StaticCall) {
+                // For static calls, check if the class itself is a method chain
+                // e.g., SomeClass::method()->anotherMethod()
+                if ($current->class instanceof Node\Expr\StaticCall || $current->class instanceof Node\Expr\MethodCall) {
+                    $current = $current->class;
+                } else {
+                    // Reached the base class (e.g., User::where()->get())
+                    break;
+                }
             } else {
                 break;
             }
         }
 
         return $chain;
+    }
+
+    /**
+     * Get a code snippet from a node for display purposes.
+     */
+    private function getCodeSnippet(Node\Expr $expr): ?string
+    {
+        // Try to get a meaningful code representation
+        if ($expr instanceof Node\Expr\Variable && is_string($expr->name)) {
+            return '$'.$expr->name;
+        }
+
+        // For method/static calls, try to reconstruct the call
+        if ($expr instanceof Node\Expr\MethodCall || $expr instanceof Node\Expr\StaticCall) {
+            $methods = $this->getMethodChain($expr);
+            if (! empty($methods)) {
+                return implode('->', $methods).'()';
+            }
+        }
+
+        return null;
     }
 
     public function getIssues(): array

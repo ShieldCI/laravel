@@ -293,17 +293,6 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
      */
     private function getRecommendation(int $lineCount): string
     {
-        $base = "Found {$lineCount} consecutive lines of commented-out code. Commented code clutters the codebase and creates maintenance confusion. ";
-
-        $strategies = [
-            'Delete the commented code - version control (Git) preserves history',
-            'If the code might be needed, create a feature branch instead',
-            'If it\'s experimental, move it to a separate proof-of-concept branch',
-            'If it documents an alternative approach, write a comment explaining why it wasn\'t used',
-            'Trust your version control system to preserve old implementations',
-            'Use blame/annotate to find when code was changed and why',
-        ];
-
-        return $base.'Best practices: '.implode('; ', $strategies);
+        return "Found {$lineCount} consecutive lines of commented-out code. Commented code clutters the codebase and creates maintenance confusion. Delete the commented code - version control (Git) preserves history.";
     }
 }

@@ -98,7 +98,7 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
             'Application uses default Laravel error pages',
             [$this->createIssue(
                 message: 'Custom error pages not configured for: '.implode(', ', $missing),
-                location: new Location($resourcesViewsPath, 1),
+                location: new Location($this->getRelativePath($resourcesViewsPath), 1),
                 severity: Severity::Medium,
                 recommendation: $this->getCustomErrorPagesRecommendation(),
                 metadata: [

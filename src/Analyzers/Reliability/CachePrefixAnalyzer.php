@@ -88,7 +88,7 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
                 'Cache prefix is not configured',
                 [$this->createIssue(
                     message: 'Cache prefix is empty or not set',
-                    location: new Location($configFile, $prefixLine),
+                    location: new Location($this->getRelativePath($configFile), $prefixLine),
                     severity: Severity::High,
                     recommendation: $this->getEmptyPrefixRecommendation(),
                     code: FileParser::getCodeSnippet($configFile, $prefixLine),
@@ -106,7 +106,7 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
                 'Cache prefix is too generic',
                 [$this->createIssue(
                     message: "Cache prefix '{$prefix}' is too generic and may cause collisions",
-                    location: new Location($configFile, $prefixLine),
+                    location: new Location($this->getRelativePath($configFile), $prefixLine),
                     severity: Severity::High,
                     recommendation: $this->getGenericPrefixRecommendation($prefix),
                     code: FileParser::getCodeSnippet($configFile, $prefixLine),

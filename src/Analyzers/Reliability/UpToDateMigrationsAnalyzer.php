@@ -55,7 +55,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                 'Laravel Artisan facade not available',
                 [$this->createIssue(
                     message: 'Cannot check migration status - Artisan facade not found',
-                    location: new Location($migrationsPath, 1),
+                    location: new Location($this->getRelativePath($migrationsPath), 1),
                     severity: Severity::Medium,
                     recommendation: 'Ensure Laravel is properly bootstrapped. Migration status checks require the Artisan facade to be available.',
                     metadata: []
@@ -92,7 +92,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                     'Unable to parse migration status output',
                     [$this->createIssue(
                         message: 'Migration status output format is unexpected',
-                        location: new Location($migrationsPath, 1),
+                        location: new Location($this->getRelativePath($migrationsPath), 1),
                         severity: Severity::Medium,
                         recommendation: 'Run "php artisan migrate:status" manually to check migration status. The analyzer could not parse the output format.',
                         metadata: [
@@ -106,7 +106,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                 sprintf('Found %d pending migration(s)', count($pendingMigrations)),
                 [$this->createIssue(
                     message: 'Pending migrations detected',
-                    location: new Location($migrationsPath, 1),
+                    location: new Location($this->getRelativePath($migrationsPath), 1),
                     severity: Severity::High,
                     recommendation: $this->getPendingMigrationsRecommendation($pendingMigrations),
                     metadata: [
@@ -124,7 +124,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                     'Database connection error while checking migration status',
                     [$this->createIssue(
                         message: 'Migration status check failed due to database connection issue',
-                        location: new Location($migrationsPath, 1),
+                        location: new Location($this->getRelativePath($migrationsPath), 1),
                         severity: Severity::High,
                         recommendation: $this->getDatabaseErrorRecommendation($e),
                         metadata: [
@@ -138,7 +138,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                     'Unable to check migration status',
                     [$this->createIssue(
                         message: 'Migration status check failed: '.$e->getMessage(),
-                        location: new Location($migrationsPath, 1),
+                        location: new Location($this->getRelativePath($migrationsPath), 1),
                         severity: Severity::High,
                         recommendation: 'Ensure the database connection is working and the migrations table exists. If this is a new installation, run "php artisan migrate:install" followed by "php artisan migrate". Error: '.$e->getMessage(),
                         metadata: [

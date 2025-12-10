@@ -10,7 +10,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Status;
 
 /**
- * Complete analysis report
+ * Complete analysis report.
  */
 final class AnalysisReport
 {
@@ -24,7 +24,8 @@ final class AnalysisReport
         public readonly float $totalExecutionTime,
         public readonly DateTimeImmutable $analyzedAt,
         public readonly array $metadata = [],
-    ) {}
+    ) {
+    }
 
     public function score(): int
     {

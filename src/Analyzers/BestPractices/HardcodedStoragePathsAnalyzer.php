@@ -22,7 +22,8 @@ class HardcodedStoragePathsAnalyzer extends AbstractFileAnalyzer
 {
     public function __construct(
         private ParserInterface $parser
-    ) {}
+    ) {
+    }
 
     protected function metadata(): AnalyzerMetadata
     {

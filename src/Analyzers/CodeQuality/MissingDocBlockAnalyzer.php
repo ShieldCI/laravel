@@ -35,7 +35,8 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
 
     public function __construct(
         private ParserInterface $parser
-    ) {}
+    ) {
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -144,7 +145,8 @@ class DocBlockVisitor extends NodeVisitorAbstract
     public function __construct(
         private array $excludePatterns = [],
         private bool $requireTags = true
-    ) {}
+    ) {
+    }
 
     public function enterNode(Node $node)
     {

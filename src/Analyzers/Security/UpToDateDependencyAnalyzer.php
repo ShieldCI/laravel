@@ -40,7 +40,8 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
 
     public function __construct(
         private Composer $composer
-    ) {}
+    ) {
+    }
 
     protected function metadata(): AnalyzerMetadata
     {

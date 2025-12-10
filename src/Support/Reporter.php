@@ -334,7 +334,7 @@ class Reporter implements ReporterInterface
 
     /**
      * Create a clickable hyperlink (OSC 8).
-     * Supported in: iTerm2, GNOME Terminal, Konsole, Windows Terminal, VS Code terminal
+     * Supported in: iTerm2, GNOME Terminal, Konsole, Windows Terminal, VS Code terminal.
      */
     private function hyperlink(string $url, ?string $text = null): string
     {

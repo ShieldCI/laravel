@@ -23,7 +23,8 @@ class AnalyzerManager
         protected Config $config,
         protected array $analyzerClasses,
         protected Container $container,
-    ) {}
+    ) {
+    }
 
     /**
      * Get all registered analyzers.

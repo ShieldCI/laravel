@@ -19,7 +19,8 @@ class PHPStanRunner
 
     public function __construct(
         private string $basePath
-    ) {}
+    ) {
+    }
 
     /**
      * Run PHPStan analysis on specified paths.

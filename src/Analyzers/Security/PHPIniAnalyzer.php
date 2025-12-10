@@ -57,32 +57,9 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
     ];
 
     /**
-     * Default list of dangerous functions that should be disabled.
-     *
-     * @var array<int, string>
-     */
-    private array $defaultDangerousFunctions = [
-        'exec',
-        'passthru',
-        'shell_exec',
-        'system',
-        'proc_open',
-        'popen',
-        'curl_exec',
-        'curl_multi_exec',
-        'parse_ini_file',
-        'show_source',
-    ];
-
-    /**
      * @var array<string, string|int|bool>|null
      */
     private ?array $iniValueOverrides = null;
-
-    /**
-     * @var array<int, string>|null
-     */
-    private ?array $dangerousFunctionsOverride = null;
 
     private ?string $phpIniPathOverride = null;
 
@@ -130,15 +107,6 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
 
         // Check PHP ini settings
         $this->checkPhpIniSettings($issues, $phpIniPath, $configuration['secure_settings']);
-
-        // Check for insecure functions enabled
-        $this->checkDisabledFunctions($issues, $phpIniPath, $configuration['dangerous_functions']);
-
-        // Check open_basedir
-        $this->checkOpenBasedir($issues, $phpIniPath);
-
-        // Check error_reporting verbosity
-        $this->checkErrorReporting($issues, $phpIniPath, $configuration['error_reporting']);
 
         if (empty($issues)) {
             return $this->passed('PHP configuration is secure');
@@ -221,169 +189,6 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check for disabled dangerous functions.
-     *
-     * @param  array<Issue>  $issues
-     * @param  array<int, string>  $dangerousFunctions
-     */
-    private function checkDisabledFunctions(array &$issues, string $phpIniPath, array $dangerousFunctions): void
-    {
-        $disabledFunctions = $this->getIniValue('disable_functions');
-
-        if (empty($disabledFunctions)) {
-            $issues[] = $this->createPhpIniIssue(
-                phpIniPath: $phpIniPath,
-                setting: 'disable_functions',
-                message: 'No dangerous PHP functions are disabled',
-                recommendation: sprintf(
-                    'Consider disabling dangerous functions in php.ini: disable_functions = %s',
-                    implode(',', $dangerousFunctions)
-                ),
-                severity: Severity::Medium,
-                metadata: [
-                    'dangerous_functions' => $dangerousFunctions,
-                    'current_value' => $disabledFunctions,
-                ]
-            );
-        } else {
-            // Check which dangerous functions are still enabled
-            // Normalize by trimming and lowercasing for comparison
-            $disabledList = array_map('strtolower', array_map('trim', explode(',', $disabledFunctions)));
-            $normalizedDangerous = array_map('strtolower', $dangerousFunctions);
-            $enabledDangerous = array_diff($normalizedDangerous, $disabledList);
-
-            if (! empty($enabledDangerous)) {
-                $examples = array_slice(array_values($enabledDangerous), 0, 3);
-                $displayExamples = array_slice(array_values($enabledDangerous), 0, 5);
-
-                $issues[] = $this->createPhpIniIssue(
-                    phpIniPath: $phpIniPath,
-                    setting: 'disable_functions',
-                    message: sprintf(
-                        '%d potentially dangerous PHP functions are still enabled',
-                        count($enabledDangerous)
-                    ),
-                    recommendation: sprintf(
-                        'Update disable_functions to include: %s',
-                        implode(', ', $examples)
-                    ),
-                    severity: Severity::Medium,
-                    metadata: [
-                        'enabled_count' => count($enabledDangerous),
-                        'examples' => $displayExamples,
-                        'enabled_dangerous_functions' => array_values($enabledDangerous),
-                        'current_value' => $disabledFunctions,
-                    ]
-                );
-            }
-        }
-    }
-
-    /**
-     * Check open_basedir restriction.
-     */
-    private function checkOpenBasedir(array &$issues, string $phpIniPath): void
-    {
-        $openBasedir = $this->getIniValue('open_basedir');
-
-        if ($openBasedir === '') {
-            $issues[] = $this->createPhpIniIssue(
-                phpIniPath: $phpIniPath,
-                setting: 'open_basedir',
-                message: 'open_basedir restriction is not configured',
-                recommendation: 'Consider setting open_basedir to restrict file access to specific directories',
-                severity: Severity::Medium,
-                metadata: [
-                    'current_value' => $openBasedir,
-                ]
-            );
-        }
-    }
-
-    /**
-     * Check error_reporting verbosity.
-     *
-     * @param  array<string, mixed>  $errorConfig
-     */
-    private function checkErrorReporting(array &$issues, string $phpIniPath, array $errorConfig): void
-    {
-        $value = $this->getIniValueInt('error_reporting');
-
-        if ($value === null) {
-            return;
-        }
-
-        $disallowedRaw = $errorConfig['disallowed_values'] ?? [];
-        $disallowedValues = array_map(
-            static function (mixed $value): int {
-                if (is_int($value)) {
-                    return $value;
-                }
-
-                if (is_string($value)) {
-                    if (is_numeric($value)) {
-                        return (int) $value;
-                    }
-
-                    if ($value !== '' && defined($value)) {
-                        $constant = constant($value);
-                        if (is_int($constant)) {
-                            return $constant;
-                        }
-                    }
-                }
-
-                return 0;
-            },
-            is_array($disallowedRaw) ? $disallowedRaw : []
-        );
-        if (! empty($disallowedValues) && in_array($value, $disallowedValues, true)) {
-            $issues[] = $this->createPhpIniIssue(
-                phpIniPath: $phpIniPath,
-                setting: 'error_reporting',
-                message: 'error_reporting is too verbose for production environments',
-                recommendation: 'Adjust error_reporting to exclude verbose levels (e.g., use E_ALL & ~E_DEPRECATED & ~E_STRICT).',
-                severity: Severity::Medium,
-                metadata: [
-                    'current_value' => $value,
-                ]
-            );
-
-            return;
-        }
-
-        $resolvedFlags = $this->resolveErrorReportingFlags(
-            is_array($errorConfig['forbidden_flags'] ?? null)
-                ? $errorConfig['forbidden_flags']
-                : []
-        );
-        if (empty($resolvedFlags)) {
-            return;
-        }
-
-        $offendingFlags = [];
-        foreach ($resolvedFlags as $name => $flagValue) {
-            if (($value & $flagValue) === $flagValue) {
-                $offendingFlags[] = $name;
-            }
-        }
-
-        if (! empty($offendingFlags)) {
-            $issues[] = $this->createPhpIniIssue(
-                phpIniPath: $phpIniPath,
-                setting: 'error_reporting',
-                message: sprintf('error_reporting includes verbose flags: %s', implode(', ', $offendingFlags)),
-                recommendation: 'Remove verbose error_reporting flags in production environments.',
-                severity: Severity::Medium,
-                metadata: [
-                    'current_value' => $value,
-                    'offending_flags' => $offendingFlags,
-                ]
-            );
-        }
-    }
-
-    /**
      * Provide overrides for ini values (testing only).
      *
      * @param  array<string, string|int|bool>  $values
@@ -391,16 +196,6 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
     public function setIniValues(array $values): void
     {
         $this->iniValueOverrides = $values;
-    }
-
-    /**
-     * Provide custom dangerous functions list (testing only).
-     *
-     * @param  array<int, string>  $functions
-     */
-    public function setDangerousFunctions(array $functions): void
-    {
-        $this->dangerousFunctionsOverride = $functions;
     }
 
     public function setPhpIniPath(string $phpIniPath): void
@@ -413,12 +208,7 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
     /**
      * @return array{
      *     ini_path: string|null,
-     *     secure_settings: array<string, bool>,
-     *     dangerous_functions: array<int, string>,
-     *     error_reporting: array{
-     *         disallowed_values: array<int>,
-     *         forbidden_flags: array<int|string>
-     *     }
+     *     secure_settings: array<string, bool>
      * }
      */
     private function getConfiguration(): array
@@ -426,42 +216,24 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
         $defaults = [
             'ini_path' => null,
             'secure_settings' => $this->defaultSecureSettings,
-            'dangerous_functions' => $this->dangerousFunctionsOverride ?? $this->defaultDangerousFunctions,
-            'error_reporting' => [
-                'disallowed_values' => [E_ALL, -1],
-                'forbidden_flags' => ['E_STRICT', 'E_DEPRECATED'],
-            ],
         ];
 
         if (function_exists('config')) {
             $config = config('shieldci.php_configuration', []);
             if (is_array($config)) {
-                /** @var array{ini_path?: string|null, secure_settings?: array<string, bool>, dangerous_functions?: array<int, string>, error_reporting?: array{disallowed_values?: array<int>, forbidden_flags?: array<int|string>}} $config */
+                /** @var array{ini_path?: string|null, secure_settings?: array<string, bool>} $config */
                 $merged = array_replace_recursive($defaults, $config);
-                $merged['dangerous_functions'] = $this->dangerousFunctionsOverride ?? $merged['dangerous_functions'];
 
                 return [
                     'ini_path' => $merged['ini_path'],
                     'secure_settings' => $merged['secure_settings'],
-                    'dangerous_functions' => array_values($merged['dangerous_functions']),
-                    'error_reporting' => [
-                        'disallowed_values' => array_values($merged['error_reporting']['disallowed_values']),
-                        'forbidden_flags' => array_values($merged['error_reporting']['forbidden_flags']),
-                    ],
                 ];
             }
         }
 
-        $defaults['dangerous_functions'] = $this->dangerousFunctionsOverride ?? $defaults['dangerous_functions'];
-
         return [
             'ini_path' => $defaults['ini_path'],
             'secure_settings' => $defaults['secure_settings'],
-            'dangerous_functions' => array_values($defaults['dangerous_functions']),
-            'error_reporting' => [
-                'disallowed_values' => array_values($defaults['error_reporting']['disallowed_values']),
-                'forbidden_flags' => array_values($defaults['error_reporting']['forbidden_flags']),
-            ],
         ];
     }
 
@@ -494,55 +266,6 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
         $value = ini_get($setting);
 
         return $this->normalizeIniValue($value);
-    }
-
-    private function getIniValueInt(string $setting): ?int
-    {
-        $value = $this->getIniValue($setting);
-
-        if ($value === '') {
-            return null;
-        }
-
-        if (is_numeric($value)) {
-            return (int) $value;
-        }
-
-        if (defined($value)) {
-            $constantValue = constant($value);
-            if (is_int($constantValue)) {
-                return $constantValue;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * @param  array<int|string, int|string>  $flags
-     * @return array<string, int>
-     */
-    private function resolveErrorReportingFlags(array $flags): array
-    {
-        /** @var array<string, int> $resolved */
-        $resolved = [];
-
-        foreach ($flags as $flag) {
-            if (is_string($flag) && defined($flag)) {
-                $value = constant($flag);
-                if (is_int($value)) {
-                    $resolved[$flag] = $value;
-                }
-
-                continue;
-            }
-
-            if (is_int($flag)) {
-                $resolved['flag_'.$flag] = $flag;
-            }
-        }
-
-        return $resolved;
     }
 
     private function normalizeIniValue(mixed $value): string

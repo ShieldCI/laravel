@@ -74,49 +74,9 @@ class PHPIniAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertIssueCount(10, $result);
+        // Note: error_reporting, open_basedir, and disable_functions checks are skipped in Laravel
+        $this->assertIssueCount(7, $result);
         $this->assertHasIssueContaining('allow_url_fopen', $result);
-        $this->assertHasIssueContaining('dangerous PHP functions', $result);
-        $this->assertHasIssueContaining('open_basedir', $result);
-        $this->assertHasIssueContaining('error_reporting', $result);
-    }
-
-    public function test_it_reports_enabled_dangerous_functions_when_subset_missing(): void
-    {
-        $iniPath = $this->createPhpIniFixture([
-            'disable_functions = exec,system',
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setPhpIniPath($iniPath);
-        $analyzer->setBasePath(dirname($iniPath));
-        $analyzer->setIniValues($this->secureIniValues([
-            'disable_functions' => 'exec,system',
-        ]));
-
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('dangerous PHP functions', $result);
-    }
-
-    public function test_it_warns_when_open_basedir_is_not_configured(): void
-    {
-        $iniPath = $this->createPhpIniFixture([
-            'open_basedir = ',
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setPhpIniPath($iniPath);
-        $analyzer->setBasePath(dirname($iniPath));
-        $analyzer->setIniValues($this->secureIniValues([
-            'open_basedir' => '',
-        ]));
-
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('open_basedir restriction is not configured', $result);
     }
 
     public function test_it_is_skipped_outside_relevant_environments(): void
@@ -142,7 +102,9 @@ class PHPIniAnalyzerTest extends AnalyzerTestCase
 
     public function test_it_detects_verbose_error_reporting_with_e_strict(): void
     {
-        // Use a safe value with E_STRICT added (not E_ALL which might trigger disallowed_values check)
+        // Note: This test is now obsolete since error_reporting checks are skipped in Laravel.
+        // Laravel intentionally sets error_reporting(-1) and controls display via display_errors.
+        // Keeping the test but updating expectations to reflect new behavior.
         $testValue = E_ALL & ~E_DEPRECATED & ~E_NOTICE | E_STRICT;
 
         $iniPath = $this->createPhpIniFixture([
@@ -158,14 +120,15 @@ class PHPIniAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('error_reporting includes verbose flags', $result);
-        $this->assertHasIssueContaining('E_STRICT', $result);
+        // error_reporting checks are skipped in Laravel applications
+        $this->assertPassed($result);
     }
 
     public function test_it_detects_verbose_error_reporting_with_e_deprecated(): void
     {
-        // Use a safe value with E_DEPRECATED added
+        // Note: This test is now obsolete since error_reporting checks are skipped in Laravel.
+        // Laravel intentionally sets error_reporting(-1) and controls display via display_errors.
+        // Keeping the test but updating expectations to reflect new behavior.
         $testValue = E_ALL & ~E_STRICT & ~E_NOTICE | E_DEPRECATED;
 
         $iniPath = $this->createPhpIniFixture([
@@ -181,49 +144,8 @@ class PHPIniAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('error_reporting includes verbose flags', $result);
-        $this->assertHasIssueContaining('E_DEPRECATED', $result);
-    }
-
-    public function test_it_detects_dangerous_functions_with_case_variations(): void
-    {
-        $iniPath = $this->createPhpIniFixture([
-            'disable_functions = EXEC,PassThru',
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setPhpIniPath($iniPath);
-        $analyzer->setBasePath(dirname($iniPath));
-        $analyzer->setIniValues($this->secureIniValues([
-            'disable_functions' => 'EXEC,PassThru',
-        ]));
-
-        $result = $analyzer->analyze();
-
-        // Should still detect missing functions (shell_exec, system, etc.)
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('dangerous PHP functions', $result);
-    }
-
-    public function test_it_detects_dangerous_functions_with_spaces(): void
-    {
-        $iniPath = $this->createPhpIniFixture([
-            'disable_functions = exec , passthru , shell_exec',
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setPhpIniPath($iniPath);
-        $analyzer->setBasePath(dirname($iniPath));
-        $analyzer->setIniValues($this->secureIniValues([
-            'disable_functions' => 'exec , passthru , shell_exec',
-        ]));
-
-        $result = $analyzer->analyze();
-
-        // Should still detect missing functions (system, proc_open, etc.)
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('dangerous PHP functions', $result);
+        // error_reporting checks are skipped in Laravel applications
+        $this->assertPassed($result);
     }
 
     public function test_it_handles_missing_php_ini_path_gracefully(): void

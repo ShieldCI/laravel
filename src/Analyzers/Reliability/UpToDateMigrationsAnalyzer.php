@@ -27,9 +27,9 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
      */
     public static bool $runInCI = false;
 
-    private const NO_PENDING_MIGRATIONS_MESSAGE = 'No pending migrations.';
-
-    private const PENDING_MIGRATION_PATTERN = '/Pending\s+(.+)/';
+    // Pattern to match pending migrations in migrate:status --pending output
+    // Format: "  2025_12_10_052419_test_pending_migration ......................... Pending  "
+    private const PENDING_MIGRATION_PATTERN = '/^\s*(.+?)\s+\.+\s+Pending\s*$/i';
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -77,29 +77,14 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                 );
             }
 
-            // Check if there are pending migrations
-            if (str_contains($output, self::NO_PENDING_MIGRATIONS_MESSAGE)) {
-                return $this->passed('All migrations are up to date');
-            }
-
             // Parse output to find pending migrations
             $pendingMigrations = $this->parsePendingMigrations($output);
 
+            // If no pending migrations found, all migrations are up to date
+            // Note: When there are no pending migrations, the output only shows the header
+            // and does NOT contain "Pending" status anywhere
             if (empty($pendingMigrations)) {
-                // Output doesn't contain "No pending migrations" but we couldn't parse any
-                // This might indicate an unexpected output format
-                return $this->warning(
-                    'Unable to parse migration status output',
-                    [$this->createIssue(
-                        message: 'Migration status output format is unexpected',
-                        location: new Location($this->getRelativePath($migrationsPath), 1),
-                        severity: Severity::Medium,
-                        recommendation: 'Run "php artisan migrate:status" manually to check migration status. The analyzer could not parse the output format.',
-                        metadata: [
-                            'raw_output' => substr($output, 0, 500), // Limit output length
-                        ]
-                    )]
-                );
+                return $this->passed('All migrations are up to date');
             }
 
             return $this->failed(
@@ -183,7 +168,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
 
         foreach ($lines as $line) {
             // Look for lines that indicate pending migrations
-            // Format typically: "Pending  2024_01_01_000000_create_users_table"
+            // Format: "  2025_12_10_052419_migration_name .................... Pending  "
             if (preg_match(self::PENDING_MIGRATION_PATTERN, $line, $matches)) {
                 // $matches[1] is guaranteed to exist after successful preg_match with capture group
                 $migration = trim($matches[1]);

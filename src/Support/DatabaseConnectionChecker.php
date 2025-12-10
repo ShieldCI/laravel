@@ -9,9 +9,7 @@ use Throwable;
 
 class DatabaseConnectionChecker
 {
-    public function __construct(private DatabaseManager $manager)
-    {
-    }
+    public function __construct(private DatabaseManager $manager) {}
 
     /**
      * Attempt to obtain a PDO connection for the given connection name.

@@ -8,8 +8,7 @@ class AdvisoryAnalyzer implements AdvisoryAnalyzerInterface
 {
     public function __construct(
         private VersionConstraintMatcher $matcher
-    ) {
-    }
+    ) {}
 
     public function analyze(array $dependencies, array $advisories): array
     {

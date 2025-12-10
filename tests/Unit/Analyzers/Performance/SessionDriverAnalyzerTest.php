@@ -317,13 +317,9 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
         $kernel = new class($middleware) implements Kernel
         {
             /** @param array<string> $middleware */
-            public function __construct(private array $middleware)
-            {
-            }
+            public function __construct(private array $middleware) {}
 
-            public function bootstrap(): void
-            {
-            }
+            public function bootstrap(): void {}
 
             /** @return mixed */
             public function handle($request)
@@ -331,9 +327,7 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
                 return $request;
             }
 
-            public function terminate($request, $response): void
-            {
-            }
+            public function terminate($request, $response): void {}
 
             /** @return \Illuminate\Contracts\Foundation\Application */
             public function getApplication()
@@ -655,13 +649,9 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
         $kernel = new class($middleware) implements Kernel
         {
             /** @param array<string> $middleware */
-            public function __construct(private array $middleware)
-            {
-            }
+            public function __construct(private array $middleware) {}
 
-            public function bootstrap(): void
-            {
-            }
+            public function bootstrap(): void {}
 
             /** @return mixed */
             public function handle($request)
@@ -669,9 +659,7 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
                 return $request;
             }
 
-            public function terminate($request, $response): void
-            {
-            }
+            public function terminate($request, $response): void {}
 
             /** @return \Illuminate\Contracts\Foundation\Application */
             public function getApplication()

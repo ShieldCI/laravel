@@ -31,8 +31,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
 {
     public function __construct(
         private ParserInterface $parser
-    ) {
-    }
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -206,9 +205,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
      */
     private ?string $currentMethod = null;
 
-    public function __construct()
-    {
-    }
+    public function __construct() {}
 
     public function enterNode(Node $node)
     {

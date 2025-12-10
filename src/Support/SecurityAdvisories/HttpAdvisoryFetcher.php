@@ -17,8 +17,7 @@ class HttpAdvisoryFetcher implements AdvisoryFetcherInterface
         private ?LoggerInterface $logger = null,
         private string $apiUrl = self::DEFAULT_SOURCE,
         private int $timeoutSeconds = 10,
-    ) {
-    }
+    ) {}
 
     public function fetch(array $dependencies): array
     {

@@ -29,8 +29,7 @@ class NamingConventionAnalyzer extends AbstractFileAnalyzer
 {
     public function __construct(
         private ParserInterface $parser
-    ) {
-    }
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -118,9 +117,7 @@ class NamingConventionVisitor extends NodeVisitorAbstract
      */
     private array $issues = [];
 
-    public function __construct()
-    {
-    }
+    public function __construct() {}
 
     public function enterNode(Node $node)
     {

@@ -38,8 +38,7 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
     public function __construct(
         private ParserInterface $parser,
         private ConfigRepository $config
-    ) {
-    }
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {

@@ -29,8 +29,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
 
     public function __construct(
         private Composer $composer
-    ) {
-    }
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace ShieldCI\Support;
 
-use Illuminate\Support\ProcessUtils;
 use Symfony\Component\Process\Process;
 
 class ComposerValidator
@@ -30,6 +29,6 @@ class ComposerValidator
             return [PHP_BINARY, getcwd().'/composer.phar'];
         }
 
-        return [ProcessUtils::escapeArgument('composer')];
+        return ['composer'];
     }
 }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
+use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\BestPractices\MissingDatabaseTransactionsAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -12,7 +13,19 @@ class MissingDatabaseTransactionsAnalyzerTest extends AnalyzerTestCase
 {
     protected function createAnalyzer(): AnalyzerInterface
     {
-        return new MissingDatabaseTransactionsAnalyzer($this->parser);
+        $config = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'best_practices' => [
+                        'missing-database-transactions' => [
+                            'threshold' => 2,
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        return new MissingDatabaseTransactionsAnalyzer($this->parser, $config);
     }
 
     public function test_passes_with_single_write_operation(): void

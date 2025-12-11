@@ -26,10 +26,13 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
 {
-    public const WRITE_OPERATION_THRESHOLD = 2;
+    public const DEFAULT_THRESHOLD = 2;
+
+    private int $threshold;
 
     public function __construct(
-        private ParserInterface $parser
+        private ParserInterface $parser,
+        private Config $config
     ) {}
 
     protected function metadata(): AnalyzerMetadata
@@ -48,6 +51,12 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
+        // Load configuration from config file (best_practices.missing-database-transactions)
+        $analyzerConfig = $this->config->get('shieldci.analyzers.best_practices.missing-database-transactions', []);
+        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
+
+        $this->threshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;
+
         $issues = [];
 
         $phpFiles = $this->getPhpFiles();
@@ -59,7 +68,7 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $visitor = new TransactionVisitor;
+                $visitor = new TransactionVisitor($this->threshold);
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
@@ -110,6 +119,10 @@ class TransactionVisitor extends NodeVisitorAbstract
 
     private array $writeOperationLines = [];
 
+    public function __construct(
+        private int $threshold
+    ) {}
+
     public function enterNode(Node $node): ?Node
     {
         // Track current class
@@ -157,7 +170,7 @@ class TransactionVisitor extends NodeVisitorAbstract
     {
         // When leaving a method, check if we need transactions
         if ($node instanceof Node\Stmt\ClassMethod) {
-            if ($this->writeOperations >= MissingDatabaseTransactionsAnalyzer::WRITE_OPERATION_THRESHOLD
+            if ($this->writeOperations >= $this->threshold
                 && ! $this->hasTransaction
             ) {
                 $this->issues[] = [

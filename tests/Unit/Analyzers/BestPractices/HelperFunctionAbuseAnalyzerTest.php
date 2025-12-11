@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
+use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\BestPractices\HelperFunctionAbuseAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -12,7 +13,19 @@ class HelperFunctionAbuseAnalyzerTest extends AnalyzerTestCase
 {
     protected function createAnalyzer(): AnalyzerInterface
     {
-        return new HelperFunctionAbuseAnalyzer($this->parser);
+        $config = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'best_practices' => [
+                        'helper-function-abuse' => [
+                            'threshold' => 5,
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        return new HelperFunctionAbuseAnalyzer($this->parser, $config);
     }
 
     public function test_detects_excessive_helper_usage(): void

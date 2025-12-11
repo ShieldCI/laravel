@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\BestPractices;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Stmt;
@@ -28,17 +29,10 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
 {
-    /**
-     * Maximum allowed helper function calls per class.
-     */
-    private int $threshold = 5;
+    public const DEFAULT_THRESHOLD = 5;
 
-    /**
-     * Laravel helper functions to track.
-     *
-     * @var array<string>
-     */
-    private array $helperFunctions = [
+    /** @var array<string> */
+    public const DEFAULT_HELPER_FUNCTIONS = [
         'app', 'auth', 'cache', 'config', 'cookie', 'event', 'logger', 'old',
         'redirect', 'request', 'response', 'route', 'session', 'storage_path',
         'url', 'view', 'abort', 'abort_if', 'abort_unless', 'bcrypt',
@@ -47,15 +41,21 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
         'validator', 'value', 'report',
     ];
 
+    private int $threshold;
+
+    /** @var array<string> */
+    private array $helperFunctions;
+
     public function __construct(
-        private ParserInterface $parser
+        private ParserInterface $parser,
+        private Config $config
     ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
             id: 'helper-function-abuse',
-            name: 'Helper Function Abuse',
+            name: 'Helper Function Abuse Analyzer',
             description: 'Detects excessive use of Laravel helper functions that hide dependencies and hinder testing',
             category: Category::BestPractices,
             severity: Severity::Low,
@@ -67,6 +67,14 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
+        // Load configuration from config file (best_practices.helper-function-abuse)
+        $analyzerConfig = $this->config->get('shieldci.analyzers.best_practices.helper-function-abuse', []);
+        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
+
+        $this->threshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;
+        $helperFuncs = $analyzerConfig['helper_functions'] ?? null;
+        $this->helperFunctions = is_array($helperFuncs) ? $helperFuncs : self::DEFAULT_HELPER_FUNCTIONS;
+
         $issues = [];
         $threshold = $this->threshold;
         $helpers = $this->helperFunctions;

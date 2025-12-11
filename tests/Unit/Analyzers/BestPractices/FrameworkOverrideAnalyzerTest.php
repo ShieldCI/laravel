@@ -4,15 +4,27 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
+use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\BestPractices\FrameworkOverrideAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class FrameworkOverrideAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    protected function createAnalyzer(array $config = []): AnalyzerInterface
     {
-        return new FrameworkOverrideAnalyzer($this->parser);
+        $configRepo = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'best_practices' => $config,
+                ],
+            ],
+        ]);
+
+        return new FrameworkOverrideAnalyzer($this->parser, $configRepo);
     }
 
     public function test_passes_with_custom_classes(): void
@@ -924,12 +936,13 @@ PHP;
 
         $tempDir = $this->createTempDirectory(['Services/Custom.php' => $code]);
 
-        $analyzer = new FrameworkOverrideAnalyzer(
-            $this->parser,
-            neverExtend: ['MyCustomBaseClass'],
-            rarelyExtend: [],
-            okToExtend: []
-        );
+        $analyzer = $this->createAnalyzer([
+            'framework-override' => [
+                'never_extend' => ['MyCustomBaseClass'],
+                'rarely_extend' => [],
+                'ok_to_extend' => [],
+            ],
+        ]);
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 
@@ -962,12 +975,13 @@ PHP;
         $tempDir = $this->createTempDirectory(['Http/CustomRequest.php' => $code]);
 
         // Allow Request extension by adding to OK list
-        $analyzer = new FrameworkOverrideAnalyzer(
-            $this->parser,
-            neverExtend: [],
-            rarelyExtend: [],
-            okToExtend: ['Illuminate\\Http\\Request']
-        );
+        $analyzer = $this->createAnalyzer([
+            'framework-override' => [
+                'never_extend' => [],
+                'rarely_extend' => [],
+                'ok_to_extend' => ['Illuminate\\Http\\Request'],
+            ],
+        ]);
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 

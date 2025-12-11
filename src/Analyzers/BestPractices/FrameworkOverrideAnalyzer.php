@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\BestPractices;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
@@ -81,21 +82,10 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
     /** @var array<int, string> */
     private array $okToExtend;
 
-    /**
-     * @param  array<int, string>|null  $neverExtend
-     * @param  array<int, string>|null  $rarelyExtend
-     * @param  array<int, string>|null  $okToExtend
-     */
     public function __construct(
         private ParserInterface $parser,
-        ?array $neverExtend = null,
-        ?array $rarelyExtend = null,
-        ?array $okToExtend = null
-    ) {
-        $this->neverExtend = $neverExtend ?? self::NEVER_EXTEND;
-        $this->rarelyExtend = $rarelyExtend ?? self::RARELY_EXTEND;
-        $this->okToExtend = $okToExtend ?? self::OK_TO_EXTEND;
-    }
+        private Config $config
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -113,6 +103,14 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
+        // Load configuration from config file (best_practices.framework-override)
+        $analyzerConfig = $this->config->get('shieldci.analyzers.best_practices.framework-override', []);
+        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
+
+        $this->neverExtend = $analyzerConfig['never_extend'] ?? self::NEVER_EXTEND;
+        $this->rarelyExtend = $analyzerConfig['rarely_extend'] ?? self::RARELY_EXTEND;
+        $this->okToExtend = $analyzerConfig['ok_to_extend'] ?? self::OK_TO_EXTEND;
+
         $issues = [];
         $phpFiles = $this->getPhpFiles();
 

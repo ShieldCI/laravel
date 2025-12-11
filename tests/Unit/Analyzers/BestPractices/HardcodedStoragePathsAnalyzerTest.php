@@ -4,15 +4,27 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
+use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\BestPractices\HardcodedStoragePathsAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class HardcodedStoragePathsAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    protected function createAnalyzer(array $config = []): AnalyzerInterface
     {
-        return new HardcodedStoragePathsAnalyzer($this->parser);
+        $configRepo = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'best_practices' => $config,
+                ],
+            ],
+        ]);
+
+        return new HardcodedStoragePathsAnalyzer($this->parser, $configRepo);
     }
 
     public function test_passes_with_storage_path_helper(): void
@@ -175,5 +187,543 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    public function test_skips_urls_as_false_positives(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    public function getApiUrl()
+    {
+        return 'https://example.com/storage/app/files/document.pdf';
+    }
+
+    public function getSecureUrl()
+    {
+        return 'http://cdn.example.com/public/images/logo.jpg';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_windows_storage_paths(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class WindowsFileService
+{
+    public function getPath()
+    {
+        return 'C:\storage\app\uploads\file.jpg';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/WindowsFileService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('storage', $result);
+    }
+
+    public function test_detects_windows_public_paths(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class WindowsPublicService
+{
+    public function getPublicPath()
+    {
+        return 'D:\public\uploads\avatar.png';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/WindowsPublicService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('public', $result);
+    }
+
+    public function test_detects_relative_storage_paths(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class RelativePathService
+{
+    public function getPath()
+    {
+        return '../storage/app/files/data.json';
+    }
+
+    public function getPublicPath()
+    {
+        return './public/images/icon.svg';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/RelativePathService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+    }
+
+    public function test_detects_app_path_hardcoding(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class AppPathService
+{
+    public function getAppPath()
+    {
+        return '/var/www/app/Models/User.php';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/AppPathService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('app_path', $issues[0]->recommendation);
+    }
+
+    public function test_detects_resource_path_hardcoding(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ResourceService
+{
+    public function getViewPath()
+    {
+        return '/var/www/resources/views/home.blade.php';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ResourceService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('resource_path', $issues[0]->recommendation);
+    }
+
+    public function test_detects_database_path_hardcoding(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DatabaseService
+{
+    public function getMigrationPath()
+    {
+        return '/var/www/database/migrations/2023_create_users_table.php';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DatabaseService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('database_path', $issues[0]->recommendation);
+    }
+
+    public function test_detects_config_path_hardcoding(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ConfigService
+{
+    public function getConfigPath()
+    {
+        return '/var/www/config/app.php';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ConfigService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('config_path', $issues[0]->recommendation);
+    }
+
+    public function test_detects_heredoc_hardcoded_paths(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class HeredocService
+{
+    public function getPath()
+    {
+        $path = <<<'EOT'
+/storage/app/files/data.json
+EOT;
+        return $path;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/HeredocService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('storage', $result);
+    }
+
+    public function test_detects_multiple_hardcoded_paths_in_same_file(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class MultiPathService
+{
+    public function getStoragePath()
+    {
+        return '/storage/app/files/data.json';
+    }
+
+    public function getPublicPath()
+    {
+        return '/public/images/logo.png';
+    }
+
+    public function getLogPath()
+    {
+        return '/storage/logs/app.log';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/MultiPathService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertGreaterThanOrEqual(3, count($issues));
+    }
+
+    public function test_respects_allowed_paths_configuration(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class OAuthService
+{
+    public function getPublicKeyPath()
+    {
+        return '/storage/oauth-public.key';
+    }
+
+    public function getPrivateKeyPath()
+    {
+        return '/storage/oauth-private.key';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OAuthService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([
+            'hardcoded-storage-paths' => [
+                'allowed_paths' => [
+                    '/storage/oauth-public.key',
+                    '/storage/oauth-private.key',
+                ],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_respects_additional_patterns_configuration(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class CustomPathService
+{
+    public function getCustomPath()
+    {
+        return '/custom/uploads/file.jpg';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/CustomPathService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([
+            'hardcoded-storage-paths' => [
+                'additional_patterns' => [
+                    '/\/custom\/uploads\//i' => 'custom_upload_path(...)',
+                ],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('custom_upload_path', $issues[0]->recommendation);
+    }
+
+    public function test_detects_paths_in_array_literals(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ArrayPathService
+{
+    public function getConfig()
+    {
+        return [
+            'upload_path' => '/storage/app/uploads',
+            'image_path' => '/public/images',
+        ];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ArrayPathService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertGreaterThanOrEqual(2, count($issues));
+    }
+
+    public function test_detects_paths_in_class_constants(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ConstantPathService
+{
+    const UPLOAD_DIR = '/storage/app/uploads';
+    const PUBLIC_DIR = '/public/assets';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ConstantPathService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertGreaterThanOrEqual(2, count($issues));
+    }
+
+    public function test_detects_paths_as_function_arguments(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class FunctionArgService
+{
+    public function checkFile()
+    {
+        if (file_exists('/storage/app/file.jpg')) {
+            return true;
+        }
+        return false;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/FunctionArgService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('storage', $result);
+    }
+
+    public function test_handles_empty_files(): void
+    {
+        $code = <<<'PHP'
+<?php
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Empty.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_files_with_only_comments(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+// This is just a comment
+// Another comment
+/* Block comment */
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Comments.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_long_paths(): void
+    {
+        $longPath = '/storage/app/very/deep/nested/path/to/files/'.str_repeat('subfolder/', 50).'file.jpg';
+        $code = <<<PHP
+<?php
+
+namespace App\Services;
+
+class LongPathService
+{
+    public function getLongPath()
+    {
+        return '$longPath';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/LongPathService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
     }
 }

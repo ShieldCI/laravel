@@ -196,33 +196,6 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Build Path
-    |--------------------------------------------------------------------------
-    |
-    | The path where compiled assets (JS, CSS) are located for production.
-    | Defaults to the public directory.
-    |
-    */
-
-    'build_path' => env('SHIELDCI_BUILD_PATH', public_path()),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Writable Directories
-    |--------------------------------------------------------------------------
-    |
-    | Directories that must be writable for the application to function.
-    | These paths are relative to the base path of your Laravel application.
-    |
-    */
-
-    'writable_directories' => [
-        'storage',
-        'bootstrap/cache',
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
     | Reporting Configuration
     |--------------------------------------------------------------------------
     |
@@ -357,25 +330,6 @@ return [
     */
 
     'ignore_errors' => [],
-
-    /*
-    |--------------------------------------------------------------------------
-    | Guest URL Path
-    |--------------------------------------------------------------------------
-    |
-    | Specify a guest url or path (preferably your app's login url) here.
-    | This is used by HTTP-based analyzers to inspect your application.
-    |
-    | If not set, the system will automatically try to find a suitable route:
-    | 1. Named 'login' route
-    | 2. Any route with 'guest' middleware
-    | 3. Fallback to root URL '/'
-    |
-    | Example: '/login', '/register', '/forgot-password'
-    |
-    */
-
-    'guest_url' => env('SHIELDCI_GUEST_URL', null),
 
     /*
     |--------------------------------------------------------------------------

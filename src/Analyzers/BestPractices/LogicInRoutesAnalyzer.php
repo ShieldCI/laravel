@@ -33,7 +33,7 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'logic-in-routes',
-            name: 'Logic in Routes Detector',
+            name: 'Logic in Routes Analyzer',
             description: 'Detects business logic in route files that should be moved to controllers or action classes',
             category: Category::BestPractices,
             severity: Severity::High,

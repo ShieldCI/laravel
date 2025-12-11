@@ -28,7 +28,7 @@ class GenericExceptionCatchAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'generic-exception-catch',
-            name: 'Generic Exception Catch Detector',
+            name: 'Generic Exception Catch Analyzer',
             description: 'Detects catching generic Exception class instead of specific exception types',
             category: Category::BestPractices,
             severity: Severity::Low,

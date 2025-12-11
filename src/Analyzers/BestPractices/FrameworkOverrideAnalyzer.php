@@ -28,7 +28,7 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'framework-override',
-            name: 'Framework Override Detector',
+            name: 'Framework Override Analyzer',
             description: 'Detects dangerous overrides of Laravel framework classes',
             category: Category::BestPractices,
             severity: Severity::High,

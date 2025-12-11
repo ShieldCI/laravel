@@ -28,7 +28,7 @@ class MissingModelScopeAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'missing-model-scope',
-            name: 'Missing Model Scope Detector',
+            name: 'Missing Model Scope Analyzer',
             description: 'Detects repeated query patterns that should be extracted to model scopes',
             category: Category::BestPractices,
             severity: Severity::Low,

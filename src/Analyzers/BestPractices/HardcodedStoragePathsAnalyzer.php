@@ -28,7 +28,7 @@ class HardcodedStoragePathsAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'hardcoded-storage-paths',
-            name: 'Hardcoded Storage Paths Detector',
+            name: 'Hardcoded Storage Paths Analyzer',
             description: 'Finds hardcoded storage/public paths instead of Laravel path helpers',
             category: Category::BestPractices,
             severity: Severity::Medium,

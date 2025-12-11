@@ -33,7 +33,7 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'mixed-query-builder-eloquent',
-            name: 'Mixed Query Builder and Eloquent Detector',
+            name: 'Mixed Query Builder and Eloquent Analyzer',
             description: 'Detects inconsistent mixing of Query Builder and Eloquent ORM in the same codebase',
             category: Category::BestPractices,
             severity: Severity::Medium,

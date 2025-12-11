@@ -37,7 +37,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'service-container-resolution',
-            name: 'Service Container Resolution',
+            name: 'Service Container Resolution Analyzer',
             description: 'Detects manual service container resolution that should use dependency injection',
             category: Category::BestPractices,
             severity: Severity::Medium,

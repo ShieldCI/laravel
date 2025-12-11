@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\BestPractices;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
@@ -35,7 +36,7 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'missing-database-transactions',
-            name: 'Missing Database Transactions Detector',
+            name: 'Missing Database Transactions Analyzer',
             description: 'Detects multiple database write operations without transaction protection',
             category: Category::BestPractices,
             severity: Severity::High,

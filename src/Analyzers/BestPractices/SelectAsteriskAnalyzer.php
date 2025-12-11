@@ -28,7 +28,7 @@ class SelectAsteriskAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'select-asterisk',
-            name: 'Select Asterisk Detector',
+            name: 'Select Asterisk Analyzer',
             description: 'Detects queries fetching all columns when only specific columns are needed',
             category: Category::BestPractices,
             severity: Severity::Low,

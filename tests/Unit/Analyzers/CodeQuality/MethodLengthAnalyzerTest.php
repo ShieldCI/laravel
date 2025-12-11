@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\CodeQuality;
 
+use Illuminate\Config\Repository;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Analyzers\CodeQuality\MethodLengthAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
@@ -12,9 +13,20 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class MethodLengthAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    protected function createAnalyzer(array $config = []): AnalyzerInterface
     {
-        return new MethodLengthAnalyzer($this->parser);
+        $configRepo = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'code_quality' => $config,
+                ],
+            ],
+        ]);
+
+        return new MethodLengthAnalyzer($this->parser, $configRepo);
     }
 
     #[Test]

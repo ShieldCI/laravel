@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
+use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\BestPractices\FatModelAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -11,9 +12,20 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class FatModelAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    protected function createAnalyzer(array $config = []): AnalyzerInterface
     {
-        return new FatModelAnalyzer($this->parser);
+        $configRepo = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'best_practices' => $config,
+                ],
+            ],
+        ]);
+
+        return new FatModelAnalyzer($this->parser, $configRepo);
     }
 
     public function test_passes_with_small_model(): void
@@ -884,7 +896,11 @@ PHP;
         $tempDir = $this->createTempDirectory(['Models/Product.php' => $code]);
 
         // Custom threshold of 5 (instead of default 15)
-        $analyzer = new FatModelAnalyzer($this->parser, methodThreshold: 5);
+        $analyzer = $this->createAnalyzer([
+            'fat-model' => [
+                'method_threshold' => 5,
+            ],
+        ]);
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 
@@ -919,7 +935,11 @@ PHP;
         $tempDir = $this->createTempDirectory(['Models/Order.php' => $code]);
 
         // Custom LOC threshold of 100 (instead of default 300)
-        $analyzer = new FatModelAnalyzer($this->parser, locThreshold: 100);
+        $analyzer = $this->createAnalyzer([
+            'fat-model' => [
+                'loc_threshold' => 100,
+            ],
+        ]);
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 
@@ -957,7 +977,11 @@ PHP;
         $tempDir = $this->createTempDirectory(['Models/Order.php' => $code]);
 
         // Custom complexity threshold of 3 (instead of default 10)
-        $analyzer = new FatModelAnalyzer($this->parser, complexityThreshold: 3);
+        $analyzer = $this->createAnalyzer([
+            'fat-model' => [
+                'complexity_threshold' => 3,
+            ],
+        ]);
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 

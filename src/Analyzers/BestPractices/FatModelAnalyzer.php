@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\BestPractices;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
@@ -39,14 +40,8 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
 
     public function __construct(
         private ParserInterface $parser,
-        ?int $methodThreshold = null,
-        ?int $locThreshold = null,
-        ?int $complexityThreshold = null
-    ) {
-        $this->methodThreshold = $methodThreshold ?? self::METHOD_THRESHOLD;
-        $this->locThreshold = $locThreshold ?? self::LOC_THRESHOLD;
-        $this->complexityThreshold = $complexityThreshold ?? self::COMPLEXITY_THRESHOLD;
-    }
+        private Config $config
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -64,6 +59,14 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
+        // Load configuration from config file (best_practices.fat-model)
+        $analyzerConfig = $this->config->get('shieldci.analyzers.best_practices.fat-model', []);
+        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
+
+        $this->methodThreshold = $analyzerConfig['method_threshold'] ?? self::METHOD_THRESHOLD;
+        $this->locThreshold = $analyzerConfig['loc_threshold'] ?? self::LOC_THRESHOLD;
+        $this->complexityThreshold = $analyzerConfig['complexity_threshold'] ?? self::COMPLEXITY_THRESHOLD;
+
         $issues = [];
 
         // Only set default paths if not already set (allows tests to override)

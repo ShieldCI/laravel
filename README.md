@@ -2,7 +2,7 @@
 
 > **⚠️ Initial Development Release (v0.1.x)** - This package is under active development. APIs may change between minor versions until v1.0.0 is released.
 
-Modern security and code quality analysis for Laravel applications with 92 comprehensive analyzers covering security, performance, reliability, and code quality.
+Modern security and code quality analysis for Laravel applications with 91 comprehensive analyzers covering security, performance, reliability, and code quality.
 
 Built on top of [`shieldci/analyzers-core`](https://github.com/shieldci/analyzers-core) (v0.1.x) - a shared, framework-agnostic foundation for static analysis tools.
 
@@ -148,12 +148,12 @@ Example: AutoloaderOptimizationAnalyzer only runs in production/staging environm
 
 ## Available Analyzers
 
-ShieldCI includes **92 comprehensive analyzers** across five categories:
+ShieldCI includes **91 comprehensive analyzers** across five categories:
 - **22 Security Analyzers** - Complete OWASP Top 10 2021 coverage
 - **18 Performance Analyzers** - Optimize application speed and efficiency
 - **25 Reliability Analyzers** - Ensure application stability and correctness
 - **5 Code Quality Analyzers** - Improve maintainability and code standards
-- **22 Best Practices Analyzers** - Enforce Laravel-specific best practices
+- **21 Best Practices Analyzers** - Enforce Laravel-specific best practices
 
 ### Security Analyzers (22)
 

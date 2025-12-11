@@ -148,12 +148,12 @@ Example: AutoloaderOptimizationAnalyzer only runs in production/staging environm
 
 ## Available Analyzers
 
-ShieldCI includes **91 comprehensive analyzers** across five categories:
+ShieldCI includes **90 comprehensive analyzers** across five categories:
 - **22 Security Analyzers** - Complete OWASP Top 10 2021 coverage
 - **18 Performance Analyzers** - Optimize application speed and efficiency
 - **25 Reliability Analyzers** - Ensure application stability and correctness
 - **5 Code Quality Analyzers** - Improve maintainability and code standards
-- **21 Best Practices Analyzers** - Enforce Laravel-specific best practices
+- **20 Best Practices Analyzers** - Enforce Laravel-specific best practices
 
 ### Security Analyzers (22)
 
@@ -270,7 +270,7 @@ Improve code maintainability and enforce best practices:
 - **Naming Convention Analyzer** - Enforces PSR naming conventions (classes, methods, properties)
 - **Nesting Depth Analyzer** - Detects excessive nesting levels that reduce readability
 
-### Best Practices Analyzers (23)
+### Best Practices Analyzers (20)
 
 Enforce Laravel-specific best practices and architectural patterns:
 
@@ -291,17 +291,14 @@ Enforce Laravel-specific best practices and architectural patterns:
 - **Query Builder in Controller Analyzer** - Detects DB queries in controllers (recommends repository pattern)
 - **Fat Model Analyzer** - Identifies models with too many responsibilities
 
-**Dependency Injection & Service Container (3):**
-- **Facade Usage Analyzer** - Detects facade usage (recommends dependency injection)
+**Dependency Injection & Service Container (2):**
 - **Helper Function Abuse Analyzer** - Flags overuse of Laravel helper functions
 - **Service Container Resolution Analyzer** - Flags manual service resolution (app(), resolve())
 
-**Configuration & Error Handling (5):**
+**Configuration & Error Handling (3):**
 - **Config Outside Config Analyzer** - Detects configuration values not in config files
-- **Environment Check Smell Analyzer** - Detects environment checks that should use configuration
 - **Missing Error Tracking Analyzer** - Identifies missing error tracking integration
 - **Silent Failure Analyzer** - Detects suppressed exceptions and errors
-- **Generic Exception Catch Analyzer** - Finds overly broad exception handling
 
 **Infrastructure (2):**
 - **Hardcoded Storage Paths Analyzer** - Detects hardcoded paths instead of Laravel helpers

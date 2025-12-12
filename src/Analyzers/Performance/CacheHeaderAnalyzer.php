@@ -11,7 +11,6 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\AnalyzesHeaders;
 
 /**
@@ -183,9 +182,10 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
         $firstSource = $firstAsset['source'];
         $issueLocation = $firstSource === 'vite' ? 'public/build/manifest.json' : 'public/mix-manifest.json';
 
-        $issues = [$this->createIssue(
+        $issues = [$this->createIssueWithSnippet(
             message: 'Compiled assets are missing Cache-Control headers or use non-cacheable directives',
-            location: new Location($issueLocation, 1),
+            filePath: $this->buildPath($issueLocation),
+            lineNumber: 1,
             severity: Severity::High,
             recommendation: sprintf(
                 'Your application does not set appropriate cache headers on compiled assets. '.
@@ -195,6 +195,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
                 'Versioned assets should use "Cache-Control: public, max-age=31536000, immutable".',
                 $this->formatUncachedAssets()
             ),
+            code: 'cache-headers',
             metadata: [
                 'uncached_assets' => $this->uncachedAssets->toArray(),
                 'count' => $this->uncachedAssets->count(),

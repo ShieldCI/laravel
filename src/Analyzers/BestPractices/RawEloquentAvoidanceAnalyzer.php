@@ -33,7 +33,7 @@ class RawEloquentAvoidanceAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'raw-eloquent-avoidance',
-            name: 'Unnecessary Raw SQL Detector',
+            name: 'Unnecessary Raw SQL Analyzer',
             description: 'Flags unnecessary use of raw SQL when Eloquent methods are available',
             category: Category::BestPractices,
             severity: Severity::Low,

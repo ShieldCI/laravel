@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Reliability;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use Mockery;
 use Mockery\MockInterface;
 use ShieldCI\Analyzers\Reliability\DatabaseStatusAnalyzer;
@@ -17,7 +18,9 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
     protected function tearDown(): void
     {
         Mockery::close();
-        config()->set('shieldci.database.connections', []);
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('shieldci.database.connections', []);
 
         parent::tearDown();
     }
@@ -100,7 +103,9 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
             'config/database.php' => $this->databaseConfig(),
         ]);
 
-        config()->set('database.default', null);
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('database.default', null);
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
         $checker->shouldNotReceive('check');
@@ -154,7 +159,9 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         ]);
 
         $this->applyDatabaseConfig($connections);
-        config()->set('shieldci.database.connections', ['sqlite']);
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('shieldci.database.connections', ['sqlite']);
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
 
@@ -192,7 +199,9 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         ]);
 
         $this->applyDatabaseConfig();
-        config()->set('shieldci.database.connections', 'mysql,sqlite');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('shieldci.database.connections', 'mysql,sqlite');
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
         /** @phpstan-ignore-next-line */
@@ -215,7 +224,9 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         ]);
 
         $this->applyDatabaseConfig();
-        config()->set('shieldci.database.connections', ['mysql', null, 123, '', 'valid']);
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('shieldci.database.connections', ['mysql', null, 123, '', 'valid']);
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
         /** @phpstan-ignore-next-line */
@@ -238,7 +249,9 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         ]);
 
         $this->applyDatabaseConfig();
-        config()->set('shieldci.database.connections', 'mysql , sqlite ');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('shieldci.database.connections', 'mysql , sqlite ');
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
         /** @phpstan-ignore-next-line */
@@ -464,7 +477,9 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
 
         $this->applyDatabaseConfig();
         // Default is 'mysql', and we configure 'mysql' again
-        config()->set('shieldci.database.connections', ['mysql']);
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('shieldci.database.connections', ['mysql']);
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
         // Should only be called once for mysql (deduplicated)
@@ -512,8 +527,10 @@ PHP;
     {
         $connections = array_merge($this->defaultConnections(), $additionalConnections);
 
-        config()->set('database.default', 'mysql');
-        config()->set('database.connections', $connections);
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('database.default', 'mysql');
+        $config->set('database.connections', $connections);
     }
 
     /**

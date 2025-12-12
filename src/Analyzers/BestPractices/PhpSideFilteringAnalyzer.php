@@ -33,7 +33,7 @@ class PhpSideFilteringAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'php-side-filtering',
-            name: 'PHP-Side Data Filtering Detector',
+            name: 'PHP-Side Data Filtering Analyzer',
             description: 'Detects filtering data in PHP that should be done at database level for performance',
             category: Category::BestPractices,
             severity: Severity::Critical,

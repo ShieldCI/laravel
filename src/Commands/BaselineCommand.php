@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Commands;
 
 use Illuminate\Console\Command;
+use Illuminate\Contracts\Config\Repository as Config;
 use ShieldCI\AnalyzerManager;
 use ShieldCI\AnalyzersCore\Enums\Status;
 use ShieldCI\AnalyzersCore\Support\FileParser;
@@ -31,12 +32,12 @@ class BaselineCommand extends Command
     /**
      * Execute the console command.
      */
-    public function handle(AnalyzerManager $manager): int
+    public function handle(AnalyzerManager $manager, Config $config): int
     {
         // If --ci flag is used, temporarily enable CI mode for baseline generation
-        $wasCiMode = config('shieldci.ci_mode', false);
+        $wasCiMode = $config->get('shieldci.ci_mode', false);
         if ($this->option('ci')) {
-            config()->set('shieldci.ci_mode', true);
+            $config->set('shieldci.ci_mode', true);
             $this->info('🔍 Running analysis to generate baseline (CI mode)...');
         } else {
             $this->info('🔍 Running analysis to generate baseline...');
@@ -48,11 +49,11 @@ class BaselineCommand extends Command
 
         // Restore original CI mode setting
         if ($this->option('ci')) {
-            config()->set('shieldci.ci_mode', $wasCiMode);
+            $config->set('shieldci.ci_mode', $wasCiMode);
         }
 
         // Get output path
-        $outputPathRaw = config('shieldci.baseline_file');
+        $outputPathRaw = $config->get('shieldci.baseline_file');
         $outputPath = is_string($outputPathRaw) ? $outputPathRaw : base_path('.shieldci-baseline.json');
 
         // Load existing baseline if merging

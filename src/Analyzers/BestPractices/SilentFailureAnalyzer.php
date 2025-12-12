@@ -28,7 +28,7 @@ class SilentFailureAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'silent-failure',
-            name: 'Silent Failure Detector',
+            name: 'Silent Failure Analyzer',
             description: 'Detects empty catch blocks and error suppression that hide failures',
             category: Category::BestPractices,
             severity: Severity::Medium,

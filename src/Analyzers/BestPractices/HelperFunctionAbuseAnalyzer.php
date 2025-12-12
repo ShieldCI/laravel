@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\BestPractices;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Stmt;
@@ -15,7 +16,6 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Detects excessive use of Laravel helper functions.
@@ -28,17 +28,10 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
 {
-    /**
-     * Maximum allowed helper function calls per class.
-     */
-    private int $threshold = 5;
+    public const DEFAULT_THRESHOLD = 5;
 
-    /**
-     * Laravel helper functions to track.
-     *
-     * @var array<string>
-     */
-    private array $helperFunctions = [
+    /** @var array<string> */
+    public const DEFAULT_HELPER_FUNCTIONS = [
         'app', 'auth', 'cache', 'config', 'cookie', 'event', 'logger', 'old',
         'redirect', 'request', 'response', 'route', 'session', 'storage_path',
         'url', 'view', 'abort', 'abort_if', 'abort_unless', 'bcrypt',
@@ -47,15 +40,21 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
         'validator', 'value', 'report',
     ];
 
+    private int $threshold;
+
+    /** @var array<string> */
+    private array $helperFunctions;
+
     public function __construct(
-        private ParserInterface $parser
+        private ParserInterface $parser,
+        private Config $config
     ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
             id: 'helper-function-abuse',
-            name: 'Helper Function Abuse',
+            name: 'Helper Function Abuse Analyzer',
             description: 'Detects excessive use of Laravel helper functions that hide dependencies and hinder testing',
             category: Category::BestPractices,
             severity: Severity::Low,
@@ -67,6 +66,16 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
+        // Load configuration from config file (best_practices.helper-function-abuse)
+        $analyzerConfig = $this->config->get('shieldci.analyzers.best_practices.helper-function-abuse', []);
+        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
+
+        $this->threshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;
+        $helperFuncs = $analyzerConfig['helper_functions'] ?? null;
+        $this->helperFunctions = (is_array($helperFuncs) && ! empty($helperFuncs))
+            ? $helperFuncs
+            : self::DEFAULT_HELPER_FUNCTIONS;
+
         $issues = [];
         $threshold = $this->threshold;
         $helpers = $this->helperFunctions;
@@ -84,9 +93,10 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
             $traverser->traverse($ast);
 
             foreach ($visitor->getIssues() as $issue) {
-                $issues[] = $this->createIssue(
+                $issues[] = $this->createIssueWithSnippet(
                     message: "Class '{$issue['class']}' uses {$issue['count']} helper function calls (threshold: {$threshold})",
-                    location: new Location($file, $issue['line']),
+                    filePath: $file,
+                    lineNumber: $issue['line'],
                     severity: $this->getSeverityForCount($issue['count'], $threshold),
                     recommendation: $this->getRecommendation($issue['class'], $issue['helpers'], $issue['count']),
                     metadata: [
@@ -119,10 +129,17 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
     {
         $excess = $count - $threshold;
 
+        // 20+ helpers over threshold is a serious issue
+        if ($excess >= 20) {
+            return Severity::High;
+        }
+
+        // 10-19 helpers over threshold is moderate
         if ($excess >= 10) {
             return Severity::Medium;
         }
 
+        // Just over threshold is low priority
         return Severity::Low;
     }
 
@@ -139,73 +156,7 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
         }
         $helperString = implode(', ', $helperList);
 
-        $base = "Class '{$class}' uses {$count} helper function calls: {$helperString}. While Laravel helpers are convenient, excessive use hides dependencies and makes unit testing difficult. ";
-
-        $strategies = [
-            'Use dependency injection in constructor instead of helper functions',
-            'Inject specific services rather than using app() or resolve()',
-            'For request data, inject Request object instead of using request() helper',
-            'For authentication, inject AuthManager instead of auth() helper',
-            'For configuration, inject Repository instead of config() helper',
-            'Create dedicated service classes for complex logic',
-            'Reserve helpers for views, routes, and simple scripts',
-        ];
-
-        $example = <<<'PHP'
-
-// Problem - Heavy helper usage (hard to test):
-class OrderController
-{
-    public function store()
-    {
-        $user = auth()->user();                    // Helper
-        $data = request()->all();                  // Helper
-        $validator = validator($data, []);         // Helper
-
-        if ($validator->fails()) {
-            return redirect()->back();             // Helper
-        }
-
-        $order = app(OrderService::class)          // Helper
-            ->create($data);
-
-        cache()->put("order_{$order->id}", $order); // Helper
-        event(new OrderCreated($order));           // Helper
-
-        return response()->json($order);           // Helper
-    }
-}
-
-// Solution - Dependency injection (testable):
-class OrderController
-{
-    public function __construct(
-        private OrderService $orders,
-        private CacheManager $cache,
-        private EventDispatcher $events
-    ) {}
-
-    public function store(Request $request)
-    {
-        $user = $request->user();
-        $validated = $request->validate([
-            // validation rules
-        ]);
-
-        $order = $this->orders->create($validated);
-
-        $this->cache->put("order_{$order->id}", $order);
-        $this->events->dispatch(new OrderCreated($order));
-
-        return response()->json($order);
-    }
-}
-
-// Note: Using response() helper at end is acceptable
-// as it's just for response creation, not business logic
-PHP;
-
-        return $base.'Best practices: '.implode('; ', $strategies).". Example:{$example}";
+        return "Class '{$class}' uses {$count} helper function calls: {$helperString}. While Laravel helpers are convenient, excessive use hides dependencies and makes unit testing difficult. ";
     }
 }
 
@@ -248,14 +199,32 @@ class HelperFunctionVisitor extends NodeVisitorAbstract
     {
         // Track class entry
         if ($node instanceof Stmt\Class_) {
-            $this->currentClass = $node->name ? $node->name->toString() : 'Anonymous';
+            // Skip anonymous classes
+            if ($node->name === null) {
+                return null;
+            }
+
+            $this->currentClass = $node->name->toString();
             $this->currentClassLine = $node->getStartLine();
             $this->currentHelpers = [];
 
             return null;
         }
 
-        // Only track inside classes
+        // Track trait entry
+        if ($node instanceof Stmt\Trait_) {
+            if ($node->name === null) {
+                return null;
+            }
+
+            $this->currentClass = $node->name->toString();
+            $this->currentClassLine = $node->getStartLine();
+            $this->currentHelpers = [];
+
+            return null;
+        }
+
+        // Only track inside classes or traits
         if ($this->currentClass === null) {
             return null;
         }
@@ -280,8 +249,13 @@ class HelperFunctionVisitor extends NodeVisitorAbstract
 
     public function leaveNode(Node $node)
     {
-        // Check helper count on class exit
-        if ($node instanceof Stmt\Class_) {
+        // Check helper count on class or trait exit
+        if ($node instanceof Stmt\Class_ || $node instanceof Stmt\Trait_) {
+            // Skip anonymous classes
+            if ($node instanceof Stmt\Class_ && $node->name === null) {
+                return null;
+            }
+
             $helperCount = array_sum($this->currentHelpers);
 
             if ($helperCount > $this->threshold) {

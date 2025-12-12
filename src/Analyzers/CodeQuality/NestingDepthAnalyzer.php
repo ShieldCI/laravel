@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\CodeQuality;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\Node\Stmt;
 use PhpParser\NodeTraverser;
@@ -26,34 +27,14 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class NestingDepthAnalyzer extends AbstractFileAnalyzer
 {
-    /**
-     * Default nesting depth threshold.
-     */
-    private int $threshold = 4;
+    public const DEFAULT_THRESHOLD = 4;
+
+    private int $threshold;
 
     public function __construct(
-        private ParserInterface $parser
-    ) {
-        $this->loadConfiguration();
-    }
-
-    /**
-     * Load configuration from shieldci config.
-     */
-    private function loadConfiguration(): void
-    {
-        if (function_exists('config')) {
-            $categoryConfig = config('shieldci.analyzers.code_quality', []);
-
-            if (is_array($categoryConfig)) {
-                $analyzerConfig = $categoryConfig['nesting_depth'] ?? [];
-
-                if (is_array($analyzerConfig) && isset($analyzerConfig['threshold']) && is_int($analyzerConfig['threshold'])) {
-                    $this->threshold = $analyzerConfig['threshold'];
-                }
-            }
-        }
-    }
+        private ParserInterface $parser,
+        private Config $config
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -71,6 +52,12 @@ class NestingDepthAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
+        // Load configuration from config file (code_quality.nesting-depth)
+        $analyzerConfig = $this->config->get('shieldci.analyzers.code_quality.nesting-depth', []);
+        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
+
+        $this->threshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;
+
         $issues = [];
         $threshold = $this->threshold;
 

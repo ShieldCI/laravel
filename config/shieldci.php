@@ -196,33 +196,6 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Build Path
-    |--------------------------------------------------------------------------
-    |
-    | The path where compiled assets (JS, CSS) are located for production.
-    | Defaults to the public directory.
-    |
-    */
-
-    'build_path' => env('SHIELDCI_BUILD_PATH', public_path()),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Writable Directories
-    |--------------------------------------------------------------------------
-    |
-    | Directories that must be writable for the application to function.
-    | These paths are relative to the base path of your Laravel application.
-    |
-    */
-
-    'writable_directories' => [
-        'storage',
-        'bootstrap/cache',
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
     | Reporting Configuration
     |--------------------------------------------------------------------------
     |
@@ -238,6 +211,12 @@ return [
         'show_recommendations' => env('SHIELDCI_SHOW_RECOMMENDATIONS', true),
 
         'show_code_snippets' => env('SHIELDCI_SHOW_CODE_SNIPPETS', true),
+
+        'snippet_context_lines' => env('SHIELDCI_SNIPPET_CONTEXT_LINES', 8), // Lines before/after the issue
+
+        'snippet_plain_mode' => env('SHIELDCI_SNIPPET_PLAIN_MODE', false), // Disable ANSI colors for copy-paste
+
+        'snippet_syntax_highlighting' => env('SHIELDCI_SNIPPET_SYNTAX_HIGHLIGHTING', true), // Enable PHP syntax highlighting
 
         'max_issues_per_check' => env('SHIELDCI_MAX_ISSUES', 5), // Limit displayed issues per check
     ],
@@ -357,25 +336,6 @@ return [
     */
 
     'ignore_errors' => [],
-
-    /*
-    |--------------------------------------------------------------------------
-    | Guest URL Path
-    |--------------------------------------------------------------------------
-    |
-    | Specify a guest url or path (preferably your app's login url) here.
-    | This is used by HTTP-based analyzers to inspect your application.
-    |
-    | If not set, the system will automatically try to find a suitable route:
-    | 1. Named 'login' route
-    | 2. Any route with 'guest' middleware
-    | 3. Fallback to root URL '/'
-    |
-    | Example: '/login', '/register', '/forgot-password'
-    |
-    */
-
-    'guest_url' => env('SHIELDCI_GUEST_URL', null),
 
     /*
     |--------------------------------------------------------------------------

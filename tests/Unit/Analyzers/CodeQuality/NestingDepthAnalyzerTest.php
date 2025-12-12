@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\CodeQuality;
 
+use Illuminate\Config\Repository;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Analyzers\CodeQuality\NestingDepthAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
@@ -13,9 +14,20 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class NestingDepthAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    protected function createAnalyzer(array $config = []): AnalyzerInterface
     {
-        return new NestingDepthAnalyzer($this->parser);
+        $configRepo = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'code_quality' => $config,
+                ],
+            ],
+        ]);
+
+        return new NestingDepthAnalyzer($this->parser, $configRepo);
     }
 
     #[Test]

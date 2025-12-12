@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use Orchestra\Testbench\TestCase as Orchestra;
 use ShieldCI\ShieldCIServiceProvider;
 
@@ -24,7 +25,9 @@ abstract class TestCase extends Orchestra
     protected function getEnvironmentSetUp($app): void
     {
         // Setup test configuration
-        config()->set('shieldci.enabled', true);
+        /** @var Config $config */
+        $config = $app->make('config');
+        $config->set('shieldci.enabled', true);
     }
 
     /**

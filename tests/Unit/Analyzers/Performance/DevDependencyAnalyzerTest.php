@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Foundation\Application as LaravelApplication;
 use ShieldCI\Analyzers\Performance\DevDependencyAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
@@ -23,7 +24,9 @@ class DevDependencyAnalyzerTest extends AnalyzerTestCase
             'composer.json' => '{}',
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         /** @var LaravelApplication $application */
         $application = app();
         $originalBasePath = $application->basePath();
@@ -61,7 +64,9 @@ JSON;
             'vendor/fakerphp/faker/composer.json' => '{}',
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool
@@ -105,7 +110,9 @@ JSON;
             'vendor/symfony/console/composer.json' => '{}',
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool
@@ -136,7 +143,9 @@ JSON;
             'composer.lock' => '{}',
         ]);
 
-        config()->set('app.env', 'local');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'local');
         /** @var LaravelApplication $application */
         $application = app();
         $originalBasePath = $application->basePath();
@@ -162,7 +171,9 @@ JSON;
             'composer.json' => '{}',
         ]);
 
-        config()->set('app.env', 'development');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'development');
         /** @var LaravelApplication $application */
         $application = app();
         $originalBasePath = $application->basePath();
@@ -185,7 +196,9 @@ JSON;
             'composer.json' => '{}',
         ]);
 
-        config()->set('app.env', 'testing');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'testing');
         /** @var LaravelApplication $application */
         $application = app();
         $originalBasePath = $application->basePath();
@@ -209,7 +222,9 @@ JSON;
             'composer.lock' => '{"packages":[],"packages-dev":[]}',
         ]);
 
-        config()->set('app.env', 'staging');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'staging');
         /** @var LaravelApplication $application */
         $application = app();
         $originalBasePath = $application->basePath();
@@ -237,7 +252,9 @@ JSON;
             '.env' => 'APP_ENV=production',
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         /** @var LaravelApplication $application */
         $application = app();
         $originalBasePath = $application->basePath();
@@ -271,7 +288,9 @@ JSON;
             // No vendor directory
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool
@@ -310,7 +329,9 @@ JSON;
             'vendor/.gitkeep' => '',
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool
@@ -342,7 +363,9 @@ JSON;
             'vendor/phpunit/phpunit/composer.json' => '{}',
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool
@@ -381,7 +404,9 @@ JSON;
             'vendor/symfony/console/composer.json' => '{}',
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool
@@ -418,7 +443,9 @@ JSON;
             'composer.lock' => $composerLock,
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool
@@ -461,7 +488,9 @@ JSON;
             'vendor/phpunit/phpunit/composer.json' => '{}',
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool
@@ -504,7 +533,9 @@ JSON;
             'vendor/phpunit/phpunit/composer.json' => '{}',
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool
@@ -537,7 +568,9 @@ JSON;
             'composer.lock' => '{"packages":[],"packages-dev":[]}',
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool
@@ -575,7 +608,9 @@ JSON;
             'composer.lock' => $composerLock,
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool
@@ -612,7 +647,9 @@ JSON;
             'composer.lock' => $composerLock,
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool
@@ -654,7 +691,9 @@ JSON;
             'vendor/doctrine/dbal-2.0/composer.json' => '{}',
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool
@@ -695,7 +734,9 @@ JSON;
 
         $tempDir = $this->createTempDirectory($vendorFiles);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool
@@ -750,7 +791,9 @@ JSON;
             'composer.lock' => '{"packages":[],"packages-dev":[]}',
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         /** @var LaravelApplication $application */
         $application = app();
         $originalBasePath = $application->basePath();
@@ -788,7 +831,9 @@ JSON;
             'vendor/phpunit/phpunit/composer.json' => '{}',
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool
@@ -833,7 +878,9 @@ JSON;
             'vendor/phpunit/phpunit/composer.json' => '{}',
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool
@@ -880,7 +927,9 @@ JSON;
             'vendor/fakerphp/faker/composer.json' => '{}',
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool
@@ -931,7 +980,9 @@ JSON;
             'vendor/fakerphp/faker/composer.json' => '{}',
         ]);
 
-        config()->set('app.env', 'production');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
         $analyzer = new class extends DevDependencyAnalyzer
         {
             protected function isComposerAvailable(): bool

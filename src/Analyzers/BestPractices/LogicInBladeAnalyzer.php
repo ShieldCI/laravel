@@ -27,7 +27,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'logic-in-blade',
-            name: 'Logic in Blade Detector',
+            name: 'Logic in Blade Analyzer',
             description: 'Finds business logic in Blade templates that should be moved to controllers or view composers',
             category: Category::BestPractices,
             severity: Severity::Medium,

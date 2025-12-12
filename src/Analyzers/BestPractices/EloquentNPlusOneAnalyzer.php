@@ -35,7 +35,7 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'eloquent-n-plus-one',
-            name: 'Eloquent N+1 Query',
+            name: 'Eloquent N+1 Query Analyzer',
             description: 'Identifies missing eager loading that causes N+1 query performance problems',
             category: Category::BestPractices,
             severity: Severity::High,
@@ -50,30 +50,35 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
         $issues = [];
 
         foreach ($this->getPhpFiles() as $file) {
-            $ast = $this->parser->parseFile($file);
+            try {
+                $ast = $this->parser->parseFile($file);
 
-            if (empty($ast)) {
+                if (empty($ast)) {
+                    continue;
+                }
+
+                $visitor = new NPlusOneVisitor;
+                $traverser = new NodeTraverser;
+                $traverser->addVisitor($visitor);
+                $traverser->traverse($ast);
+
+                foreach ($visitor->getIssues() as $issue) {
+                    $issues[] = $this->createIssue(
+                        message: "Potential N+1 query: accessing '{$issue['relationship']}' inside loop",
+                        location: new Location($this->getRelativePath($file), $issue['line']),
+                        severity: Severity::High,
+                        recommendation: $this->getRecommendation($issue['relationship'], $issue['loop_type']),
+                        metadata: [
+                            'relationship' => $issue['relationship'],
+                            'loop_type' => $issue['loop_type'],
+                            'variable' => $issue['variable'],
+                            'file' => $file,
+                        ]
+                    );
+                }
+            } catch (\Throwable $e) {
+                // Skip files that can't be parsed
                 continue;
-            }
-
-            $visitor = new NPlusOneVisitor;
-            $traverser = new NodeTraverser;
-            $traverser->addVisitor($visitor);
-            $traverser->traverse($ast);
-
-            foreach ($visitor->getIssues() as $issue) {
-                $issues[] = $this->createIssue(
-                    message: "Potential N+1 query: accessing '{$issue['relationship']}' inside loop",
-                    location: new Location($file, $issue['line']),
-                    severity: Severity::High,
-                    recommendation: $this->getRecommendation($issue['relationship'], $issue['loop_type']),
-                    metadata: [
-                        'relationship' => $issue['relationship'],
-                        'loop_type' => $issue['loop_type'],
-                        'variable' => $issue['variable'],
-                        'file' => $file,
-                    ]
-                );
             }
         }
 
@@ -94,32 +99,7 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
      */
     private function getRecommendation(string $relationship, string $loopType): string
     {
-        $base = "Accessing the '{$relationship}' relationship inside a {$loopType} will trigger a separate database query for each iteration, causing an N+1 query problem. ";
-
-        $solutions = [
-            "Use eager loading before the loop: ->with('{$relationship}')",
-            "If data is already loaded, use lazy eager loading: ->load('{$relationship}')",
-            'Consider using select() to load only needed columns',
-            'Use Laravel Debugbar or Telescope to verify query reduction',
-            'For complex relationships, consider using subqueries or joins',
-        ];
-
-        $example = <<<PHP
-
-// Problem:
-\$posts = Post::all();
-foreach (\$posts as \$post) {
-    echo \$post->{$relationship}->name; // N+1 queries
-}
-
-// Solution:
-\$posts = Post::with('{$relationship}')->get();
-foreach (\$posts as \$post) {
-    echo \$post->{$relationship}->name; // Single query with join
-}
-PHP;
-
-        return $base.'Solutions: '.implode('; ', $solutions).". Example:{$example}";
+        return "Accessing the '{$relationship}' relationship inside a {$loopType} will trigger a separate database query for each iteration, causing an N+1 query problem. ";
     }
 }
 
@@ -128,30 +108,34 @@ PHP;
  */
 class NPlusOneVisitor extends NodeVisitorAbstract
 {
+    /** @var string Loop type constants */
+    private const LOOP_TYPE_FOREACH = 'foreach';
+
+    private const LOOP_TYPE_FOR = 'for';
+
+    private const LOOP_TYPE_WHILE = 'while';
+
+    private const LOOP_TYPE_DO_WHILE = 'do-while';
+
+    /** @var array<string> Common model properties that are not relationships */
+    private const EXCLUDED_PROPERTIES = [
+        'id', 'created_at', 'updated_at', 'deleted_at', 'name', 'email',
+        'password', 'remember_token', 'email_verified_at', 'title', 'content',
+        'description', 'status', 'type', 'value', 'data', 'meta', 'slug',
+        'count', 'total', 'amount', 'price', 'quantity', 'active', 'enabled',
+    ];
+
     /**
      * @var array<int, array{relationship: string, line: int, loop_type: string, variable: string}>
      */
     private array $issues = [];
 
     /**
-     * Track if we're currently inside a loop.
+     * Stack of loop contexts (for nested loop support).
+     *
+     * @var array<int, array{variable: string|null, type: string}>
      */
-    private bool $inLoop = false;
-
-    /**
-     * Track loop variable name.
-     */
-    private ?string $loopVariable = null;
-
-    /**
-     * Current loop type.
-     */
-    private string $loopType = 'foreach';
-
-    /**
-     * Nesting level of loops.
-     */
-    private int $loopDepth = 0;
+    private array $loopStack = [];
 
     /**
      * Track variables and their eager loaded relationships.
@@ -167,53 +151,103 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         // Track variable assignments to detect eager loading
         if ($node instanceof Expr\Assign) {
             if ($node->var instanceof Expr\Variable && is_string($node->var->name)) {
-                // Check if the assignment uses with() for eager loading
+                // Check if the assignment uses with() or load() for eager loading
                 $this->trackEagerLoading($node->expr, $node->var->name);
             }
 
             return null;
         }
 
+        // Track load() calls on existing variables: $posts->load('user')
+        if ($node instanceof Expr\MethodCall) {
+            if ($node->var instanceof Expr\Variable &&
+                is_string($node->var->name) &&
+                $node->name instanceof Node\Identifier &&
+                $node->name->toString() === 'load') {
+
+                $varName = $node->var->name;
+                $relationships = $this->extractRelationshipsFromEagerLoadCall($node);
+
+                if (! empty($relationships)) {
+                    // Merge with existing eager loaded relationships
+                    if (isset($this->eagerLoadedRelationships[$varName])) {
+                        $this->eagerLoadedRelationships[$varName] = array_merge(
+                            $this->eagerLoadedRelationships[$varName],
+                            $relationships
+                        );
+                    } else {
+                        $this->eagerLoadedRelationships[$varName] = $relationships;
+                    }
+                }
+            }
+        }
+
         // Track loop entry
         if ($node instanceof Stmt\Foreach_) {
-            $this->loopDepth++;
-            $this->inLoop = true;
-            $this->loopType = 'foreach';
+            $loopVariable = null;
 
             // Get loop variable name and source variable
             if ($node->valueVar instanceof Expr\Variable && is_string($node->valueVar->name)) {
-                $this->loopVariable = $node->valueVar->name;
+                $loopVariable = $node->valueVar->name;
 
                 // Check if iterating over a variable with eager loaded relationships
                 if ($node->expr instanceof Expr\Variable && is_string($node->expr->name)) {
                     $sourceVar = $node->expr->name;
                     // Copy eager loaded relationships to loop variable context
                     if (isset($this->eagerLoadedRelationships[$sourceVar])) {
-                        $this->eagerLoadedRelationships[$this->loopVariable] =
+                        $this->eagerLoadedRelationships[$loopVariable] =
                             $this->eagerLoadedRelationships[$sourceVar];
                     }
                 }
             }
 
+            $this->loopStack[] = [
+                'variable' => $loopVariable,
+                'type' => self::LOOP_TYPE_FOREACH,
+            ];
+
             return null;
         }
 
-        if ($node instanceof Stmt\For_ || $node instanceof Stmt\While_ || $node instanceof Stmt\Do_) {
-            $this->loopDepth++;
-            $this->inLoop = true;
-            $this->loopType = $node instanceof Stmt\For_ ? 'for' : 'while';
+        if ($node instanceof Stmt\For_) {
+            $this->loopStack[] = [
+                'variable' => null,
+                'type' => self::LOOP_TYPE_FOR,
+            ];
+
+            return null;
+        }
+
+        if ($node instanceof Stmt\While_) {
+            $this->loopStack[] = [
+                'variable' => null,
+                'type' => self::LOOP_TYPE_WHILE,
+            ];
+
+            return null;
+        }
+
+        if ($node instanceof Stmt\Do_) {
+            $this->loopStack[] = [
+                'variable' => null,
+                'type' => self::LOOP_TYPE_DO_WHILE,
+            ];
 
             return null;
         }
 
         // Detect relationship access inside loops
-        if ($this->inLoop && $this->loopVariable !== null) {
+        $currentLoop = $this->getCurrentLoop();
+        if ($currentLoop !== null && $currentLoop['variable'] !== null) {
+            $loopVariable = $currentLoop['variable'];
+            $loopType = $currentLoop['type'];
+
             // Look for property access like $post->user or $post->comments
             if ($node instanceof Expr\PropertyFetch) {
                 // Check if accessing property on loop variable
                 if ($node->var instanceof Expr\Variable &&
                     is_string($node->var->name) &&
-                    $node->var->name === $this->loopVariable &&
+                    $node->var->name === $loopVariable &&
                     $node->name instanceof Node\Identifier) {
 
                     $propertyName = $node->name->toString();
@@ -221,12 +255,12 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     // Check if this looks like a relationship (not typical model properties)
                     if ($this->looksLikeRelationship($propertyName)) {
                         // Only flag if NOT eager loaded
-                        if (! $this->isEagerLoaded($this->loopVariable, $propertyName)) {
+                        if (! $this->isEagerLoaded($loopVariable, $propertyName)) {
                             $this->issues[] = [
                                 'relationship' => $propertyName,
                                 'line' => $node->getStartLine(),
-                                'loop_type' => $this->loopType,
-                                'variable' => $this->loopVariable,
+                                'loop_type' => $loopType,
+                                'variable' => $loopVariable,
                             ];
                         }
                     }
@@ -237,7 +271,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             if ($node instanceof Expr\MethodCall) {
                 if ($node->var instanceof Expr\Variable &&
                     is_string($node->var->name) &&
-                    $node->var->name === $this->loopVariable &&
+                    $node->var->name === $loopVariable &&
                     $node->name instanceof Node\Identifier) {
 
                     $methodName = $node->name->toString();
@@ -245,12 +279,12 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     // Check if this looks like a relationship method
                     if ($this->looksLikeRelationship($methodName)) {
                         // Only flag if NOT eager loaded
-                        if (! $this->isEagerLoaded($this->loopVariable, $methodName)) {
+                        if (! $this->isEagerLoaded($loopVariable, $methodName)) {
                             $this->issues[] = [
                                 'relationship' => $methodName,
                                 'line' => $node->getStartLine(),
-                                'loop_type' => $this->loopType,
-                                'variable' => $this->loopVariable,
+                                'loop_type' => $loopType,
+                                'variable' => $loopVariable,
                             ];
                         }
                     }
@@ -263,19 +297,27 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
     public function leaveNode(Node $node)
     {
-        // Track loop exit
+        // Track loop exit - pop from stack
         if ($node instanceof Stmt\Foreach_ || $node instanceof Stmt\For_ ||
             $node instanceof Stmt\While_ || $node instanceof Stmt\Do_) {
-            $this->loopDepth--;
-
-            if ($this->loopDepth === 0) {
-                $this->inLoop = false;
-                $this->loopVariable = null;
-                $this->loopType = 'foreach';
-            }
+            array_pop($this->loopStack);
         }
 
         return null;
+    }
+
+    /**
+     * Get the current loop context (innermost loop).
+     *
+     * @return array{variable: string|null, type: string}|null
+     */
+    private function getCurrentLoop(): ?array
+    {
+        if (empty($this->loopStack)) {
+            return null;
+        }
+
+        return end($this->loopStack);
     }
 
     /**
@@ -293,7 +335,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Extract relationships from with() calls in an expression chain.
+     * Extract relationships from with() or load() calls in an expression chain.
      *
      * @return array<string>
      */
@@ -303,26 +345,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
         // Check if this is a method call
         if ($expr instanceof Expr\MethodCall) {
-            // Check if the method is 'with'
-            if ($expr->name instanceof Node\Identifier && $expr->name->toString() === 'with') {
-                // Extract relationships from the argument
-                if (! empty($expr->args)) {
-                    $arg = $expr->args[0]->value;
-
-                    // Handle array of relationships: with(['user', 'comments'])
-                    if ($arg instanceof Expr\Array_) {
-                        foreach ($arg->items as $item) {
-                            if ($item !== null && $item->value instanceof Node\Scalar\String_) {
-                                $relationships[] = $item->value->value;
-                            }
-                        }
-                    }
-                    // Handle single relationship: with('user')
-                    elseif ($arg instanceof Node\Scalar\String_) {
-                        $relationships[] = $arg->value;
-                    }
-                }
-            }
+            $relationships = $this->extractRelationshipsFromEagerLoadCall($expr);
 
             // Recursively check the chain (e.g., Post::query()->with()->get())
             $relationships = array_merge(
@@ -333,24 +356,62 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
         // Check if this is a static call (e.g., Post::with())
         if ($expr instanceof Expr\StaticCall) {
-            if ($expr->name instanceof Node\Identifier && $expr->name->toString() === 'with') {
-                if (! empty($expr->args)) {
-                    $arg = $expr->args[0]->value;
-
-                    if ($arg instanceof Expr\Array_) {
-                        foreach ($arg->items as $item) {
-                            if ($item !== null && $item->value instanceof Node\Scalar\String_) {
-                                $relationships[] = $item->value->value;
-                            }
-                        }
-                    } elseif ($arg instanceof Node\Scalar\String_) {
-                        $relationships[] = $arg->value;
-                    }
-                }
-            }
+            $relationships = $this->extractRelationshipsFromEagerLoadCall($expr);
         }
 
         return $relationships;
+    }
+
+    /**
+     * Extract relationships from a with() or load() method/static call.
+     *
+     * @return array<string>
+     */
+    private function extractRelationshipsFromEagerLoadCall(Expr\MethodCall|Expr\StaticCall $expr): array
+    {
+        // Check if the method is 'with' or 'load'
+        if (! ($expr->name instanceof Node\Identifier)) {
+            return [];
+        }
+
+        $methodName = $expr->name->toString();
+        if ($methodName !== 'with' && $methodName !== 'load') {
+            return [];
+        }
+
+        // Extract relationships from the argument
+        if (empty($expr->args)) {
+            return [];
+        }
+
+        return $this->parseRelationshipArgument($expr->args[0]->value);
+    }
+
+    /**
+     * Parse relationship argument (string or array).
+     *
+     * @return array<string>
+     */
+    private function parseRelationshipArgument(Node $arg): array
+    {
+        // Handle array of relationships: with(['user', 'comments'])
+        if ($arg instanceof Expr\Array_) {
+            $relationships = [];
+            foreach ($arg->items as $item) {
+                if ($item !== null && $item->value instanceof Node\Scalar\String_) {
+                    $relationships[] = $item->value->value;
+                }
+            }
+
+            return $relationships;
+        }
+
+        // Handle single relationship: with('user')
+        if ($arg instanceof Node\Scalar\String_) {
+            return [$arg->value];
+        }
+
+        return [];
     }
 
     /**
@@ -371,14 +432,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     private function looksLikeRelationship(string $name): bool
     {
         // Exclude common non-relationship properties
-        $excludedProperties = [
-            'id', 'created_at', 'updated_at', 'deleted_at', 'name', 'email',
-            'password', 'remember_token', 'email_verified_at', 'title', 'content',
-            'description', 'status', 'type', 'value', 'data', 'meta', 'slug',
-            'count', 'total', 'amount', 'price', 'quantity', 'active', 'enabled',
-        ];
-
-        if (in_array(strtolower($name), $excludedProperties, true)) {
+        if (in_array(strtolower($name), self::EXCLUDED_PROPERTIES, true)) {
             return false;
         }
 
@@ -394,12 +448,14 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      */
     public function getIssues(): array
     {
-        // Deduplicate issues (same relationship accessed multiple times)
+        // Deduplicate issues (same variable accessing same relationship)
         $unique = [];
         $seen = [];
 
         foreach ($this->issues as $issue) {
-            $key = $issue['relationship'].'_'.$issue['line'];
+            // Include variable name to prevent false deduplication across different variables
+            // Don't include line to deduplicate same relationship accessed multiple times
+            $key = $issue['variable'].'_'.$issue['relationship'];
             if (! isset($seen[$key])) {
                 $unique[] = $issue;
                 $seen[$key] = true;

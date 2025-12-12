@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use ShieldCI\Analyzers\Performance\AutoloaderOptimizationAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -374,10 +375,12 @@ PHP,
     public function test_runs_in_production_us_variant_with_mapping(): void
     {
         // Configure environment mapping
-        config()->set('shieldci.environment_mapping', [
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('shieldci.environment_mapping', [
             'production-us' => 'production',
         ]);
-        config()->set('app.env', 'production-us');
+        $config->set('app.env', 'production-us');
 
         $tempDir = $this->createTempDirectory([
             'vendor/autoload.php' => '<?php // Autoloader',
@@ -396,10 +399,12 @@ PHP,
     public function test_runs_in_production_1_variant_with_mapping(): void
     {
         // Configure environment mapping
-        config()->set('shieldci.environment_mapping', [
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('shieldci.environment_mapping', [
             'production-1' => 'production',
         ]);
-        config()->set('app.env', 'production-1');
+        $config->set('app.env', 'production-1');
 
         $tempDir = $this->createTempDirectory([
             'vendor/autoload.php' => '<?php // Autoloader',
@@ -418,10 +423,12 @@ PHP,
     public function test_runs_in_staging_preview_variant_with_mapping(): void
     {
         // Configure environment mapping
-        config()->set('shieldci.environment_mapping', [
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('shieldci.environment_mapping', [
             'staging-preview' => 'staging',
         ]);
-        config()->set('app.env', 'staging-preview');
+        $config->set('app.env', 'staging-preview');
 
         $tempDir = $this->createTempDirectory([
             'vendor/autoload.php' => '<?php // Autoloader',
@@ -440,7 +447,9 @@ PHP,
     public function test_skips_in_demo_environment_without_mapping(): void
     {
         // No environment mapping configured for 'demo'
-        config()->set('app.env', 'demo');
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'demo');
 
         $tempDir = $this->createTempDirectory([
             'vendor/autoload.php' => '<?php // Autoloader',

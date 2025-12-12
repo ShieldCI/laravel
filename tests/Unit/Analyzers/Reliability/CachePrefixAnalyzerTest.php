@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Reliability;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use ShieldCI\Analyzers\Reliability\CachePrefixAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Enums\Status;
@@ -505,11 +506,13 @@ class CachePrefixAnalyzerTest extends AnalyzerTestCase
 
         $config = array_replace_recursive($default, $overrides);
 
-        config()->set('cache', $config);
-        config()->set('cache.default', $config['default']);
-        config()->set('cache.prefix', $config['prefix']);
-        config()->set('cache.stores', $config['stores']);
-        config()->set('app.name', 'ShieldCI Demo');
+        /** @var Config $configRepo */
+        $configRepo = $this->app?->make('config') ?? app('config');
+        $configRepo->set('cache', $config);
+        $configRepo->set('cache.default', $config['default']);
+        $configRepo->set('cache.prefix', $config['prefix']);
+        $configRepo->set('cache.stores', $config['stores']);
+        $configRepo->set('app.name', 'ShieldCI Demo');
 
         if (! $writeFile) {
             return;

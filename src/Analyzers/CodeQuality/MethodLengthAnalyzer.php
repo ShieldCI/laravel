@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\CodeQuality;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\Node\Stmt;
 use PhpParser\NodeTraverser;
@@ -26,47 +27,20 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class MethodLengthAnalyzer extends AbstractFileAnalyzer
 {
-    /**
-     * Default line count threshold.
-     */
-    private int $threshold = 50;
+    public const DEFAULT_THRESHOLD = 50;
 
-    /**
-     * @var array<string>
-     */
-    private array $excludedPatterns = ['get*', 'set*', 'is*', 'has*'];
+    /** @var array<string> */
+    public const DEFAULT_EXCLUDED_PATTERNS = ['get*', 'set*', 'is*', 'has*'];
+
+    private int $threshold;
+
+    /** @var array<string> */
+    private array $excludedPatterns;
 
     public function __construct(
-        private ParserInterface $parser
-    ) {
-        $this->loadConfiguration();
-    }
-
-    /**
-     * Load configuration from shieldci config.
-     */
-    private function loadConfiguration(): void
-    {
-        if (function_exists('config')) {
-            $categoryConfig = config('shieldci.analyzers.code_quality', []);
-
-            if (is_array($categoryConfig)) {
-                $analyzerConfig = $categoryConfig['method_length'] ?? [];
-
-                if (is_array($analyzerConfig)) {
-                    // Load threshold
-                    if (isset($analyzerConfig['threshold']) && is_int($analyzerConfig['threshold'])) {
-                        $this->threshold = $analyzerConfig['threshold'];
-                    }
-
-                    // Load excluded patterns
-                    if (isset($analyzerConfig['exclude_patterns']) && is_array($analyzerConfig['exclude_patterns'])) {
-                        $this->excludedPatterns = $analyzerConfig['exclude_patterns'];
-                    }
-                }
-            }
-        }
-    }
+        private ParserInterface $parser,
+        private Config $config
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -84,6 +58,14 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
+        // Load configuration from config file (code_quality.method-length)
+        $analyzerConfig = $this->config->get('shieldci.analyzers.code_quality.method-length', []);
+        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
+
+        $this->threshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;
+        $excludePatterns = $analyzerConfig['exclude_patterns'] ?? null;
+        $this->excludedPatterns = is_array($excludePatterns) ? $excludePatterns : self::DEFAULT_EXCLUDED_PATTERNS;
+
         $issues = [];
         $threshold = $this->threshold;
         $excludePatterns = $this->excludedPatterns;

@@ -36,7 +36,7 @@ class MvcStructureViolationAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'mvc-structure-violation',
-            name: 'MVC Structure Violation Detector',
+            name: 'MVC Structure Violation Analyzer',
             description: 'Detects violations of Model-View-Controller architectural pattern',
             category: Category::BestPractices,
             severity: Severity::High,

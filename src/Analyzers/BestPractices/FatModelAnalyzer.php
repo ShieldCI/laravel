@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\BestPractices;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
@@ -31,15 +32,22 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
 
     public const COMPLEXITY_THRESHOLD = 10;
 
+    private int $methodThreshold;
+
+    private int $locThreshold;
+
+    private int $complexityThreshold;
+
     public function __construct(
-        private ParserInterface $parser
+        private ParserInterface $parser,
+        private Config $config
     ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
             id: 'fat-model',
-            name: 'Fat Model Detector',
+            name: 'Fat Model Analyzer',
             description: 'Detects Eloquent models with too much business logic that should be extracted to services',
             category: Category::BestPractices,
             severity: Severity::Medium,
@@ -51,6 +59,14 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
+        // Load configuration from config file (best_practices.fat-model)
+        $analyzerConfig = $this->config->get('shieldci.analyzers.best_practices.fat-model', []);
+        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
+
+        $this->methodThreshold = $analyzerConfig['method_threshold'] ?? self::METHOD_THRESHOLD;
+        $this->locThreshold = $analyzerConfig['loc_threshold'] ?? self::LOC_THRESHOLD;
+        $this->complexityThreshold = $analyzerConfig['complexity_threshold'] ?? self::COMPLEXITY_THRESHOLD;
+
         $issues = [];
 
         // Only set default paths if not already set (allows tests to override)
@@ -68,7 +84,7 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $visitor = new FatModelVisitor;
+                $visitor = new FatModelVisitor($this->methodThreshold, $this->locThreshold, $this->complexityThreshold);
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
@@ -111,7 +127,11 @@ class FatModelVisitor extends NodeVisitorAbstract
 
     private int $classStartLine = 0;
 
-    private int $classEndLine = 0;
+    public function __construct(
+        private int $methodThreshold,
+        private int $locThreshold,
+        private int $complexityThreshold
+    ) {}
 
     public function enterNode(Node $node): ?Node
     {
@@ -120,7 +140,6 @@ class FatModelVisitor extends NodeVisitorAbstract
             if ($this->extendsModel($node)) {
                 $this->currentClassName = $node->name?->toString();
                 $this->classStartLine = $node->getStartLine();
-                $this->classEndLine = $node->getEndLine();
                 $this->analyzeModel($node);
             }
         }
@@ -144,9 +163,28 @@ class FatModelVisitor extends NodeVisitorAbstract
 
         $parentClass = $class->extends->toString();
 
-        return $parentClass === 'Model'
+        // Standard Eloquent Model
+        if ($parentClass === 'Model'
             || str_ends_with($parentClass, '\\Model')
-            || $parentClass === 'Illuminate\\Database\\Eloquent\\Model';
+            || $parentClass === 'Illuminate\\Database\\Eloquent\\Model') {
+            return true;
+        }
+
+        // Custom base models (common patterns in Laravel apps)
+        if (str_ends_with($parentClass, 'BaseModel')
+            || str_contains($parentClass, '\\Models\\Base')
+            || preg_match('/Base[A-Z]\w*Model/', $parentClass)) {
+            return true;
+        }
+
+        // Pivot models
+        if ($parentClass === 'Pivot'
+            || str_ends_with($parentClass, '\\Pivot')
+            || $parentClass === 'Illuminate\\Database\\Eloquent\\Relations\\Pivot') {
+            return true;
+        }
+
+        return false;
     }
 
     private function analyzeModel(Node\Stmt\Class_ $class): void
@@ -163,34 +201,48 @@ class FatModelVisitor extends NodeVisitorAbstract
             }
         }
 
-        // Check method count
-        if ($businessMethods > FatModelAnalyzer::METHOD_THRESHOLD) {
+        // Check method count with dynamic severity
+        if ($businessMethods > $this->methodThreshold) {
+            $excess = $businessMethods - $this->methodThreshold;
+            $severity = match (true) {
+                $excess >= 15 => Severity::High,    // 30+ methods (threshold + 15)
+                $excess >= 5 => Severity::Medium,   // 20-29 methods (threshold + 5)
+                default => Severity::Low,            // 16-19 methods
+            };
+
             $this->issues[] = [
                 'message' => sprintf(
                     'Model "%s" has %d business methods (threshold: %d). Consider extracting logic to service classes',
                     $this->currentClassName,
                     $businessMethods,
-                    FatModelAnalyzer::METHOD_THRESHOLD
+                    $this->methodThreshold
                 ),
                 'line' => $this->classStartLine,
-                'severity' => Severity::Medium,
+                'severity' => $severity,
                 'recommendation' => 'Move business logic to service classes. Models should focus on data representation, relationships, and simple accessors/mutators. Extract complex operations to dedicated service classes',
                 'code' => null,
             ];
         }
 
-        // Check lines of code
-        $loc = $this->classEndLine - $this->classStartLine;
-        if ($loc > FatModelAnalyzer::LOC_THRESHOLD) {
+        // Check lines of code with dynamic severity
+        $loc = $this->countActualLOC($class);
+        if ($loc > $this->locThreshold) {
+            $excess = $loc - $this->locThreshold;
+            $severity = match (true) {
+                $excess >= 200 => Severity::High,  // 500+ lines (threshold + 200)
+                $excess >= 100 => Severity::Medium, // 400-499 lines (threshold + 100)
+                default => Severity::Low,           // 301-399 lines
+            };
+
             $this->issues[] = [
                 'message' => sprintf(
-                    'Model "%s" has %d lines (threshold: %d). Model is too large',
+                    'Model "%s" has %d lines of code (threshold: %d). Model is too large',
                     $this->currentClassName,
                     $loc,
-                    FatModelAnalyzer::LOC_THRESHOLD
+                    $this->locThreshold
                 ),
                 'line' => $this->classStartLine,
-                'severity' => Severity::Medium,
+                'severity' => $severity,
                 'recommendation' => 'Large models are hard to maintain. Consider: 1) Extracting business logic to services, 2) Using traits for reusable functionality, 3) Moving query logic to repositories',
                 'code' => null,
             ];
@@ -199,14 +251,14 @@ class FatModelVisitor extends NodeVisitorAbstract
         // Check method complexity
         foreach ($methods as $method) {
             $complexity = $this->calculateComplexity($method);
-            if ($complexity > FatModelAnalyzer::COMPLEXITY_THRESHOLD) {
+            if ($complexity > $this->complexityThreshold) {
                 $this->issues[] = [
                     'message' => sprintf(
                         'Method "%s::%s()" has complexity of %d (threshold: %d)',
                         $this->currentClassName,
                         $method->name->toString(),
                         $complexity,
-                        FatModelAnalyzer::COMPLEXITY_THRESHOLD
+                        $this->complexityThreshold
                     ),
                     'line' => $method->getStartLine(),
                     'severity' => Severity::Low,
@@ -217,6 +269,22 @@ class FatModelVisitor extends NodeVisitorAbstract
         }
     }
 
+    /**
+     * Count actual lines of code (properties + methods), excluding blank lines and pure comment blocks.
+     */
+    private function countActualLOC(Node\Stmt\Class_ $class): int
+    {
+        $loc = 0;
+
+        foreach ($class->stmts as $stmt) {
+            if ($stmt instanceof Node\Stmt\Property || $stmt instanceof Node\Stmt\ClassMethod) {
+                $loc += $stmt->getEndLine() - $stmt->getStartLine() + 1;
+            }
+        }
+
+        return $loc;
+    }
+
     private function isBusinessMethod(Node\Stmt\ClassMethod $method): bool
     {
         $name = $method->name->toString();
@@ -225,9 +293,6 @@ class FatModelVisitor extends NodeVisitorAbstract
         $excluded = [
             // Lifecycle hooks
             'boot', 'booting', 'booted',
-            // Scopes (start with 'scope')
-            // Relationships (common names)
-            // Accessors/Mutators (end with 'Attribute')
         ];
 
         if (in_array($name, $excluded, true)) {
@@ -249,25 +314,9 @@ class FatModelVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // Exclude common relationship method patterns
-        $relationshipMethods = [
-            'hasOne', 'hasMany', 'belongsTo', 'belongsToMany',
-            'morphTo', 'morphOne', 'morphMany', 'morphToMany',
-            'hasOneThrough', 'hasManyThrough',
-        ];
-
-        // Check if method body only contains a relationship call
-        if ($method->stmts && count($method->stmts) === 1) {
-            $stmt = $method->stmts[0];
-            if ($stmt instanceof Node\Stmt\Return_ && $stmt->expr instanceof Node\Expr\MethodCall) {
-                $returnCall = $stmt->expr;
-                if ($returnCall->name instanceof Node\Identifier) {
-                    $methodName = $returnCall->name->toString();
-                    if (in_array($methodName, $relationshipMethods, true)) {
-                        return false;
-                    }
-                }
-            }
+        // Exclude relationship methods (improved detection)
+        if ($this->isRelationshipMethod($method)) {
+            return false;
         }
 
         // Exclude protected/private methods (usually internal)
@@ -278,47 +327,132 @@ class FatModelVisitor extends NodeVisitorAbstract
         return true;
     }
 
+    /**
+     * Detect if a method is a relationship definition.
+     * Handles multi-line relationships and type-hinted relationships.
+     */
+    private function isRelationshipMethod(Node\Stmt\ClassMethod $method): bool
+    {
+        // Check return type hint first (Laravel 8+)
+        if ($method->returnType instanceof Node\Name) {
+            $returnType = $method->returnType->toString();
+            $relationshipTypes = [
+                'HasOne', 'HasMany', 'BelongsTo', 'BelongsToMany',
+                'MorphTo', 'MorphOne', 'MorphMany', 'MorphToMany',
+                'HasOneThrough', 'HasManyThrough',
+            ];
+
+            foreach ($relationshipTypes as $type) {
+                if (str_ends_with($returnType, $type)) {
+                    return true;
+                }
+            }
+        }
+
+        // Check method body for relationship calls
+        if (! $method->stmts) {
+            return false;
+        }
+
+        $relationshipMethods = [
+            'hasOne', 'hasMany', 'belongsTo', 'belongsToMany',
+            'morphTo', 'morphOne', 'morphMany', 'morphToMany',
+            'hasOneThrough', 'hasManyThrough',
+        ];
+
+        // Find the last return statement (handles multi-line method bodies)
+        foreach (array_reverse($method->stmts) as $stmt) {
+            if ($stmt instanceof Node\Stmt\Return_ && $stmt->expr) {
+                return $this->containsRelationshipCall($stmt->expr, $relationshipMethods);
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Recursively check if an expression contains a relationship method call.
+     * Handles chained method calls like $this->hasMany()->where()->orderBy().
+     *
+     * @param  array<int, string>  $methods
+     */
+    private function containsRelationshipCall(Node\Expr $expr, array $methods): bool
+    {
+        if ($expr instanceof Node\Expr\MethodCall) {
+            // Check if this call is a relationship method
+            if ($expr->name instanceof Node\Identifier) {
+                if (in_array($expr->name->toString(), $methods, true)) {
+                    return true;
+                }
+            }
+
+            // Check chained calls (e.g., $this->hasMany()->where())
+            if ($expr->var instanceof Node\Expr\MethodCall) {
+                return $this->containsRelationshipCall($expr->var, $methods);
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Calculate cyclomatic complexity of a method.
+     *
+     * Cyclomatic complexity measures the number of linearly independent paths through code.
+     * Formula: Base complexity (1) + decision points
+     *
+     * Decision points:
+     * - Control structures: if, elseif, case, for, foreach, while, do, catch, ternary
+     * - Logical operators: &&, ||, and, or
+     */
     private function calculateComplexity(Node\Stmt\ClassMethod $method): int
     {
-        $complexity = 1; // Base complexity
-
-        $visitor = new class($complexity) extends NodeVisitorAbstract
-        {
-            public function __construct(private int &$complexity) {}
-
-            public function enterNode(Node $node): ?Node
-            {
-                // Increment for control structures
-                if ($node instanceof Node\Stmt\If_
-                    || $node instanceof Node\Stmt\ElseIf_
-                    || $node instanceof Node\Stmt\Case_
-                    || $node instanceof Node\Stmt\For_
-                    || $node instanceof Node\Stmt\Foreach_
-                    || $node instanceof Node\Stmt\While_
-                    || $node instanceof Node\Stmt\Do_
-                    || $node instanceof Node\Stmt\Catch_
-                    || $node instanceof Node\Expr\Ternary
-                ) {
-                    $this->complexity++;
-                }
-
-                // Increment for logical operators
-                if ($node instanceof Node\Expr\BinaryOp\BooleanAnd
-                    || $node instanceof Node\Expr\BinaryOp\BooleanOr
-                    || $node instanceof Node\Expr\BinaryOp\LogicalAnd
-                    || $node instanceof Node\Expr\BinaryOp\LogicalOr
-                ) {
-                    $this->complexity++;
-                }
-
-                return null;
-            }
-        };
-
+        $visitor = new ComplexityVisitor;
         $traverser = new NodeTraverser;
         $traverser->addVisitor($visitor);
         $traverser->traverse($method->stmts ?? []);
 
-        return $complexity;
+        return $visitor->getComplexity();
+    }
+}
+
+/**
+ * Visitor to calculate cyclomatic complexity.
+ */
+class ComplexityVisitor extends NodeVisitorAbstract
+{
+    private int $complexity = 1; // Base complexity
+
+    public function getComplexity(): int
+    {
+        return $this->complexity;
+    }
+
+    public function enterNode(Node $node): ?Node
+    {
+        // Increment for control structures
+        if ($node instanceof Node\Stmt\If_
+            || $node instanceof Node\Stmt\ElseIf_
+            || $node instanceof Node\Stmt\Case_
+            || $node instanceof Node\Stmt\For_
+            || $node instanceof Node\Stmt\Foreach_
+            || $node instanceof Node\Stmt\While_
+            || $node instanceof Node\Stmt\Do_
+            || $node instanceof Node\Stmt\Catch_
+            || $node instanceof Node\Expr\Ternary
+        ) {
+            $this->complexity++;
+        }
+
+        // Increment for logical operators
+        if ($node instanceof Node\Expr\BinaryOp\BooleanAnd
+            || $node instanceof Node\Expr\BinaryOp\BooleanOr
+            || $node instanceof Node\Expr\BinaryOp\LogicalAnd
+            || $node instanceof Node\Expr\BinaryOp\LogicalOr
+        ) {
+            $this->complexity++;
+        }
+
+        return null;
     }
 }

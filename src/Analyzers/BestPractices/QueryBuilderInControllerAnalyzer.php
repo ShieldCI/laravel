@@ -53,7 +53,7 @@ class QueryBuilderInControllerAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'query-builder-in-controller',
-            name: 'Query Builder in Controller',
+            name: 'Query Builder in Controller Analyzer',
             description: 'Detects direct database query building in controllers that should use repositories or services',
             category: Category::BestPractices,
             severity: Severity::Medium,

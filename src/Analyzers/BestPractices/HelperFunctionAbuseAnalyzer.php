@@ -16,7 +16,6 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Detects excessive use of Laravel helper functions.
@@ -73,7 +72,9 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
 
         $this->threshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;
         $helperFuncs = $analyzerConfig['helper_functions'] ?? null;
-        $this->helperFunctions = is_array($helperFuncs) ? $helperFuncs : self::DEFAULT_HELPER_FUNCTIONS;
+        $this->helperFunctions = (is_array($helperFuncs) && ! empty($helperFuncs))
+            ? $helperFuncs
+            : self::DEFAULT_HELPER_FUNCTIONS;
 
         $issues = [];
         $threshold = $this->threshold;
@@ -92,9 +93,10 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
             $traverser->traverse($ast);
 
             foreach ($visitor->getIssues() as $issue) {
-                $issues[] = $this->createIssue(
+                $issues[] = $this->createIssueWithSnippet(
                     message: "Class '{$issue['class']}' uses {$issue['count']} helper function calls (threshold: {$threshold})",
-                    location: new Location($file, $issue['line']),
+                    filePath: $file,
+                    lineNumber: $issue['line'],
                     severity: $this->getSeverityForCount($issue['count'], $threshold),
                     recommendation: $this->getRecommendation($issue['class'], $issue['helpers'], $issue['count']),
                     metadata: [
@@ -127,10 +129,17 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
     {
         $excess = $count - $threshold;
 
+        // 20+ helpers over threshold is a serious issue
+        if ($excess >= 20) {
+            return Severity::High;
+        }
+
+        // 10-19 helpers over threshold is moderate
         if ($excess >= 10) {
             return Severity::Medium;
         }
 
+        // Just over threshold is low priority
         return Severity::Low;
     }
 
@@ -256,14 +265,28 @@ class HelperFunctionVisitor extends NodeVisitorAbstract
     {
         // Track class entry
         if ($node instanceof Stmt\Class_) {
-            $this->currentClass = $node->name ? $node->name->toString() : 'Anonymous';
+            // Skip anonymous classes
+            if ($node->name === null) {
+                return null;
+            }
+
+            $this->currentClass = $node->name->toString();
             $this->currentClassLine = $node->getStartLine();
             $this->currentHelpers = [];
 
             return null;
         }
 
-        // Only track inside classes
+        // Track trait entry
+        if ($node instanceof Stmt\Trait_) {
+            $this->currentClass = $node->name->toString();
+            $this->currentClassLine = $node->getStartLine();
+            $this->currentHelpers = [];
+
+            return null;
+        }
+
+        // Only track inside classes or traits
         if ($this->currentClass === null) {
             return null;
         }
@@ -288,8 +311,13 @@ class HelperFunctionVisitor extends NodeVisitorAbstract
 
     public function leaveNode(Node $node)
     {
-        // Check helper count on class exit
-        if ($node instanceof Stmt\Class_) {
+        // Check helper count on class or trait exit
+        if ($node instanceof Stmt\Class_ || $node instanceof Stmt\Trait_) {
+            // Skip anonymous classes
+            if ($node instanceof Stmt\Class_ && $node->name === null) {
+                return null;
+            }
+
             $helperCount = array_sum($this->currentHelpers);
 
             if ($helperCount > $this->threshold) {

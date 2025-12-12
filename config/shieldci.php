@@ -212,6 +212,12 @@ return [
 
         'show_code_snippets' => env('SHIELDCI_SHOW_CODE_SNIPPETS', true),
 
+        'snippet_context_lines' => env('SHIELDCI_SNIPPET_CONTEXT_LINES', 8), // Lines before/after the issue
+
+        'snippet_plain_mode' => env('SHIELDCI_SNIPPET_PLAIN_MODE', false), // Disable ANSI colors for copy-paste
+
+        'snippet_syntax_highlighting' => env('SHIELDCI_SNIPPET_SYNTAX_HIGHLIGHTING', true), // Enable PHP syntax highlighting
+
         'max_issues_per_check' => env('SHIELDCI_MAX_ISSUES', 5), // Limit displayed issues per check
     ],
 

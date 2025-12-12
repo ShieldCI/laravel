@@ -12,7 +12,6 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Detects missing login throttling/rate limiting.
@@ -138,15 +137,12 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber);
 
                         if (! $hasThrottle && ! $hasGlobalThrottling) {
-                            $issues[] = $this->createIssue(
+                            $issues[] = $this->createIssueWithSnippet(
                                 message: sprintf('Login route "%s" lacks rate limiting protection', $routeUri),
-                                location: new Location(
-                                    $this->getRelativePath($filePath),
-                                    $lineNumber + 1
-                                ),
+                                filePath: $filePath,
+                                lineNumber: $lineNumber + 1,
                                 severity: Severity::High,
                                 recommendation: 'Add ->middleware("throttle:5,1") or similar rate limiting to prevent brute force attacks',
-                                code: FileParser::getCodeSnippet($filePath, $lineNumber + 1),
                                 metadata: [
                                     'route' => $routeUri,
                                     'issue_type' => 'missing_route_throttle',
@@ -245,15 +241,12 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                                 $methodName = $stmt->name->toString();
 
                                 if (in_array($methodName, ['login', 'authenticate', 'postLogin', 'attempt'], true)) {
-                                    $issues[] = $this->createIssue(
+                                    $issues[] = $this->createIssueWithSnippet(
                                         message: sprintf('Authentication method %s::%s() lacks rate limiting', $className, $methodName),
-                                        location: new Location(
-                                            $this->getRelativePath($controllerPath),
-                                            $stmt->getLine()
-                                        ),
+                                        filePath: $controllerPath,
+                                        lineNumber: $stmt->getLine(),
                                         severity: Severity::High,
                                         recommendation: 'Implement rate limiting using RateLimiter facade or throttle middleware to prevent brute force attacks',
-                                        code: FileParser::getCodeSnippet($controllerPath, $stmt->getLine()),
                                         metadata: [
                                             'class' => $className,
                                             'method' => $methodName,

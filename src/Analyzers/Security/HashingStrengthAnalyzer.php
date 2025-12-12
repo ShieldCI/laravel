@@ -11,7 +11,6 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Validates password hashing configuration strength.
@@ -178,15 +177,12 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
             if (preg_match('/["\']driver["\']\s*=>\s*["\'](md5|sha1|sha256)["\']/i', $line, $matches)) {
                 $driver = $matches[1];
 
-                $issues[] = $this->createIssue(
+                $issues[] = $this->createIssueWithSnippet(
                     message: sprintf('Weak hashing driver "%s" configured', $driver),
-                    location: new Location(
-                        $this->getRelativePath($hashingConfig),
-                        $lineNumber + 1
-                    ),
+                    filePath: $hashingConfig,
+                    lineNumber: $lineNumber + 1,
                     severity: Severity::Critical,
                     recommendation: 'Use "bcrypt" or "argon2id" as the hashing driver',
-                    code: FileParser::getCodeSnippet($hashingConfig, $lineNumber + 1),
                     metadata: ['driver' => $driver, 'issue_type' => 'weak_driver']
                 );
             }
@@ -216,7 +212,7 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
             $value = (int) $matches[1];
 
             if ($value < $minValue) {
-                $issues[] = $this->createIssue(
+                $issues[] = $this->createIssueWithSnippet(
                     message: sprintf('%s (%d%s) is below recommended minimum of %d%s',
                         $displayName,
                         $value,
@@ -224,10 +220,10 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
                         $minValue,
                         $unit
                     ),
-                    location: new Location($this->getRelativePath($file), $lineNumber + 1),
+                    filePath: $file,
+                    lineNumber: $lineNumber + 1,
                     severity: $severity,
                     recommendation: sprintf($recommendationTemplate, $minValue),
-                    code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                     metadata: [$param => $value, 'issue_type' => 'weak_'.$param]
                 );
             }
@@ -288,15 +284,12 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
                     // Check for password hashing with weak functions
                     // Detect password variable hashing (direct or through object/array access)
                     if (preg_match('/\b'.$func.'\s*\(\s*\$(?:password|(?:request|_POST|_GET)(?:->|\[).*password)/i', $codeOnly)) {
-                        $issues[] = $this->createIssue(
+                        $issues[] = $this->createIssueWithSnippet(
                             message: sprintf('Weak hashing function %s() used for password', $func),
-                            location: new Location(
-                                $this->getRelativePath($file),
-                                $lineNumber + 1
-                            ),
+                            filePath: $file,
+                            lineNumber: $lineNumber + 1,
                             severity: Severity::Critical,
                             recommendation: 'Use Hash::make() or bcrypt() for password hashing',
-                            code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                             metadata: ['function' => $func, 'issue_type' => 'weak_hash_function']
                         );
                     }
@@ -306,30 +299,24 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
                 if (preg_match('/password_hash\s*\([^,]+,\s*PASSWORD_(MD5|SHA1|SHA256)/i', $codeOnly, $matches)) {
                     $algorithm = $matches[1];
 
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: sprintf('Weak password_hash algorithm PASSWORD_%s used', $algorithm),
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $lineNumber + 1
-                        ),
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::Critical,
                         recommendation: 'Use PASSWORD_BCRYPT or PASSWORD_ARGON2ID',
-                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                         metadata: ['algorithm' => "PASSWORD_$algorithm", 'issue_type' => 'weak_password_hash_algorithm']
                     );
                 }
 
                 // Check for plain password storage (improved detection)
                 if ($this->isPlainTextPasswordStorage($codeOnly)) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: 'Potential plain-text password storage detected',
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $lineNumber + 1
-                        ),
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::Critical,
                         recommendation: 'Always hash passwords using Hash::make() or bcrypt()',
-                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                         metadata: ['issue_type' => 'plain_text_password']
                     );
                 }

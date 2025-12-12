@@ -10,9 +10,7 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Detects foreign keys in fillable arrays.
@@ -176,24 +174,21 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
         if (array_key_exists($fieldName, $dangerousPatterns)) {
             $relationship = $dangerousPatterns[$fieldName];
 
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createIssueWithSnippet(
                 message: sprintf(
                     'Critical: "%s" (%s) is fillable in model "%s" - this allows users to impersonate others',
                     $fieldName,
                     $relationship,
                     $modelName
                 ),
-                location: new Location(
-                    $this->getRelativePath($file),
-                    $stmt->getLine()
-                ),
+                filePath: $file,
+                lineNumber: $stmt->getLine(),
                 severity: Severity::Critical,
                 recommendation: sprintf(
                     'IMMEDIATELY remove "%s" from $fillable. Set it manually: $model->%s = auth()->id();',
                     $fieldName,
                     $fieldName
                 ),
-                code: FileParser::getCodeSnippet($file, $stmt->getLine()),
                 metadata: [
                     'field_name' => $fieldName,
                     'model_name' => $modelName,
@@ -209,23 +204,20 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 
         // Check for generic _id pattern (only if not a dangerous pattern)
         if (str_ends_with($fieldName, '_id')) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createIssueWithSnippet(
                 message: sprintf(
                     'Potential foreign key "%s" is fillable in model "%s"',
                     $fieldName,
                     $modelName
                 ),
-                location: new Location(
-                    $this->getRelativePath($file),
-                    $stmt->getLine()
-                ),
+                filePath: $file,
+                lineNumber: $stmt->getLine(),
                 severity: Severity::High,
                 recommendation: sprintf(
                     'Remove "%s" from $fillable or validate that users should be able to set this relationship. '.
                     'Consider using $guarded or manual assignment for foreign keys.',
                     $fieldName
                 ),
-                code: FileParser::getCodeSnippet($file, $stmt->getLine()),
                 metadata: [
                     'field_name' => $fieldName,
                     'model_name' => $modelName,

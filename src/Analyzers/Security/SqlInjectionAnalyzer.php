@@ -12,10 +12,8 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Detects potential SQL injection vulnerabilities.
@@ -256,15 +254,12 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
         string $method,
         string $recommendation
     ): Issue {
-        return $this->createIssue(
+        return $this->createIssueWithSnippet(
             message: "Potential SQL injection: {$method} with string concatenation or user input",
-            location: new Location(
-                $this->getRelativePath($file),
-                $node->getLine()
-            ),
+            filePath: $file,
+            lineNumber: $node->getLine(),
             severity: Severity::Critical,
-            recommendation: $recommendation,
-            code: FileParser::getCodeSnippet($file, $node->getLine())
+            recommendation: $recommendation
         );
     }
 

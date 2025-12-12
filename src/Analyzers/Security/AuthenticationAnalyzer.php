@@ -12,7 +12,6 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Detects missing authentication and authorization protection.
@@ -160,15 +159,12 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
                 // Resource routes that modify data should require auth
                 if (! $hasAuthMiddleware && in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE', 'RESOURCE', 'APIRESOURCE'])) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: sprintf('%s route without authentication middleware', $method),
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $lineNumber + 1
-                        ),
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::High,
                         recommendation: 'Add ->middleware("auth") or wrap in Route::middleware(["auth"])->group()',
-                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                         metadata: ['method' => $method]
                     );
                 }
@@ -187,15 +183,12 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 }
 
                 if (! $hasAuthMiddleware && ! $this->isPublicRoute($line)) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: 'Route group without authentication middleware',
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $lineNumber + 1
-                        ),
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::Medium,
                         recommendation: 'Add "middleware" => "auth" to route group configuration',
-                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                         metadata: ['route_type' => 'group', 'file' => basename($file)]
                     );
                 }
@@ -239,15 +232,12 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     // Check sensitive methods
                     if (in_array($methodName, $this->sensitiveControllerMethods)) {
                         if (! $hasAuthMiddleware && ! $this->hasAuthCheckInMethod($stmt)) {
-                            $issues[] = $this->createIssue(
+                            $issues[] = $this->createIssueWithSnippet(
                                 message: "Sensitive method {$className}::{$methodName}() without authentication check",
-                                location: new Location(
-                                    $this->getRelativePath($file),
-                                    $stmt->getLine()
-                                ),
+                                filePath: $file,
+                                lineNumber: $stmt->getLine(),
                                 severity: Severity::High,
-                                recommendation: 'Add $this->middleware("auth") in constructor or use authorization checks',
-                                code: FileParser::getCodeSnippet($file, $stmt->getLine())
+                                recommendation: 'Add $this->middleware("auth") in constructor or use authorization checks'
                             );
                         }
                     }
@@ -415,15 +405,12 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         }
 
         if (! $hasNullCheck) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createIssueWithSnippet(
                 message: "Unsafe {$method} usage without null check",
-                location: new Location(
-                    $this->getRelativePath($file),
-                    $lineNumber + 1
-                ),
+                filePath: $file,
+                lineNumber: $lineNumber + 1,
                 severity: Severity::Medium,
                 recommendation: "Check if user is authenticated before accessing: if ({$checkMethod}) or use {$method}?->property",
-                code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                 metadata: [
                     'method' => $method,
                     'check_method' => $checkMethod,

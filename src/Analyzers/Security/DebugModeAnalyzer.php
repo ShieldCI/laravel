@@ -11,7 +11,6 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Detects debug mode and debugging-related security issues.
@@ -121,15 +120,12 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
             }
 
             if (preg_match('/^APP_DEBUG\s*=\s*true/i', trim($line))) {
-                $issues[] = $this->createIssue(
+                $issues[] = $this->createIssueWithSnippet(
                     message: 'Debug mode is enabled (APP_DEBUG=true) in '.($appEnv ?: 'unknown').' environment',
-                    location: new Location(
-                        $this->getRelativePath($envFile),
-                        $lineNumber + 1
-                    ),
+                    filePath: $envFile,
+                    lineNumber: $lineNumber + 1,
                     severity: Severity::Critical,
                     recommendation: 'Set APP_DEBUG=false in production/staging environments to prevent information disclosure',
-                    code: FileParser::getCodeSnippet($envFile, $lineNumber + 1),
                     metadata: [
                         'file' => basename($envFile),
                         'env_var' => 'APP_DEBUG',
@@ -196,15 +192,12 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                 }
 
                 if (preg_match('/["\']debug["\']\s*=>\s*true\b/i', $line)) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: 'Debug mode hardcoded to true in config/app.php',
-                        location: new Location(
-                            $this->getRelativePath($appConfig),
-                            $lineNumber + 1
-                        ),
+                        filePath: $appConfig,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::Critical,
                         recommendation: 'Use env("APP_DEBUG", false) instead of hardcoded true',
-                        code: FileParser::getCodeSnippet($appConfig, $lineNumber + 1),
                         metadata: [
                             'file' => 'app.php',
                             'config_key' => 'debug',
@@ -246,15 +239,12 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                             ? Severity::High
                             : Severity::Medium;
 
-                        $issues[] = $this->createIssue(
+                        $issues[] = $this->createIssueWithSnippet(
                             message: sprintf('Debug function %s() found in production code', $func),
-                            location: new Location(
-                                $this->getRelativePath($file),
-                                $lineNumber + 1
-                            ),
+                            filePath: $file,
+                            lineNumber: $lineNumber + 1,
                             severity: $severity,
                             recommendation: sprintf('Remove %s() calls before deploying to production or use proper logging instead', $func),
-                            code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                             metadata: [
                                 'function' => $func,
                                 'file' => basename($file),
@@ -267,15 +257,12 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
                 // Check for Ray debugging tool
                 if (preg_match('/(?<!->)\bray\s*\(/i', $line)) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: 'Ray debugging function found in code',
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $lineNumber + 1
-                        ),
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::High,
                         recommendation: 'Remove ray() calls before deploying to production',
-                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                         metadata: [
                             'function' => 'ray',
                             'file' => basename($file),
@@ -285,15 +272,12 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
                 // Check for error_reporting(E_ALL)
                 if (preg_match('/error_reporting\s*\(\s*E_ALL/i', $line)) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: 'Verbose error reporting enabled',
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $lineNumber + 1
-                        ),
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::Medium,
                         recommendation: 'Let Laravel handle error reporting through APP_DEBUG configuration',
-                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                         metadata: [
                             'function' => 'error_reporting',
                             'file' => basename($file),
@@ -303,15 +287,12 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
                 // Check for ini_set('display_errors')
                 if (preg_match('/ini_set\s*\(\s*["\']display_errors["\']\s*,\s*["\']?1["\']?\s*\)/i', $line)) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: 'Display errors enabled with ini_set()',
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $lineNumber + 1
-                        ),
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::High,
                         recommendation: 'Remove ini_set("display_errors") and use Laravel\'s error handling',
-                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                         metadata: [
                             'function' => 'ini_set',
                             'parameter' => 'display_errors',
@@ -366,15 +347,12 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                     }
                 }
 
-                $issues[] = $this->createIssue(
+                $issues[] = $this->createIssueWithSnippet(
                     message: sprintf("%s package in 'require' section (should be in 'require-dev')", $name),
-                    location: new Location(
-                        $this->getRelativePath($composerFile),
-                        $lineNumber + 1
-                    ),
+                    filePath: $composerFile,
+                    lineNumber: $lineNumber + 1,
                     severity: Severity::Medium,
                     recommendation: sprintf("Move %s to 'require-dev' section to exclude from production", $package),
-                    code: FileParser::getCodeSnippet($composerFile, $lineNumber + 1),
                     metadata: [
                         'package' => $package,
                         'package_name' => $name,

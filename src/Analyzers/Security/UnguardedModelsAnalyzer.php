@@ -12,7 +12,6 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Detects Model::unguard() calls that disable mass assignment protection.
@@ -196,18 +195,15 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
 
             $classLabel = $call->class instanceof Node\Name ? $call->class->toString() : 'Model';
 
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createIssueWithSnippet(
                 message: sprintf(
                     'Model mass assignment protection disabled without re-guarding (%s::unguard())',
                     $classLabel
                 ),
-                location: new Location(
-                    $relativePath,
-                    $lineNumber
-                ),
+                filePath: $file,
+                lineNumber: $lineNumber,
                 severity: $this->getSeverityForContext($relativePath),
-                recommendation: 'Call Model::reguard() immediately after importing or use $fillable/forceFill() instead of globally unguarding models.',
-                code: FileParser::getCodeSnippet($file, $lineNumber)
+                recommendation: 'Call Model::reguard() immediately after importing or use $fillable/forceFill() instead of globally unguarding models.'
             );
         }
     }

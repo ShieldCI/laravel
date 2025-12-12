@@ -11,7 +11,6 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Validates that the application encryption key is properly configured.
@@ -130,15 +129,12 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
 
                 // Detect multiple APP_KEY definitions
                 if ($appKeyCount > 1) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: sprintf('Multiple APP_KEY definitions found (first at line %d, duplicate at line %d)', $firstKeyLine + 1, $lineNumber + 1),
-                        location: new Location(
-                            $this->getRelativePath($envFile),
-                            $lineNumber + 1
-                        ),
+                        filePath: $envFile,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::High,
                         recommendation: 'Remove duplicate APP_KEY definitions. Only one APP_KEY should be defined per file.',
-                        code: FileParser::getCodeSnippet($envFile, $lineNumber + 1),
                         metadata: ['duplicate_count' => $appKeyCount]
                     );
 
@@ -149,29 +145,23 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
 
                 // Check if APP_KEY is empty or whitespace
                 if ($normalizedValue === '') {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: 'APP_KEY is not set or is empty',
-                        location: new Location(
-                            $this->getRelativePath($envFile),
-                            $lineNumber + 1
-                        ),
+                        filePath: $envFile,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::Critical,
                         recommendation: 'Run "php artisan key:generate" to generate a secure application key',
-                        code: FileParser::getCodeSnippet($envFile, $lineNumber + 1),
                         metadata: ['file' => basename($envFile)]
                     );
                 }
                 // Check if APP_KEY is a placeholder (case-insensitive)
                 elseif ($this->isPlaceholderValue($appKeyValue)) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: 'APP_KEY is set to a placeholder/example value',
-                        location: new Location(
-                            $this->getRelativePath($envFile),
-                            $lineNumber + 1
-                        ),
+                        filePath: $envFile,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::Critical,
                         recommendation: 'Run "php artisan key:generate" to generate a secure application key',
-                        code: FileParser::getCodeSnippet($envFile, $lineNumber + 1),
                         metadata: [
                             'file' => basename($envFile),
                             'placeholder_detected' => $normalizedValue,
@@ -180,15 +170,12 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                 }
                 // Validate APP_KEY format and strength
                 elseif (! $this->isValidAppKey($appKeyValue)) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: 'APP_KEY does not follow the expected format or is too short',
-                        location: new Location(
-                            $this->getRelativePath($envFile),
-                            $lineNumber + 1
-                        ),
+                        filePath: $envFile,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::High,
                         recommendation: 'Ensure APP_KEY is properly generated with "php artisan key:generate". Valid keys must be at least 32 characters or use base64: prefix with properly encoded content (minimum 16 bytes decoded).',
-                        code: FileParser::getCodeSnippet($envFile, $lineNumber + 1),
                         metadata: [
                             'file' => basename($envFile),
                             'provided_length' => strlen($normalizedValue),
@@ -201,15 +188,12 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
 
         // Flag missing APP_KEY
         if (! $hasAppKey) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createIssueWithSnippet(
                 message: 'APP_KEY is not defined in .env file',
-                location: new Location(
-                    $this->getRelativePath($envFile),
-                    1
-                ),
+                filePath: $envFile,
+                lineNumber: 1,
                 severity: Severity::Critical,
                 recommendation: 'Add APP_KEY to your .env file and run "php artisan key:generate"',
-                code: FileParser::getCodeSnippet($envFile, 1),
                 metadata: ['file' => basename($envFile)]
             );
         }
@@ -251,15 +235,12 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
             if (preg_match('/["\']key["\']\s*=>\s*["\'][^"\']+["\']/i', $line)) {
                 // Check if it's a real hardcoded key (not a comment or documentation)
                 if (! preg_match('/^\s*\/\/|^\s*\*/', $line)) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: 'Application key is hardcoded in config/app.php instead of using environment variable',
-                        location: new Location(
-                            $this->getRelativePath($appConfig),
-                            $lineNumber + 1
-                        ),
+                        filePath: $appConfig,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::Critical,
                         recommendation: 'Use env("APP_KEY") to reference the key from .env file',
-                        code: FileParser::getCodeSnippet($appConfig, $lineNumber + 1),
                         metadata: [
                             'file' => 'app.php',
                             'config_key' => 'key',
@@ -275,15 +256,12 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
 
                     // Laravel supports AES-128-CBC and AES-256-CBC
                     if (! in_array($cipher, ['aes-128-cbc', 'aes-256-cbc'], true)) {
-                        $issues[] = $this->createIssue(
+                        $issues[] = $this->createIssueWithSnippet(
                             message: sprintf('Unsupported or weak cipher algorithm: %s', $cipher),
-                            location: new Location(
-                                $this->getRelativePath($appConfig),
-                                $lineNumber + 1
-                            ),
+                            filePath: $appConfig,
+                            lineNumber: $lineNumber + 1,
                             severity: Severity::High,
                             recommendation: 'Use "AES-256-CBC" or "AES-128-CBC" cipher',
-                            code: FileParser::getCodeSnippet($appConfig, $lineNumber + 1),
                             metadata: [
                                 'file' => 'app.php',
                                 'config_key' => 'cipher',

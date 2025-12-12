@@ -10,7 +10,6 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Detects missing CSRF protection vulnerabilities.
@@ -130,15 +129,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 }
 
                 if (! $hasCsrf && ! $this->isApiRoute($content)) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: 'Form without CSRF protection - missing @csrf directive',
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $lineNumber + 1
-                        ),
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::High,
                         recommendation: 'Add @csrf directive inside the form or use {{ csrf_field() }}',
-                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                         metadata: [
                             'file' => basename($file),
                             'form_method' => $method,
@@ -186,15 +182,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 }
 
                 if ($hasPostMethod && ! $hasCsrfToken) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: 'AJAX request without CSRF token',
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $lineNumber + 1
-                        ),
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::High,
                         recommendation: 'Add X-CSRF-TOKEN header: headers: { "X-CSRF-TOKEN": $("meta[name=csrf-token]").attr("content") }',
-                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                         metadata: [
                             'file' => basename($file),
                             'ajax_type' => $ajaxType,
@@ -238,15 +231,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 }
 
                 if (! $hasCsrfToken) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: 'JavaScript AJAX request may be missing CSRF token',
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $lineNumber + 1
-                        ),
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::Medium,
                         recommendation: 'Add CSRF token to headers or ensure Laravel\'s default CSRF setup is configured',
-                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                         metadata: [
                             'file' => basename($file),
                             'ajax_library' => $ajaxLibrary,
@@ -309,15 +299,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                     }
 
                     if ($exception === '*' || $exception === '/*') {
-                        $issues[] = $this->createIssue(
+                        $issues[] = $this->createIssueWithSnippet(
                             message: 'Critical: All routes excluded from CSRF protection with wildcard',
-                            location: new Location(
-                                $this->getRelativePath($middlewarePath),
-                                $lineNumber + 1
-                            ),
+                            filePath: $middlewarePath,
+                            lineNumber: $lineNumber + 1,
                             severity: Severity::Critical,
                             recommendation: 'Remove wildcard CSRF exceptions and specify exact routes that need exclusion',
-                            code: FileParser::getCodeSnippet($middlewarePath, $lineNumber + 1),
                             metadata: [
                                 'exception' => $exception,
                                 'file' => 'VerifyCsrfToken.php',
@@ -326,15 +313,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                             ]
                         );
                     } elseif (preg_match('/\*/', $exception) && ! str_contains($exception, 'api/')) {
-                        $issues[] = $this->createIssue(
+                        $issues[] = $this->createIssueWithSnippet(
                             message: sprintf('Broad CSRF exception pattern: %s', $exception),
-                            location: new Location(
-                                $this->getRelativePath($middlewarePath),
-                                $lineNumber + 1
-                            ),
+                            filePath: $middlewarePath,
+                            lineNumber: $lineNumber + 1,
                             severity: Severity::High,
                             recommendation: 'Use more specific route patterns for CSRF exceptions',
-                            code: FileParser::getCodeSnippet($middlewarePath, $lineNumber + 1),
                             metadata: [
                                 'exception' => $exception,
                                 'file' => 'VerifyCsrfToken.php',
@@ -372,15 +356,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         // Check if VerifyCsrfToken middleware is present
         if (! str_contains($content, 'VerifyCsrfToken')) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createIssueWithSnippet(
                 message: 'VerifyCsrfToken middleware is not registered in HTTP Kernel',
-                location: new Location(
-                    $this->getRelativePath($kernelFile),
-                    1
-                ),
+                filePath: $kernelFile,
+                lineNumber: 1,
                 severity: Severity::Critical,
                 recommendation: 'Add \\App\\Http\\Middleware\\VerifyCsrfToken::class to $middleware or $middlewareGroups[\'web\'] array in app/Http/Kernel.php',
-                code: FileParser::getCodeSnippet($kernelFile, 1),
                 metadata: [
                     'file' => 'Kernel.php',
                     'middleware' => 'VerifyCsrfToken',
@@ -398,15 +379,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
             if (str_contains($line, 'VerifyCsrfToken') &&
                 preg_match('/^\s*\/\//', $line)) {
-                $issues[] = $this->createIssue(
+                $issues[] = $this->createIssueWithSnippet(
                     message: 'VerifyCsrfToken middleware is commented out',
-                    location: new Location(
-                        $this->getRelativePath($kernelFile),
-                        $lineNumber + 1
-                    ),
+                    filePath: $kernelFile,
+                    lineNumber: $lineNumber + 1,
                     severity: Severity::Critical,
                     recommendation: 'Uncomment the VerifyCsrfToken middleware to enable CSRF protection',
-                    code: FileParser::getCodeSnippet($kernelFile, $lineNumber + 1),
                     metadata: [
                         'file' => 'Kernel.php',
                         'middleware' => 'VerifyCsrfToken',
@@ -429,15 +407,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         if (! str_contains($content, 'VerifyCsrfToken') && ! str_contains($content, 'csrf')) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createIssueWithSnippet(
                 message: 'VerifyCsrfToken middleware may not be properly configured',
-                location: new Location(
-                    $this->getRelativePath($file),
-                    1
-                ),
+                filePath: $file,
+                lineNumber: 1,
                 severity: Severity::High,
                 recommendation: 'Ensure CSRF protection is enabled in your middleware configuration',
-                code: FileParser::getCodeSnippet($file, 1),
                 metadata: [
                     'file' => 'bootstrap/app.php',
                     'laravel_version' => '11+',
@@ -489,15 +464,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 }
 
                 if (! $hasMiddleware) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: sprintf('%s route may be missing CSRF protection middleware', $method),
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $lineNumber + 1
-                        ),
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::Medium,
                         recommendation: 'Ensure route uses "web" middleware group which includes CSRF protection',
-                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                         metadata: [
                             'method' => $method,
                             'file' => basename($file),

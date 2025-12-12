@@ -213,7 +213,7 @@ class HelperFunctionVisitor extends NodeVisitorAbstract
 
         // Track trait entry
         if ($node instanceof Stmt\Trait_) {
-            $this->currentClass = $node->name->toString();
+            $this->currentClass = $node->name?->toString();
             $this->currentClassLine = $node->getStartLine();
             $this->currentHelpers = [];
 

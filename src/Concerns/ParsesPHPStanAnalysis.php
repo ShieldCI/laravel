@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace ShieldCI\Concerns;
 
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\FileParser;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Support\PHPStan;
 
 /**
@@ -32,12 +30,13 @@ trait ParsesPHPStanAnalysis
                 continue;  // Skip invalid types
             }
 
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createIssueWithSnippet(
                 message: $trace['message'],
-                location: new Location($trace['path'], $trace['line']),
+                filePath: $trace['path'],
+                lineNumber: $trace['line'],
                 severity: Severity::High,
                 recommendation: $this->getRecommendationFromMessage($trace['message']),
-                code: FileParser::getCodeSnippet($trace['path'], $trace['line']),
+                code: 'phpstan',
                 metadata: [
                     'phpstan_message' => $trace['message'],
                     'detection_method' => 'phpstan',
@@ -55,12 +54,13 @@ trait ParsesPHPStanAnalysis
     protected function matchPHPStanAnalysis(PHPStan $phpStan, string|array $pattern, array &$issues): void
     {
         foreach ($phpStan->match($pattern) as $trace) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createIssueWithSnippet(
                 message: $trace['message'],
-                location: new Location($trace['path'], $trace['line']),
+                filePath: $trace['path'],
+                lineNumber: $trace['line'],
                 severity: Severity::High,
                 recommendation: $this->getRecommendationFromMessage($trace['message']),
-                code: FileParser::getCodeSnippet($trace['path'], $trace['line']),
+                code: 'phpstan',
                 metadata: [
                     'phpstan_message' => $trace['message'],
                     'detection_method' => 'phpstan',
@@ -77,12 +77,13 @@ trait ParsesPHPStanAnalysis
     protected function pregMatchPHPStanAnalysis(PHPStan $phpStan, string $pattern, array &$issues): void
     {
         foreach ($phpStan->pregMatch($pattern) as $trace) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createIssueWithSnippet(
                 message: $trace['message'],
-                location: new Location($trace['path'], $trace['line']),
+                filePath: $trace['path'],
+                lineNumber: $trace['line'],
                 severity: Severity::High,
                 recommendation: $this->getRecommendationFromMessage($trace['message']),
-                code: FileParser::getCodeSnippet($trace['path'], $trace['line']),
+                code: 'phpstan',
                 metadata: [
                     'phpstan_message' => $trace['message'],
                     'detection_method' => 'phpstan',

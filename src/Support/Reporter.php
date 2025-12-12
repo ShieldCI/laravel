@@ -739,14 +739,14 @@ class Reporter implements ReporterInterface
             '/(["\'])(?:(?=(\\\\?))\2.)*?\1/',
             fn ($matches) => $this->color($matches[0], 'yellow'),
             $result
-        );
+        ) ?? $result;
 
         // Highlight comments
         $result = preg_replace_callback(
             '/\/\/.*$|\/\*.*?\*\/|#.*$/',
             fn ($matches) => $this->color($matches[0], 'gray'),
             $result
-        );
+        ) ?? $result;
 
         // Highlight keywords (word boundaries)
         foreach ($keywords as $keyword) {
@@ -754,7 +754,7 @@ class Reporter implements ReporterInterface
                 '/\b('.preg_quote($keyword, '/').')\b/',
                 fn ($matches) => $this->color($matches[1], 'cyan'),
                 $result
-            );
+            ) ?? $result;
         }
 
         // Highlight variables ($var)
@@ -762,15 +762,16 @@ class Reporter implements ReporterInterface
             '/\$[a-zA-Z_\x7f-\xff][a-zA-Z0-9_\x7f-\xff]*/',
             fn ($matches) => $this->color($matches[0], 'green'),
             $result
-        );
+        ) ?? $result;
 
         // Highlight numbers
         $result = preg_replace_callback(
             '/\b\d+\.?\d*\b/',
             fn ($matches) => $this->color($matches[0], 'magenta'),
             $result
-        );
+        ) ?? $result;
 
-        return $result;
+        // Ensure we always return a string (preg_replace_callback can return null on error)
+        return is_string($result) ? $result : $line;
     }
 }

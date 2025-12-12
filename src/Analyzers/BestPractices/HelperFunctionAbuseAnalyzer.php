@@ -156,73 +156,7 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
         }
         $helperString = implode(', ', $helperList);
 
-        $base = "Class '{$class}' uses {$count} helper function calls: {$helperString}. While Laravel helpers are convenient, excessive use hides dependencies and makes unit testing difficult. ";
-
-        $strategies = [
-            'Use dependency injection in constructor instead of helper functions',
-            'Inject specific services rather than using app() or resolve()',
-            'For request data, inject Request object instead of using request() helper',
-            'For authentication, inject AuthManager instead of auth() helper',
-            'For configuration, inject Repository instead of config() helper',
-            'Create dedicated service classes for complex logic',
-            'Reserve helpers for views, routes, and simple scripts',
-        ];
-
-        $example = <<<'PHP'
-
-// Problem - Heavy helper usage (hard to test):
-class OrderController
-{
-    public function store()
-    {
-        $user = auth()->user();                    // Helper
-        $data = request()->all();                  // Helper
-        $validator = validator($data, []);         // Helper
-
-        if ($validator->fails()) {
-            return redirect()->back();             // Helper
-        }
-
-        $order = app(OrderService::class)          // Helper
-            ->create($data);
-
-        cache()->put("order_{$order->id}", $order); // Helper
-        event(new OrderCreated($order));           // Helper
-
-        return response()->json($order);           // Helper
-    }
-}
-
-// Solution - Dependency injection (testable):
-class OrderController
-{
-    public function __construct(
-        private OrderService $orders,
-        private CacheManager $cache,
-        private EventDispatcher $events
-    ) {}
-
-    public function store(Request $request)
-    {
-        $user = $request->user();
-        $validated = $request->validate([
-            // validation rules
-        ]);
-
-        $order = $this->orders->create($validated);
-
-        $this->cache->put("order_{$order->id}", $order);
-        $this->events->dispatch(new OrderCreated($order));
-
-        return response()->json($order);
-    }
-}
-
-// Note: Using response() helper at end is acceptable
-// as it's just for response creation, not business logic
-PHP;
-
-        return $base.'Best practices: '.implode('; ', $strategies).". Example:{$example}";
+        return "Class '{$class}' uses {$count} helper function calls: {$helperString}. While Laravel helpers are convenient, excessive use hides dependencies and makes unit testing difficult. ";
     }
 }
 

@@ -143,47 +143,35 @@ class XssAnalyzer extends AbstractFileAnalyzer
                 if (preg_match('/\{!!.*?!!\}/', $line)) {
                     // Check if the variable might contain user input
                     if ($this->mightContainUserInput($line)) {
-                        $issues[] = $this->createIssue(
+                        $issues[] = $this->createIssueWithSnippet(
                             message: 'Potential XSS: Unescaped blade output with possible user input',
-                            location: new Location(
-                                $this->getRelativePath($file),
-                                $lineNumber + 1
-                            ),
+                            filePath: $file,
+                            lineNumber: $lineNumber + 1,
                             severity: Severity::High,
-                            recommendation: 'Use {{ $var }} instead of {!! $var !!} or sanitize with e() helper or Purifier',
-                            code: FileParser::getCodeSnippet($file, $lineNumber + 1),
-                            metadata: []
+                            recommendation: 'Use {{ $var }} instead of {!! $var !!} or sanitize with e() helper or Purifier'
                         );
                     }
                 }
 
                 // Check for echo with superglobals
                 if (preg_match('/echo\s+\$_(GET|POST|REQUEST|COOKIE)/', $line)) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: 'Critical XSS: Direct echo of superglobal without escaping',
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $lineNumber + 1
-                        ),
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::Critical,
-                        recommendation: 'Always escape output: echo htmlspecialchars($_GET["var"], ENT_QUOTES, "UTF-8")',
-                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
-                        metadata: []
+                        recommendation: 'Always escape output: echo htmlspecialchars($_GET["var"], ENT_QUOTES, "UTF-8")'
                     );
                 }
 
                 // Check for echo with request() helper
                 if (preg_match('/echo\s+.*?request\(/', $line) && ! str_contains($line, 'htmlspecialchars') && ! str_contains($line, 'e(')) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: 'Potential XSS: Echo of request data without escaping',
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $lineNumber + 1
-                        ),
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
                         severity: Severity::High,
-                        recommendation: 'Use e() helper or htmlspecialchars() to escape output',
-                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
-                        metadata: []
+                        recommendation: 'Use e() helper or htmlspecialchars() to escape output'
                     );
                 }
 
@@ -193,16 +181,12 @@ class XssAnalyzer extends AbstractFileAnalyzer
                     ! preg_match('/\be\s*\(/', $line) &&
                     ! str_contains($line, 'htmlspecialchars')) {
                     if ($this->mightContainUserInput($line)) {
-                        $issues[] = $this->createIssue(
+                        $issues[] = $this->createIssueWithSnippet(
                             message: 'Potential XSS: Response::make() with possible unescaped user input',
-                            location: new Location(
-                                $this->getRelativePath($file),
-                                $lineNumber + 1
-                            ),
+                            filePath: $file,
+                            lineNumber: $lineNumber + 1,
                             severity: Severity::High,
-                            recommendation: 'Escape user input before rendering or use response()->json() for JSON responses',
-                            code: FileParser::getCodeSnippet($file, $lineNumber + 1),
-                            metadata: []
+                            recommendation: 'Escape user input before rendering or use response()->json() for JSON responses'
                         );
                     }
                 }
@@ -212,16 +196,12 @@ class XssAnalyzer extends AbstractFileAnalyzer
                     // Check for unescaped Blade output or superglobals in JavaScript
                     if (preg_match('/\{\{[^@].*?(\$_(GET|POST|REQUEST|COOKIE)|request\(|->get\(|->post\()/', $line) ||
                         preg_match('/@json\(\$_(GET|POST|REQUEST|COOKIE)/', $line)) {
-                        $issues[] = $this->createIssue(
+                        $issues[] = $this->createIssueWithSnippet(
                             message: 'Potential XSS: User data in JavaScript without proper encoding',
-                            location: new Location(
-                                $this->getRelativePath($file),
-                                $lineNumber + 1
-                            ),
+                            filePath: $file,
+                            lineNumber: $lineNumber + 1,
                             severity: Severity::High,
-                            recommendation: 'Use @json() directive for variables or json_encode() with JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP flags',
-                            code: FileParser::getCodeSnippet($file, $lineNumber + 1),
-                            metadata: []
+                            recommendation: 'Use @json() directive for variables or json_encode() with JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP flags'
                         );
                     }
                 }

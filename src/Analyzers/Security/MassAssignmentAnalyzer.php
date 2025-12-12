@@ -12,7 +12,6 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Detects mass assignment vulnerabilities in Eloquent models.
@@ -196,15 +195,12 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
         // Issue if neither fillable nor guarded is set
         if (! $hasFillable && ! $hasGuarded) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createIssueWithSnippet(
                 message: "Model '{$modelName}' lacks mass assignment protection (\$fillable or \$guarded)",
-                location: new Location(
-                    $this->getRelativePath($file),
-                    $class->getLine()
-                ),
+                filePath: $file,
+                lineNumber: $class->getLine(),
                 severity: Severity::High,
                 recommendation: 'Add protected $fillable = [...] or protected $guarded = ["*"] to the model',
-                code: FileParser::getCodeSnippet($file, $class->getLine()),
                 metadata: [
                     'model' => $modelName,
                     'issue_type' => 'missing_model_protection',
@@ -214,15 +210,12 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
         // Issue if guarded is empty array (allows all)
         if ($hasEmptyGuarded) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createIssueWithSnippet(
                 message: "Model '{$modelName}' has \$guarded = [] which allows mass assignment of all attributes",
-                location: new Location(
-                    $this->getRelativePath($file),
-                    $class->getLine()
-                ),
+                filePath: $file,
+                lineNumber: $class->getLine(),
                 severity: Severity::Critical,
                 recommendation: 'Either specify fillable attributes or use $guarded = ["*"] to protect all',
-                code: FileParser::getCodeSnippet($file, $class->getLine()),
                 metadata: [
                     'model' => $modelName,
                     'issue_type' => 'empty_guarded_array',
@@ -362,15 +355,12 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     default => 'Call to',
                 };
 
-                $issues[] = $this->createIssue(
+                $issues[] = $this->createIssueWithSnippet(
                     message: "{$callTypeLabel} {$method}() with unfiltered request data may result in mass assignment vulnerability",
-                    location: new Location(
-                        $this->getRelativePath($file),
-                        $call->getLine()
-                    ),
+                    filePath: $file,
+                    lineNumber: $call->getLine(),
                     severity: Severity::Critical,
                     recommendation: 'Use request()->only([...]) or request()->validated() to specify allowed fields explicitly',
-                    code: FileParser::getCodeSnippet($file, $call->getLine()),
                     metadata: [
                         'method' => $method,
                         'call_type' => $callType,

@@ -176,9 +176,10 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         if (! isset($opcacheConfig['directives']['opcache.enable'])
             || $opcacheConfig['directives']['opcache.enable'] !== true
         ) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createOpcacheIssue(
+                phpIniPath: $phpIniPath,
+                setting: 'opcache.enable',
                 message: 'OPcache is disabled',
-                location: new Location($phpIniPath, 1),
                 severity: Severity::High,
                 recommendation: 'Enable OPcache by setting "opcache.enable=1" in php.ini. OPcache provides significant performance improvements by caching compiled bytecode.',
                 metadata: [
@@ -476,19 +477,13 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         $line = $this->getSettingLine($phpIniPath, $setting);
 
         // Try to get code snippet, but handle open_basedir restrictions gracefully
-        try {
-            $snippet = FileParser::getCodeSnippet($phpIniPath, $line);
-        } catch (\Throwable $e) {
-            // If we can't read the file (e.g., due to open_basedir restrictions), use empty snippet
-            $snippet = '';
-        }
-
-        return $this->createIssue(
+        return $this->createIssueWithSnippet(
             message: $message,
-            location: new Location($phpIniPath, $line),
+            filePath: $phpIniPath,
+            lineNumber: $line,
             severity: $severity,
             recommendation: $recommendation,
-            code: $snippet,
+            code: 'opcache-setting',
             metadata: $metadata
         );
     }

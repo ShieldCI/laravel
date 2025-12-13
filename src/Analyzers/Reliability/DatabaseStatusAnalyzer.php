@@ -73,7 +73,7 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
                     location: $configLocation,
                     severity: Severity::Critical,
                     recommendation: $this->buildRecommendation($connectionName, $result),
-                    code: $this->getCodeSnippetSafely($configLocation),
+                    code: FileParser::getCodeSnippet($configLocation->file, $configLocation->line),
                     metadata: [
                         'connection' => $connectionName,
                         'driver' => $this->getConnectionDriver($connectionName),
@@ -245,17 +245,5 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
         }
 
         return $error;
-    }
-
-    /**
-     * Safely get code snippet, handling missing files.
-     */
-    private function getCodeSnippetSafely(Location $location): ?string
-    {
-        if (! file_exists($location->file)) {
-            return null;
-        }
-
-        return FileParser::getCodeSnippet($location->file, $location->line);
     }
 }

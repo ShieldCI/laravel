@@ -69,7 +69,7 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
                         location: $configLocation,
                         severity: Severity::Critical,
                         recommendation: $this->getWriteReadFailureRecommendation(),
-                        code: $this->getCodeSnippetSafely($configLocation),
+                        code: FileParser::getCodeSnippet($configLocation->file, $configLocation->line),
                         metadata: [
                             'cache_driver' => $this->getCacheDriver(),
                             'expected' => $testValue,
@@ -94,7 +94,7 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
                     location: $configLocation,
                     severity: Severity::Critical,
                     recommendation: $this->getConnectionFailureRecommendation($e),
-                    code: $this->getCodeSnippetSafely($configLocation),
+                    code: FileParser::getCodeSnippet($configLocation->file, $configLocation->line),
                     metadata: [
                         'cache_driver' => $this->getCacheDriver(),
                         'exception' => get_class($e),
@@ -197,15 +197,4 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
         }
     }
 
-    /**
-     * Safely get code snippet, handling missing files.
-     */
-    private function getCodeSnippetSafely(Location $location): ?string
-    {
-        if (! file_exists($location->file)) {
-            return null;
-        }
-
-        return FileParser::getCodeSnippet($location->file, $location->line);
-    }
 }

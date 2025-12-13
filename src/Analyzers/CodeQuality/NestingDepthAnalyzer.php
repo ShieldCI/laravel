@@ -15,7 +15,6 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Identifies deeply nested code blocks.
@@ -74,11 +73,15 @@ class NestingDepthAnalyzer extends AbstractFileAnalyzer
             $traverser->traverse($ast);
 
             foreach ($visitor->getIssues() as $issue) {
-                $issues[] = $this->createIssue(
+                $issues[] = $this->createIssueWithSnippet(
                     message: "Code block has nesting depth of {$issue['depth']} (threshold: {$threshold}) in '{$issue['context']}'",
-                    location: new Location($this->getRelativePath($file), $issue['line']),
+                    filePath: $file,
+                    lineNumber: $issue['line'],
                     severity: $this->getSeverityForDepth($issue['depth'], $threshold),
                     recommendation: $this->getRecommendation($issue['depth'], $threshold),
+                    column: null,
+                    contextLines: null,
+                    code: $issue['context'],
                     metadata: [
                         'depth' => $issue['depth'],
                         'threshold' => $threshold,

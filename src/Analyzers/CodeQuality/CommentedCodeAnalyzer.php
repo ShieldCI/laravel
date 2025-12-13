@@ -10,7 +10,6 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Detects commented-out code that should be removed.
@@ -79,11 +78,15 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
             $commentedBlocks = $this->findCommentedCodeBlocks($content, $minLines);
 
             foreach ($commentedBlocks as $block) {
-                $issues[] = $this->createIssue(
+                $issues[] = $this->createIssueWithSnippet(
                     message: "Found {$block['lineCount']} consecutive lines of commented-out code",
-                    location: new Location($this->getRelativePath($file), $block['startLine']),
+                    filePath: $file,
+                    lineNumber: $block['startLine'],
                     severity: $this->getSeverityForBlock($block['lineCount']),
                     recommendation: $this->getRecommendation($block['lineCount']),
+                    column: null,
+                    contextLines: null,
+                    code: 'commented-code',
                     metadata: [
                         'startLine' => $block['startLine'],
                         'endLine' => $block['endLine'],

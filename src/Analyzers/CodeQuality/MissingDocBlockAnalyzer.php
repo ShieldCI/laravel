@@ -16,7 +16,6 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Flags public methods without documentation.
@@ -70,11 +69,15 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
             $traverser->traverse($ast);
 
             foreach ($visitor->getIssues() as $issue) {
-                $issues[] = $this->createIssue(
+                $issues[] = $this->createIssueWithSnippet(
                     message: $issue['message'],
-                    location: new Location($this->getRelativePath($file), $issue['line']),
+                    filePath: $file,
+                    lineNumber: $issue['line'],
                     severity: Severity::Low,
                     recommendation: $this->getRecommendation($issue['type'], $issue['method']),
+                    column: null,
+                    contextLines: null,
+                    code: $issue['method'],
                     metadata: [
                         'method' => $issue['method'],
                         'class' => $issue['class'],

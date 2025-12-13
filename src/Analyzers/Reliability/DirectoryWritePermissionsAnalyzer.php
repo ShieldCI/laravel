@@ -211,7 +211,7 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
             location: new Location($this->getRelativePath($locationPath), 1),
             severity: Severity::Critical,
             recommendation: $this->buildRecommendation($failedDirsList, $formattedDirs),
-            code: $this->getCodeSnippetSafely($locationPath),
+            code: FileParser::getCodeSnippet($locationPath->file, 1),
             metadata: [
                 'failed_directories' => $formattedDirs,
                 'count' => count($failedDirs),
@@ -289,20 +289,6 @@ RECOMMENDATION,
         return str_replace(['/', '\\'], DIRECTORY_SEPARATOR, rtrim($path, '/\\'));
     }
 
-    /**
-     * Safely get code snippet, handling missing files.
-     */
-    private function getCodeSnippetSafely(string $file): ?string
-    {
-        if (! file_exists($file)) {
-            return null;
-        }
-
-        return $this->safeExecute(
-            fn () => FileParser::getCodeSnippet($file, 1),
-            null
-        );
-    }
 
     /**
      * Execute a callable safely, returning default on exception.

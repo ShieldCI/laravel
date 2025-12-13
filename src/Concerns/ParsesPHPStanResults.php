@@ -6,7 +6,6 @@ namespace ShieldCI\Concerns;
 
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\FileParser;
 
 /**
  * Shared functionality for analyzers that parse PHPStan results.
@@ -59,7 +58,7 @@ trait ParsesPHPStanResults
                 lineNumber: $line,
                 severity: $severity,
                 recommendation: $recommendationCallback($message),
-                code: $this->getCodeSafely($file, $line),
+                code: 'phpstan',
                 metadata: [
                     'phpstan_message' => $message,
                     'file' => $file,
@@ -90,18 +89,6 @@ trait ParsesPHPStanResults
         }
 
         return sprintf('Found %d %s', $totalCount, $issueType);
-    }
-
-    /**
-     * Safely get code, handling missing files.
-     */
-    private function getCodeSafely(string $file, int $line): ?string
-    {
-        if (! file_exists($file)) {
-            return null;
-        }
-
-        return FileParser::getCodeSnippet($file, $line);
     }
 
     /**

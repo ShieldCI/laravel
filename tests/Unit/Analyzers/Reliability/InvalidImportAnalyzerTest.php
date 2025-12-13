@@ -754,7 +754,7 @@ PHP,
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals('phpstan', $issues[0]->code);
+        $this->assertNull($issues[0]->code);
     }
 
     // =========================================================================

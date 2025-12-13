@@ -30,7 +30,6 @@ class Reporter implements ReporterInterface
     public function toConsole(AnalysisReport $report): string
     {
         $showRecommendations = config('shieldci.report.show_recommendations', true);
-        $showCodeSnippets = config('shieldci.report.show_code_snippets', true);
         $maxIssuesPerCheckRaw = config('shieldci.report.max_issues_per_check', 5);
         $maxIssuesPerCheck = is_int($maxIssuesPerCheckRaw) ? $maxIssuesPerCheckRaw : 5;
 
@@ -129,11 +128,6 @@ class Reporter implements ReporterInterface
                                 $output[] = $this->color("At {$issue->location}.", 'white', 'bg_red');
                             } else {
                                 $output[] = $this->color("At {$issue->location}.", 'magenta');
-                            }
-
-                            // Show code snippet if enabled and available
-                            if ($showCodeSnippets && $issue->codeSnippet !== null) {
-                                $output[] = $this->formatCodeSnippet($issue->codeSnippet);
                             }
                         }
 
@@ -563,7 +557,6 @@ class Reporter implements ReporterInterface
         string $category
     ): string {
         $showRecommendations = config('shieldci.report.show_recommendations', true);
-        $showCodeSnippets = config('shieldci.report.show_code_snippets', true);
         $maxIssuesPerCheckRaw = config('shieldci.report.max_issues_per_check', 5);
         $maxIssuesPerCheck = is_int($maxIssuesPerCheckRaw) ? $maxIssuesPerCheckRaw : 5;
 
@@ -615,11 +608,6 @@ class Reporter implements ReporterInterface
                     } else {
                         $output[] = $this->color("At {$issue->location}.", 'magenta');
                     }
-
-                    // Show code snippet if enabled and available
-                    if ($showCodeSnippets && $issue->codeSnippet !== null) {
-                        $output[] = $this->formatCodeSnippet($issue->codeSnippet);
-                    }
                 }
 
                 if (count($issues) > $displayCount) {
@@ -655,123 +643,5 @@ class Reporter implements ReporterInterface
         $output[] = '';
 
         return implode(PHP_EOL, $output);
-    }
-
-    /**
-     * Format a code snippet for console display.
-     *
-     * @param  \ShieldCI\AnalyzersCore\ValueObjects\CodeSnippet  $snippet
-     */
-    private function formatCodeSnippet(object $snippet): string
-    {
-        $plainMode = config('shieldci.report.snippet_plain_mode', false);
-        $syntaxHighlighting = config('shieldci.report.snippet_syntax_highlighting', true);
-
-        $output[] = '';
-
-        if ($plainMode) {
-            $output[] = '  Code Preview:';
-        } else {
-            $output[] = $this->color('  Code Preview:', 'gray');
-        }
-
-        foreach ($snippet->getLines() as $lineNum => $lineContent) {
-            $isTargetLine = $lineNum === $snippet->getTargetLine();
-
-            if ($plainMode) {
-                // Plain text mode - no colors
-                $prefix = sprintf('%4d', $lineNum);
-                $arrow = $isTargetLine ? ' → ' : '   ';
-                $content = $lineContent;
-            } else {
-                // Format line number with color
-                $prefix = $isTargetLine
-                    ? $this->color(sprintf('%4d', $lineNum), 'red')
-                    : $this->color(sprintf('%4d', $lineNum), 'gray');
-
-                // Add arrow for target line
-                $arrow = $isTargetLine ? $this->color(' → ', 'red') : '   ';
-
-                // Apply syntax highlighting if enabled
-                if ($syntaxHighlighting && ! $isTargetLine) {
-                    $content = $this->highlightPhpSyntax($lineContent);
-                } elseif ($isTargetLine) {
-                    // Target line always has red background
-                    $content = $this->color($lineContent, 'white', 'bg_red');
-                } else {
-                    $content = $this->color($lineContent, 'gray');
-                }
-            }
-
-            $output[] = "  {$prefix}{$arrow}{$content}";
-        }
-
-        $output[] = '';
-
-        return implode(PHP_EOL, $output);
-    }
-
-    /**
-     * Apply basic PHP syntax highlighting to a code line.
-     */
-    private function highlightPhpSyntax(string $line): string
-    {
-        // PHP keywords
-        $keywords = [
-            'abstract', 'and', 'array', 'as', 'break', 'callable', 'case', 'catch',
-            'class', 'clone', 'const', 'continue', 'declare', 'default', 'die',
-            'do', 'echo', 'else', 'elseif', 'empty', 'enddeclare', 'endfor',
-            'endforeach', 'endif', 'endswitch', 'endwhile', 'eval', 'exit',
-            'extends', 'final', 'finally', 'fn', 'for', 'foreach', 'function',
-            'global', 'goto', 'if', 'implements', 'include', 'include_once',
-            'instanceof', 'insteadof', 'interface', 'isset', 'list', 'match',
-            'namespace', 'new', 'or', 'print', 'private', 'protected', 'public',
-            'readonly', 'require', 'require_once', 'return', 'static', 'switch',
-            'throw', 'trait', 'try', 'unset', 'use', 'var', 'while', 'xor',
-            'yield', 'from', 'enum',
-        ];
-
-        // Save original line for tracking ANSI codes
-        $result = $line;
-
-        // Highlight strings (simple approach - single and double quotes)
-        $result = preg_replace_callback(
-            '/(["\'])(?:(?=(\\\\?))\2.)*?\1/',
-            fn ($matches) => $this->color($matches[0], 'yellow'),
-            $result
-        ) ?? $result;
-
-        // Highlight comments
-        $result = preg_replace_callback(
-            '/\/\/.*$|\/\*.*?\*\/|#.*$/',
-            fn ($matches) => $this->color($matches[0], 'gray'),
-            $result
-        ) ?? $result;
-
-        // Highlight keywords (word boundaries)
-        foreach ($keywords as $keyword) {
-            $result = preg_replace_callback(
-                '/\b('.preg_quote($keyword, '/').')\b/',
-                fn ($matches) => $this->color($matches[1], 'cyan'),
-                $result
-            ) ?? $result;
-        }
-
-        // Highlight variables ($var)
-        $result = preg_replace_callback(
-            '/\$[a-zA-Z_\x7f-\xff][a-zA-Z0-9_\x7f-\xff]*/',
-            fn ($matches) => $this->color($matches[0], 'green'),
-            $result
-        ) ?? $result;
-
-        // Highlight numbers
-        $result = preg_replace_callback(
-            '/\b\d+\.?\d*\b/',
-            fn ($matches) => $this->color($matches[0], 'magenta'),
-            $result
-        ) ?? $result;
-
-        // Ensure we always return a string (preg_replace_callback can return null on error)
-        return is_string($result) ? $result : $line;
     }
 }

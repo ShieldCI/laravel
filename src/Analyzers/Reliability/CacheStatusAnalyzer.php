@@ -196,5 +196,4 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
             // to mask the actual cache issue we're testing for
         }
     }
-
 }

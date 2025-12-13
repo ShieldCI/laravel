@@ -289,7 +289,6 @@ RECOMMENDATION,
         return str_replace(['/', '\\'], DIRECTORY_SEPARATOR, rtrim($path, '/\\'));
     }
 
-
     /**
      * Execute a callable safely, returning default on exception.
      *

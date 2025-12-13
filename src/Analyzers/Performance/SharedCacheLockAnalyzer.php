@@ -235,10 +235,7 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
         return <<<'REC'
 Your application uses cache locks on your default cache store. This means that when your cache is cleared, your locks will also be cleared. Typically, this is not the intention when using locks for managing race conditions or concurrent processing.
 
-If you intend to persist locks despite cache clearing, it is recommended that you use cache locks on a separate store.
-
-Laravel 8.20+ supports a separate lock_connection configuration. Add this to your cache store config:
-"lock_connection" => "lock_redis",
+Add this to your cache store config: "lock_connection" => "lock_redis",
 
 Then define a separate "lock_redis" connection in config/database.php that uses a different Redis database number.
 REC;

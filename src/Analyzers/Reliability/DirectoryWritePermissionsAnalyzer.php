@@ -211,7 +211,7 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
             location: new Location($this->getRelativePath($locationPath), 1),
             severity: Severity::Critical,
             recommendation: $this->buildRecommendation($failedDirsList, $formattedDirs),
-            code: FileParser::getCodeSnippet($locationPath->file, 1),
+            code: FileParser::getCodeSnippet($locationPath, 1),
             metadata: [
                 'failed_directories' => $formattedDirs,
                 'count' => count($failedDirs),

@@ -6,8 +6,6 @@ namespace ShieldCI\Concerns;
 
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\FileParser;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Shared functionality for analyzers that parse PHPStan results.
@@ -54,12 +52,15 @@ trait ParsesPHPStanResults
                 $line = 1;
             }
 
-            $issueObjects[] = $this->createIssue(
+            $issueObjects[] = $this->createIssueWithSnippet(
                 message: $issueMessage,
-                location: new Location($file, $line),
+                filePath: $file,
+                lineNumber: $line,
                 severity: $severity,
                 recommendation: $recommendationCallback($message),
-                code: $this->getCodeSnippetSafely($file, $line),
+                column: null,
+                contextLines: null,
+                code: 'phpstan',
                 metadata: [
                     'phpstan_message' => $message,
                     'file' => $file,
@@ -93,28 +94,19 @@ trait ParsesPHPStanResults
     }
 
     /**
-     * Safely get code snippet, handling missing files.
-     */
-    private function getCodeSnippetSafely(string $file, int $line): ?string
-    {
-        if (! file_exists($file)) {
-            return null;
-        }
-
-        return FileParser::getCodeSnippet($file, $line);
-    }
-
-    /**
      * Abstract method that must be implemented by the using class.
      * This is provided by AbstractAnalyzer.
      *
      * @param  array<string, mixed>  $metadata
      */
-    abstract protected function createIssue(
+    abstract protected function createIssueWithSnippet(
         string $message,
-        Location $location,
+        string $filePath,
+        int $lineNumber,
         Severity $severity,
         string $recommendation,
+        ?int $column = null,
+        ?int $contextLines = null,
         ?string $code = null,
         array $metadata = []
     ): \ShieldCI\AnalyzersCore\ValueObjects\Issue;

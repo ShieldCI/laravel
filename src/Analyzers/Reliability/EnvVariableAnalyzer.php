@@ -10,7 +10,6 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Checks that all environment variables from .env.example are defined in .env.
@@ -51,11 +50,15 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
         if (! file_exists($envPath)) {
             return $this->failed(
                 '.env file not found',
-                [$this->createIssue(
+                [$this->createIssueWithSnippet(
                     message: '.env file is missing',
-                    location: new Location('.env', 1),
+                    filePath: $envPath,
+                    lineNumber: 1,
                     severity: Severity::Critical,
                     recommendation: $this->buildMissingEnvFileRecommendation(),
+                    column: null,
+                    contextLines: null,
+                    code: 'missing-env',
                     metadata: []
                 )]
             );
@@ -74,12 +77,15 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
 
         return $this->failed(
             sprintf('Found %d missing environment variable(s)', count($missingVars)),
-            [$this->createIssue(
+            [$this->createIssueWithSnippet(
                 message: 'Missing environment variables',
-                location: new Location('.env', 1),
+                filePath: $envPath,
+                lineNumber: 1,
                 severity: Severity::High,
                 recommendation: $this->buildMissingVariablesRecommendation($missingVars),
-                code: FileParser::getCodeSnippet($envPath, 1),
+                column: null,
+                contextLines: null,
+                code: 'missing-variables',
                 metadata: [
                     'missing_count' => count($missingVars),
                     'missing_variables' => array_keys($missingVars),

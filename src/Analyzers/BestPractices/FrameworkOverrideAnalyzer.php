@@ -14,7 +14,6 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Detects overriding standard Laravel framework classes that should use extension points instead.
@@ -136,9 +135,10 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
                 $traverser->traverse($ast);
 
                 foreach ($visitor->getIssues() as $issue) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: $issue['message'],
-                        location: new Location($this->getRelativePath($file), $issue['line']),
+                        filePath: $file,
+                        lineNumber: $issue['line'],
                         severity: $issue['severity'],
                         recommendation: $issue['recommendation'],
                         code: $issue['code'] ?? null,

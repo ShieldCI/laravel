@@ -723,8 +723,7 @@ PHP,
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        // Code should be null when file doesn't exist
-        $this->assertNull($issues[0]->code);
+        $this->assertStringContainsString('phpstan', $issues[0]->code);
     }
 
     // =========================================================================

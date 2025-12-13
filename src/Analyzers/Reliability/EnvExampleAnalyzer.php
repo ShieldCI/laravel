@@ -74,12 +74,15 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
 
         return $this->failed(
             sprintf('Found %d undocumented environment variable(s)', count($undocumentedVars)),
-            [$this->createIssue(
+            [$this->createIssueWithSnippet(
                 message: 'Undocumented environment variables',
-                location: new Location('.env.example', 1),
+                filePath: $envExamplePath,
+                lineNumber: 1,
                 severity: Severity::Low,
                 recommendation: $this->buildUndocumentedVariablesRecommendation($undocumentedVars),
-                code: $this->getCodeSnippetSafely($envExamplePath),
+                column: null,
+                contextLines: null,
+                code: 'undocumented-variables',
                 metadata: [
                     'undocumented_count' => count($undocumentedVars),
                     'undocumented_variables' => array_keys($undocumentedVars),
@@ -186,21 +189,5 @@ RECOMMENDATION,
         }
 
         return $variables;
-    }
-
-    /**
-     * Safely get code snippet, handling missing files.
-     */
-    private function getCodeSnippetSafely(string $file): ?string
-    {
-        if (! file_exists($file)) {
-            return null;
-        }
-
-        try {
-            return FileParser::getCodeSnippet($file, 1);
-        } catch (\Throwable $e) {
-            return null;
-        }
     }
 }

@@ -834,4 +834,43 @@ GITIGNORE;
         // Should return a result (not crash)
         $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
     }
+
+    // ==================== CODE SNIPPET TESTS ====================
+
+    public function test_code_snippets_are_attached_to_issues(): void
+    {
+        $envExample = <<<'ENV'
+APP_NAME=Laravel
+APP_KEY=base64:verylongkeyvaluethatshouldnotbeinexamplefilebutisanyway123456
+DB_PASSWORD=super_secret_password_that_should_not_be_here
+ENV;
+
+        $tempDir = $this->createTempDirectory(['.env.example' => $envExample]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        // Enable code snippets in config
+        config(['shieldci.report.show_code_snippets' => true]);
+        config(['shieldci.report.snippet_context_lines' => 5]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertGreaterThan(0, count($issues));
+
+        // Check that at least one issue has a code snippet
+        $hasSnippet = false;
+        foreach ($issues as $issue) {
+            if ($issue->codeSnippet !== null) {
+                $hasSnippet = true;
+                $this->assertGreaterThan(0, count($issue->codeSnippet->getLines()));
+                $this->assertGreaterThan(0, $issue->codeSnippet->getTargetLine());
+                break;
+            }
+        }
+
+        $this->assertTrue($hasSnippet, 'At least one issue should have a code snippet attached');
+    }
 }

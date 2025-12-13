@@ -21,7 +21,6 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\AnalyzesMiddleware;
 
 /**
@@ -84,12 +83,13 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
 
         $issues = [];
         foreach ($this->unusedMiddleware as $middleware) {
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createIssueWithSnippet(
                 message: "Unused global middleware detected: {$middleware['name']}",
-                location: new Location($this->getRelativePath($kernelPath), $middlewareLine),
+                filePath: $kernelPath,
+                lineNumber: $middlewareLine,
                 severity: Severity::Low,
                 recommendation: $middleware['recommendation'],
-                code: FileParser::getCodeSnippet($kernelPath, $middlewareLine),
+                code: $middleware['name'],
                 metadata: [
                     'middleware_class' => $middleware['class'],
                     'middleware_name' => $middleware['name'],

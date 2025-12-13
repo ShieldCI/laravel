@@ -20,9 +20,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\AstParser;
-use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\InspectsCode;
 use ShieldCI\Support\ConfigSuggester;
 use ShieldCI\Support\FileTypeDetector;
@@ -118,12 +116,13 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
                 ? 'Env::get() call detected outside configuration files'
                 : 'env() call detected outside configuration files';
 
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createIssueWithSnippet(
                 message: $message,
-                location: new Location($this->getRelativePath($filePath), $line),
+                filePath: $filePath,
+                lineNumber: $line,
                 severity: Severity::High,
                 recommendation: ConfigSuggester::getRecommendation($varNameString),
-                code: FileParser::getCodeSnippet($filePath, $line),
+                code: $callType === 'static' ? 'Env::get' : 'env',
                 metadata: [
                     'function' => $callType === 'static' ? 'Env::get' : 'env',
                     'variable' => $varNameString,

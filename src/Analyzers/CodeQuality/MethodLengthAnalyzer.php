@@ -15,7 +15,6 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Flags methods exceeding recommended line count.
@@ -83,11 +82,15 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
             $traverser->traverse($ast);
 
             foreach ($visitor->getIssues() as $issue) {
-                $issues[] = $this->createIssue(
+                $issues[] = $this->createIssueWithSnippet(
                     message: "Method '{$issue['method']}' has {$issue['lines']} lines (threshold: {$threshold})",
-                    location: new Location($this->getRelativePath($file), $issue['line']),
+                    filePath: $file,
+                    lineNumber: $issue['line'],
                     severity: $this->getSeverityForLength($issue['lines'], $threshold),
                     recommendation: $this->getRecommendation($issue['lines'], $threshold),
+                    column: null,
+                    contextLines: null,
+                    code: $issue['method'],
                     metadata: [
                         'method' => $issue['method'],
                         'lines' => $issue['lines'],

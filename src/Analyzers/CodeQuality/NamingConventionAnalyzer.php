@@ -14,7 +14,6 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Validates PSR naming standards.
@@ -62,11 +61,15 @@ class NamingConventionAnalyzer extends AbstractFileAnalyzer
             $traverser->traverse($ast);
 
             foreach ($visitor->getIssues() as $issue) {
-                $issues[] = $this->createIssue(
+                $issues[] = $this->createIssueWithSnippet(
                     message: $issue['message'],
-                    location: new Location($this->getRelativePath($file), $issue['line']),
+                    filePath: $file,
+                    lineNumber: $issue['line'],
                     severity: Severity::Low,
                     recommendation: $this->getRecommendation($issue['type'], $issue['name'], $issue['suggestion']),
+                    column: null,
+                    contextLines: null,
+                    code: $issue['name'],
                     metadata: [
                         'type' => $issue['type'],
                         'name' => $issue['name'],

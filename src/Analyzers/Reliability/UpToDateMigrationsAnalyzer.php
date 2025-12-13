@@ -10,7 +10,6 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Checks that all migrations are up to date.
@@ -53,11 +52,15 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
         if (! class_exists(Artisan::class)) {
             return $this->warning(
                 'Laravel Artisan facade not available',
-                [$this->createIssue(
+                [$this->createIssueWithSnippet(
                     message: 'Cannot check migration status - Artisan facade not found',
-                    location: new Location($this->getRelativePath($migrationsPath), 1),
+                    filePath: $migrationsPath,
+                    lineNumber: 1,
                     severity: Severity::Medium,
                     recommendation: 'Ensure Laravel is properly bootstrapped. Migration status checks require the Artisan facade to be available.',
+                    column: null,
+                    contextLines: null,
+                    code: 'artisan-unavailable',
                     metadata: []
                 )]
             );
@@ -89,11 +92,15 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
 
             return $this->failed(
                 sprintf('Found %d pending migration(s)', count($pendingMigrations)),
-                [$this->createIssue(
+                [$this->createIssueWithSnippet(
                     message: 'Pending migrations detected',
-                    location: new Location($this->getRelativePath($migrationsPath), 1),
+                    filePath: $migrationsPath,
+                    lineNumber: 1,
                     severity: Severity::High,
                     recommendation: $this->getPendingMigrationsRecommendation($pendingMigrations),
+                    column: null,
+                    contextLines: null,
+                    code: 'pending-migrations',
                     metadata: [
                         'pending_count' => count($pendingMigrations),
                         'pending_migrations' => $pendingMigrations,
@@ -107,11 +114,15 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
             return $isDatabaseError
                 ? $this->failed(
                     'Database connection error while checking migration status',
-                    [$this->createIssue(
+                    [$this->createIssueWithSnippet(
                         message: 'Migration status check failed due to database connection issue',
-                        location: new Location($this->getRelativePath($migrationsPath), 1),
+                        filePath: $migrationsPath,
+                        lineNumber: 1,
                         severity: Severity::High,
                         recommendation: $this->getDatabaseErrorRecommendation($e),
+                        column: null,
+                        contextLines: null,
+                        code: 'database-error',
                         metadata: [
                             'exception' => get_class($e),
                             'error' => $e->getMessage(),
@@ -121,11 +132,13 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                 )
                 : $this->failed(
                     'Unable to check migration status',
-                    [$this->createIssue(
+                    [$this->createIssueWithSnippet(
                         message: 'Migration status check failed: '.$e->getMessage(),
-                        location: new Location($this->getRelativePath($migrationsPath), 1),
+                        filePath: $migrationsPath,
+                        lineNumber: 1,
                         severity: Severity::High,
                         recommendation: 'Ensure the database connection is working and the migrations table exists. If this is a new installation, run "php artisan migrate:install" followed by "php artisan migrate". Error: '.$e->getMessage(),
+                        code: 'migration-check-error',
                         metadata: [
                             'exception' => get_class($e),
                             'error' => $e->getMessage(),

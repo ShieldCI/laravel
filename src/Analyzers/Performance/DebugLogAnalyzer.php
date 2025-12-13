@@ -11,7 +11,6 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Analyzes log level configuration for performance issues.
@@ -136,11 +135,13 @@ class DebugLogAnalyzer extends AbstractAnalyzer
 
             $lineNumber = ConfigFileHelper::findNestedKeyLine($configPath, 'channels', 'level', $channel);
 
-            $issues[] = $this->createIssue(
+            $issues[] = $this->createIssueWithSnippet(
                 message: "Log channel '{$channel}' is set to debug level in {$environment} environment",
-                location: new Location($this->getRelativePath($configPath), $lineNumber),
+                filePath: $configPath,
+                lineNumber: $lineNumber,
                 severity: Severity::High,
                 recommendation: "Change the log level to 'info' or higher in production. Debug logging causes 50-300% performance degradation, generates massive log files that can exhaust disk space, and exposes sensitive data in logs. This is a critical production misconfiguration. Update your logging configuration or set LOG_LEVEL environment variable to 'info', 'warning', or 'error'.",
+                code: 'debug-log-level',
                 metadata: [
                     'environment' => $environment,
                     'channel' => $channel,

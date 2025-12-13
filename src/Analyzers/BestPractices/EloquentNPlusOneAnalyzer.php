@@ -15,7 +15,6 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Identifies missing eager loading that causes N+1 query problems.
@@ -63,9 +62,10 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
                 $traverser->traverse($ast);
 
                 foreach ($visitor->getIssues() as $issue) {
-                    $issues[] = $this->createIssue(
+                    $issues[] = $this->createIssueWithSnippet(
                         message: "Potential N+1 query: accessing '{$issue['relationship']}' inside loop",
-                        location: new Location($this->getRelativePath($file), $issue['line']),
+                        filePath: $file,
+                        lineNumber: $issue['line'],
                         severity: Severity::High,
                         recommendation: $this->getRecommendation($issue['relationship'], $issue['loop_type']),
                         metadata: [

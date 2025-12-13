@@ -750,4 +750,48 @@ PHP;
         $this->assertSame('EncryptCookies', $issue->metadata['middleware']);
         $this->assertSame('missing', $issue->metadata['status']);
     }
+
+    // ==================== CODE SNIPPET TESTS ====================
+
+    public function test_code_snippets_are_attached_to_issues(): void
+    {
+        $sessionConfig = <<<'PHP'
+<?php
+
+return [
+    'driver' => 'file',
+    'http_only' => false,
+    'secure' => false,
+    'same_site' => null,
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory(['config/session.php' => $sessionConfig]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        // Enable code snippets in config
+        config(['shieldci.report.show_code_snippets' => true]);
+        config(['shieldci.report.snippet_context_lines' => 5]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertGreaterThan(0, count($issues));
+
+        // Check that at least one issue has a code snippet
+        $hasSnippet = false;
+        foreach ($issues as $issue) {
+            if ($issue->codeSnippet !== null) {
+                $hasSnippet = true;
+                $this->assertGreaterThan(0, count($issue->codeSnippet->getLines()));
+                $this->assertGreaterThan(0, $issue->codeSnippet->getTargetLine());
+                break;
+            }
+        }
+
+        $this->assertTrue($hasSnippet, 'At least one issue should have a code snippet attached');
+    }
 }

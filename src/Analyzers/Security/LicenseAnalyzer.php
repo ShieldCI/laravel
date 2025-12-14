@@ -175,7 +175,7 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
                 if (! $isDevDependency) {
                     $issues[] = $this->createIssue(
                         message: sprintf('Package "%s" has no license information', $packageName),
-                        location: new Location($composerLock, 1),
+                        location: new Location($composerLock),
                         severity: Severity::Medium,
                         recommendation: sprintf('Investigate license for "%s" or contact the package maintainer', $packageName),
                         code: FileParser::getCodeSnippet($composerLock, 1),
@@ -227,7 +227,7 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
                         $packageName,
                         implode(', ', $licenses)
                     ),
-                    location: new Location($composerLock, 1),
+                    location: new Location($composerLock),
                     severity: $severity,
                     recommendation: $isDevDependency
                         ? sprintf('Dev dependency "%s" has GPL/AGPL license. This is generally safe for development tools, but verify it\'s not distributed with your application', $packageName)
@@ -249,7 +249,7 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
                             $packageName,
                             implode(', ', $licenses)
                         ),
-                        location: new Location($composerLock, 1),
+                        location: new Location($composerLock),
                         severity: Severity::Low,
                         recommendation: sprintf(
                             'Review the "%s" license terms to ensure compatibility with your application. Common safe licenses: MIT, Apache-2.0, BSD',

@@ -62,7 +62,7 @@ class MissingReturnStatementAnalyzer extends AbstractFileAnalyzer
                 'PHPStan is not available',
                 [$this->createIssue(
                     message: 'PHPStan binary not found',
-                    location: new Location($basePath, 1),
+                    location: new Location($basePath),
                     severity: Severity::Medium,
                     recommendation: 'Install PHPStan to enable missing return statement detection. Run: composer require --dev phpstan/phpstan',
                     metadata: []

@@ -300,20 +300,12 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
     ): Issue {
         $line = $this->getSettingLine($phpIniPath, $setting);
 
-        // Try to get code snippet, but handle open_basedir restrictions gracefully
-        try {
-            $snippet = FileParser::getCodeSnippet($phpIniPath, $line);
-        } catch (\Throwable $e) {
-            // If we can't read the file (e.g., due to open_basedir restrictions), use empty snippet
-            $snippet = '';
-        }
-
         return $this->createIssue(
             message: $message,
             location: new Location($phpIniPath, $line),
             severity: $severity,
             recommendation: $recommendation,
-            code: $snippet,
+            code: FileParser::getCodeSnippet($phpIniPath, $line),
             metadata: $metadata
         );
     }

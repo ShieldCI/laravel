@@ -55,7 +55,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         if (! file_exists($composerLock)) {
             $issues[] = $this->createIssue(
                 message: 'composer.lock file not found',
-                location: new Location('composer.lock', 1),
+                location: new Location('composer.lock'),
                 severity: Severity::Medium,
                 recommendation: 'Run "composer install" to generate composer.lock for dependency tracking.',
                 metadata: []
@@ -114,9 +114,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                         $version,
                         $advisory['title']
                     ),
-                    location: new Location(
-                        $this->getRelativePath($composerLock),
-                        $lineNumber
+                    location: new Location($this->getRelativePath($composerLock), $lineNumber
                     ),
                     severity: Severity::Critical,
                     recommendation: $this->formatRecommendation($package, $advisory),
@@ -178,10 +176,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
             $issues[] = $this->createIssue(
                 message: sprintf('Package "%s" is abandoned and no longer maintained', $packageName),
-                location: new Location(
-                    $this->getRelativePath($composerLock),
-                    $lineNumber
-                ),
+                location: new Location($this->getRelativePath($composerLock), $lineNumber),
                 severity: Severity::Medium,
                 recommendation: $recommendation,
                 code: FileParser::getCodeSnippet($composerLock, $lineNumber),

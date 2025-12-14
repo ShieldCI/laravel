@@ -69,7 +69,7 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
                         location: $configLocation,
                         severity: Severity::Critical,
                         recommendation: $this->getWriteReadFailureRecommendation(),
-                        code: $this->getCodeSnippetSafely($configLocation),
+                        code: $configLocation->line ? FileParser::getCodeSnippet($configLocation->file, $configLocation->line) : null,
                         metadata: [
                             'cache_driver' => $this->getCacheDriver(),
                             'expected' => $testValue,
@@ -94,7 +94,7 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
                     location: $configLocation,
                     severity: Severity::Critical,
                     recommendation: $this->getConnectionFailureRecommendation($e),
-                    code: $this->getCodeSnippetSafely($configLocation),
+                    code: $configLocation->line ? FileParser::getCodeSnippet($configLocation->file, $configLocation->line) : null,
                     metadata: [
                         'cache_driver' => $this->getCacheDriver(),
                         'exception' => get_class($e),
@@ -130,14 +130,10 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
         if (file_exists($configFile)) {
             $lineNumber = ConfigFileHelper::findKeyLine($configFile, 'default');
 
-            if ($lineNumber < 1) {
-                $lineNumber = 1;
-            }
-
-            return new Location($this->getRelativePath($configFile), $lineNumber);
+            return new Location($this->getRelativePath($configFile), $lineNumber < 1 ? null : $lineNumber);
         }
 
-        return new Location($this->getRelativePath($configFile), 1);
+        return new Location($this->getRelativePath($configFile));
     }
 
     /**
@@ -195,17 +191,5 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
             // Silently ignore cleanup errors - we don't want cleanup failures
             // to mask the actual cache issue we're testing for
         }
-    }
-
-    /**
-     * Safely get code snippet, handling missing files.
-     */
-    private function getCodeSnippetSafely(Location $location): ?string
-    {
-        if (! file_exists($location->file)) {
-            return null;
-        }
-
-        return FileParser::getCodeSnippet($location->file, $location->line);
     }
 }

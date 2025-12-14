@@ -208,10 +208,10 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
 
         $issues[] = $this->createIssue(
             message: 'Storage and cache directories are not writable',
-            location: new Location($this->getRelativePath($locationPath), 1),
+            location: new Location($this->getRelativePath($locationPath)),
             severity: Severity::Critical,
             recommendation: $this->buildRecommendation($failedDirsList, $formattedDirs),
-            code: $this->getCodeSnippetSafely($locationPath),
+            code: FileParser::getCodeSnippet($locationPath, 1),
             metadata: [
                 'failed_directories' => $formattedDirs,
                 'count' => count($failedDirs),
@@ -287,21 +287,6 @@ RECOMMENDATION,
     private function normalizePath(string $path): string
     {
         return str_replace(['/', '\\'], DIRECTORY_SEPARATOR, rtrim($path, '/\\'));
-    }
-
-    /**
-     * Safely get code snippet, handling missing files.
-     */
-    private function getCodeSnippetSafely(string $file): ?string
-    {
-        if (! file_exists($file)) {
-            return null;
-        }
-
-        return $this->safeExecute(
-            fn () => FileParser::getCodeSnippet($file, 1),
-            null
-        );
     }
 
     /**

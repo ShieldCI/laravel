@@ -275,10 +275,6 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
 
         $lineNumber = ConfigFileHelper::findKeyLine($configPath, 'driver');
 
-        if ($lineNumber < 1) {
-            $lineNumber = 1;
-        }
-
-        return new Location($this->getRelativePath($configPath), $lineNumber);
+        return new Location($this->getRelativePath($configPath), $lineNumber < 1 ? null : $lineNumber);
     }
 }

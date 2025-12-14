@@ -141,7 +141,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $location = $issue->location;
 
         $this->assertStringContainsString('storage/framework/down', $location->file);
-        $this->assertSame(1, $location->line);
+        $this->assertNull($location->line);
     }
 
     #[Test]

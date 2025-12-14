@@ -305,7 +305,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
             if (empty($metaPolicy)) {
                 $issues[] = $this->createIssue(
                     message: 'HTTP XSS: Content-Security-Policy header not set',
-                    location: new Location('HTTP Headers', 0),
+                    location: new Location('HTTP Headers'),
                     severity: Severity::High,
                     recommendation: 'Set Content-Security-Policy header with script-src or default-src directive without unsafe-eval or unsafe-inline. Example: "default-src \'self\'; script-src \'self\'"'
                 );
@@ -330,7 +330,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
 
             $issues[] = $this->createIssue(
                 message: 'HTTP XSS: Content-Security-Policy header is inadequate for XSS protection',
-                location: new Location('HTTP Headers', 0),
+                location: new Location('HTTP Headers'),
                 severity: Severity::High,
                 recommendation: 'Set a "script-src" or "default-src" policy directive without "unsafe-eval" or "unsafe-inline". Current policy may allow inline scripts which defeats XSS protection.',
                 metadata: ['current_csp' => $cspString]

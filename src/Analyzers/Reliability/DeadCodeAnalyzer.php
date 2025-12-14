@@ -76,7 +76,7 @@ class DeadCodeAnalyzer extends AbstractFileAnalyzer
                 'PHPStan is not available',
                 [$this->createIssue(
                     message: 'PHPStan binary not found',
-                    location: new Location($basePath, 1),
+                    location: new Location($basePath),
                     severity: Severity::Medium,
                     recommendation: 'PHPStan is included with ShieldCI. If you\'re seeing this error, ensure you\'ve run `composer install` to install all dependencies. If the issue persists, verify that `vendor/bin/phpstan` exists in your project.',
                     metadata: []

@@ -157,7 +157,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
         if ($this->isWorldWritable($permissions['raw'])) {
             $issues[] = $this->createIssue(
                 message: sprintf('%s "%s" is world-writable (permissions: %s)', ucfirst($type), $relativePath, $permissions['octal']),
-                location: new Location($relativePath, 1),
+                location: new Location($relativePath),
                 severity: Severity::Critical,
                 recommendation: sprintf(
                     'Change permissions to %s: chmod %s %s',
@@ -165,7 +165,6 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
                     decoct($recommended),
                     $relativePath
                 ),
-                code: FileParser::getCodeSnippet($path, 1),
                 metadata: [
                     'path' => $relativePath,
                     'permissions' => $permissions['octal'],
@@ -187,7 +186,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 
             $issues[] = $this->createIssue(
                 message: sprintf('%s "%s" has overly permissive permissions (%s)', ucfirst($type), $relativePath, $permissions['octal']),
-                location: new Location($relativePath, 1),
+                location: new Location($relativePath),
                 severity: $severity,
                 recommendation: sprintf(
                     'Change permissions to %s or %s: chmod %s %s',
@@ -218,7 +217,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
         if ($isCritical && $this->isGroupWritable($permissions['raw'])) {
             $issues[] = $this->createIssue(
                 message: sprintf('Critical file "%s" is group-writable (permissions: %s)', $relativePath, $permissions['octal']),
-                location: new Location($relativePath, 1),
+                location: new Location($relativePath),
                 severity: Severity::Medium,
                 recommendation: sprintf(
                     'Remove group write permissions: chmod %s %s',
@@ -245,7 +244,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
         if ($type === 'file' && ! $isExecutable && $this->hasExecutePermissions($permissions['raw'])) {
             $issues[] = $this->createIssue(
                 message: sprintf('Non-executable file "%s" has execute permissions (%s)', $relativePath, $permissions['octal']),
-                location: new Location($relativePath, 1),
+                location: new Location($relativePath),
                 severity: Severity::Medium,
                 recommendation: sprintf(
                     'Remove execute permissions: chmod %s %s',

@@ -76,7 +76,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                 'composer.lock file not found',
                 [$this->createIssue(
                     message: 'composer.lock file is missing',
-                    location: new Location('composer.lock', 1),
+                    location: new Location('composer.lock'),
                     severity: Severity::Medium,
                     recommendation: 'Run "composer install" to generate composer.lock for dependency tracking.',
                     metadata: []
@@ -113,7 +113,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                 // Scenario 1: Both production AND dev need updates
                 $issues[] = $this->createIssue(
                     message: 'Production and development dependencies are not up-to-date',
-                    location: new Location($this->getRelativePath($composerLockPath), 1),
+                    location: new Location($this->getRelativePath($composerLockPath)),
                     severity: Severity::Medium,
                     recommendation: $this->getBothDepsRecommendation(),
                     code: FileParser::getCodeSnippet($composerLockPath, 1),
@@ -126,7 +126,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                 // Scenario 2: Only production needs updates (dev is up-to-date)
                 $issues[] = $this->createIssue(
                     message: 'Production dependencies are not up-to-date',
-                    location: new Location($this->getRelativePath($composerLockPath), 1),
+                    location: new Location($this->getRelativePath($composerLockPath)),
                     severity: Severity::Medium,
                     recommendation: $this->getProductionDepsRecommendation(),
                     code: FileParser::getCodeSnippet($composerLockPath, 1),
@@ -139,7 +139,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                 // Scenario 3: Only dev needs updates (production is up-to-date)
                 $issues[] = $this->createIssue(
                     message: 'Development dependencies are not up-to-date',
-                    location: new Location($this->getRelativePath($composerLockPath), 1),
+                    location: new Location($this->getRelativePath($composerLockPath)),
                     severity: Severity::Low,
                     recommendation: $this->getDevDepsRecommendation(),
                     code: FileParser::getCodeSnippet($composerLockPath, 1),

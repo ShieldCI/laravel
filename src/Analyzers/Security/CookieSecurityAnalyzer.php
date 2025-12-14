@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
+use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Routing\Router;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -11,6 +14,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\AnalyzesMiddleware;
 
 /**
  * Validates cookie security configuration.
@@ -23,6 +27,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  */
 class CookieSecurityAnalyzer extends AbstractFileAnalyzer
 {
+    use AnalyzesMiddleware;
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
@@ -157,6 +163,12 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
      */
     private function checkEncryptCookiesMiddleware(array &$issues): void
     {
+        // First, try to check if middleware is registered at runtime (most accurate)
+        if ($this->checkRuntimeMiddleware($issues)) {
+            return; // Runtime check succeeded, no need for file-based checks
+        }
+
+        // Fall back to file-based checks if app isn't bootstrapped
         $kernelFile = $this->buildPath('app', 'Http', 'Kernel.php');
 
         if (! file_exists($kernelFile)) {
@@ -219,7 +231,125 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Check if EncryptCookies middleware is registered at runtime.
+     * Returns true if check was successful (app is bootstrapped), false otherwise.
+     *
+     * This method is conservative - it only uses runtime checks when we're confident
+     * the app is fully bootstrapped with the actual application code. In test scenarios
+     * or when the app path doesn't match, it falls back to file-based checks.
+     */
+    private function checkRuntimeMiddleware(array &$issues): bool
+    {
+        // Check if Laravel app is bootstrapped
+        if (! function_exists('app')) {
+            return false;
+        }
+
+        try {
+            $app = app();
+
+            // Type check: ensure app() returned an Application instance
+            if (! $app instanceof Application) {
+                return false;
+            }
+
+            if (! $app->bound(Router::class) || ! $app->bound(Kernel::class)) {
+                return false;
+            }
+
+            // Conservative check: Only use runtime checks if the app's base path matches
+            // our analyzer's base path. If they don't match, we're likely in a test scenario
+            // and should use file-based checks instead.
+            $appBasePath = $app->basePath();
+            $analyzerBasePath = $this->getBasePath();
+
+            // Normalize paths for comparison
+            $appBasePath = rtrim(str_replace('\\', '/', $appBasePath), '/');
+            $analyzerBasePath = rtrim(str_replace('\\', '/', $analyzerBasePath), '/');
+
+            // If paths don't match, we're probably in a test scenario - use file checks
+            if ($appBasePath !== $analyzerBasePath && $analyzerBasePath !== '') {
+                return false;
+            }
+
+            $router = $app->make(Router::class);
+            $kernel = $app->make(Kernel::class);
+
+            if ($router === null || $kernel === null) {
+                return false;
+            }
+
+            $this->router = $router;
+            $this->kernel = $kernel;
+
+            // Check if EncryptCookies is registered globally
+            // Use try-catch around the middleware check since reflection can fail
+            try {
+                $encryptCookiesClasses = [
+                    'Illuminate\Cookie\Middleware\EncryptCookies',
+                    'App\Http\Middleware\EncryptCookies',
+                    'EncryptCookies',
+                ];
+
+                $isRegistered = false;
+                foreach ($encryptCookiesClasses as $middlewareClass) {
+                    try {
+                        if ($this->appUsesGlobalMiddleware($middlewareClass)) {
+                            $isRegistered = true;
+                            break;
+                        }
+                    } catch (\ReflectionException $e) {
+                        // If reflection fails, we can't reliably check - fall back to file checks
+                        return false;
+                    }
+                }
+
+                if (! $isRegistered) {
+                    // Check if it's registered on any route (less ideal but still acceptable)
+                    try {
+                        $isRegistered = $this->appUsesMiddleware('Illuminate\Cookie\Middleware\EncryptCookies');
+                    } catch (\ReflectionException $e) {
+                        // If reflection fails, we can't reliably check - fall back to file checks
+                        return false;
+                    }
+                }
+
+                // Only create issue if we're certain it's not registered
+                if (! $isRegistered) {
+                    $kernelFile = $this->buildPath('app', 'Http', 'Kernel.php');
+                    $bootstrapApp = $this->buildPath('bootstrap', 'app.php');
+                    $configFile = file_exists($kernelFile) ? $kernelFile : (file_exists($bootstrapApp) ? $bootstrapApp : $kernelFile);
+
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: 'EncryptCookies middleware is not registered globally',
+                        filePath: $configFile,
+                        lineNumber: 1,
+                        severity: Severity::Critical,
+                        recommendation: 'Register EncryptCookies middleware globally in app/Http/Kernel.php (Laravel 9/10) or bootstrap/app.php (Laravel 11+) to enable cookie encryption',
+                        code: 'EncryptCookies',
+                        metadata: [
+                            'file' => file_exists($kernelFile) ? 'Kernel.php' : 'bootstrap/app.php',
+                            'middleware' => 'EncryptCookies',
+                            'status' => 'missing',
+                            'detection_method' => 'runtime',
+                        ]
+                    );
+                }
+
+                return true; // Runtime check completed successfully
+            } catch (\ReflectionException $e) {
+                // If reflection fails, we can't reliably check - fall back to file checks
+                return false;
+            }
+        } catch (\Throwable $e) {
+            // If runtime check fails for any reason, fall back to file-based checks
+            return false;
+        }
+    }
+
+    /**
      * Check bootstrap/app.php for Laravel 11+ applications.
+     * This is a fallback when runtime checks aren't available.
      */
     private function checkBootstrapApp(string $file, array &$issues): void
     {
@@ -228,18 +358,26 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        if (! str_contains($content, 'EncryptCookies') && ! str_contains($content, 'encryptCookies')) {
+        // Check for various ways EncryptCookies might be registered in Laravel 11+
+        $hasEncryptCookies = str_contains($content, 'EncryptCookies') ||
+                             str_contains($content, 'encryptCookies') ||
+                             str_contains($content, 'EncryptCookies::class') ||
+                             preg_match('/->withMiddleware\s*\([^)]*EncryptCookies/i', $content) ||
+                             preg_match('/->withMiddleware\s*\([^)]*encryptCookies/i', $content);
+
+        if (! $hasEncryptCookies) {
             $issues[] = $this->createIssueWithSnippet(
-                message: 'EncryptCookies middleware may not be properly configured',
+                message: 'EncryptCookies middleware may not be properly configured in bootstrap/app.php',
                 filePath: $file,
                 lineNumber: 1,
                 severity: Severity::High,
-                recommendation: 'Ensure cookie encryption is enabled in your middleware configuration',
+                recommendation: 'Add EncryptCookies middleware using ->withMiddleware() in bootstrap/app.php to enable cookie encryption',
                 code: 'EncryptCookies',
                 metadata: [
                     'file' => 'bootstrap/app.php',
                     'laravel_version' => '11+',
                     'middleware' => 'EncryptCookies',
+                    'detection_method' => 'file_analysis',
                 ]
             );
         }

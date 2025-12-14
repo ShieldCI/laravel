@@ -73,7 +73,7 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
                     location: $configLocation,
                     severity: Severity::Critical,
                     recommendation: $this->buildRecommendation($connectionName, $result),
-                    code: FileParser::getCodeSnippet($configLocation->file, $configLocation->line),
+                    code: $configLocation->line ? FileParser::getCodeSnippet($configLocation->file, $configLocation->line) : null,
                     metadata: [
                         'connection' => $connectionName,
                         'driver' => $this->getConnectionDriver($connectionName),
@@ -188,15 +188,12 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
             if ($lineNumber < 1) {
                 // Fallback to finding the connection name
                 $lineNumber = ConfigFileHelper::findKeyLine($configFile, $connectionName, 'connections');
-                if ($lineNumber < 1) {
-                    $lineNumber = 1;
-                }
             }
 
-            return new Location($this->getRelativePath($configFile), $lineNumber);
+            return new Location($this->getRelativePath($configFile), $lineNumber < 1 ? null : $lineNumber);
         }
 
-        return new Location($this->getRelativePath($configFile), 1);
+        return new Location($this->getRelativePath($configFile));
     }
 
     /**

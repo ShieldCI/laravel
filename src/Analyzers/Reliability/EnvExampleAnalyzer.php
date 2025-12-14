@@ -53,7 +53,7 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
                 '.env.example file not found',
                 [$this->createIssue(
                     message: '.env.example file is missing',
-                    location: new Location('.env.example', 1),
+                    location: new Location('.env.example'),
                     severity: Severity::High,
                     recommendation: $this->buildMissingExampleFileRecommendation(),
                     metadata: []

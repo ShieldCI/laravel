@@ -62,10 +62,7 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
             $packageJson = $this->buildPath('package.json');
             $issues[] = $this->createIssue(
                 message: 'No package-lock.json or yarn.lock found',
-                location: new Location(
-                    $this->getRelativePath($packageJson),
-                    1
-                ),
+                location: new Location($this->getRelativePath($packageJson)),
                 severity: Severity::Medium,
                 recommendation: 'Run "npm install" or "yarn install" to generate lock file for dependency tracking',
                 metadata: [
@@ -305,10 +302,7 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
                 $issues[] = $this->createIssue(
                     message: sprintf('Found %d frontend package vulnerabilities', $total),
-                    location: new Location(
-                        $this->getRelativePath($packageLock),
-                        1
-                    ),
+                    location: new Location($this->getRelativePath($packageLock)),
                     severity: $severity,
                     recommendation: 'Run "npm audit" to see details and "npm audit fix" to automatically fix vulnerabilities',
                     code: FileParser::getCodeSnippet($packageLock, 1),
@@ -356,10 +350,7 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                 // Use High severity for summaries (less severe than always Critical)
                 $issues[] = $this->createIssue(
                     message: sprintf('Found %d frontend package vulnerabilities', $total),
-                    location: new Location(
-                        $this->getRelativePath($yarnLock),
-                        1
-                    ),
+                    location: new Location($this->getRelativePath($yarnLock)),
                     severity: Severity::High,
                     recommendation: 'Run "yarn audit" to see details and upgrade vulnerable packages',
                     code: FileParser::getCodeSnippet($yarnLock, 1),
@@ -508,10 +499,7 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
         $issues[] = $this->createIssue(
             message: sprintf('Frontend package "%s" has a known vulnerability: %s', $package, $message),
-            location: new Location(
-                $this->getRelativePath($lockFile),
-                $lineNumber
-            ),
+            location: new Location($this->getRelativePath($lockFile), $lineNumber),
             severity: $severity,
             recommendation: $recommendation,
             code: FileParser::getCodeSnippet($lockFile, $lineNumber),

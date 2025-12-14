@@ -241,15 +241,11 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
     private function getConnectionLocation(string $configFile, string $connectionName): Location
     {
         if (! file_exists($configFile)) {
-            return new Location($this->getRelativePath($configFile), 1);
+            return new Location($this->getRelativePath($configFile));
         }
 
         $lineNumber = ConfigFileHelper::findKeyLine($configFile, $connectionName, 'connections');
 
-        if ($lineNumber < 1) {
-            $lineNumber = 1;
-        }
-
-        return new Location($this->getRelativePath($configFile), $lineNumber);
+        return new Location($this->getRelativePath($configFile), $lineNumber < 1 ? null : $lineNumber);
     }
 }

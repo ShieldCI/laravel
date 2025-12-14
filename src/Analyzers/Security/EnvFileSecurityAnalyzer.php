@@ -134,10 +134,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
             if (file_exists($path)) {
                 $issues[] = $this->createIssue(
                     message: '.env file found in publicly accessible directory',
-                    location: new Location(
-                        $this->getRelativePath($path),
-                        1
-                    ),
+                    location: new Location($this->getRelativePath($path)),
                     severity: Severity::Critical,
                     recommendation: 'IMMEDIATELY remove .env from public directory. It should be in the application root, one level above public/',
                     metadata: ['path' => $path]
@@ -162,10 +159,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
             // While not critical, it's good practice to have .env.example
             $issues[] = $this->createIssue(
                 message: 'Missing .env.example file',
-                location: new Location(
-                    '.env.example',
-                    1
-                ),
+                location: new Location('.env.example'),
                 severity: Severity::Low,
                 recommendation: 'Create .env.example as a template for environment configuration (without sensitive values)',
                 metadata: [

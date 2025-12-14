@@ -152,7 +152,7 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
             if ($result['accessible']) {
                 $issues[] = $this->createIssue(
                     message: sprintf('.env file is publicly accessible via HTTP at: %s', $testUrl),
-                    location: new Location('.env', 1),
+                    location: new Location('.env'),
                     severity: $this->determineSeverity($path),
                     recommendation: $this->getRecommendation($path),
                     metadata: [

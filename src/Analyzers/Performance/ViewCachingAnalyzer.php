@@ -127,7 +127,7 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
                     location: $configLocation,
                     severity: Severity::Medium,
                     recommendation: 'View caching improves performance by pre-compiling all Blade templates. Add "php artisan view:cache" to your deployment script. This eliminates the need to compile views on each request and is especially important in production environments where view caching can significantly reduce response times.',
-                    code: FileParser::getCodeSnippet($configLocation->file, $configLocation->line),
+                    code: $configLocation->line ? FileParser::getCodeSnippet($configLocation->file, $configLocation->line) : null,
                     metadata: [
                         'environment' => $environment,
                         'total_views' => $viewCount,
@@ -243,16 +243,12 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
         if (file_exists($configPath)) {
             $lineNumber = ConfigFileHelper::findKeyLine($configPath, 'compiled');
 
-            if ($lineNumber < 1) {
-                $lineNumber = 1;
-            }
-
-            return new Location($this->getRelativePath($configPath), $lineNumber);
+            return new Location($this->getRelativePath($configPath), $lineNumber < 1 ? null : $lineNumber);
         }
 
         // Fallback to artisan file if config not found
         $artisanPath = $basePath.DIRECTORY_SEPARATOR.'artisan';
 
-        return new Location($this->getRelativePath($artisanPath), 1);
+        return new Location($this->getRelativePath($artisanPath));
     }
 }

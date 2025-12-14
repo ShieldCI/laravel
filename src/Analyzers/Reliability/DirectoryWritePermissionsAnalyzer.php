@@ -208,7 +208,7 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
 
         $issues[] = $this->createIssue(
             message: 'Storage and cache directories are not writable',
-            location: new Location($this->getRelativePath($locationPath), 1),
+            location: new Location($this->getRelativePath($locationPath)),
             severity: Severity::Critical,
             recommendation: $this->buildRecommendation($failedDirsList, $formattedDirs),
             code: FileParser::getCodeSnippet($locationPath, 1),

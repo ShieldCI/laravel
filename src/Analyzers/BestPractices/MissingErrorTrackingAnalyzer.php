@@ -85,7 +85,7 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
         if (! $hasErrorTracking) {
             $issues[] = $this->createIssue(
                 message: 'No error tracking service found in composer.json',
-                location: new Location('composer.json', 1),
+                location: new Location('composer.json'),
                 severity: Severity::Medium,
                 recommendation: 'Install an error tracking service like Sentry (sentry/sentry-laravel), Bugsnag, or Rollbar for production error monitoring. This provides better visibility into production errors, automatic error grouping, and faster debugging',
             );

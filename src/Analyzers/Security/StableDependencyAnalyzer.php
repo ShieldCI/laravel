@@ -79,10 +79,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                 $filePath = file_exists($composerLock) ? $composerLock : $composerJson;
                 $issues[] = $this->createIssue(
                     message: 'Composer update --prefer-stable would modify installed packages',
-                    location: new Location(
-                        $this->getRelativePath($filePath),
-                        1
-                    ),
+                    location: new Location($this->getRelativePath($filePath)),
                     severity: Severity::Low,
                     recommendation: 'Run "composer update --prefer-stable" and ensure all dependencies resolve to stable releases.',
                     code: FileParser::getCodeSnippet($filePath, 1),
@@ -150,10 +147,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             $line = $this->findMinimumStabilityLine($composerJson);
             $issues[] = $this->createIssue(
                 message: sprintf('Composer minimum-stability is set to "%s" instead of "stable"', $minimumStability),
-                location: new Location(
-                    $this->getRelativePath($composerJson),
-                    $line
-                ),
+                location: new Location($this->getRelativePath($composerJson), $line),
                 severity: Severity::Medium,
                 recommendation: 'Set "minimum-stability": "stable" in composer.json to prefer stable package versions',
                 code: FileParser::getCodeSnippet($composerJson, $line),
@@ -166,10 +160,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             $line = $this->findPreferStableLine($composerJson);
             $issues[] = $this->createIssue(
                 message: 'Composer prefer-stable is not enabled',
-                location: new Location(
-                    $this->getRelativePath($composerJson),
-                    $line
-                ),
+                location: new Location($this->getRelativePath($composerJson), $line),
                 severity: Severity::Low,
                 recommendation: 'Set "prefer-stable": true in composer.json to prefer stable versions when possible',
                 code: FileParser::getCodeSnippet($composerJson, $line),
@@ -244,10 +235,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             if ($this->isUnstableVersion($version)) {
                 $issues[] = $this->createIssue(
                     message: sprintf('Package "%s" in %s requires unstable dev version: %s', $package, $section, $version),
-                    location: new Location(
-                        $this->getRelativePath($composerJson),
-                        $line
-                    ),
+                    location: new Location($this->getRelativePath($composerJson), $line),
                     severity: Severity::Medium,
                     recommendation: sprintf('Update "%s" to use a stable version constraint', $package),
                     code: FileParser::getCodeSnippet($composerJson, $line),
@@ -263,10 +251,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             if ($stabilityFlag !== null) {
                 $issues[] = $this->createIssue(
                     message: sprintf('Package "%s" in %s requires unstable version: %s', $package, $section, $version),
-                    location: new Location(
-                        $this->getRelativePath($composerJson),
-                        $line
-                    ),
+                    location: new Location($this->getRelativePath($composerJson), $line),
                     severity: Severity::Medium,
                     recommendation: sprintf('Remove @%s flag and use stable version for "%s"', $stabilityFlag, $package),
                     code: FileParser::getCodeSnippet($composerJson, $line),
@@ -322,10 +307,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
 
             $issues[] = $this->createIssue(
                 message: sprintf('Found %d unstable package versions installed', $count),
-                location: new Location(
-                    $this->getRelativePath($composerLock),
-                    1
-                ),
+                location: new Location($this->getRelativePath($composerLock)),
                 severity: Severity::Low,
                 recommendation: sprintf(
                     'Update to stable versions: %s%s. Run "composer update --prefer-stable"',

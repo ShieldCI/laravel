@@ -194,13 +194,9 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
             $middlewarePath = $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Middleware';
             $issues[] = $this->createIssue(
                 message: 'HTTPS-only application missing HSTS (Strict-Transport-Security) header',
-                location: new Location(
-                    $middlewarePath,
-                    1
-                ),
+                location: new Location($middlewarePath),
                 severity: Severity::High,
                 recommendation: 'Add middleware to set Strict-Transport-Security header: "max-age=31536000; includeSubDomains; preload"',
-                code: FileParser::getCodeSnippet($middlewarePath, 1),
                 metadata: [
                     'issue_type' => 'missing_hsts',
                     'https_only' => true,
@@ -236,10 +232,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
 
                         $issues[] = $this->createIssue(
                             message: sprintf('HSTS max-age (%d seconds) is below recommended minimum of %d seconds', $maxAge, $minMaxAge),
-                            location: new Location(
-                                $this->getRelativePath($file),
-                                $lineNumber + 1
-                            ),
+                            location: new Location($this->getRelativePath($file), $lineNumber + 1),
                             severity: Severity::High,
                             recommendation: sprintf('Set HSTS max-age to at least %d (6 months) or 31536000 (1 year)', $minMaxAge),
                             code: FileParser::getCodeSnippet($file, $lineNumber + 1),
@@ -257,10 +250,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
                 if ($config['require_include_subdomains'] && ! str_contains($line, 'includeSubDomains')) {
                     $issues[] = $this->createIssue(
                         message: 'HSTS header missing "includeSubDomains" directive',
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $lineNumber + 1
-                        ),
+                        location: new Location($this->getRelativePath($file), $lineNumber + 1),
                         severity: Severity::Medium,
                         recommendation: 'Add "includeSubDomains" to HSTS header for complete subdomain protection',
                         code: FileParser::getCodeSnippet($file, $lineNumber + 1),
@@ -276,10 +266,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
                 if ($config['require_preload'] && ! str_contains($line, 'preload')) {
                     $issues[] = $this->createIssue(
                         message: 'HSTS header missing "preload" directive',
-                        location: new Location(
-                            $this->getRelativePath($file),
-                            $lineNumber + 1
-                        ),
+                        location: new Location($this->getRelativePath($file), $lineNumber + 1),
                         severity: Severity::Low,
                         recommendation: 'Add "preload" to HSTS header and submit to https://hstspreload.org/ for browser preload list inclusion',
                         code: FileParser::getCodeSnippet($file, $lineNumber + 1),
@@ -327,10 +314,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
             if (preg_match('/["\']secure["\']\s*=>\s*(false|0)/i', $line)) {
                 $issues[] = $this->createIssue(
                     message: 'HTTPS-only application has secure cookies disabled',
-                    location: new Location(
-                        $this->getRelativePath($sessionConfig),
-                        $lineNumber + 1
-                    ),
+                    location: new Location($this->getRelativePath($sessionConfig), $lineNumber + 1),
                     severity: Severity::High,
                     recommendation: 'Set "secure" => true in config/session.php for HTTPS-only applications',
                     code: FileParser::getCodeSnippet($sessionConfig, $lineNumber + 1),

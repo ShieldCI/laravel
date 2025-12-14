@@ -105,7 +105,7 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
 
             $issues[] = $this->createIssue(
                 message: "Configuration is cached in {$environment} environment",
-                location: new Location($this->getRelativePath($configPath), 1),
+                location: new Location($this->getRelativePath($configPath)),
                 severity: Severity::Medium,
                 recommendation: 'Configuration caching is not recommended for '.$environment.'. Run "php artisan config:clear" to clear the cache. As you change your config files, the changes will not be reflected unless you clear the cache.',
                 metadata: [
@@ -122,7 +122,7 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
 
             $issues[] = $this->createIssue(
                 message: "Configuration is not cached in {$environment} environment",
-                location: new Location($this->getRelativePath($configPath), 1),
+                location: new Location($this->getRelativePath($configPath)),
                 severity: Severity::High,
                 recommendation: 'Configuration caching is critical for production performance - it improves bootstrap time by up to 50% on every request. Add "php artisan config:cache" to your deployment script. Without caching, Laravel must load and parse all config files on every request, causing significant performance degradation.',
                 metadata: [

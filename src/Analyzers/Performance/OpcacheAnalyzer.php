@@ -145,7 +145,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         if (! $this->isOpcacheLoaded()) {
             $issues[] = $this->createIssue(
                 message: 'OPcache extension is not loaded',
-                location: new Location($phpIniPath, 1),
+                location: new Location($phpIniPath),
                 severity: Severity::Critical,
                 recommendation: 'Install and enable the OPcache extension. OPcache can improve PHP performance by 30-70% by caching precompiled bytecode. Add "zend_extension=opcache.so" to your php.ini file and restart your web server.',
                 metadata: [
@@ -163,7 +163,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         if ($opcacheConfig === false || ! is_array($opcacheConfig) || ! isset($opcacheConfig['directives']) || ! is_array($opcacheConfig['directives'])) {
             $issues[] = $this->createIssue(
                 message: 'Unable to retrieve OPcache configuration',
-                location: new Location($phpIniPath, 1),
+                location: new Location($phpIniPath),
                 severity: Severity::Medium,
                 recommendation: 'OPcache is loaded but configuration cannot be retrieved. Verify OPcache is properly configured in php.ini.',
                 metadata: ['php_version' => PHP_VERSION]

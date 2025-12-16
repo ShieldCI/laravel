@@ -126,6 +126,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
                     // Single-line <script>...</script> - treat content as inside script
                     // (will be checked in the inScriptTag section)
                     $inScriptTag = true;
+                    $exitScriptAfterLine = true;
                 } elseif ($hasOpeningTag) {
                     // Opening tag without closing - enter script block
                     $inScriptTag = true;
@@ -139,18 +140,19 @@ class XssAnalyzer extends AbstractFileAnalyzer
                     $exitScriptAfterLine = false;
                 }
 
+                $rawBladeMatched = false;
+
                 // Check for unescaped blade output {!! !!}
-                if (preg_match('/\{!!.*?!!\}/', $line)) {
-                    // Check if the variable might contain user input
-                    if ($this->mightContainUserInput($line)) {
-                        $issues[] = $this->createIssueWithSnippet(
-                            message: 'Potential XSS: Unescaped blade output with possible user input',
-                            filePath: $file,
-                            lineNumber: $lineNumber + 1,
-                            severity: Severity::High,
-                            recommendation: 'Use {{ $var }} instead of {!! $var !!} or sanitize with e() helper or Purifier'
-                        );
-                    }
+                if (preg_match('/\{!!.*?!!\}/', $line) && $this->mightContainUserInput($line)) {
+                    $rawBladeMatched = true;
+
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: 'Critical XSS: Unescaped blade output with possible user input',
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
+                        severity: Severity::Critical,
+                        recommendation: 'Use {{ $var }} instead of {!! $var !!} or sanitize with e() helper or Purifier'
+                    );
                 }
 
                 // Check for echo with superglobals
@@ -192,22 +194,28 @@ class XssAnalyzer extends AbstractFileAnalyzer
                 }
 
                 // Check for dangerous JavaScript output when inside script tags
-                if ($inScriptTag) {
+                $isBladeOutput = preg_match('/\{\{.*?\}\}|\{!!.*?!!\}/', $line);
+                $isRawBlade = preg_match('/\{!!.*?!!\}/', $line);
+                $isTainted = $this->mightContainUserInput($line);
+                $isEncoded = preg_match('/@json\s*\(|json_encode\s*\(|Js::from\s*\(/', $line);
+                $isJsString = preg_match('/([=\(,]\s*[\'"]\s*\{\{.*?\}\}\s*[\'"])/', $line);
+                if ($inScriptTag && ! $rawBladeMatched && $isBladeOutput && $isTainted && ! $isEncoded) {
                     // Check for unescaped Blade output or superglobals in JavaScript
-                    if (preg_match('/\{\{[^@].*?(\$_(GET|POST|REQUEST|COOKIE)|request\(|->get\(|->post\()/', $line) ||
-                        preg_match('/@json\(\$_(GET|POST|REQUEST|COOKIE)/', $line)) {
-                        $issues[] = $this->createIssueWithSnippet(
-                            message: 'Potential XSS: User data in JavaScript without proper encoding',
-                            filePath: $file,
-                            lineNumber: $lineNumber + 1,
-                            severity: Severity::High,
-                            recommendation: 'Use @json() directive for variables or json_encode() with JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP flags'
-                        );
-                    }
+                    $severity = $isRawBlade || $isJsString
+                        ? Severity::Critical
+                        : Severity::High;
+
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: $isJsString ? 'Critical XSS: User input injected into JavaScript string context' : 'Potential XSS: User data injected into JavaScript without proper encoding',
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
+                        severity: $severity,
+                        recommendation: 'Use @json() directive for variables, Js::from(), or json_encode() with JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP flags'
+                    );
                 }
 
                 // Exit script tag after processing closing tag line
-                if (isset($exitScriptAfterLine) && $exitScriptAfterLine) {
+                if ($exitScriptAfterLine) {
                     $inScriptTag = false;
                 }
             }
@@ -235,7 +243,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
     private function mightContainUserInput(string $line): bool
     {
         // Superglobals - always user input
-        $superglobals = ['$_GET', '$_POST', '$_REQUEST', '$_COOKIE'];
+        $superglobals = ['$_GET', '$_POST', '$_REQUEST', '$_COOKIE', '$_FILES'];
         foreach ($superglobals as $superglobal) {
             if (str_contains($line, $superglobal)) {
                 return true;
@@ -255,6 +263,11 @@ class XssAnalyzer extends AbstractFileAnalyzer
         // Request object methods (context-aware)
         // Only flag ->get(), ->post(), etc. if preceded by $request or request context
         if (preg_match('/(\$request|request\(.*?\))\s*->\s*(input|get|post|query|cookie)\s*\(/', $line)) {
+            return true;
+        }
+
+        // old() helper function
+        if (preg_match('/\bold\s*\(/', $line)) {
             return true;
         }
 

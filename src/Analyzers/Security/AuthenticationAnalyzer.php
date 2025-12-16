@@ -51,6 +51,21 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      */
     private array $publicControllerMethods = [];
 
+    /**
+     * Route-level auth statistics per controller method.
+     *
+     * Format:
+     * [
+     *   'Controller::method' => [
+     *     'total' => int,
+     *     'authenticated' => int,
+     *   ]
+     * ]
+     *
+     * @var array<string, array{total: int, authenticated: int}>
+     */
+    private array $routeAuthStats = [];
+
     public function __construct(
         private ParserInterface $parser,
         private Config $config
@@ -153,35 +168,59 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Build map of controller methods that are intentionally public.
-     * This includes methods on routes with withoutMiddleware or on public routes.
+     * Build route-level authentication statistics per controller method.
+     *
+     * - Tracks total routes pointing to each controller method
+     * - Tracks how many of those routes are authenticated
+     * - Tracks intentionally public controller methods
      */
     private function buildPublicControllerMap(string $file): void
     {
         $lines = FileParser::getLines($file);
+        $routeGroups = $this->identifyRouteGroups($lines);
 
         foreach ($lines as $lineNumber => $line) {
             if (! is_string($line)) {
                 continue;
             }
 
-            // Check if this is a route definition
+            // Match route definitions
             if (! preg_match('/Route::(get|post|put|patch|delete|resource|apiResource)\s*\(/i', $line)) {
                 continue;
             }
 
-            // Check if route is on a public URI or has withoutMiddleware
-            $isPublicRoute = $this->isPublicRouteLine($line);
-            $hasWithoutMiddleware = $this->routeHasExplicitAuthRemoval($lineNumber, $lines);
-
-            if (! $isPublicRoute && ! $hasWithoutMiddleware) {
-                continue; // Not a public route
+            // Extract controller + method
+            $controllerMethod = $this->extractControllerMethod($line, $lines, $lineNumber);
+            if ($controllerMethod === null) {
+                continue;
             }
 
-            // Extract controller and method from route
-            $controllerMethod = $this->extractControllerMethod($line, $lines, $lineNumber);
-            if ($controllerMethod !== null) {
+            // Ensure stats bucket exists
+            if (! isset($this->routeAuthStats[$controllerMethod])) {
+                $this->routeAuthStats[$controllerMethod] = [
+                    'total' => 0,
+                    'authenticated' => 0,
+                ];
+            }
+
+            // Count this route
+            $this->routeAuthStats[$controllerMethod]['total']++;
+
+            // Explicit public route always wins
+            if (
+                $this->isPublicRouteLine($line) ||
+                $this->routeHasExplicitAuthRemoval($lineNumber, $lines)
+            ) {
                 $this->publicControllerMethods[$controllerMethod] = true;
+
+                continue;
+            }
+
+            // Check if this specific route is authenticated
+            $isAuthenticated = $this->isRouteAuthenticated($lineNumber, $lines, $routeGroups);
+
+            if ($isAuthenticated) {
+                $this->routeAuthStats[$controllerMethod]['authenticated']++;
             }
         }
     }
@@ -309,8 +348,6 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                             'method' => $method,
                         ]
                     );
-
-                    continue; // Authorization irrelevant without auth
                 }
             }
         }
@@ -360,15 +397,21 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                             continue; // Method is intentionally public via route-level decision
                         }
 
+                        // Check if method has controller-level auth middleware
                         $hasAuthMiddleware = $this->isControllerMethodAuthenticated($methodName, $constructorMiddlewareInfo, $middlewareMethodInfo);
 
-                        if (! $hasAuthMiddleware) {
+                        // Also consider method authenticated if protected at route level
+                        $stats = $this->routeAuthStats[$controllerMethodKey] ?? null;
+
+                        $isRouteProtected = $stats !== null && $stats['total'] > 0 && $stats['authenticated'] === $stats['total'];
+
+                        if (! $hasAuthMiddleware && ! $isRouteProtected) {
                             $issues[] = $this->createIssueWithSnippet(
                                 message: "Sensitive method {$className}::{$methodName}() without authentication check",
                                 filePath: $file,
                                 lineNumber: $stmt->getLine(),
                                 severity: Severity::High,
-                                recommendation: 'Add $this->middleware("auth") in constructor or use authorization checks'
+                                recommendation: 'Add $this->middleware("auth") in constructor or protect all routes to this method with route-level auth middleware'
                             );
 
                             continue;

@@ -2193,4 +2193,149 @@ PHP;
         $this->assertCount(1, $issues);
         $this->assertEquals(Severity::High, $issues[0]->severity);
     }
+
+    public function test_passes_controller_without_auth_middleware_but_all_routes_protected(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('auth')->group(function () {
+    Route::post('/posts', [PostController::class, 'store']);
+    Route::put('/posts/{id}', [PostController::class, 'update']);
+    Route::delete('/posts/{id}', [PostController::class, 'destroy']);
+});
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+
+class PostController extends Controller
+{
+    // No auth middleware in constructor
+
+    public function store()
+    {
+        return response()->json(['status' => 'created']);
+    }
+
+    public function update($id)
+    {
+        return response()->json(['status' => 'updated']);
+    }
+
+    public function destroy($id)
+    {
+        return response()->json(['status' => 'deleted']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+            'app/Http/Controllers/PostController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because all routes are protected at route level
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_controller_without_auth_middleware_with_mixed_route_protection(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('auth')->group(function () {
+    Route::post('/posts', [PostController::class, 'store']);
+    Route::put('/posts/{id}', [PostController::class, 'update']);
+});
+
+// This route is NOT protected
+Route::delete('/posts/{id}', [PostController::class, 'destroy']);
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+
+class PostController extends Controller
+{
+    // No auth middleware in constructor
+
+    public function store()
+    {
+        return response()->json(['status' => 'created']);
+    }
+
+    public function update($id)
+    {
+        return response()->json(['status' => 'updated']);
+    }
+
+    public function destroy($id)
+    {
+        return response()->json(['status' => 'deleted']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+            'app/Http/Controllers/PostController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because destroy() method is not protected
+        $this->assertFalse($result->isSuccess());
+        $issues = $result->getIssues();
+        $this->assertGreaterThanOrEqual(1, count($issues));
+    }
+
+    public function test_passes_invokable_controller_without_auth_middleware_but_route_protected(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('auth')->group(function () {
+    Route::post('/webhook/callback', WebhookController::class);
+});
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+
+class WebhookController extends Controller
+{
+    // No auth middleware in constructor
+
+    public function __invoke()
+    {
+        return response()->json(['status' => 'ok']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+            'app/Http/Controllers/WebhookController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because route is protected at route level
+        $this->assertPassed($result);
+    }
 }

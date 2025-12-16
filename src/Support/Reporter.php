@@ -31,7 +31,7 @@ class Reporter implements ReporterInterface
     {
         $showRecommendations = config('shieldci.report.show_recommendations', true);
         $maxIssuesPerCheckRaw = config('shieldci.report.max_issues_per_check', 5);
-        $maxIssuesPerCheck = is_int($maxIssuesPerCheckRaw) ? $maxIssuesPerCheckRaw : 5;
+        $maxIssuesPerCheck = $this->normalizeIntegerConfig($maxIssuesPerCheckRaw, 5);
 
         $output = [];
 
@@ -558,7 +558,7 @@ class Reporter implements ReporterInterface
     ): string {
         $showRecommendations = config('shieldci.report.show_recommendations', true);
         $maxIssuesPerCheckRaw = config('shieldci.report.max_issues_per_check', 5);
-        $maxIssuesPerCheck = is_int($maxIssuesPerCheckRaw) ? $maxIssuesPerCheckRaw : 5;
+        $maxIssuesPerCheck = $this->normalizeIntegerConfig($maxIssuesPerCheckRaw, 5);
 
         $output = [];
 
@@ -643,5 +643,28 @@ class Reporter implements ReporterInterface
         $output[] = '';
 
         return implode(PHP_EOL, $output);
+    }
+
+    /**
+     * Normalize config value to integer, handling both int and string values from .env.
+     *
+     * @param  mixed  $value
+     */
+    private function normalizeIntegerConfig($value, int $default): int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+
+        if (is_string($value)) {
+            // Handle string integers (including negative numbers)
+            // ctype_digit only works for positive numbers, so we use filter_var for full support
+            $filtered = filter_var($value, FILTER_VALIDATE_INT);
+            if ($filtered !== false) {
+                return $filtered;
+            }
+        }
+
+        return $default;
     }
 }

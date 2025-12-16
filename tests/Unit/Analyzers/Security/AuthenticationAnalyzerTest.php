@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
+use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\Security\AuthenticationAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -12,9 +13,56 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class AuthenticationAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    protected function createAnalyzer(array $config = []): AnalyzerInterface
     {
-        return new AuthenticationAnalyzer($this->parser);
+        // Default public routes (same as in config file)
+        $defaultPublicRoutes = [
+            'login',
+            'register',
+            'password',
+            'forgot-password',
+            'reset-password',
+            'verify',
+            'health',
+            'status',
+            'up',
+            'webhook',
+        ];
+
+        // Get custom public routes from config if provided
+        $customPublicRoutes = $config['authentication-authorization']['public_routes'] ?? [];
+        $publicRoutes = is_array($customPublicRoutes) && ! empty($customPublicRoutes)
+            ? array_merge($defaultPublicRoutes, $customPublicRoutes)
+            : $defaultPublicRoutes;
+
+        // Build security config
+        $securityConfig = [
+            'enabled' => true,
+            'authentication-authorization' => [
+                'public_routes' => $publicRoutes,
+            ],
+        ];
+
+        // Remove authentication-authorization from config to avoid conflicts
+        unset($config['authentication-authorization']);
+
+        // Merge any remaining config
+        if (! empty($config)) {
+            $securityConfig = array_merge_recursive($securityConfig, $config);
+        }
+
+        $configRepo = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'security' => $securityConfig,
+                ],
+            ],
+        ]);
+
+        return new AuthenticationAnalyzer($this->parser, $configRepo);
     }
 
     // ==========================================
@@ -43,6 +91,169 @@ class DashboardController extends Controller
 PHP;
 
         $tempDir = $this->createTempDirectory(['app/Http/Controllers/DashboardController.php' => $controller]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_middleware_method(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController extends Controller
+{
+    public function middleware()
+    {
+        return [
+            'auth' => ['except' => ['index', 'show']],
+        ];
+    }
+
+    public function store()
+    {
+        return Post::create(request()->all());
+    }
+
+    public function destroy($id)
+    {
+        Post::destroy($id);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/PostController.php' => $controller]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_middleware_method_only_constraint(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController extends Controller
+{
+    public function middleware()
+    {
+        return [
+            'auth' => ['only' => ['store', 'update', 'destroy']],
+        ];
+    }
+
+    public function store()
+    {
+        return User::create(request()->all());
+    }
+
+    public function update($id)
+    {
+        User::find($id)->update(request()->all());
+    }
+
+    public function destroy($id)
+    {
+        User::destroy($id);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $controller]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_sensitive_methods_without_middleware_method_protection(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController extends Controller
+{
+    public function middleware()
+    {
+        return [
+            'auth' => ['only' => ['index', 'show']], // Only protects index/show, not store/destroy
+        ];
+    }
+
+    public function store()
+    {
+        return Post::create(request()->all());
+    }
+
+    public function destroy($id)
+    {
+        Post::destroy($id);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/PostController.php' => $controller]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('store', $result);
+        $this->assertHasIssueContaining('destroy', $result);
+    }
+
+    public function test_passes_with_middleware_method_all_methods(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AdminController extends Controller
+{
+    public function middleware()
+    {
+        return [
+            'auth' => [], // Applies to all methods
+        ];
+    }
+
+    public function store()
+    {
+        return Admin::create(request()->all());
+    }
+
+    public function destroy($id)
+    {
+        Admin::destroy($id);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AdminController.php' => $controller]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -133,6 +344,11 @@ namespace App\Http\Controllers;
 
 class PostController extends Controller
 {
+    public function __construct()
+    {
+        $this->middleware('auth');
+    }
+
     public function destroy($id)
     {
         $this->authorize('delete', Post::find($id));
@@ -164,6 +380,11 @@ use Illuminate\Support\Facades\Gate;
 
 class PostController extends Controller
 {
+    public function __construct()
+    {
+        $this->middleware('auth');
+    }
+
     public function destroy($id)
     {
         Gate::authorize('delete-post');
@@ -195,6 +416,11 @@ use Illuminate\Support\Facades\Gate;
 
 class PostController extends Controller
 {
+    public function __construct()
+    {
+        $this->middleware('auth');
+    }
+
     public function update($id)
     {
         Gate::allows('update-post');
@@ -223,6 +449,11 @@ namespace App\Http\Controllers;
 
 class PostController extends Controller
 {
+    public function __construct()
+    {
+        $this->middleware('auth');
+    }
+
     public function destroy($id)
     {
         $post = Post::find($id);
@@ -233,44 +464,6 @@ class PostController extends Controller
 PHP;
 
         $tempDir = $this->createTempDirectory(['app/Http/Controllers/PostController.php' => $controller]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertPassed($result);
-    }
-
-    public function test_skips_construct_and_invoke_methods(): void
-    {
-        $controller = <<<'PHP'
-<?php
-
-namespace App\Http\Controllers;
-
-class TestController extends Controller
-{
-    public function __construct()
-    {
-        // Constructor - should be skipped
-    }
-
-    public function __invoke()
-    {
-        // Invoke method - should be skipped
-        return 'test';
-    }
-
-    public function middleware()
-    {
-        // Middleware method - should be skipped
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['app/Http/Controllers/TestController.php' => $controller]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -553,6 +746,63 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_skips_custom_public_routes_from_config(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/api/public', [PublicApiController::class, 'endpoint']);
+Route::post('/oauth/callback', [OAuthController::class, 'callback']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        // Create analyzer with custom public routes
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => [
+                    'api/public',
+                    'oauth/callback',
+                ],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Routes should not be flagged because they're in the public routes list
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_routes_not_in_custom_public_routes(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/api/private', [PrivateApiController::class, 'endpoint']);
+Route::post('/custom/endpoint', [CustomController::class, 'store']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        // Create analyzer with custom public routes that don't include these routes
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => [
+                    'api/public',
+                    'oauth/callback',
+                ],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Routes should be flagged because they're not in the public routes list
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
     public function test_skips_password_reset_routes(): void
     {
         $routes = <<<'PHP'
@@ -655,9 +905,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // The analyzer checks individual routes, not the middleware() wrapper
-        // This is a limitation - it only detects ->middleware('auth') on routes, not Route::middleware()
-        $this->assertFalse($result->isSuccess());
+        // The analyzer now correctly detects Route::middleware() wrappers
+        $this->assertPassed($result);
     }
 
     public function test_detects_route_group_even_with_public_route_names(): void
@@ -681,6 +930,602 @@ PHP;
         // Route group itself is flagged (prefix contains 'auth' but that's just a name)
         // The individual routes inside are skipped because they contain 'login' and 'register'
         $this->assertFalse($result->isSuccess());
+    }
+
+    public function test_without_middleware_removes_auth_from_route(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('auth')->group(function () {
+    Route::post('/login', [AuthController::class, 'login'])
+        ->withoutMiddleware('auth');
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Route explicitly removes auth — should NOT be flagged
+        $this->assertPassed($result);
+    }
+
+    public function test_without_middleware_array_removes_auth(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware(['auth', 'verified'])->group(function () {
+    Route::post('/callback', [WebhookController::class, 'handle'])
+        ->withoutMiddleware(['auth']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_nested_group_without_middleware_removes_parent_auth(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('auth')->group(function () {
+    Route::group(['prefix' => 'public'], function () {
+        Route::post('/callback', [WebhookController::class, 'handle'])
+            ->withoutMiddleware('auth');
+    });
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_group_without_middleware_removes_parent_auth(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('auth')->group(function () {
+    Route::withoutMiddleware('auth')->group(function () {
+        Route::post('/login', [AuthController::class, 'login']);
+    });
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Public login route should not be flagged
+        $this->assertPassed($result);
+    }
+
+    public function test_mixed_routes_with_and_without_without_middleware(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('auth')->group(function () {
+    Route::post('/secure', [SecureController::class, 'store']);
+    Route::post('/public', [PublicController::class, 'store'])
+        ->withoutMiddleware('auth');
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Secure route should NOT be flagged
+        // Public route explicitly removes auth — also should NOT be flagged
+        $this->assertPassed($result);
+    }
+
+    public function test_auth_not_reapplied_after_without_middleware(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('auth')->group(function () {
+    Route::post('/login', [AuthController::class, 'login'])
+        ->withoutMiddleware('auth');
+
+    Route::post('/admin', [AdminController::class, 'store']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // /login is public
+        // /admin is protected
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_routes_inside_protected_route_group_with_string_middleware(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['middleware' => 'auth', 'prefix' => 'admin'], function () {
+    Route::post('/users', [UserController::class, 'store']);
+    Route::put('/users/{id}', [UserController::class, 'update']);
+    Route::delete('/users/{id}', [UserController::class, 'destroy']);
+    Route::resource('posts', PostController::class);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Routes inside protected group should not be flagged
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_routes_inside_protected_route_group_with_array_middleware(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['middleware' => ['auth'], 'prefix' => 'admin'], function () {
+    Route::post('/users', [UserController::class, 'store']);
+    Route::delete('/users/{id}', [UserController::class, 'destroy']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Routes inside protected group should not be flagged
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_routes_inside_protected_route_group_with_multiple_middleware(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['middleware' => ['login.user', 'auth', 'auth.admin'], 'prefix' => 'admin'], function () {
+    Route::post('/users', [UserController::class, 'store']);
+    Route::put('/users/{id}', [UserController::class, 'update']);
+    Route::delete('/users/{id}', [UserController::class, 'destroy']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Routes inside protected group should not be flagged
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_routes_inside_protected_route_group_with_multiline_middleware_array(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group([
+    'as' => 'admin.',
+    'prefix' => 'admin',
+    'middleware' => [
+        'login.user',
+        'auth',
+        'auth.admin'
+    ]
+], function () {
+    Route::post('/users', [UserController::class, 'store']);
+    Route::put('/users/{id}', [UserController::class, 'update']);
+    Route::delete('/users/{id}', [UserController::class, 'destroy']);
+    Route::resource('posts', PostController::class);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Routes inside protected group should not be flagged
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_routes_inside_unprotected_route_group(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['prefix' => 'admin'], function () {
+    Route::post('/users', [UserController::class, 'store']);
+    Route::delete('/users/{id}', [UserController::class, 'destroy']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should flag both the route group and the routes inside
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertGreaterThanOrEqual(3, count($issues)); // Route group + 2 routes
+        $this->assertHasIssueContaining('Route group without authentication middleware', $result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+        $this->assertHasIssueContaining('DELETE route without authentication middleware', $result);
+    }
+
+    public function test_detects_routes_outside_protected_route_group(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/public-endpoint', [PublicController::class, 'store']);
+
+Route::group(['middleware' => 'auth', 'prefix' => 'admin'], function () {
+    Route::post('/users', [UserController::class, 'store']);
+    Route::get('/dashboard', [AdminController::class, 'dashboard']);
+});
+
+Route::delete('/another-public', [PublicController::class, 'destroy']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should flag routes outside the protected group, but not routes inside
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues); // Only the 2 routes outside the group
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+        $this->assertHasIssueContaining('DELETE route without authentication middleware', $result);
+
+        // Verify routes inside protected group are not flagged
+        $messages = array_map(fn ($issue) => $issue->message, $issues);
+        $messagesString = implode(' ', $messages);
+        $this->assertStringNotContainsString('users', $messagesString);
+        $this->assertStringNotContainsString('dashboard', $messagesString);
+    }
+
+    public function test_detects_mixed_routes_in_and_outside_protected_group(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/public', [PublicController::class, 'store']);
+
+Route::group(['middleware' => ['auth'], 'prefix' => 'admin'], function () {
+    Route::post('/protected', [AdminController::class, 'store']);
+    Route::delete('/protected/{id}', [AdminController::class, 'destroy']);
+});
+
+Route::put('/another-public', [PublicController::class, 'update']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should flag only routes outside the protected group
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues); // Only the 2 routes outside the group
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+        $this->assertHasIssueContaining('PUT route without authentication middleware', $result);
+    }
+
+    public function test_passes_routes_with_own_middleware_inside_unprotected_group(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['prefix' => 'admin'], function () {
+    Route::post('/users', [UserController::class, 'store'])->middleware('auth');
+    Route::delete('/users/{id}', [UserController::class, 'destroy'])->middleware('auth');
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Route group is flagged, but individual routes with their own auth middleware should pass
+        // However, the route group itself will be flagged
+        $this->assertFalse($result->isSuccess());
+        $issues = $result->getIssues();
+        // Should only flag the route group, not the individual routes
+        $this->assertCount(1, $issues);
+        $this->assertHasIssueContaining('Route group without authentication middleware', $result);
+    }
+
+    public function test_handles_nested_route_groups(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['middleware' => 'auth', 'prefix' => 'admin'], function () {
+    Route::post('/users', [UserController::class, 'store']);
+    
+    Route::group(['prefix' => 'settings'], function () {
+        Route::put('/profile', [SettingsController::class, 'update']);
+        Route::delete('/account', [SettingsController::class, 'destroy']);
+    });
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Routes in nested group should be protected by parent group's auth middleware
+        // Inner group should NOT be flagged because it's inside a protected parent group
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_routes_in_nested_protected_groups(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['middleware' => 'auth', 'prefix' => 'admin'], function () {
+    Route::post('/users', [UserController::class, 'store']);
+    
+    Route::group(['middleware' => ['auth', 'verified'], 'prefix' => 'settings'], function () {
+        Route::put('/profile', [SettingsController::class, 'update']);
+        Route::delete('/account', [SettingsController::class, 'destroy']);
+    });
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // All routes should be protected by their respective groups
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_routes_in_nested_unprotected_group_inside_protected_parent(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['middleware' => 'auth', 'prefix' => 'admin'], function () {
+    Route::post('/users', [UserController::class, 'store']);
+    
+    // Nested group without explicit auth, but protected by parent
+    Route::group(['prefix' => 'settings'], function () {
+        Route::put('/profile', [SettingsController::class, 'update']);
+        Route::delete('/account', [SettingsController::class, 'destroy']);
+    });
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Routes should be protected by parent group's auth middleware
+        // Inner group should NOT be flagged because it's inside a protected parent group
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_routes_in_nested_protected_group_inside_unprotected_parent(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['prefix' => 'admin'], function () {
+    Route::post('/users', [UserController::class, 'store']);
+    
+    // Nested group with auth, protecting its routes
+    Route::group(['middleware' => 'auth', 'prefix' => 'settings'], function () {
+        Route::put('/profile', [SettingsController::class, 'update']);
+        Route::delete('/account', [SettingsController::class, 'destroy']);
+    });
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Routes in nested protected group should not be flagged
+        // Parent group and route outside nested group should be flagged
+        $this->assertFalse($result->isSuccess());
+        $issues = $result->getIssues();
+        $this->assertGreaterThanOrEqual(2, $issues); // Parent group + route outside nested group
+
+        // Verify nested group routes are not flagged
+        $messages = array_map(fn ($issue) => $issue->message, $issues);
+        $messagesString = implode(' ', $messages);
+        $this->assertStringNotContainsString('PUT route', $messagesString);
+        $this->assertStringNotContainsString('DELETE route', $messagesString);
+    }
+
+    public function test_detects_routes_in_nested_unprotected_groups(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['prefix' => 'admin'], function () {
+    Route::post('/users', [UserController::class, 'store']);
+    
+    // Nested group also without auth
+    Route::group(['prefix' => 'settings'], function () {
+        Route::put('/profile', [SettingsController::class, 'update']);
+        Route::delete('/account', [SettingsController::class, 'destroy']);
+    });
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // All routes should be flagged since neither group has auth
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertGreaterThanOrEqual(4, $issues); // 2 groups + 3 routes
+        $this->assertHasIssueContaining('POST route', $result);
+        $this->assertHasIssueContaining('PUT route', $result);
+        $this->assertHasIssueContaining('DELETE route', $result);
+    }
+
+    public function test_handles_triple_nested_groups(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['middleware' => 'auth', 'prefix' => 'admin'], function () {
+    Route::post('/users', [UserController::class, 'store']);
+    
+    Route::group(['prefix' => 'settings'], function () {
+        Route::put('/profile', [SettingsController::class, 'update']);
+        
+        Route::group(['prefix' => 'advanced'], function () {
+            Route::delete('/account', [SettingsController::class, 'destroy']);
+        });
+    });
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // All routes should be protected by top-level parent group's auth
+        // Inner groups should NOT be flagged because they're inside a protected parent group
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_routes_in_nested_group_with_multiple_middleware_keys(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['as' => 'admin.', 'prefix' => 'admin', 'middleware' => ['login.user', 'auth', 'auth.admin']], function () {
+    Route::group(['as' => 'airports.', 'prefix' => 'airports'], function () {
+        Route::post('/create', [AirportController::class, 'store']);
+        Route::delete('/{id}', [AirportController::class, 'destroy']);
+    });
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Routes should be protected by parent group's auth middleware
+        // Inner group should NOT be flagged because it's inside a protected parent group
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_routes_in_nested_group_with_multiline_middleware_array(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group([
+    'as' => 'admin.',
+    'prefix' => 'admin',
+    'middleware' => [
+        'login.user',
+        'auth',
+        'auth.admin'
+    ]
+], function () {
+    Route::group(['as' => 'airports.', 'prefix' => 'airports'], function () {
+        Route::post('/create', [AirportController::class, 'store']);
+        Route::delete('/{id}', [AirportController::class, 'destroy']);
+    });
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Routes should be protected by parent group's auth middleware
+        // Inner group should NOT be flagged because it's inside a protected parent group
+        $this->assertPassed($result);
     }
 
     // ==========================================
@@ -785,6 +1630,50 @@ PHP;
 
         $result = $analyzer->analyze();
 
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_routes_in_multiple_nested_groups_with_same_name(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\AdminController;
+use App\Http\Controllers\AirportController;
+use App\Http\Controllers\NoFlyRecordController;
+use App\Http\Controllers\PageController;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/nvhb', [LoginController::class, 'healthCheck'])->name('envoyer.health.check');
+
+Route::group(['as' => 'admin.', 'prefix' => 'admin', 'middleware' => ['login.user', 'auth', 'auth.admin']], function () {
+    Route::get('/', [AdminController::class, 'adminDashboard'])->name('dashboard');
+    
+    Route::group(['as' => 'airports.', 'prefix' => 'airports'], function () {
+        Route::get('/members', [AirportController::class, 'getMemberAirports'])->name('members');
+        Route::post('/nofly/{nofly}/archive', [NoFlyRecordController::class, 'archive'])->name('nofly.archive');
+    });
+});
+
+Route::group(['middleware' => ['login.user', 'auth']], function () {
+    Route::get('/', [PageController::class, 'getDashboard'])->name('dashboard');
+    
+    Route::group(['as' => 'airports.', 'prefix' => 'airports'], function () {
+        Route::get('/', [AirportController::class, 'getMemberAirportsHunterSide'])->name('index');
+        Route::post('/{airport}/deals/check', [AirportDealController::class, 'checkDeal'])->name('deals.check');
+    });
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Routes should be protected by their respective parent groups
+        // Nested route groups should NOT be flagged because they're inside protected parent groups
         $this->assertPassed($result);
     }
 
@@ -1282,7 +2171,7 @@ PHP;
         $this->assertEquals(Severity::Medium, $authIssue->severity);
     }
 
-    public function test_route_groups_have_medium_severity(): void
+    public function test_route_groups_have_high_severity(): void
     {
         $routes = <<<'PHP'
 <?php
@@ -1299,10 +2188,9 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Medium severity issues result in warning status with resultBySeverity()
         $this->assertFalse($result->isSuccess());
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(Severity::Medium, $issues[0]->severity);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
     }
 }

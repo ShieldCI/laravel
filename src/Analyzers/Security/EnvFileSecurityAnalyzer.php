@@ -250,7 +250,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
             $issues[] = $this->createIssueWithSnippet(
                 message: '.env file is not excluded in .gitignore',
                 filePath: $gitignorePath,
-                lineNumber: 1,
+                lineNumber: null,
                 severity: Severity::Critical,
                 recommendation: 'Add ".env" to .gitignore to prevent accidentally committing secrets to version control',
                 code: '.env',
@@ -308,7 +308,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
             $issues[] = $this->createIssueWithSnippet(
                 message: '.env file is committed to git repository',
                 filePath: $envPath,
-                lineNumber: 1,
+                lineNumber: null,
                 severity: Severity::Critical,
                 recommendation: 'Remove .env from git: "git rm --cached .env" and ensure it\'s in .gitignore',
                 code: 'git-tracked',
@@ -344,7 +344,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
             $issues[] = $this->createIssueWithSnippet(
                 message: sprintf('.env file has insecure permissions (%s)', $octal),
                 filePath: $envPath,
-                lineNumber: 1,
+                lineNumber: null,
                 severity: Severity::Critical,
                 recommendation: 'Restrict .env permissions: chmod 600 .env',
                 code: 'permissions',
@@ -363,7 +363,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
             $issues[] = $this->createIssueWithSnippet(
                 message: sprintf('.env file has overly permissive permissions (%s)', $octal),
                 filePath: $envPath,
-                lineNumber: 1,
+                lineNumber: null,
                 severity: Severity::Medium,
                 recommendation: 'Consider restricting .env permissions: chmod 600 .env (readable only by owner)',
                 code: 'permissions',

@@ -125,9 +125,9 @@ class Reporter implements ReporterInterface
                         foreach (array_slice($issues, 0, $displayCount) as $issue) {
                             // Highlight critical issues with background color
                             if (isset($issue->severity) && $issue->severity->value === 'critical') {
-                                $output[] = $this->color("At {$issue->location}.", 'white', 'bg_red');
+                                $output[] = $this->color("At {$issue->location}", 'white', 'bg_red');
                             } else {
-                                $output[] = $this->color("At {$issue->location}.", 'magenta');
+                                $output[] = $this->color("At {$issue->location}", 'magenta');
                             }
                         }
 
@@ -604,9 +604,9 @@ class Reporter implements ReporterInterface
                 foreach (array_slice($issues, 0, $displayCount) as $issue) {
                     // Highlight critical issues with background color
                     if (isset($issue->severity) && $issue->severity->value === 'critical') {
-                        $output[] = $this->color("At {$issue->location}.", 'white', 'bg_red');
+                        $output[] = $this->color("At {$issue->location}", 'white', 'bg_red');
                     } else {
-                        $output[] = $this->color("At {$issue->location}.", 'magenta');
+                        $output[] = $this->color("At {$issue->location}", 'magenta');
                     }
                 }
 

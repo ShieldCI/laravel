@@ -126,6 +126,12 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             $this->checkController($file, $issues);
         }
 
+        // Check FormRequest classes
+        $formRequests = $this->getFormRequestFiles();
+        foreach ($formRequests as $file) {
+            $this->checkFormRequest($file, $issues);
+        }
+
         // Check for unsafe Auth::user() usage
         foreach ($this->getPhpFiles() as $file) {
             $this->checkUnsafeAuthUsage($file, $issues);
@@ -312,7 +318,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                // Check if route has auth middleware directly
+                // Check if route has auth middleware directly (early optimization)
+                // Supports auth, auth:api, auth:sanctum, auth:web, etc.
                 $searchRange = min($lineNumber + 10, count($lines));
 
                 for ($i = $lineNumber; $i < $searchRange; $i++) {
@@ -320,7 +327,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                         continue;
                     }
 
-                    if (preg_match('/->middleware\s*\(\s*["\']auth["\']|->middleware\s*\(\s*\[[^\]]*["\']auth["\']/i', $lines[$i])) {
+                    if (preg_match('/->middleware\s*\(\s*["\']auth(?::[a-zA-Z0-9_-]+)?["\']|->middleware\s*\(\s*\[[^\]]*["\']auth(?::[a-zA-Z0-9_-]+)?["\']/i', $lines[$i])) {
                         break;
                     }
 
@@ -423,6 +430,116 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Check FormRequest for missing or weak authorization.
+     */
+    private function checkFormRequest(string $file, array &$issues): void
+    {
+        $ast = $this->parser->parseFile($file);
+        if (empty($ast)) {
+            return;
+        }
+
+        $classes = $this->parser->findClasses($ast);
+
+        foreach ($classes as $class) {
+            $className = $class->name ? $class->name->toString() : 'Unknown';
+
+            // Check if it extends FormRequest
+            if (! $this->extendsFormRequest($class)) {
+                continue;
+            }
+
+            // Find authorize() method
+            $authorizeMethod = null;
+            foreach ($class->stmts as $stmt) {
+                if ($stmt instanceof Node\Stmt\ClassMethod && $stmt->name->toString() === 'authorize') {
+                    $authorizeMethod = $stmt;
+                    break;
+                }
+            }
+
+            // Missing authorize() method defaults to false (secure by default)
+            if ($authorizeMethod === null) {
+                continue;
+            }
+
+            // Check if authorize() returns true without any checks
+            if ($this->authorizesWithoutChecks($authorizeMethod)) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: "{$className}::authorize() returns true without authorization checks",
+                    filePath: $file,
+                    lineNumber: $authorizeMethod->getLine(),
+                    severity: Severity::High,
+                    recommendation: 'Add proper authorization logic to the authorize() method or remove it to deny by default',
+                    metadata: [
+                        'type' => 'form_request_authorization',
+                        'class' => $className,
+                    ]
+                );
+            }
+        }
+    }
+
+    /**
+     * Check if a class extends FormRequest.
+     */
+    private function extendsFormRequest(Node\Stmt\Class_ $class): bool
+    {
+        if ($class->extends === null) {
+            return false;
+        }
+
+        $extends = $class->extends->toString();
+
+        return str_contains($extends, 'FormRequest');
+    }
+
+    /**
+     * Check if authorize() method returns true without any checks.
+     */
+    private function authorizesWithoutChecks(Node\Stmt\ClassMethod $method): bool
+    {
+        if ($method->stmts === null || empty($method->stmts)) {
+            return false;
+        }
+
+        // Look for immediate "return true;"
+        foreach ($method->stmts as $stmt) {
+            if ($stmt instanceof Node\Stmt\Return_) {
+                $returnValue = $stmt->expr;
+
+                // Check for "return true;"
+                if ($returnValue instanceof Node\Expr\ConstFetch) {
+                    $constName = $returnValue->name->toString();
+                    if (strcasecmp($constName, 'true') === 0) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Get FormRequest files.
+     *
+     * @return array<string>
+     */
+    private function getFormRequestFiles(): array
+    {
+        $files = [];
+
+        foreach ($this->getPhpFiles() as $file) {
+            if (str_contains($file, '/Requests/') || str_ends_with($file, 'Request.php')) {
+                $files[] = $file;
+            }
+        }
+
+        return $files;
+    }
+
+    /**
      * Get middleware information from controller's constructor.
      *
      * Returns array with 'auth' key containing 'only' or 'except' arrays, or null if no auth middleware.
@@ -475,14 +592,14 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 // Extract middleware name from arguments
                 foreach ($currentExpr->args as $arg) {
                     $value = $arg->value;
-                    if ($value instanceof Node\Scalar\String_ && str_contains($value->value, 'auth')) {
+                    if ($value instanceof Node\Scalar\String_ && $this->isAuthMiddleware($value->value)) {
                         $middlewareName = $value->value;
                     }
                     // Also check array arguments like ['auth', 'verified']
                     if ($value instanceof Node\Expr\Array_) {
                         foreach ($value->items as $item) {
                             if ($item instanceof Node\Expr\ArrayItem && $item->value instanceof Node\Scalar\String_) {
-                                if (str_contains($item->value->value, 'auth')) {
+                                if ($this->isAuthMiddleware($item->value->value)) {
                                     $middlewareName = $item->value->value;
                                     break;
                                 }
@@ -543,10 +660,10 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                                 continue;
                             }
 
-                            // Get the key (middleware name like 'auth')
+                            // Get the key (middleware name like 'auth' or 'auth:api')
                             $key = $this->extractArrayKeyValue($item->key);
 
-                            if ($key === null || ! str_contains($key, 'auth')) {
+                            if ($key === null || ! $this->isAuthMiddleware($key)) {
                                 continue;
                             }
 
@@ -646,7 +763,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         }
 
         foreach ($middlewareInfo as $middlewareName => $constraints) {
-            if (! str_contains($middlewareName, 'auth')) {
+            if (! $this->isAuthMiddleware($middlewareName)) {
                 continue;
             }
 
@@ -671,11 +788,12 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if a line removes auth middleware.
+     * Supports: auth, auth:api, auth:sanctum, auth:web, etc.
      */
     private function removesAuthMiddleware(string $line): bool
     {
         return (bool) preg_match(
-            '/->withoutMiddleware\s*\(\s*(?:\[[^\]]*["\']auth["\']|["\']auth["\'])/i',
+            '/->withoutMiddleware\s*\(\s*(?:\[[^\]]*["\']auth(?::[a-zA-Z0-9_-]+)?["\']|["\']auth(?::[a-zA-Z0-9_-]+)?["\'])/i',
             $line
         );
     }
@@ -688,8 +806,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         $lines = FileParser::getLines($file);
 
         foreach ($lines as $lineNumber => $line) {
-            // Check for Auth::user()->
-            if (preg_match('/Auth::user\(\)->/i', $line)) {
+            // Check for Auth::user()-> (but NOT Auth::user()?-> which is safe)
+            if (preg_match('/Auth::user\(\)\s*->/i', $line) && ! preg_match('/Auth::user\(\)\s*\?->/i', $line)) {
                 $this->checkAuthUsageWithNullSafety(
                     file: $file,
                     lines: $lines,
@@ -700,14 +818,26 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 );
             }
 
-            // Check for auth()->user()->
-            if (preg_match('/auth\(\)->user\(\)->/i', $line)) {
+            // Check for auth()->user()-> (but NOT auth()->user()?-> which is safe)
+            if (preg_match('/auth\(\)->user\(\)\s*->/i', $line) && ! preg_match('/auth\(\)->user\(\)\s*\?->/i', $line)) {
                 $this->checkAuthUsageWithNullSafety(
                     file: $file,
                     lines: $lines,
                     lineNumber: $lineNumber,
                     method: 'auth()->user()',
                     checkMethod: 'auth()->check()',
+                    issues: $issues
+                );
+            }
+
+            // Check for $request->user()-> (but NOT $request->user()?-> which is safe)
+            if (preg_match('/\$request->user\(\)\s*->/i', $line) && ! preg_match('/\$request->user\(\)\s*\?->/i', $line)) {
+                $this->checkAuthUsageWithNullSafety(
+                    file: $file,
+                    lines: $lines,
+                    lineNumber: $lineNumber,
+                    method: '$request->user()',
+                    checkMethod: '$request->user()',
                     issues: $issues
                 );
             }
@@ -753,13 +883,25 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Check if a middleware name represents authentication middleware.
+     * Supports: auth, auth:api, auth:sanctum, auth:web, etc.
+     */
+    private function isAuthMiddleware(string $middleware): bool
+    {
+        // Match 'auth' optionally followed by a colon and guard name
+        // Examples: 'auth', 'auth:api', 'auth:sanctum', 'auth:web'
+        return (bool) preg_match('/^auth(?::[a-zA-Z0-9_-]+)?$/i', trim($middleware));
+    }
+
+    /**
      * Check if a line contains an auth null check.
      */
     private function hasAuthNullCheck(string $line): bool
     {
-        // Look for actual auth checks: Auth::check(), auth()->check(), if (Auth::user()), if (auth()->user())
+        // Look for actual auth checks: Auth::check(), auth()->check(), if (Auth::user()), if (auth()->user()), if ($request->user())
+        // Also recognize nullsafe operators (?->) as safe
         return (bool) preg_match(
-            '/(?:Auth::check\(\)|auth\(\)->check\(\)|if\s*\(\s*Auth::user\(\)|if\s*\(\s*auth\(\)->user\(\))/i',
+            '/(?:Auth::check\(\)|auth\(\)->check\(\)|if\s*\(\s*Auth::user\(\)|if\s*\(\s*auth\(\)->user\(\)|if\s*\(\s*\$request->user\(\)|Auth::user\(\)\?->|auth\(\)->user\(\)\?->|\$request->user\(\)\?->)/i',
             $line
         );
     }
@@ -848,11 +990,12 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if a line adds auth middleware.
+     * Supports: auth, auth:api, auth:sanctum, auth:web, etc.
      */
     private function addsAuthMiddleware(string $line): bool
     {
         return (bool) preg_match(
-            '/->middleware\s*\(\s*(?:\[[^\]]*["\']auth["\']|["\']auth["\'])/i',
+            '/->middleware\s*\(\s*(?:\[[^\]]*["\']auth(?::[a-zA-Z0-9_-]+)?["\']|["\']auth(?::[a-zA-Z0-9_-]+)?["\'])/i',
             $line
         );
     }
@@ -1027,18 +1170,19 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
         // Check for chained middleware: Route::middleware('auth')->group() or Route->middleware(['auth'])->group()
         // Must match both :: (static) and -> (instance) calls
-        if (preg_match('/(->|::)middleware\s*\(\s*["\']auth["\']\s*\)|(->|::)middleware\s*\(\s*\[[^\]]*["\']auth["\'][^\]]*\]\s*\)/i', $groupDefinition)) {
+        // Supports auth, auth:api, auth:sanctum, auth:web
+        if (preg_match('/(->|::)middleware\s*\(\s*["\']auth(?::[a-zA-Z0-9_-]+)?["\']\s*\)|(->|::)middleware\s*\(\s*\[[^\]]*["\']auth(?::[a-zA-Z0-9_-]+)?["\'][^\]]*\]\s*\)/i', $groupDefinition)) {
             return true;
         }
 
-        // Check for string middleware: 'middleware' => 'auth' or "middleware" => "auth"
-        if (preg_match('/["\']middleware["\']\s*=>\s*["\']auth["\']/i', $groupDefinition)) {
+        // Check for string middleware: 'middleware' => 'auth' or "middleware" => "auth:api"
+        if (preg_match('/["\']middleware["\']\s*=>\s*["\']auth(?::[a-zA-Z0-9_-]+)?["\']/i', $groupDefinition)) {
             return true;
         }
 
-        // Check for array middleware: 'middleware' => ['auth', ...] or ['login.user', 'auth', 'auth.admin']
+        // Check for array middleware: 'middleware' => ['auth', ...] or ['login.user', 'auth:api', 'auth.admin']
         // First, try simple single-line array pattern
-        if (preg_match('/["\']middleware["\']\s*=>\s*\[[^\]]*["\']auth["\'][^\]]*\]/i', $groupDefinition)) {
+        if (preg_match('/["\']middleware["\']\s*=>\s*\[[^\]]*["\']auth(?::[a-zA-Z0-9_-]+)?["\'][^\]]*\]/i', $groupDefinition)) {
             return true;
         }
 
@@ -1075,8 +1219,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 $pos++;
             }
 
-            // Check if 'auth' appears in the array content (handles both single and double quotes)
-            if (preg_match('/["\']auth["\']/i', $arrayContent)) {
+            // Check if 'auth' (with optional guard) appears in the array content
+            // Matches: 'auth', 'auth:api', 'auth:sanctum', 'auth:web', etc.
+            if (preg_match('/["\']auth(?::[a-zA-Z0-9_-]+)?["\']/i', $arrayContent)) {
                 return true;
             }
         }

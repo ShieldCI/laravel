@@ -2338,4 +2338,378 @@ PHP;
         // Should pass because route is protected at route level
         $this->assertPassed($result);
     }
+
+    // ==========================================
+    // Nullsafe Operator Tests
+    // ==========================================
+
+    public function test_passes_with_nullsafe_operator_auth_user(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Auth;
+
+class ProfileController extends Controller
+{
+    public function show()
+    {
+        $name = Auth::user()?->name;
+        return view('profile', ['name' => $name]);
+    }
+}
+PHP;
+
+        $routes = '<?php';  // Empty routes file so shouldRun() passes
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/ProfileController.php' => $controller,
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - nullsafe operator is safe
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_nullsafe_operator_auth_helper(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class ProfileController extends Controller
+{
+    public function show()
+    {
+        $email = auth()->user()?->email;
+        return view('profile', ['email' => $email]);
+    }
+}
+PHP;
+
+        $routes = '<?php';
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/ProfileController.php' => $controller,
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_nullsafe_operator_request_user(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+
+class ProfileController extends Controller
+{
+    public function show(Request $request)
+    {
+        $name = $request->user()?->name;
+        return view('profile', ['name' => $name]);
+    }
+}
+PHP;
+
+        $routes = '<?php';
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/ProfileController.php' => $controller,
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_unsafe_request_user_without_null_check(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+
+class ProfileController extends Controller
+{
+    public function show(Request $request)
+    {
+        $name = $request->user()->name;
+        return view('profile', ['name' => $name]);
+    }
+}
+PHP;
+
+        $routes = '<?php';
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/ProfileController.php' => $controller,
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFalse($result->isSuccess());
+        $this->assertHasIssueContaining('Unsafe $request->user() usage without null check', $result);
+    }
+
+    // ==========================================
+    // Auth Middleware Variant Tests
+    // ==========================================
+
+    public function test_passes_with_auth_api_middleware(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware(['auth:api'])->group(function () {
+    Route::post('/api/posts', [PostController::class, 'store']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_auth_sanctum_middleware(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('auth:sanctum')->group(function () {
+    Route::put('/api/profile', [ProfileController::class, 'update']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_auth_web_middleware_in_controller(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class DashboardController extends Controller
+{
+    public function __construct()
+    {
+        $this->middleware('auth:web');
+    }
+
+    public function destroy($id)
+    {
+        return redirect('/');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/DashboardController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_auth_guard_on_route(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/admin/users', [UserController::class, 'store'])
+    ->middleware('auth:admin');
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    // ==========================================
+    // FormRequest Tests
+    // ==========================================
+
+    public function test_detects_form_request_authorize_returns_true(): void
+    {
+        $formRequest = <<<'PHP'
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class UpdatePostRequest extends FormRequest
+{
+    public function authorize()
+    {
+        return true;
+    }
+
+    public function rules()
+    {
+        return [
+            'title' => 'required|string',
+        ];
+    }
+}
+PHP;
+
+        $routes = '<?php';
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Requests/UpdatePostRequest.php' => $formRequest,
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFalse($result->isSuccess());
+        $this->assertHasIssueContaining('UpdatePostRequest::authorize() returns true without authorization checks', $result);
+    }
+
+    public function test_passes_form_request_without_authorize_method(): void
+    {
+        $formRequest = <<<'PHP'
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class StorePostRequest extends FormRequest
+{
+    // No authorize() method - defaults to false (secure)
+
+    public function rules()
+    {
+        return [
+            'title' => 'required|string',
+        ];
+    }
+}
+PHP;
+
+        $routes = '<?php';
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Requests/StorePostRequest.php' => $formRequest,
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - missing authorize() defaults to false (secure)
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_form_request_with_authorization_logic(): void
+    {
+        $formRequest = <<<'PHP'
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class UpdatePostRequest extends FormRequest
+{
+    public function authorize()
+    {
+        return $this->user()->can('update', $this->post);
+    }
+
+    public function rules()
+    {
+        return [
+            'title' => 'required|string',
+        ];
+    }
+}
+PHP;
+
+        $routes = '<?php';
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Requests/UpdatePostRequest.php' => $formRequest,
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - has proper authorization logic
+        $this->assertPassed($result);
+    }
 }

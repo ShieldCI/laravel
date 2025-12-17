@@ -53,7 +53,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
             name: 'XSS Vulnerabilities Analyzer',
             description: 'Detects XSS vulnerabilities via code analysis and HTTP header verification (dual protection)',
             category: Category::Security,
-            severity: Severity::High,
+            severity: Severity::Critical,
             tags: ['xss', 'cross-site-scripting', 'security', 'blade', 'csp', 'headers'],
             docsUrl: 'https://docs.shieldci.com/analyzers/security/xss-vulnerabilities',
             timeToFix: 30

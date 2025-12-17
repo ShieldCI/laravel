@@ -2712,4 +2712,444 @@ PHP;
         // Should pass - has proper authorization logic
         $this->assertPassed($result);
     }
+
+    // ==========================================
+    // Resource Route Tests
+    // ==========================================
+
+    public function test_passes_resource_route_in_protected_group(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['as' => 'admin.', 'prefix' => 'admin', 'middleware' => ['login.user', 'auth', 'auth.admin']], function () {
+    Route::resource('permissions', PermissionController::class);
+});
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PermissionController extends Controller
+{
+    public function index()
+    {
+        return view('permissions.index');
+    }
+
+    public function create()
+    {
+        return view('permissions.create');
+    }
+
+    public function store()
+    {
+        // Store logic
+    }
+
+    public function show($id)
+    {
+        return view('permissions.show');
+    }
+
+    public function edit($id)
+    {
+        return view('permissions.edit');
+    }
+
+    public function update($id)
+    {
+        // Update logic
+    }
+
+    public function destroy($id)
+    {
+        // Delete logic
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+            'app/Http/Controllers/PermissionController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - all resource methods are protected by route group auth middleware
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_resource_route_without_auth(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::resource('posts', PostController::class);
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController extends Controller
+{
+    public function store()
+    {
+        // Store logic
+    }
+
+    public function update($id)
+    {
+        // Update logic
+    }
+
+    public function destroy($id)
+    {
+        // Delete logic
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+            'app/Http/Controllers/PostController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should detect unprotected resource routes (store, update, destroy are mutation routes)
+        $this->assertFalse($result->isSuccess());
+        $issues = $result->getIssues();
+        $this->assertGreaterThan(0, count($issues));
+    }
+
+    public function test_passes_api_resource_route_in_protected_group(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('auth:sanctum')->group(function () {
+    Route::apiResource('users', UserController::class);
+});
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController extends Controller
+{
+    public function index()
+    {
+        return response()->json([]);
+    }
+
+    public function store()
+    {
+        // Store logic
+    }
+
+    public function show($id)
+    {
+        return response()->json([]);
+    }
+
+    public function update($id)
+    {
+        // Update logic
+    }
+
+    public function destroy($id)
+    {
+        // Delete logic
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routes,
+            'app/Http/Controllers/UserController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - all API resource methods are protected by auth:sanctum middleware
+        $this->assertPassed($result);
+    }
+
+    // ==========================================
+    // Authorization Middleware Tests (can:, role:, permission:)
+    // ==========================================
+
+    public function test_passes_with_can_middleware_on_route(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::put('/posts/{post}', [PostController::class, 'update'])
+    ->middleware(['auth', 'can:update,post']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_role_middleware_in_controller(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AdminController extends Controller
+{
+    public function __construct()
+    {
+        $this->middleware(['auth', 'role:admin']);
+    }
+
+    public function destroy($id)
+    {
+        // Admin action
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/AdminController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_permission_middleware_in_route_group(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware(['auth', 'permission:delete-users'])->group(function () {
+    Route::delete('/users/{user}', [UserController::class, 'destroy']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    // ==========================================
+    // Closure Route Tests
+    // ==========================================
+
+    public function test_detects_closure_route_without_auth(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/admin/process', function (Request $request) {
+    DB::table('users')->update(['active' => false]);
+    return response()->json(['status' => 'ok']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFalse($result->isSuccess());
+        $this->assertHasIssueContaining('POST closure route without authentication middleware', $result);
+    }
+
+    public function test_passes_closure_route_with_auth_middleware(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/webhook', function (Request $request) {
+    return response()->json(['status' => 'ok']);
+})->middleware('auth');
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_closure_route_in_protected_group(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('auth:sanctum')->group(function () {
+    Route::post('/api/process', function (Request $request) {
+        return response()->json(['processed' => true]);
+    });
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    // ==========================================
+    // Suppression Comment Tests (@shieldci-ignore)
+    // ==========================================
+
+    public function test_suppresses_route_with_shieldci_ignore_comment(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+// @shieldci-ignore authentication
+Route::post('/public-webhook', [WebhookController::class, 'handle']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because route is suppressed
+        $this->assertPassed($result);
+    }
+
+    public function test_suppresses_controller_method_with_shieldci_ignore_docblock(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class WebhookController extends Controller
+{
+    /**
+     * Public webhook endpoint for external systems
+     * @shieldci-ignore authentication
+     */
+    public function store()
+    {
+        // Public webhook logic
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/WebhookController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because method is suppressed
+        $this->assertPassed($result);
+    }
+
+    public function test_suppresses_route_group_with_shieldci_ignore_comment(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+// @shieldci-ignore
+Route::group(['prefix' => 'webhooks'], function () {
+    Route::post('/stripe', [WebhookController::class, 'stripe']);
+    Route::post('/paypal', [WebhookController::class, 'paypal']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because route group is suppressed
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_suppress_without_specific_tag(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+// Some other comment
+Route::post('/admin/delete-all', [AdminController::class, 'deleteAll']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should detect issue - comment doesn't contain @shieldci-ignore
+        $this->assertFalse($result->isSuccess());
+    }
 }

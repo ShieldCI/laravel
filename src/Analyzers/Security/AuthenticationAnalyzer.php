@@ -78,7 +78,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             name: 'Authentication & Authorization Analyzer',
             description: 'Detects missing authentication and authorization protection on routes and controllers',
             category: Category::Security,
-            severity: Severity::High,
+            severity: Severity::Critical,
             tags: ['authentication', 'authorization', 'security', 'middleware'],
             docsUrl: 'https://docs.shieldci.com/analyzers/security/authentication-authorization',
             timeToFix: 25
@@ -195,38 +195,43 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            // Extract controller + method
+            // Extract controller + method (can be string or array for resource routes)
             $controllerMethod = $this->extractControllerMethod($line, $lines, $lineNumber);
             if ($controllerMethod === null) {
                 continue;
             }
 
-            // Ensure stats bucket exists
-            if (! isset($this->routeAuthStats[$controllerMethod])) {
-                $this->routeAuthStats[$controllerMethod] = [
-                    'total' => 0,
-                    'authenticated' => 0,
-                ];
-            }
+            // Handle resource routes (array of methods) and regular routes (single string)
+            $methods = is_array($controllerMethod) ? $controllerMethod : [$controllerMethod];
 
-            // Count this route
-            $this->routeAuthStats[$controllerMethod]['total']++;
+            foreach ($methods as $method) {
+                // Ensure stats bucket exists
+                if (! isset($this->routeAuthStats[$method])) {
+                    $this->routeAuthStats[$method] = [
+                        'total' => 0,
+                        'authenticated' => 0,
+                    ];
+                }
 
-            // Explicit public route always wins
-            if (
-                $this->isPublicRouteLine($line) ||
-                $this->routeHasExplicitAuthRemoval($lineNumber, $lines)
-            ) {
-                $this->publicControllerMethods[$controllerMethod] = true;
+                // Count this route
+                $this->routeAuthStats[$method]['total']++;
 
-                continue;
-            }
+                // Explicit public route always wins
+                if (
+                    $this->isPublicRouteLine($line) ||
+                    $this->routeHasExplicitAuthRemoval($lineNumber, $lines)
+                ) {
+                    $this->publicControllerMethods[$method] = true;
 
-            // Check if this specific route is authenticated
-            $isAuthenticated = $this->isRouteAuthenticated($lineNumber, $lines, $routeGroups);
+                    continue;
+                }
 
-            if ($isAuthenticated) {
-                $this->routeAuthStats[$controllerMethod]['authenticated']++;
+                // Check if this specific route is authenticated
+                $isAuthenticated = $this->isRouteAuthenticated($lineNumber, $lines, $routeGroups);
+
+                if ($isAuthenticated) {
+                    $this->routeAuthStats[$method]['authenticated']++;
+                }
             }
         }
     }
@@ -234,10 +239,13 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     /**
      * Extract controller and method from a route line.
      * Returns format: 'ControllerClass::method' or null if not found.
+     * For resource routes, returns an array of all resource methods.
+     *
+     * @return string|array<string>|null
      */
-    private function extractControllerMethod(string $line, array $lines, int $lineNumber): ?string
+    private function extractControllerMethod(string $line, array $lines, int $lineNumber)
     {
-        // Look for [ControllerClass::class, 'method'] pattern
+        // Look for resource routes first
         $searchRange = min($lineNumber + 10, count($lines));
         $routeContent = '';
 
@@ -253,7 +261,28 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        // Match [SomeController::class, 'method']
+        // Check if this is a resource or apiResource route
+        if (preg_match('/Route::(resource|apiResource)\s*\(/i', $routeContent)) {
+            // Match: Route::resource('name', ControllerClass::class)
+            if (preg_match('/Route::(?:resource|apiResource)\s*\([^,]+,\s*([A-Za-z_\\\\]+)::class/i', $routeContent, $matches)) {
+                $controller = $matches[1];
+
+                // Extract just the class name if it's fully qualified
+                $parts = explode('\\', $controller);
+                $className = end($parts);
+
+                // Return all resource methods
+                $resourceMethods = ['index', 'create', 'store', 'show', 'edit', 'update', 'destroy'];
+                $results = [];
+                foreach ($resourceMethods as $method) {
+                    $results[] = "{$className}::{$method}";
+                }
+
+                return $results;
+            }
+        }
+
+        // Match [SomeController::class, 'method'] pattern for regular routes
         if (preg_match('/\[([A-Za-z_\\\\]+)::class,\s*[\'"]([a-zA-Z_][a-zA-Z0-9_]*)[\'"]/', $routeContent, $matches)) {
             $controller = $matches[1];
             $method = $matches[2];
@@ -291,6 +320,11 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         foreach ($lines as $lineNumber => $line) {
             // Check for route groups without middleware
             if (preg_match('/Route::group\s*\(/i', $line)) {
+                // Check for suppression comment
+                if ($this->hasSuppressionComment($lines, $lineNumber, 'authentication')) {
+                    continue;
+                }
+
                 $hasAuthMiddleware = $this->checkRouteGroupForAuth($lines, $lineNumber);
 
                 // Check if this route group is inside a protected parent group
@@ -313,13 +347,18 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             if (preg_match('/Route::(get|post|put|patch|delete|resource|apiResource)\s*\(/i', $line, $matches)) {
                 $method = strtoupper($matches[1]);
 
+                // Check for suppression comment
+                if ($this->hasSuppressionComment($lines, $lineNumber, 'authentication')) {
+                    continue;
+                }
+
                 // Skip if it's clearly a public route
                 if ($this->isPublicRouteLine($line)) {
                     continue;
                 }
 
-                // Check if route has auth middleware directly (early optimization)
-                // Supports auth, auth:api, auth:sanctum, auth:web, etc.
+                // Check if route has auth or authorization middleware directly (early optimization)
+                // Supports auth, auth:api, can:ability, role:admin, permission:delete-users, etc.
                 $searchRange = min($lineNumber + 10, count($lines));
 
                 for ($i = $lineNumber; $i < $searchRange; $i++) {
@@ -327,7 +366,12 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                         continue;
                     }
 
+                    // Check for auth or authorization middleware
                     if (preg_match('/->middleware\s*\(\s*["\']auth(?::[a-zA-Z0-9_-]+)?["\']|->middleware\s*\(\s*\[[^\]]*["\']auth(?::[a-zA-Z0-9_-]+)?["\']/i', $lines[$i])) {
+                        break;
+                    }
+
+                    if (preg_match('/->middleware\s*\(\s*["\'](?:can|role|permission|ability):[^"\']+["\']|->middleware\s*\(\s*\[[^\]]*["\'](?:can|role|permission|ability):[^"\']+["\']/i', $lines[$i])) {
                         break;
                     }
 
@@ -344,20 +388,113 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 $isMutation = $this->isMutationRoute($method);
 
                 if (! $isAuthenticated && $isMutation) {
+                    // Check if this is a closure route
+                    $isClosure = $this->isClosureRoute($line, $lines, $lineNumber);
+
                     $issues[] = $this->createIssueWithSnippet(
-                        message: "{$method} route without authentication middleware",
+                        message: $isClosure
+                            ? "{$method} closure route without authentication middleware"
+                            : "{$method} route without authentication middleware",
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
                         severity: Severity::High,
-                        recommendation: 'Protect this route with auth middleware or wrap in Route::middleware(["auth"])->group()',
+                        recommendation: $isClosure
+                            ? 'Add auth middleware: ->middleware("auth") or wrap in Route::middleware(["auth"])->group(). Consider moving closure logic to a controller.'
+                            : 'Protect this route with auth middleware or wrap in Route::middleware(["auth"])->group()',
                         metadata: [
                             'type' => 'authentication',
                             'method' => $method,
+                            'is_closure' => $isClosure,
                         ]
                     );
                 }
             }
         }
+    }
+
+    /**
+     * Check if a route is a closure route.
+     */
+    private function isClosureRoute(string $line, array $lines, int $lineNumber): bool
+    {
+        $searchRange = min($lineNumber + 10, count($lines));
+        $routeContent = '';
+
+        for ($i = $lineNumber; $i < $searchRange; $i++) {
+            if (! isset($lines[$i]) || ! is_string($lines[$i])) {
+                continue;
+            }
+
+            $routeContent .= $lines[$i];
+
+            if (str_contains($lines[$i], ';')) {
+                break;
+            }
+        }
+
+        // Check for function() or fn() pattern (closures)
+        return (bool) preg_match('/,\s*function\s*\(|,\s*fn\s*\(/i', $routeContent);
+    }
+
+    /**
+     * Check if a line has a @shieldci-ignore suppression comment.
+     *
+     * Checks the current line and up to 5 lines above for:
+     * - @shieldci-ignore (ignores all checks)
+     * - @shieldci-ignore authentication (ignores only authentication checks)
+     * - @shieldci-ignore authorization (ignores only authorization checks)
+     *
+     * @param  array<int, string>  $lines
+     */
+    private function hasSuppressionComment(array $lines, int $lineNumber, string $checkType = ''): bool
+    {
+        // Check current line and up to 5 lines above
+        $searchStart = max(0, $lineNumber - 5);
+
+        for ($i = $searchStart; $i <= $lineNumber; $i++) {
+            if (! isset($lines[$i]) || ! is_string($lines[$i])) {
+                continue;
+            }
+
+            $line = $lines[$i];
+
+            // Check for general @shieldci-ignore
+            if (preg_match('/@shieldci-ignore(?:\s|$)/i', $line)) {
+                return true;
+            }
+
+            // Check for specific type ignore (e.g., @shieldci-ignore authentication)
+            if ($checkType !== '' && preg_match('/@shieldci-ignore\s+'.preg_quote($checkType, '/').'(?:\s|$)/i', $line)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a ClassMethod node has a @shieldci-ignore suppression comment in its docblock.
+     */
+    private function methodHasSuppressionComment(Node\Stmt\ClassMethod $method, string $checkType = ''): bool
+    {
+        $docComment = $method->getDocComment();
+        if ($docComment === null) {
+            return false;
+        }
+
+        $commentText = $docComment->getText();
+
+        // Check for general @shieldci-ignore
+        if (preg_match('/@shieldci-ignore(?:\s|$|\*)/i', $commentText)) {
+            return true;
+        }
+
+        // Check for specific type ignore
+        if ($checkType !== '' && preg_match('/@shieldci-ignore\s+'.preg_quote($checkType, '/').'(?:\s|$|\*)/i', $commentText)) {
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -398,6 +535,11 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
                     // Check sensitive methods (including invokable controllers)
                     if (in_array($methodName, $this->sensitiveControllerMethods) || $methodName === '__invoke') {
+                        // Check for suppression comment in method docblock
+                        if ($this->methodHasSuppressionComment($stmt, 'authentication')) {
+                            continue;
+                        }
+
                         // Skip if this controller method is intentionally public (from route analysis)
                         $controllerMethodKey = "{$className}::{$methodName}";
                         if (isset($this->publicControllerMethods[$controllerMethodKey])) {
@@ -592,14 +734,17 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 // Extract middleware name from arguments
                 foreach ($currentExpr->args as $arg) {
                     $value = $arg->value;
-                    if ($value instanceof Node\Scalar\String_ && $this->isAuthMiddleware($value->value)) {
-                        $middlewareName = $value->value;
+                    if ($value instanceof Node\Scalar\String_) {
+                        // Check for auth or authorization middleware
+                        if ($this->isAuthMiddleware($value->value) || $this->isAuthorizationMiddleware($value->value)) {
+                            $middlewareName = $value->value;
+                        }
                     }
-                    // Also check array arguments like ['auth', 'verified']
+                    // Also check array arguments like ['auth', 'can:update,post']
                     if ($value instanceof Node\Expr\Array_) {
                         foreach ($value->items as $item) {
                             if ($item instanceof Node\Expr\ArrayItem && $item->value instanceof Node\Scalar\String_) {
-                                if ($this->isAuthMiddleware($item->value->value)) {
+                                if ($this->isAuthMiddleware($item->value->value) || $this->isAuthorizationMiddleware($item->value->value)) {
                                     $middlewareName = $item->value->value;
                                     break;
                                 }
@@ -660,10 +805,10 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                                 continue;
                             }
 
-                            // Get the key (middleware name like 'auth' or 'auth:api')
+                            // Get the key (middleware name like 'auth', 'auth:api', 'can:update,post')
                             $key = $this->extractArrayKeyValue($item->key);
 
-                            if ($key === null || ! $this->isAuthMiddleware($key)) {
+                            if ($key === null || (! $this->isAuthMiddleware($key) && ! $this->isAuthorizationMiddleware($key))) {
                                 continue;
                             }
 
@@ -752,7 +897,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if middleware method provides authentication.
+     * Check if middleware method provides authentication or authorization.
      *
      * @param  array<string, array{only?: array<string>, except?: array<string>}>|null  $middlewareInfo
      */
@@ -763,7 +908,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         }
 
         foreach ($middlewareInfo as $middlewareName => $constraints) {
-            if (! $this->isAuthMiddleware($middlewareName)) {
+            // Check for both auth and authorization middleware (can:, role:, permission:)
+            if (! $this->isAuthMiddleware($middlewareName) && ! $this->isAuthorizationMiddleware($middlewareName)) {
                 continue;
             }
 
@@ -894,6 +1040,18 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Check if a middleware name represents authorization middleware.
+     * Supports: can:ability, can:ability,model, role:admin, permission:delete-users
+     */
+    private function isAuthorizationMiddleware(string $middleware): bool
+    {
+        $middleware = trim($middleware);
+
+        // Match can:, role:, permission:, ability:, etc.
+        return (bool) preg_match('/^(can|role|permission|ability):/i', $middleware);
+    }
+
+    /**
      * Check if a line contains an auth null check.
      */
     private function hasAuthNullCheck(string $line): bool
@@ -989,15 +1147,22 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if a line adds auth middleware.
-     * Supports: auth, auth:api, auth:sanctum, auth:web, etc.
+     * Check if a line adds auth or authorization middleware.
+     * Supports: auth, auth:api, can:ability, role:admin, permission:delete-users, etc.
      */
     private function addsAuthMiddleware(string $line): bool
     {
-        return (bool) preg_match(
-            '/->middleware\s*\(\s*(?:\[[^\]]*["\']auth(?::[a-zA-Z0-9_-]+)?["\']|["\']auth(?::[a-zA-Z0-9_-]+)?["\'])/i',
-            $line
-        );
+        // Check for auth middleware
+        if (preg_match('/->middleware\s*\(\s*(?:\[[^\]]*["\']auth(?::[a-zA-Z0-9_-]+)?["\']|["\']auth(?::[a-zA-Z0-9_-]+)?["\'])/i', $line)) {
+            return true;
+        }
+
+        // Check for authorization middleware (can:, role:, permission:)
+        if (preg_match('/->middleware\s*\(\s*(?:\[[^\]]*["\'](?:can|role|permission|ability):[^"\']+["\']|["\'](?:can|role|permission|ability):[^"\']+["\'])/i', $line)) {
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -1170,8 +1335,13 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
         // Check for chained middleware: Route::middleware('auth')->group() or Route->middleware(['auth'])->group()
         // Must match both :: (static) and -> (instance) calls
-        // Supports auth, auth:api, auth:sanctum, auth:web
+        // Supports auth, auth:api, auth:sanctum, auth:web, can:ability, role:admin, etc.
         if (preg_match('/(->|::)middleware\s*\(\s*["\']auth(?::[a-zA-Z0-9_-]+)?["\']\s*\)|(->|::)middleware\s*\(\s*\[[^\]]*["\']auth(?::[a-zA-Z0-9_-]+)?["\'][^\]]*\]\s*\)/i', $groupDefinition)) {
+            return true;
+        }
+
+        // Check for authorization middleware: can:, role:, permission:
+        if (preg_match('/(->|::)middleware\s*\(\s*["\'](?:can|role|permission|ability):[^"\']+["\']\s*\)|(->|::)middleware\s*\(\s*\[[^\]]*["\'](?:can|role|permission|ability):[^"\']+["\'][^\]]*\]\s*\)/i', $groupDefinition)) {
             return true;
         }
 
@@ -1180,9 +1350,19 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             return true;
         }
 
+        // Check for string authorization middleware: 'middleware' => 'can:update,post'
+        if (preg_match('/["\']middleware["\']\s*=>\s*["\'](?:can|role|permission|ability):[^"\']+["\']/i', $groupDefinition)) {
+            return true;
+        }
+
         // Check for array middleware: 'middleware' => ['auth', ...] or ['login.user', 'auth:api', 'auth.admin']
         // First, try simple single-line array pattern
         if (preg_match('/["\']middleware["\']\s*=>\s*\[[^\]]*["\']auth(?::[a-zA-Z0-9_-]+)?["\'][^\]]*\]/i', $groupDefinition)) {
+            return true;
+        }
+
+        // Check for array with authorization middleware
+        if (preg_match('/["\']middleware["\']\s*=>\s*\[[^\]]*["\'](?:can|role|permission|ability):[^"\']+["\'][^\]]*\]/i', $groupDefinition)) {
             return true;
         }
 
@@ -1222,6 +1402,11 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             // Check if 'auth' (with optional guard) appears in the array content
             // Matches: 'auth', 'auth:api', 'auth:sanctum', 'auth:web', etc.
             if (preg_match('/["\']auth(?::[a-zA-Z0-9_-]+)?["\']/i', $arrayContent)) {
+                return true;
+            }
+
+            // Check for authorization middleware: can:, role:, permission:, ability:
+            if (preg_match('/["\'](?:can|role|permission|ability):[^"\']+["\']/i', $arrayContent)) {
                 return true;
             }
         }

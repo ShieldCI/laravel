@@ -2,7 +2,7 @@
 
 > **⚠️ Initial Development Release (v0.1.x)** - This package is under active development. APIs may change between minor versions until v1.0.0 is released.
 
-Modern security and code quality analysis for Laravel applications with 89 comprehensive analyzers covering security, performance, reliability, and code quality.
+Modern security and code quality analysis for Laravel applications with 88 comprehensive analyzers covering security, performance, reliability, and code quality.
 
 Built on top of [`shieldci/analyzers-core`](https://github.com/shieldci/analyzers-core) (v0.1.x) - a shared, framework-agnostic foundation for static analysis tools.
 
@@ -148,12 +148,12 @@ Example: AutoloaderOptimizationAnalyzer only runs in production/staging environm
 
 ## Available Analyzers
 
-ShieldCI includes **89 comprehensive analyzers** across five categories:
+ShieldCI includes **88 comprehensive analyzers** across five categories:
 - **22 Security Analyzers** - Complete OWASP Top 10 2021 coverage
 - **18 Performance Analyzers** - Optimize application speed and efficiency
 - **25 Reliability Analyzers** - Ensure application stability and correctness
 - **5 Code Quality Analyzers** - Improve maintainability and code standards
-- **19 Best Practices Analyzers** - Enforce Laravel-specific best practices
+- **18 Best Practices Analyzers** - Enforce Laravel-specific best practices
 
 ### Security Analyzers (22)
 
@@ -270,7 +270,7 @@ Improve code maintainability and enforce best practices:
 - **Naming Convention Analyzer** - Enforces PSR naming conventions (classes, methods, properties)
 - **Nesting Depth Analyzer** - Detects excessive nesting levels that reduce readability
 
-### Best Practices Analyzers (19)
+### Best Practices Analyzers (18)
 
 Enforce Laravel-specific best practices and architectural patterns:
 
@@ -283,8 +283,7 @@ Enforce Laravel-specific best practices and architectural patterns:
 - **Missing Database Transactions Analyzer** - Detects operations that should be wrapped in transactions
 - **PHP Side Filtering Analyzer** - Finds filtering done in PHP that should be in SQL queries
 
-**Architecture & Structure (5):**
-- **MVC Structure Violation Analyzer** - Detects violations of MVC pattern separation
+**Architecture & Structure (4):**
 - **Logic in Routes Analyzer** - Identifies business logic in route files
 - **Logic in Blade Analyzer** - Detects complex logic in Blade templates
 - **Query Builder in Controller Analyzer** - Detects DB queries in controllers (recommends repository pattern)

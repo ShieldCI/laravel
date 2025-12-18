@@ -63,7 +63,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertSkipped($result);
-        $this->assertStringContainsString('acceptable in local', $result->getMessage());
+        $this->assertStringContainsString('Not relevant in \'local\' environment', $result->getMessage());
     }
 
     public function test_passes_when_debug_level_in_development_environment(): void
@@ -77,7 +77,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertSkipped($result);
-        $this->assertStringContainsString('acceptable in development', $result->getMessage());
+        $this->assertStringContainsString('Not relevant in \'development\' environment', $result->getMessage());
     }
 
     public function test_passes_when_debug_level_in_testing_environment(): void
@@ -91,7 +91,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertSkipped($result);
-        $this->assertStringContainsString('acceptable in testing', $result->getMessage());
+        $this->assertStringContainsString('Not relevant in \'testing\' environment', $result->getMessage());
     }
 
     public function test_fails_when_debug_level_in_production(): void
@@ -512,7 +512,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
 
         // Long environment name is not in relevantEnvironments list, so it's skipped
         $this->assertSkipped($result);
-        $this->assertStringContainsString('only checks production and staging', $result->getMessage());
+        $this->assertStringContainsString('only relevant in:', $result->getMessage());
     }
 
     public function test_handles_special_characters_in_environment(): void
@@ -527,7 +527,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
 
         // Environment with special characters, not in relevantEnvironments list
         $this->assertSkipped($result);
-        $this->assertStringContainsString('only checks production and staging', $result->getMessage());
+        $this->assertStringContainsString('only relevant in:', $result->getMessage());
     }
 
     public function test_handles_whitespace_in_environment(): void
@@ -542,7 +542,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
 
         // Environment with whitespace won't match relevantEnvironments check
         $this->assertSkipped($result);
-        $this->assertStringContainsString('only checks production and staging', $result->getMessage());
+        $this->assertStringContainsString('only relevant in:', $result->getMessage());
     }
 
     public function test_handles_unknown_environment(): void
@@ -557,7 +557,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
 
         // 'qa' environment not in relevantEnvironments list, analyzer is skipped
         $this->assertSkipped($result);
-        $this->assertStringContainsString('only checks production and staging', $result->getMessage());
+        $this->assertStringContainsString('only relevant in:', $result->getMessage());
     }
 
     public function test_handles_empty_environment_string(): void

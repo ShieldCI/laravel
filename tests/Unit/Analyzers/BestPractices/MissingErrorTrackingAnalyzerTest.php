@@ -4,15 +4,35 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
+use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\BestPractices\MissingErrorTrackingAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    protected function createAnalyzer(array $config = []): AnalyzerInterface
     {
-        return new MissingErrorTrackingAnalyzer;
+        // Build best-practices config with defaults
+        $bestPracticesConfig = [
+            'enabled' => true,
+            'missing-error-tracking' => [
+                'known_packages' => $config['known_packages'] ?? [],
+            ],
+        ];
+
+        $configRepo = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'best-practices' => $bestPracticesConfig,
+                ],
+            ],
+        ]);
+
+        return new MissingErrorTrackingAnalyzer($configRepo);
     }
 
     public function test_passes_with_sentry_installed(): void

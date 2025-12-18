@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\BestPractices;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -49,36 +50,9 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
      */
     private array $knownPackages = [];
 
-    public function __construct()
-    {
-        // Load known packages from config if available
-        if (function_exists('config')) {
-            $configPackages = config('shieldci.analyzers.best_practices.missing_error_tracking.known_packages', []);
-            if (is_array($configPackages) && ! empty($configPackages)) {
-                $this->knownPackages = $configPackages;
-            }
-        }
-
-        // Set default packages if not configured
-        if (empty($this->knownPackages)) {
-            $this->knownPackages = [
-                // Dedicated error tracking services
-                'sentry/sentry-laravel',
-                'bugsnag/bugsnag-laravel',
-                'rollbar/rollbar-laravel',
-                'airbrake/phpbrake',
-                'honeybadger-io/honeybadger-laravel',
-
-                // Additional monitoring services
-                'facade/ignition',
-                'spatie/laravel-ray',
-                'spatie/flare-client-php',
-
-                // APM with error tracking
-                'aws/aws-sdk-php',
-            ];
-        }
-    }
+    public function __construct(
+        private Config $config
+    ) {}
 
     /**
      * Set known packages (for testing).
@@ -129,8 +103,51 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
         return 'No composer.json found';
     }
 
+    /**
+     * Load configuration from config repository.
+     */
+    private function loadConfiguration(): void
+    {
+        // Default known error tracking packages
+        $defaultPackages = [
+            // Dedicated error tracking services
+            'sentry/sentry-laravel',
+            'bugsnag/bugsnag-laravel',
+            'rollbar/rollbar-laravel',
+            'airbrake/phpbrake',
+            'honeybadger-io/honeybadger-laravel',
+
+            // Additional monitoring services
+            'facade/ignition',
+            'spatie/laravel-ray',
+            'spatie/flare-client-php',
+
+            // APM with error tracking
+            'aws/aws-sdk-php',
+        ];
+
+        // Load from config
+        $configPackages = $this->config->get('shieldci.analyzers.best-practices.missing-error-tracking.known_packages', []);
+
+        // Ensure configPackages is an array
+        if (! is_array($configPackages)) {
+            $configPackages = [];
+        }
+
+        // If config has packages, use them; otherwise use defaults
+        // This allows complete override rather than merge
+        if (! empty($configPackages)) {
+            $this->knownPackages = array_values(array_unique($configPackages));
+        } else {
+            $this->knownPackages = $defaultPackages;
+        }
+    }
+
     protected function runAnalysis(): ResultInterface
     {
+        // Load configuration
+        $this->loadConfiguration();
+
         $issues = [];
 
         // Check composer.json for error tracking packages (we know it exists from shouldRun())

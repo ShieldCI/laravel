@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\BestPractices;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Stmt;
@@ -24,13 +25,29 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - app()->make() calls
  * - resolve() function calls
  * - App::make() static calls
- * - Excessive container access
+ * - Container::getInstance() usage
+ * - app()->bind() / singleton() outside service providers
  * - Recommends constructor injection
+ *
+ * Configuration:
+ * - whitelist_dirs: Directories to skip (e.g., tests, database/seeders)
+ * - whitelist_classes: Class name patterns to skip (e.g., *Command, *Seeder)
+ * - whitelist_methods: Methods to skip (e.g., environment, isLocal)
  */
 class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
 {
+    /** @var array<string> */
+    private array $whitelistDirs = [];
+
+    /** @var array<string> */
+    private array $whitelistClasses = [];
+
+    /** @var array<string> */
+    private array $whitelistMethods = [];
+
     public function __construct(
-        private ParserInterface $parser
+        private ParserInterface $parser,
+        private Config $config
     ) {}
 
     protected function metadata(): AnalyzerMetadata
@@ -47,23 +64,70 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
         );
     }
 
+    /**
+     * Load configuration from config repository.
+     */
+    private function loadConfiguration(): void
+    {
+        $baseKey = 'shieldci.analyzers.best-practices.service-container-resolution';
+
+        // Load whitelist_dirs
+        $configDirs = $this->config->get("{$baseKey}.whitelist_dirs", [
+            'tests',
+            'database/seeders',
+            'database/factories',
+        ]);
+        $this->whitelistDirs = is_array($configDirs) ? $configDirs : [];
+
+        // Load whitelist_classes
+        $configClasses = $this->config->get("{$baseKey}.whitelist_classes", [
+            '*Command',
+            '*Seeder',
+            'DatabaseSeeder',
+        ]);
+        $this->whitelistClasses = is_array($configClasses) ? $configClasses : [];
+
+        // Load whitelist_methods
+        $configMethods = $this->config->get("{$baseKey}.whitelist_methods", [
+            'environment',
+            'isLocal',
+            'isProduction',
+            'runningInConsole',
+            'runningUnitTests',
+        ]);
+        $this->whitelistMethods = is_array($configMethods) ? $configMethods : [];
+    }
+
     protected function runAnalysis(): ResultInterface
     {
+        // Load configuration
+        $this->loadConfiguration();
+
         $issues = [];
 
         foreach ($this->getPhpFiles() as $file) {
+            // Skip whitelisted directories
+            if ($this->isWhitelistedDirectory($file)) {
+                continue;
+            }
+
             // Skip service providers - they legitimately use container
             if ($this->isServiceProvider($file)) {
                 continue;
             }
 
-            $ast = $this->parser->parseFile($file);
+            try {
+                $ast = $this->parser->parseFile($file);
+            } catch (\Throwable $e) {
+                // Skip files with parse errors
+                continue;
+            }
 
             if (empty($ast)) {
                 continue;
             }
 
-            $visitor = new ServiceContainerVisitor;
+            $visitor = new ServiceContainerVisitor($this->whitelistClasses, $this->whitelistMethods);
             $traverser = new NodeTraverser;
             $traverser->addVisitor($visitor);
             $traverser->traverse($ast);
@@ -72,13 +136,14 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
                 $issues[] = $this->createIssue(
                     message: "Manual service resolution in '{$issue['location']}': {$issue['pattern']}",
                     location: new Location($file, $issue['line']),
-                    severity: Severity::Medium,
+                    severity: $issue['severity'],
                     recommendation: $this->getRecommendation($issue['pattern'], $issue['location']),
                     metadata: [
                         'pattern' => $issue['pattern'],
                         'location' => $issue['location'],
                         'class' => $issue['class'],
                         'file' => $file,
+                        'argument_type' => $issue['argument_type'] ?? 'unknown',
                     ]
                 );
             }
@@ -97,12 +162,62 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if file is a service provider.
+     * Check if file is in a whitelisted directory.
+     */
+    private function isWhitelistedDirectory(string $file): bool
+    {
+        foreach ($this->whitelistDirs as $dir) {
+            $normalizedDir = str_replace('\\', '/', $dir);
+            $normalizedFile = str_replace('\\', '/', $file);
+
+            if (str_contains($normalizedFile, "/{$normalizedDir}/") ||
+                str_contains($normalizedFile, "{$normalizedDir}/")) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if file is a service provider by parsing AST and checking extends.
      */
     private function isServiceProvider(string $file): bool
     {
-        return str_contains($file, '/Providers/') ||
-               str_ends_with($file, 'ServiceProvider.php');
+        try {
+            $ast = $this->parser->parseFile($file);
+        } catch (\Throwable $e) {
+            // Can't parse, fallback to filename check
+            return str_ends_with($file, 'ServiceProvider.php');
+        }
+
+        if (empty($ast)) {
+            return str_ends_with($file, 'ServiceProvider.php');
+        }
+
+        foreach ($ast as $node) {
+            if ($node instanceof Stmt\Namespace_) {
+                foreach ($node->stmts as $stmt) {
+                    if ($stmt instanceof Stmt\Class_) {
+                        if ($stmt->extends instanceof Node\Name) {
+                            $parent = $stmt->extends->toString();
+                            if (str_contains($parent, 'ServiceProvider')) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            } elseif ($node instanceof Stmt\Class_) {
+                if ($node->extends instanceof Node\Name) {
+                    $parent = $node->extends->toString();
+                    if (str_contains($parent, 'ServiceProvider')) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -179,6 +294,8 @@ $processor = new OrderProcessor($repository, $mock, $mailer);
 // - Bootstrap files
 // - Facades (they're designed for it)
 // - Routes and middleware registration
+// - Tests (for resolving services)
+// - Database seeders and factories
 PHP;
 
         return $base.'Best practices: '.implode('; ', $strategies).". Example:{$example}";
@@ -191,7 +308,7 @@ PHP;
 class ServiceContainerVisitor extends NodeVisitorAbstract
 {
     /**
-     * @var array<int, array{pattern: string, location: string, class: string, line: int}>
+     * @var array<int, array{pattern: string, location: string, class: string, line: int, severity: Severity, argument_type: string}>
      */
     private array $issues = [];
 
@@ -205,7 +322,14 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
      */
     private ?string $currentMethod = null;
 
-    public function __construct() {}
+    /**
+     * @param  array<string>  $whitelistClasses
+     * @param  array<string>  $whitelistMethods
+     */
+    public function __construct(
+        private array $whitelistClasses = [],
+        private array $whitelistMethods = []
+    ) {}
 
     public function enterNode(Node $node)
     {
@@ -223,18 +347,67 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
             return null;
         }
 
+        // Skip if class is whitelisted
+        if ($this->isWhitelistedClass()) {
+            return null;
+        }
+
         // Detect app()->make() pattern
         if ($node instanceof Expr\MethodCall) {
             // Check for app()->make()
             if ($this->isAppHelper($node->var) && $node->name instanceof Node\Identifier) {
                 $methodName = $node->name->toString();
-                if (in_array($methodName, ['make', 'makeWith', 'resolve', 'get'])) {
+
+                // Skip whitelisted methods like app()->environment()
+                if (in_array($methodName, $this->whitelistMethods, true)) {
+                    return null;
+                }
+
+                if (in_array($methodName, ['make', 'makeWith', 'resolve', 'get'], true)) {
+                    $argumentType = $this->getArgumentType($node->args);
                     $this->issues[] = [
                         'pattern' => "app()->{$methodName}()",
                         'location' => $this->getLocation(),
                         'class' => $this->currentClass ?? 'Unknown',
                         'line' => $node->getStartLine(),
+                        'severity' => $this->getSeverityByArgumentType($argumentType),
+                        'argument_type' => $argumentType,
                     ];
+                }
+
+                // Detect app()->bind() / singleton() outside service providers
+                if (in_array($methodName, ['bind', 'singleton', 'instance', 'scoped'], true)) {
+                    $this->issues[] = [
+                        'pattern' => "app()->{$methodName}()",
+                        'location' => $this->getLocation(),
+                        'class' => $this->currentClass ?? 'Unknown',
+                        'line' => $node->getStartLine(),
+                        'severity' => Severity::High,
+                        'argument_type' => 'binding',
+                    ];
+                }
+            }
+
+            // Detect Container::getInstance()->make()
+            if ($node->var instanceof Expr\StaticCall &&
+                $node->var->class instanceof Node\Name &&
+                str_contains($node->var->class->toString(), 'Container') &&
+                $node->var->name instanceof Node\Identifier &&
+                $node->var->name->toString() === 'getInstance') {
+
+                if ($node->name instanceof Node\Identifier) {
+                    $methodName = $node->name->toString();
+                    if (in_array($methodName, ['make', 'makeWith', 'resolve', 'get'], true)) {
+                        $argumentType = $this->getArgumentType($node->args);
+                        $this->issues[] = [
+                            'pattern' => "Container::getInstance()->{$methodName}()",
+                            'location' => $this->getLocation(),
+                            'class' => $this->currentClass ?? 'Unknown',
+                            'line' => $node->getStartLine(),
+                            'severity' => $this->getSeverityByArgumentType($argumentType),
+                            'argument_type' => $argumentType,
+                        ];
+                    }
                 }
             }
         }
@@ -247,12 +420,15 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                 if (($className === 'App' || str_ends_with($className, '\\App')) &&
                     $node->name instanceof Node\Identifier) {
                     $methodName = $node->name->toString();
-                    if (in_array($methodName, ['make', 'makeWith', 'resolve', 'get'])) {
+                    if (in_array($methodName, ['make', 'makeWith', 'resolve', 'get'], true)) {
+                        $argumentType = $this->getArgumentType($node->args);
                         $this->issues[] = [
                             'pattern' => "App::{$methodName}()",
                             'location' => $this->getLocation(),
                             'class' => $this->currentClass ?? 'Unknown',
                             'line' => $node->getStartLine(),
+                            'severity' => $this->getSeverityByArgumentType($argumentType),
+                            'argument_type' => $argumentType,
                         ];
                     }
                 }
@@ -263,12 +439,30 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         if ($node instanceof Expr\FuncCall) {
             if ($node->name instanceof Node\Name) {
                 $functionName = $node->name->toString();
+
+                // Detect resolve(Something::class)
                 if ($functionName === 'resolve') {
+                    $argumentType = $this->getArgumentType($node->args);
                     $this->issues[] = [
                         'pattern' => 'resolve()',
                         'location' => $this->getLocation(),
                         'class' => $this->currentClass ?? 'Unknown',
                         'line' => $node->getStartLine(),
+                        'severity' => $this->getSeverityByArgumentType($argumentType),
+                        'argument_type' => $argumentType,
+                    ];
+                }
+
+                // Detect app(Something::class) - shorthand for app()->make()
+                if ($functionName === 'app' && ! empty($node->args)) {
+                    $argumentType = $this->getArgumentType($node->args);
+                    $this->issues[] = [
+                        'pattern' => 'app()',
+                        'location' => $this->getLocation(),
+                        'class' => $this->currentClass ?? 'Unknown',
+                        'line' => $node->getStartLine(),
+                        'severity' => $this->getSeverityByArgumentType($argumentType),
+                        'argument_type' => $argumentType,
                     ];
                 }
             }
@@ -293,6 +487,39 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     }
 
     /**
+     * Check if current class is whitelisted.
+     */
+    private function isWhitelistedClass(): bool
+    {
+        if ($this->currentClass === null) {
+            return false;
+        }
+
+        foreach ($this->whitelistClasses as $pattern) {
+            if ($this->matchesPattern($this->currentClass, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if class name matches pattern (supports wildcards).
+     */
+    private function matchesPattern(string $className, string $pattern): bool
+    {
+        // Convert wildcard pattern to regex
+        // First replace * with placeholder, then preg_quote, then convert placeholder to .*
+        $pattern = str_replace('*', 'WILDCARD_PLACEHOLDER', $pattern);
+        $pattern = preg_quote($pattern, '/');
+        $pattern = str_replace('WILDCARD_PLACEHOLDER', '.*', $pattern);
+        $regex = '/^'.$pattern.'$/i';
+
+        return (bool) preg_match($regex, $className);
+    }
+
+    /**
      * Check if expression is app() helper call.
      */
     private function isAppHelper(Node $expr): bool
@@ -304,6 +531,56 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         }
 
         return false;
+    }
+
+    /**
+     * Get argument type from function/method args.
+     *
+     * @param  array<Node\Arg|Node\VariadicPlaceholder>  $args
+     */
+    private function getArgumentType(array $args): string
+    {
+        if (empty($args)) {
+            return 'none';
+        }
+
+        // Skip VariadicPlaceholder
+        $firstArg = $args[0];
+        if ($firstArg instanceof Node\VariadicPlaceholder) {
+            return 'unknown';
+        }
+
+        $firstArg = $firstArg->value;
+
+        // Class constant (e.g., Service::class)
+        if ($firstArg instanceof Expr\ClassConstFetch) {
+            return 'class';
+        }
+
+        // String literal (e.g., 'service.name')
+        if ($firstArg instanceof Node\Scalar\String_) {
+            return 'string';
+        }
+
+        // Variable (e.g., $serviceName)
+        if ($firstArg instanceof Expr\Variable) {
+            return 'variable';
+        }
+
+        return 'unknown';
+    }
+
+    /**
+     * Get severity based on argument type.
+     */
+    private function getSeverityByArgumentType(string $argumentType): Severity
+    {
+        return match ($argumentType) {
+            'class' => Severity::Medium,      // app(Service::class) - Type-safe
+            'string' => Severity::High,       // app('service') - String-based, fragile
+            'variable' => Severity::Medium,   // app($var) - Dynamic
+            default => Severity::Medium,      // Unknown
+        };
     }
 
     /**
@@ -325,7 +602,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     /**
      * Get collected issues.
      *
-     * @return array<int, array{pattern: string, location: string, class: string, line: int}>
+     * @return array<int, array{pattern: string, location: string, class: string, line: int, severity: Severity, argument_type: string}>
      */
     public function getIssues(): array
     {

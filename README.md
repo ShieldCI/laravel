@@ -2,7 +2,7 @@
 
 > **⚠️ Initial Development Release (v0.1.x)** - This package is under active development. APIs may change between minor versions until v1.0.0 is released.
 
-Modern security and code quality analysis for Laravel applications with 87 comprehensive analyzers covering security, performance, reliability, and code quality.
+Modern security and code quality analysis for Laravel applications with 85 comprehensive analyzers covering security, performance, reliability, and code quality.
 
 Built on top of [`shieldci/analyzers-core`](https://github.com/shieldci/analyzers-core) (v0.1.x) - a shared, framework-agnostic foundation for static analysis tools.
 
@@ -148,12 +148,12 @@ Example: AutoloaderOptimizationAnalyzer only runs in production/staging environm
 
 ## Available Analyzers
 
-ShieldCI includes **87 comprehensive analyzers** across five categories:
+ShieldCI includes **85 comprehensive analyzers** across five categories:
 - **22 Security Analyzers** - Complete OWASP Top 10 2021 coverage
 - **18 Performance Analyzers** - Optimize application speed and efficiency
 - **25 Reliability Analyzers** - Ensure application stability and correctness
 - **5 Code Quality Analyzers** - Improve maintainability and code standards
-- **17 Best Practices Analyzers** - Enforce Laravel-specific best practices
+- **15 Best Practices Analyzers** - Enforce Laravel-specific best practices
 
 ### Security Analyzers (22)
 
@@ -270,15 +270,13 @@ Improve code maintainability and enforce best practices:
 - **Naming Convention Analyzer** - Enforces PSR naming conventions (classes, methods, properties)
 - **Nesting Depth Analyzer** - Detects excessive nesting levels that reduce readability
 
-### Best Practices Analyzers (17)
+### Best Practices Analyzers (15)
 
 Enforce Laravel-specific best practices and architectural patterns:
 
-**Query & Database Best Practices (7):**
+**Query & Database Best Practices (5):**
 - **Eloquent N+1 Query Analyzer** - Identifies missing eager loading causing N+1 queries
 - **Mixed Query Builder Eloquent Analyzer** - Detects inconsistent mixing of Query Builder and Eloquent ORM
-- **Raw Eloquent Avoidance Analyzer** - Identifies overuse of raw SQL queries instead of Eloquent
-- **Select Asterisk Analyzer** - Detects SELECT * queries that should specify columns
 - **Chunk Missing Analyzer** - Identifies large dataset queries missing chunk() for memory efficiency
 - **Missing Database Transactions Analyzer** - Detects operations that should be wrapped in transactions
 - **PHP Side Filtering Analyzer** - Finds filtering done in PHP that should be in SQL queries

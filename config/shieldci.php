@@ -163,7 +163,6 @@ return [
 
     'dont_report' => [
         // 'missing-error-tracking',
-        // 'select-asterisk',
         // 'missing-docblock',
     ],
 

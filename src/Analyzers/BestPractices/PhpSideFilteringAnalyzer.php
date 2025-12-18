@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\BestPractices;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
@@ -16,40 +17,80 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
- * Detects filtering collections in PHP that should be done in database.
+ * Detects PHP-side filtering patterns not covered by Larastan.
+ *
+ * This analyzer complements CollectionCallAnalyzer by detecting unique patterns
+ * that Larastan's noUnnecessaryCollectionCall rule doesn't cover:
  *
  * Checks for:
- * - ->all()->filter(), ->get()->where() patterns
- * - Collection methods on potentially large datasets
- * - Memory-intensive operations that could be DB queries
+ * - ->all()->filter() / ->get()->filter() - Custom filtering with closures
+ * - ->all()->reject() / ->get()->reject() - Inverse filtering
+ * - ->all()->whereIn() / ->get()->whereIn() - Array-based filtering
+ * - ->all()->whereNotIn() / ->get()->whereNotIn() - Inverse array filtering
+ *
+ * Note: Patterns like ->get()->where(), ->get()->first(), etc. are detected by
+ * CollectionCallAnalyzer (via Larastan) and are not checked here.
  */
 class PhpSideFilteringAnalyzer extends AbstractFileAnalyzer
 {
+    /** @var array<string> */
+    private array $whitelist = [];
+
     public function __construct(
-        private ParserInterface $parser
+        private ParserInterface $parser,
+        private Config $config
     ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
             id: 'php-side-filtering',
-            name: 'PHP-Side Data Filtering Analyzer',
-            description: 'Detects filtering data in PHP that should be done at database level for performance',
+            name: 'PHP-Side Collection Filtering Analyzer',
+            description: 'Detects filter(), reject(), whereIn(), and whereNotIn() usage after database fetch (patterns not covered by Larastan)',
             category: Category::BestPractices,
             severity: Severity::Critical,
-            tags: ['laravel', 'performance', 'database', 'memory', 'optimization'],
+            tags: ['laravel', 'performance', 'database', 'memory', 'optimization', 'collections'],
             docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/php-side-filtering',
-            timeToFix: 25
+            timeToFix: 15
         );
+    }
+
+    /**
+     * Load configuration from config repository.
+     */
+    private function loadConfiguration(): void
+    {
+        // Default whitelist (empty)
+        $defaultWhitelist = [];
+
+        // Load from config
+        $configWhitelist = $this->config->get('shieldci.analyzers.best-practices.php-side-filtering.whitelist', []);
+
+        // Ensure configWhitelist is an array
+        if (! is_array($configWhitelist)) {
+            $configWhitelist = [];
+        }
+
+        // Merge defaults with config (config takes precedence)
+        $this->whitelist = array_values(array_unique(array_merge($defaultWhitelist, $configWhitelist)));
     }
 
     protected function runAnalysis(): ResultInterface
     {
+        // Load configuration
+        $this->loadConfiguration();
+
         $issues = [];
 
         $phpFiles = $this->getPhpFiles();
 
         foreach ($phpFiles as $file) {
+            // Check whitelist
+            $relativePath = $this->getRelativePath($file);
+            if ($this->isWhitelisted($relativePath)) {
+                continue;
+            }
+
             try {
                 $ast = $this->parser->parseFile($file);
                 if (empty($ast)) {
@@ -64,7 +105,7 @@ class PhpSideFilteringAnalyzer extends AbstractFileAnalyzer
                 foreach ($visitor->getIssues() as $issue) {
                     $issues[] = $this->createIssue(
                         message: $issue['message'],
-                        location: new Location($this->getRelativePath($file), $issue['line']),
+                        location: new Location($relativePath, $issue['line']),
                         severity: $issue['severity'],
                         recommendation: $issue['recommendation'],
                         code: $issue['code'] ?? null,
@@ -77,13 +118,27 @@ class PhpSideFilteringAnalyzer extends AbstractFileAnalyzer
         }
 
         if (empty($issues)) {
-            return $this->passed('All filtering is performed at database level');
+            return $this->passed('No PHP-side filtering detected (filter/reject/whereIn/whereNotIn after fetch)');
         }
 
         return $this->failed(
             sprintf('Found %d instance(s) of PHP-side filtering that should be done in database', count($issues)),
             $issues
         );
+    }
+
+    /**
+     * Check if a file path is whitelisted.
+     */
+    private function isWhitelisted(string $path): bool
+    {
+        foreach ($this->whitelist as $pattern) {
+            if (str_contains($path, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
 
@@ -165,39 +220,28 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
      */
     private function hasPhpSideFiltering(array $chain): bool
     {
-        // Critical patterns: fetching all data then filtering
+        // Only detect patterns NOT covered by Larastan:
+        // - filter() - Custom filtering with closures
+        // - reject() - Inverse of filter
+        // - whereIn() - Array-based filtering
+        // - whereNotIn() - Inverse of whereIn
+        //
+        // Patterns like where(), first(), last(), take(), skip() are
+        // detected by CollectionCallAnalyzer (via Larastan)
         $criticalPatterns = [
             ['all', 'filter'],
-            ['all', 'where'],
             ['all', 'reject'],
-            ['all', 'first'],
-            ['all', 'last'],
+            ['all', 'whereIn'],
+            ['all', 'whereNotIn'],
             ['get', 'filter'],
-            ['get', 'where'],
             ['get', 'reject'],
-            ['get', 'first'],  // ->get()->first() is wasteful
-            ['get', 'last'],
+            ['get', 'whereIn'],
+            ['get', 'whereNotIn'],
         ];
 
         foreach ($criticalPatterns as $pattern) {
-            if ($this->chainContainsPattern($chain, $pattern)) {
+            if ($this->chainContainsSequence($chain, $pattern)) {
                 return true;
-            }
-        }
-
-        // Check for collection filtering methods after database fetch
-        $fetchMethods = ['all', 'get'];
-        $filterMethods = ['filter', 'where', 'whereIn', 'whereNotIn', 'reject', 'first', 'last', 'take', 'skip'];
-
-        foreach ($fetchMethods as $fetch) {
-            if (in_array($fetch, $chain, true)) {
-                $fetchIndex = array_search($fetch, $chain, true);
-                foreach ($filterMethods as $filter) {
-                    $filterIndex = array_search($filter, $chain, true);
-                    if ($filterIndex !== false && $filterIndex > $fetchIndex) {
-                        return true;
-                    }
-                }
             }
         }
 
@@ -205,15 +249,40 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     }
 
     /**
+     * Check if a chain contains a specific sequence of methods.
+     *
+     * This properly checks for consecutive method calls, not just substring matching.
+     * For example, ['get', 'filter'] will match in ['User', 'where', 'get', 'filter']
+     * but NOT in ['getFilter'] or ['get', 'where', 'filter'] if we're looking for
+     * consecutive calls.
+     *
      * @param  array<string>  $chain
-     * @param  array<string>  $pattern
+     * @param  array<string>  $sequence
      */
-    private function chainContainsPattern(array $chain, array $pattern): bool
+    private function chainContainsSequence(array $chain, array $sequence): bool
     {
-        $chainStr = implode('->', $chain);
-        $patternStr = implode('->', $pattern);
+        $chainLength = count($chain);
+        $sequenceLength = count($sequence);
 
-        return str_contains($chainStr, $patternStr);
+        if ($sequenceLength > $chainLength) {
+            return false;
+        }
+
+        // Check if sequence appears consecutively in chain
+        for ($i = 0; $i <= $chainLength - $sequenceLength; $i++) {
+            $match = true;
+            for ($j = 0; $j < $sequenceLength; $j++) {
+                if ($chain[$i + $j] !== $sequence[$j]) {
+                    $match = false;
+                    break;
+                }
+            }
+            if ($match) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -223,27 +292,28 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     {
         $pattern = implode('->', $chain);
 
+        // Recommendations for the 4 unique patterns we detect
         $recommendations = [
-            'all()->filter' => 'Replace with Model::where(...)->get() to filter at database level',
-            'all()->where' => 'Replace with Model::where(...)->get() to filter at database level',
-            'get()->filter' => 'Add where() clauses before get() to filter at database level',
-            'get()->where' => 'Add where() clauses before get() to filter at database level',
-            'get()->first' => 'Replace with ->first() directly (remove ->get())',
-            'get()->last' => 'Replace with ->orderBy()->first() to get last record efficiently',
-            'all()->first' => 'Replace with Model::first() or Model::where(...)->first()',
-            'all()->last' => 'Replace with Model::latest()->first() or orderBy()->first()',
+            'filter' => 'Replace filter() with where() clauses before get()/all() to filter at database level. For complex filtering logic, consider database computed columns or raw where clauses.',
+            'reject' => 'Replace reject() with where() or whereNot() clauses before get()/all() to filter at database level. The inverse logic can be expressed with whereNot() or negative where conditions.',
+            'whereIn' => 'Replace whereIn() with whereIn() in the query builder before get()/all(). Move this filtering to the database query.',
+            'whereNotIn' => 'Replace whereNotIn() with whereNotIn() in the query builder before get()/all(). Move this filtering to the database query.',
         ];
 
-        foreach ($recommendations as $badPattern => $recommendation) {
-            if (str_contains($pattern, $badPattern)) {
+        // Find which filter method is being used
+        foreach ($recommendations as $method => $recommendation) {
+            if (in_array($method, $chain, true)) {
                 return sprintf(
-                    '%s. Current pattern "%s" loads all data into memory before filtering, which is extremely inefficient and can cause memory exhaustion on large datasets',
+                    '%s Current pattern "%s" loads all data into memory before filtering, which is extremely inefficient and can cause memory exhaustion on large datasets.',
                     $recommendation,
                     $pattern
                 );
             }
         }
 
-        return 'Move filtering logic to database queries using where(), orderBy(), limit(), etc. Loading all data into memory is inefficient and dangerous';
+        return sprintf(
+            'Move filtering logic to database queries. Current pattern "%s" loads all data into memory before filtering, which is inefficient and dangerous.',
+            $pattern
+        );
     }
 }

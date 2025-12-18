@@ -175,10 +175,10 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('No error tracking service found', $result);
+        $this->assertHasIssueContaining('No error tracking service detected', $result);
     }
 
-    public function test_passes_when_composer_json_not_found(): void
+    public function test_skips_when_composer_json_not_found(): void
     {
         $tempDir = $this->createTempDirectory([
             '.env' => 'APP_ENV=production',
@@ -189,7 +189,7 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        $this->assertSkipped($result);
     }
 
     public function test_provides_helpful_recommendation(): void
@@ -215,7 +215,7 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
         $issues = $result->getIssues();
         $this->assertGreaterThan(0, count($issues));
         $this->assertStringContainsString('Sentry', $issues[0]->recommendation);
-        $this->assertStringContainsString('production error monitoring', $issues[0]->recommendation);
+        $this->assertStringContainsString('production error visibility', $issues[0]->recommendation);
     }
 
     public function test_handles_malformed_composer_json(): void

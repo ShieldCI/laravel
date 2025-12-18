@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
+use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\Security\FillableForeignKeyAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -11,9 +12,56 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class FillableForeignKeyAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    protected function createAnalyzer(array $config = []): AnalyzerInterface
     {
-        return new FillableForeignKeyAnalyzer($this->parser);
+        // Default dangerous patterns (same as in analyzer)
+        $defaultPatterns = [
+            'user_id' => 'user ownership',
+            'author_id' => 'author relationship',
+            'owner_id' => 'owner relationship',
+            'creator_id' => 'creator relationship',
+            'parent_id' => 'hierarchical relationship',
+            'tenant_id' => 'tenant isolation',
+            'organization_id' => 'organization ownership',
+            'company_id' => 'company ownership',
+            'team_id' => 'team membership',
+            'account_id' => 'account ownership',
+        ];
+
+        // Get custom dangerous patterns from config if provided
+        $customPatterns = $config['fillable-foreign-key']['dangerous_patterns'] ?? [];
+        $dangerousPatterns = is_array($customPatterns) && ! empty($customPatterns)
+            ? array_merge($defaultPatterns, $customPatterns)
+            : $defaultPatterns;
+
+        // Build security config
+        $securityConfig = [
+            'enabled' => true,
+            'fillable-foreign-key' => [
+                'dangerous_patterns' => $dangerousPatterns,
+            ],
+        ];
+
+        // Remove fillable-foreign-key from config to avoid conflicts
+        unset($config['fillable-foreign-key']);
+
+        // Merge any remaining config
+        if (! empty($config)) {
+            $securityConfig = array_merge_recursive($securityConfig, $config);
+        }
+
+        $configRepo = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'security' => $securityConfig,
+                ],
+            ],
+        ]);
+
+        return new FillableForeignKeyAnalyzer($this->parser, $configRepo);
     }
 
     // ==================== Basic Detection Tests ====================

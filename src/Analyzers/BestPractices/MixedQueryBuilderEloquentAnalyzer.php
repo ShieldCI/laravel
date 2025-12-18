@@ -33,7 +33,7 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
     ) {
         // P2.9: Load whitelist from config if available
         if (function_exists('config')) {
-            $configWhitelist = config('shieldci.analyzers.mixed_query_builder_eloquent.whitelist', []);
+            $configWhitelist = config('shieldci.analyzers.best_practices.mixed_query_builder_eloquent.whitelist', []);
             if (is_array($configWhitelist)) {
                 $this->whitelist = $configWhitelist;
             }

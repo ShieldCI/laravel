@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -22,6 +23,20 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * @var array<string>
+     */
+    private array $ignoredPackages = [];
+
+    /**
+     * @var array<string>
+     */
+    private array $ignoredAdvisories = [];
+
+    public function __construct(
+        private Config $config
+    ) {}
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
@@ -48,8 +63,40 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         return 'No package.json found - not a frontend project';
     }
 
+    /**
+     * Load configuration from config repository.
+     */
+    private function loadConfiguration(): void
+    {
+        // Default empty arrays (no packages or advisories ignored by default)
+        $defaultIgnoredPackages = [];
+        $defaultIgnoredAdvisories = [];
+
+        // Load from config
+        $configIgnoredPackages = $this->config->get('shieldci.analyzers.security.frontend-vulnerable-dependencies.ignored_packages', []);
+
+        // Ensure configIgnoredPackages is an array
+        if (! is_array($configIgnoredPackages)) {
+            $configIgnoredPackages = [];
+        }
+
+        $configIgnoredAdvisories = $this->config->get('shieldci.analyzers.security.frontend-vulnerable-dependencies.ignored_advisories', []);
+
+        // Ensure configIgnoredAdvisories is an array
+        if (! is_array($configIgnoredAdvisories)) {
+            $configIgnoredAdvisories = [];
+        }
+
+        // Merge config with defaults, ensuring no duplicates
+        $this->ignoredPackages = array_values(array_unique(array_merge($defaultIgnoredPackages, $configIgnoredPackages)));
+        $this->ignoredAdvisories = array_values(array_unique(array_merge($defaultIgnoredAdvisories, $configIgnoredAdvisories)));
+    }
+
     protected function runAnalysis(): ResultInterface
     {
+        // Load configuration
+        $this->loadConfiguration();
+
         $issues = [];
 
         // Check if package-lock.json or yarn.lock exists
@@ -405,18 +452,12 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         // Check if package or advisory is ignored in configuration
-        $config = $this->getConfiguration();
-
-        /** @var array<int, string> $ignoredPackages */
-        $ignoredPackages = $config['ignored_packages'];
-        if (in_array($package, $ignoredPackages)) {
+        if (in_array($package, $this->ignoredPackages)) {
             return;
         }
 
         $advisoryId = $advisory['id'] ?? $advisory['github_advisory_id'] ?? null;
-        /** @var array<int, string> $ignoredAdvisories */
-        $ignoredAdvisories = $config['ignored_advisories'];
-        if ($advisoryId && in_array($advisoryId, $ignoredAdvisories)) {
+        if ($advisoryId && in_array($advisoryId, $this->ignoredAdvisories)) {
             return;
         }
 
@@ -554,21 +595,5 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
         // If not found, return 1
         return 1;
-    }
-
-    /**
-     * Get analyzer configuration.
-     *
-     * @return array<string, mixed>
-     */
-    private function getConfiguration(): array
-    {
-        /** @var array<string, mixed> $config */
-        $config = config('shieldci.frontend_vulnerable_dependencies', []);
-
-        return array_merge([
-            'ignored_packages' => [],
-            'ignored_advisories' => [],
-        ], $config);
     }
 }

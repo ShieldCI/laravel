@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
+use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\Security\FrontendVulnerableDependencyAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -11,9 +12,29 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class FrontendVulnerableDependencyAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    protected function createAnalyzer(array $config = []): AnalyzerInterface
     {
-        return new FrontendVulnerableDependencyAnalyzer;
+        // Build security config with defaults
+        $securityConfig = [
+            'enabled' => true,
+            'frontend-vulnerable-dependencies' => [
+                'ignored_packages' => $config['ignored_packages'] ?? [],
+                'ignored_advisories' => $config['ignored_advisories'] ?? [],
+            ],
+        ];
+
+        $configRepo = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'security' => $securityConfig,
+                ],
+            ],
+        ]);
+
+        return new FrontendVulnerableDependencyAnalyzer($configRepo);
     }
 
     // ==================== Basic Functionality Tests ====================
@@ -236,24 +257,89 @@ YARN;
 
     // ==================== Configuration Tests ====================
 
+    public function test_accepts_config_repository_dependency(): void
+    {
+        // Verify that analyzer can be created with custom config
+        $customConfig = [
+            'ignored_packages' => ['test-package'],
+            'ignored_advisories' => ['GHSA-1234-5678-9012'],
+        ];
+
+        $analyzer = $this->createAnalyzer($customConfig);
+
+        // Verify analyzer was created successfully
+        $this->assertInstanceOf(FrontendVulnerableDependencyAnalyzer::class, $analyzer);
+    }
+
     public function test_respects_ignored_packages_configuration(): void
     {
-        // This test would require mocking the config
-        // For now, verify the configuration method exists and returns expected format
-        $analyzer = $this->createAnalyzer();
+        // Create analyzer with ignored packages configuration
+        $customConfig = [
+            'ignored_packages' => ['vulnerable-package'],
+            'ignored_advisories' => [],
+        ];
 
-        // Use reflection to test private method
+        $analyzer = $this->createAnalyzer($customConfig);
+
+        // Use reflection to verify the configuration was loaded
         $reflection = new \ReflectionClass($analyzer);
-        $method = $reflection->getMethod('getConfiguration');
-        $method->setAccessible(true);
+        $property = $reflection->getProperty('ignoredPackages');
+        $property->setAccessible(true);
 
-        $config = $method->invoke($analyzer);
+        // Create a temp directory to trigger runAnalysis (which calls loadConfiguration)
+        $packageJson = json_encode(['name' => 'test']);
+        $packageLock = json_encode(['lockfileVersion' => 2]);
 
-        $this->assertIsArray($config);
-        $this->assertArrayHasKey('ignored_packages', $config);
-        $this->assertArrayHasKey('ignored_advisories', $config);
-        $this->assertIsArray($config['ignored_packages']);
-        $this->assertIsArray($config['ignored_advisories']);
+        $tempDir = $this->createTempDirectory([
+            'package.json' => $packageJson,
+            'package-lock.json' => $packageLock,
+        ]);
+
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+        $analyzer->analyze(); // This triggers loadConfiguration()
+
+        $ignoredPackages = $property->getValue($analyzer);
+
+        // Verify the ignored package is in the list
+        $this->assertIsArray($ignoredPackages);
+        $this->assertContains('vulnerable-package', $ignoredPackages);
+    }
+
+    public function test_respects_ignored_advisories_configuration(): void
+    {
+        // Create analyzer with ignored advisories configuration
+        $customConfig = [
+            'ignored_packages' => [],
+            'ignored_advisories' => ['GHSA-1234-5678-9012', 'CVE-2023-12345'],
+        ];
+
+        $analyzer = $this->createAnalyzer($customConfig);
+
+        // Use reflection to verify the configuration was loaded
+        $reflection = new \ReflectionClass($analyzer);
+        $property = $reflection->getProperty('ignoredAdvisories');
+        $property->setAccessible(true);
+
+        // Trigger runAnalysis to load configuration
+        $packageJson = json_encode(['name' => 'test']);
+        $packageLock = json_encode(['lockfileVersion' => 2]);
+
+        $tempDir = $this->createTempDirectory([
+            'package.json' => $packageJson,
+            'package-lock.json' => $packageLock,
+        ]);
+
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+        $analyzer->analyze(); // This triggers loadConfiguration()
+
+        $ignoredAdvisories = $property->getValue($analyzer);
+
+        // Verify the ignored advisories are in the list
+        $this->assertIsArray($ignoredAdvisories);
+        $this->assertContains('GHSA-1234-5678-9012', $ignoredAdvisories);
+        $this->assertContains('CVE-2023-12345', $ignoredAdvisories);
     }
 
     // ==================== Severity Mapping Tests ====================

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\BestPractices;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
@@ -29,16 +30,9 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
     private array $whitelist = [];
 
     public function __construct(
-        private ParserInterface $parser
-    ) {
-        // P2.9: Load whitelist from config if available
-        if (function_exists('config')) {
-            $configWhitelist = config('shieldci.analyzers.best_practices.mixed_query_builder_eloquent.whitelist', []);
-            if (is_array($configWhitelist)) {
-                $this->whitelist = $configWhitelist;
-            }
-        }
-    }
+        private ParserInterface $parser,
+        private Config $config
+    ) {}
 
     /**
      * Set whitelisted classes (for testing).
@@ -64,8 +58,31 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
         );
     }
 
+    /**
+     * Load configuration from config repository.
+     */
+    private function loadConfiguration(): void
+    {
+        // Default empty whitelist (no classes whitelisted by default)
+        $defaultWhitelist = [];
+
+        // Load from config
+        $configWhitelist = $this->config->get('shieldci.analyzers.best-practices.mixed-query-builder-eloquent.whitelist', []);
+
+        // Ensure configWhitelist is an array
+        if (! is_array($configWhitelist)) {
+            $configWhitelist = [];
+        }
+
+        // Merge config with defaults, ensuring no duplicates
+        $this->whitelist = array_values(array_unique(array_merge($defaultWhitelist, $configWhitelist)));
+    }
+
     protected function runAnalysis(): ResultInterface
     {
+        // Load configuration
+        $this->loadConfiguration();
+
         $issues = [];
 
         // Only set default paths if not already set (allows tests to override)

@@ -4,15 +4,35 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
+use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\BestPractices\MixedQueryBuilderEloquentAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class MixedQueryBuilderEloquentAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    protected function createAnalyzer(array $config = []): AnalyzerInterface
     {
-        return new MixedQueryBuilderEloquentAnalyzer($this->parser);
+        // Build best-practices config with defaults
+        $bestPracticesConfig = [
+            'enabled' => true,
+            'mixed-query-builder-eloquent' => [
+                'whitelist' => $config['whitelist'] ?? [],
+            ],
+        ];
+
+        $configRepo = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'best-practices' => $bestPracticesConfig,
+                ],
+            ],
+        ]);
+
+        return new MixedQueryBuilderEloquentAnalyzer($this->parser, $configRepo);
     }
 
     public function test_passes_with_only_eloquent(): void
@@ -567,11 +587,12 @@ PHP;
 
         $tempDir = $this->createTempDirectory(['Repositories/LegacyReportRepository.php' => $code]);
 
-        /** @var \ShieldCI\Analyzers\BestPractices\MixedQueryBuilderEloquentAnalyzer $analyzer */
-        $analyzer = $this->createAnalyzer();
+        // Create analyzer with whitelist configuration
+        $analyzer = $this->createAnalyzer([
+            'whitelist' => ['LegacyReportRepository'],
+        ]);
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
-        $analyzer->setWhitelist(['LegacyReportRepository']);
 
         $result = $analyzer->analyze();
 

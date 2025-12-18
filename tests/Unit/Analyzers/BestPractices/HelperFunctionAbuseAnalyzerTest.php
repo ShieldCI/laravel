@@ -16,7 +16,7 @@ class HelperFunctionAbuseAnalyzerTest extends AnalyzerTestCase
         $config = new Repository([
             'shieldci' => [
                 'analyzers' => [
-                    'best_practices' => [
+                    'best-practices' => [
                         'helper-function-abuse' => [
                             'threshold' => 5,
                         ],
@@ -277,7 +277,7 @@ PHP;
         $config = new Repository([
             'shieldci' => [
                 'analyzers' => [
-                    'best_practices' => [
+                    'best-practices' => [
                         'helper-function-abuse' => [
                             'threshold' => 3, // Custom threshold
                         ],
@@ -323,7 +323,7 @@ PHP;
         $config = new Repository([
             'shieldci' => [
                 'analyzers' => [
-                    'best_practices' => [
+                    'best-practices' => [
                         'helper-function-abuse' => [
                             'threshold' => 2,
                             'helper_functions' => ['auth', 'request'], // Only track these two
@@ -372,7 +372,7 @@ PHP;
         $config = new Repository([
             'shieldci' => [
                 'analyzers' => [
-                    'best_practices' => [
+                    'best-practices' => [
                         'helper-function-abuse' => [
                             'threshold' => 5,
                             'helper_functions' => [], // Empty array should use defaults

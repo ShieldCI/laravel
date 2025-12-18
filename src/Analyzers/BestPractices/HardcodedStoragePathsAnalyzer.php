@@ -48,7 +48,7 @@ class HardcodedStoragePathsAnalyzer extends AbstractFileAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         // Load configuration
-        $analyzerConfig = $this->config->get('shieldci.analyzers.best_practices.hardcoded-storage-paths', []);
+        $analyzerConfig = $this->config->get('shieldci.analyzers.best-practices.hardcoded-storage-paths', []);
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
         $this->allowedPaths = $analyzerConfig['allowed_paths'] ?? [];

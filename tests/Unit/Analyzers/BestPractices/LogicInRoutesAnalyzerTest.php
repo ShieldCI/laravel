@@ -16,7 +16,7 @@ class LogicInRoutesAnalyzerTest extends AnalyzerTestCase
         $config = new Repository([
             'shieldci' => [
                 'analyzers' => [
-                    'best_practices' => [
+                    'best-practices' => [
                         'logic-in-routes' => [
                             'max_closure_lines' => 5,
                         ],
@@ -738,7 +738,7 @@ PHP;
         $config = new Repository([
             'shieldci' => [
                 'analyzers' => [
-                    'best_practices' => [
+                    'best-practices' => [
                         'logic-in-routes' => [
                             'max_closure_lines' => 3,
                         ],

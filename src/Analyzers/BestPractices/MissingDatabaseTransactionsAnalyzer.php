@@ -51,8 +51,8 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        // Load configuration from config file (best_practices.missing-database-transactions)
-        $analyzerConfig = $this->config->get('shieldci.analyzers.best_practices.missing-database-transactions', []);
+        // Load configuration from config file (best-practices.missing-database-transactions)
+        $analyzerConfig = $this->config->get('shieldci.analyzers.best-practices.missing-database-transactions', []);
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
         $this->threshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;

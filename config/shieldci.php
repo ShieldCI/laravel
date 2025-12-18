@@ -101,7 +101,7 @@ return [
     |--------------------------------------------------------------------------
     |
     | Enable or disable entire categories of analyzers.
-    | Available categories: security, performance, reliability, code_quality, best_practices
+    | Available categories: security, performance, reliability, code-quality, best-practices
     |
     */
 
@@ -115,10 +115,10 @@ return [
         'reliability' => [
             'enabled' => env('SHIELDCI_RELIABILITY_ANALYZERS', true),
         ],
-        'code_quality' => [
+        'code-quality' => [
             'enabled' => env('SHIELDCI_CODE_QUALITY_ANALYZERS', true),
         ],
-        'best_practices' => [
+        'best-practices' => [
             'enabled' => env('SHIELDCI_BEST_PRACTICES_ANALYZERS', true),
         ],
     ],

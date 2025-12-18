@@ -16,7 +16,7 @@ class MissingDatabaseTransactionsAnalyzerTest extends AnalyzerTestCase
         $config = new Repository([
             'shieldci' => [
                 'analyzers' => [
-                    'best_practices' => [
+                    'best-practices' => [
                         'missing-database-transactions' => [
                             'threshold' => 2,
                         ],
@@ -520,7 +520,7 @@ PHP;
         $config = new Repository([
             'shieldci' => [
                 'analyzers' => [
-                    'best_practices' => [
+                    'best-practices' => [
                         'missing-database-transactions' => [
                             'threshold' => 3,
                         ],

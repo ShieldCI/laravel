@@ -16,7 +16,7 @@ class LogicInBladeAnalyzerTest extends AnalyzerTestCase
         $config = new Repository([
             'shieldci' => [
                 'analyzers' => [
-                    'best_practices' => [
+                    'best-practices' => [
                         'logic-in-blade' => [
                             'max_php_block_lines' => 10,
                         ],
@@ -731,7 +731,7 @@ BLADE;
         $config = new Repository([
             'shieldci' => [
                 'analyzers' => [
-                    'best_practices' => [
+                    'best-practices' => [
                         'logic-in-blade' => [
                             'max_php_block_lines' => 5,
                         ],

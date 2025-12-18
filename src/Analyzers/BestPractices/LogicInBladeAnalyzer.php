@@ -80,7 +80,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         // Load configuration
-        $analyzerConfig = $this->config->get('shieldci.analyzers.best_practices.logic-in-blade', []);
+        $analyzerConfig = $this->config->get('shieldci.analyzers.best-practices.logic-in-blade', []);
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
         $this->maxPhpBlockLines = $analyzerConfig['max_php_block_lines'] ?? self::DEFAULT_MAX_PHP_BLOCK_LINES;

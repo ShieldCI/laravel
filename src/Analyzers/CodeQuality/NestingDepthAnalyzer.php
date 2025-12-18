@@ -51,8 +51,8 @@ class NestingDepthAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        // Load configuration from config file (code_quality.nesting-depth)
-        $analyzerConfig = $this->config->get('shieldci.analyzers.code_quality.nesting-depth', []);
+        // Load configuration from config file (code-quality.nesting-depth)
+        $analyzerConfig = $this->config->get('shieldci.analyzers.code-quality.nesting-depth', []);
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
         $this->threshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;

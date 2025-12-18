@@ -281,7 +281,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     private function getNativeMysqliFunctions(): array
     {
         if ($this->config) {
-            $custom = $this->config->get('shieldci.sql_injection.mysqli_functions');
+            $custom = $this->config->get('shieldci.analyzers.security.sql-injection.mysqli_functions');
             if (is_array($custom) && ! empty($custom)) {
                 return $custom;
             }
@@ -298,7 +298,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     private function getNativePostgresFunctions(): array
     {
         if ($this->config) {
-            $custom = $this->config->get('shieldci.sql_injection.postgres_functions');
+            $custom = $this->config->get('shieldci.analyzers.security.sql-injection.postgres_functions');
             if (is_array($custom) && ! empty($custom)) {
                 return $custom;
             }

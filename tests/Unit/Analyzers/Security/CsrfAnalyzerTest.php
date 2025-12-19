@@ -983,7 +983,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertWarning($result);
-        $this->assertHasIssueContaining('route may be missing', $result);
+        $this->assertHasIssueContaining('route missing', $result);
     }
 
     public function test_detects_post_route_with_chained_middleware(): void
@@ -1014,7 +1014,7 @@ PHP;
         $routes = <<<'PHP'
 <?php
 
-Route::put('/users/{id}', 'UserController@update')->middleware('auth');
+Route::put('/users/{id}', 'UserController@update')->middleware('web');
 PHP;
 
         $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
@@ -1049,7 +1049,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertWarning($result);
-        $this->assertHasIssueContaining('route may be missing', $result);
+        $this->assertHasIssueContaining('route missing', $result);
     }
 
     public function test_detects_multiple_unprotected_routes(): void

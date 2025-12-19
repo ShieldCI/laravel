@@ -430,7 +430,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     private function isBroadCsrfException(string $exception): bool
     {
         // Allow API routes - they typically use token authentication
-        if (str_contains($exception, 'api/')) {
+        if (str_starts_with(trim($exception, '/'), 'api/')) {
             return false;
         }
 
@@ -770,6 +770,17 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check route files for routes that should have CSRF middleware.
+     *
+     * Only accepts explicit 'web' middleware:
+     * - middleware('web')
+     * - middleware(['web', ...])
+     * - Route::group(['middleware' => 'web'], ...)
+     * - Route::group(['middleware' => ['web', ...]], ...)
+     *
+     * Does NOT accept:
+     * - 'auth' middleware (doesn't include CSRF)
+     * - Just ->middleware( without 'web'
+     * - Assumed middleware from elsewhere
      */
     private function checkRoutesForCsrfMiddleware(string $file, array &$issues): void
     {
@@ -784,42 +795,96 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         $lines = FileParser::getLines($file);
+        $insideWebGroup = false;
+        $groupDepth = 0;
 
         foreach ($lines as $lineNumber => $line) {
             if (! is_string($line)) {
                 continue;
             }
 
+            // Check for Route::group with 'web' middleware
+            if (preg_match('/Route::group\s*\(\s*\[/', $line)) {
+                // Look ahead to check if this group has 'web' middleware
+                $searchRange = min($lineNumber + 10, count($lines));
+                $hasWebInGroup = false;
+
+                for ($i = $lineNumber; $i < $searchRange; $i++) {
+                    if (! isset($lines[$i]) || ! is_string($lines[$i])) {
+                        continue;
+                    }
+
+                    // Check for 'middleware' => 'web' or 'middleware' => ['web', ...]
+                    if (preg_match('/[\'"]middleware[\'"]\s*=>\s*[\'"]\s*web\s*[\'"]/', $lines[$i]) ||
+                        preg_match('/[\'"]middleware[\'"]\s*=>\s*\[\s*[\'"]\s*web\s*[\'"]/', $lines[$i])) {
+                        $hasWebInGroup = true;
+                        break;
+                    }
+
+                    // Stop at the end of the array
+                    if (str_contains($lines[$i], '],')) {
+                        break;
+                    }
+                }
+
+                if ($hasWebInGroup) {
+                    $insideWebGroup = true;
+                    $groupDepth++;
+                }
+            }
+
+            // Track when we exit a group
+            if ($insideWebGroup && preg_match('/^\s*\}\s*\);\s*$/', $line)) {
+                $groupDepth--;
+                if ($groupDepth <= 0) {
+                    $insideWebGroup = false;
+                    $groupDepth = 0;
+                }
+            }
+
             // Check for POST/PUT/PATCH/DELETE routes
             if (preg_match('/Route::(post|put|patch|delete)\s*\(/i', $line, $matches)) {
                 $method = strtoupper($matches[1]);
 
-                // Check if the route has middleware
-                $searchRange = min($lineNumber + 5, count($lines));
-                $hasMiddleware = false;
+                // If inside a web group, the route is protected
+                if ($insideWebGroup) {
+                    continue;
+                }
+
+                // Check if the route has explicit 'web' middleware
+                $searchRange = min($lineNumber + 10, count($lines));
+                $hasWebMiddleware = false;
 
                 for ($i = $lineNumber; $i < $searchRange; $i++) {
-                    if (preg_match('/->middleware\s*\(|[\'"](web|auth)[\'"]/', $lines[$i])) {
-                        $hasMiddleware = true;
+                    if (! isset($lines[$i]) || ! is_string($lines[$i])) {
+                        continue;
+                    }
+
+                    // Check for middleware('web') or middleware(['web', ...])
+                    if (preg_match('/->middleware\s*\(\s*[\'"]\s*web\s*[\'"]/', $lines[$i]) ||
+                        preg_match('/->middleware\s*\(\s*\[\s*[\'"]\s*web\s*[\'"]/', $lines[$i])) {
+                        $hasWebMiddleware = true;
                         break;
                     }
 
+                    // Stop at semicolon (end of route definition)
                     if (str_contains($lines[$i], ';')) {
                         break;
                     }
                 }
 
-                if (! $hasMiddleware) {
+                if (! $hasWebMiddleware) {
                     $issues[] = $this->createIssueWithSnippet(
-                        message: sprintf('%s route may be missing CSRF protection middleware', $method),
+                        message: sprintf('%s route missing CSRF protection - no "web" middleware detected', $method),
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
                         severity: Severity::Medium,
-                        recommendation: 'Ensure route uses "web" middleware group which includes CSRF protection',
+                        recommendation: 'Add ->middleware(\'web\') to the route or wrap it in Route::group([\'middleware\' => \'web\'], ...)',
                         metadata: [
                             'method' => $method,
                             'file' => basename($file),
                             'line' => $lineNumber + 1,
+                            'severity_reason' => 'Medium severity because routes in routes/web.php may inherit web middleware globally',
                         ]
                     );
                 }

@@ -225,6 +225,134 @@ BLADE;
         $this->assertCount(1, $result->getIssues()); // Only second form should fail
     }
 
+    public function test_passes_with_csrf_parentheses(): void
+    {
+        $blade = <<<'BLADE'
+<form method="POST" action="/submit">
+    @csrf()
+    <input type="text" name="email">
+</form>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['resources/views/form.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_csrf_component_self_closing(): void
+    {
+        $blade = <<<'BLADE'
+<form method="POST" action="/update">
+    <x-csrf />
+    <input type="text" name="username">
+</form>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['resources/views/form.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_csrf_component_non_self_closing(): void
+    {
+        $blade = <<<'BLADE'
+<form method="POST" action="/create">
+    <x-csrf>
+    <input type="text" name="title">
+</form>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['resources/views/form.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_scans_beyond_10_lines_for_csrf_token(): void
+    {
+        $blade = <<<'BLADE'
+<form method="POST" action="/long-form">
+    <div class="form-group">
+        <label>Field 1</label>
+        <input type="text" name="field1">
+    </div>
+    <div class="form-group">
+        <label>Field 2</label>
+        <input type="text" name="field2">
+    </div>
+    <div class="form-group">
+        <label>Field 3</label>
+        <input type="text" name="field3">
+    </div>
+    <div class="form-group">
+        @csrf
+        <label>Field 4</label>
+        <input type="text" name="field4">
+    </div>
+    <button type="submit">Submit</button>
+</form>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['resources/views/long-form.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_form_without_csrf_after_many_lines(): void
+    {
+        $blade = <<<'BLADE'
+<form method="POST" action="/long-form-no-csrf">
+    <div class="form-group">
+        <label>Field 1</label>
+        <input type="text" name="field1">
+    </div>
+    <div class="form-group">
+        <label>Field 2</label>
+        <input type="text" name="field2">
+    </div>
+    <div class="form-group">
+        <label>Field 3</label>
+        <input type="text" name="field3">
+    </div>
+    <button type="submit">Submit</button>
+</form>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['resources/views/long-form-no-csrf.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('CSRF', $result);
+    }
+
     // ==================== Blade AJAX Tests (8 tests) ====================
 
     public function test_detects_jquery_ajax_post_without_csrf(): void
@@ -421,6 +549,103 @@ BLADE;
         $this->assertHasIssueContaining('AJAX', $result);
     }
 
+    public function test_detects_ajax_patch_without_csrf(): void
+    {
+        $blade = <<<'BLADE'
+<script>
+$.ajax({
+    url: '/posts/1',
+    method: 'PATCH',
+    data: { status: 'published' }
+});
+</script>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['resources/views/patch-ajax.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('AJAX', $result);
+    }
+
+    public function test_handles_ajax_spanning_many_lines(): void
+    {
+        $blade = <<<'BLADE'
+<script>
+$.ajax({
+    url: '/api/complex',
+    method: 'POST',
+    data: {
+        field1: 'value1',
+        field2: 'value2',
+        nested: {
+            key1: 'val1',
+            key2: 'val2'
+        }
+    },
+    success: function(response) {
+        console.log(response);
+    },
+    error: function(xhr) {
+        console.error(xhr);
+    }
+});
+</script>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['resources/views/complex-ajax.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('AJAX', $result);
+    }
+
+    public function test_passes_ajax_spanning_many_lines_with_csrf(): void
+    {
+        $blade = <<<'BLADE'
+<script>
+$.ajax({
+    url: '/api/complex',
+    method: 'POST',
+    headers: {
+        'X-CSRF-TOKEN': $('meta[name="csrf-token"]').attr('content')
+    },
+    data: {
+        field1: 'value1',
+        field2: 'value2',
+        nested: {
+            key1: 'val1',
+            key2: 'val2'
+        }
+    },
+    success: function(response) {
+        console.log(response);
+    }
+});
+</script>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['resources/views/complex-ajax.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     // ==================== JavaScript AJAX Tests (7 tests) ====================
 
     public function test_warns_fetch_in_js_without_csrf(): void
@@ -565,6 +790,79 @@ JS;
 
         $this->assertWarning($result);
         $this->assertHasIssueContaining('JavaScript AJAX', $result);
+    }
+
+    public function test_warns_axios_patch_without_csrf(): void
+    {
+        $js = <<<'JS'
+axios.patch('/api/users/1', {
+    status: 'active'
+});
+JS;
+
+        $tempDir = $this->createTempDirectory(['resources/js/patch.js' => $js]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('JavaScript AJAX', $result);
+    }
+
+    public function test_passes_fetch_get_in_js(): void
+    {
+        $js = <<<'JS'
+fetch('/api/users', {
+    method: 'GET'
+});
+JS;
+
+        $tempDir = $this->createTempDirectory(['resources/js/fetch-get.js' => $js]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_axios_get_in_js(): void
+    {
+        $js = <<<'JS'
+axios.get('/api/users');
+JS;
+
+        $tempDir = $this->createTempDirectory(['resources/js/axios-get.js' => $js]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_fetch_without_method_in_js(): void
+    {
+        $js = <<<'JS'
+fetch('/api/users').then(response => response.json());
+JS;
+
+        $tempDir = $this->createTempDirectory(['resources/js/fetch-default.js' => $js]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
     }
 
     // ==================== CSRF Middleware Exception Tests (9 tests) ====================
@@ -816,6 +1114,118 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_passes_with_known_webhook_service_stripe(): void
+    {
+        $middleware = <<<'PHP'
+<?php
+
+class VerifyCsrfToken
+{
+    protected $except = [
+        'stripe/*',
+    ];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Middleware/VerifyCsrfToken.php' => $middleware,
+            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_known_webhook_service_mailgun(): void
+    {
+        $middleware = <<<'PHP'
+<?php
+
+class VerifyCsrfToken
+{
+    protected $except = [
+        'mailgun/*',
+        'mailslurp/*',
+    ];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Middleware/VerifyCsrfToken.php' => $middleware,
+            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_multi_segment_pattern(): void
+    {
+        $middleware = <<<'PHP'
+<?php
+
+class VerifyCsrfToken
+{
+    protected $except = [
+        '/clock/switch/*',
+        'api/external/callback/*',
+    ];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Middleware/VerifyCsrfToken.php' => $middleware,
+            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_with_broad_dashboard_wildcard(): void
+    {
+        $middleware = <<<'PHP'
+<?php
+
+class VerifyCsrfToken
+{
+    protected $except = [
+        'dashboard/*',
+    ];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Middleware/VerifyCsrfToken.php' => $middleware,
+            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Broad CSRF exception', $result);
+        $this->assertHasIssueContaining('dashboard/*', $result);
+    }
+
     // ==================== Middleware Registration Tests (4 tests) ====================
 
     public function test_passes_when_verify_csrf_token_registered(): void
@@ -939,6 +1349,265 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    public function test_fails_when_validate_csrf_token_missing_from_use_array(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function ($middleware) {
+        $middleware->use([
+            \Illuminate\Foundation\Http\Middleware\InvokeDeferredCallbacks::class,
+            \Illuminate\Http\Middleware\TrustProxies::class,
+            \Illuminate\Http\Middleware\HandleCors::class,
+            \Illuminate\Foundation\Http\Middleware\PreventRequestsDuringMaintenance::class,
+        ]);
+    })
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrap,
+            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap', 'resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('ValidateCsrfToken missing from global middleware stack', $result);
+    }
+
+    public function test_passes_when_validate_csrf_token_in_use_array(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function ($middleware) {
+        $middleware->use([
+            \Illuminate\Foundation\Http\Middleware\InvokeDeferredCallbacks::class,
+            \Illuminate\Http\Middleware\TrustProxies::class,
+            \Illuminate\Http\Middleware\HandleCors::class,
+            \Illuminate\Foundation\Http\Middleware\PreventRequestsDuringMaintenance::class,
+            \Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class,
+            \Illuminate\Foundation\Http\Middleware\TrimStrings::class,
+        ]);
+    })
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrap,
+            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap', 'resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_csrf_removed_from_web_group(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function ($middleware) {
+        $middleware->web(remove: [
+            \Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class,
+        ]);
+    })
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrap,
+            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap', 'resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('ValidateCsrfToken removed from web middleware group', $result);
+        $issues = $result->getIssues();
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+    }
+
+    public function test_fails_when_csrf_removed_entirely(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function ($middleware) {
+        $middleware->remove(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class);
+    })
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrap,
+            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap', 'resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('ValidateCsrfToken middleware has been removed', $result);
+        $issues = $result->getIssues();
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+    }
+
+    public function test_fails_when_validate_csrf_tokens_excludes_all_with_wildcard(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function ($middleware) {
+        $middleware->validateCsrfTokens(except: ['*']);
+    })
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrap,
+            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap', 'resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('All routes excluded from CSRF protection', $result);
+        $issues = $result->getIssues();
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+    }
+
+    public function test_passes_validate_csrf_tokens_with_known_webhook(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function ($middleware) {
+        $middleware->validateCsrfTokens(except: [
+            'stripe/*',
+            'mailgun/*',
+        ]);
+    })
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrap,
+            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap', 'resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_validate_csrf_tokens_with_multi_segment_pattern(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function ($middleware) {
+        $middleware->validateCsrfTokens(except: [
+            'api/webhooks/stripe',
+            '/clock/switch/*',
+        ]);
+    })
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrap,
+            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap', 'resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_validate_csrf_tokens_with_broad_exception(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function ($middleware) {
+        $middleware->validateCsrfTokens(except: [
+            'admin/*',
+            'dashboard/*',
+        ]);
+    })
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrap,
+            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap', 'resources']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Broad CSRF exception pattern in bootstrap/app.php', $result);
+        $this->assertCount(2, $result->getIssues()); // Both admin/* and dashboard/*
     }
 
     // ==================== Route Middleware Tests (6 tests) ====================
@@ -1072,6 +1741,179 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertCount(4, $result->getIssues());
+    }
+
+    public function test_skips_routes_in_web_php(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/submit', function () {
+    return 'submitted';
+});
+
+Route::put('/update', function () {
+    return 'updated';
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // routes/web.php automatically gets 'web' middleware globally, so no issues
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_route_with_web_middleware_array(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/submit', function () {
+    return 'submitted';
+})->middleware(['web', 'auth']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/custom.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_route_with_auth_middleware_only(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/submit', function () {
+    return 'submitted';
+})->middleware(['auth', 'verified']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/custom.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('route', $result);
+    }
+
+    public function test_passes_nested_route_groups_with_web(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['middleware' => 'web'], function () {
+    Route::post('/level1', function () {});
+
+    Route::group(['prefix' => 'admin'], function () {
+        Route::post('/level2', function () {});
+
+        Route::group(['prefix' => 'settings'], function () {
+            Route::post('/level3', function () {});
+        });
+    });
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/custom.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // All routes inside nested web groups should be protected
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_route_group_with_web_in_middleware_array(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['middleware' => ['web', 'auth']], function () {
+    Route::post('/protected', function () {});
+    Route::put('/update', function () {});
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/custom.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_route_after_web_group_ends(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['middleware' => 'web'], function () {
+    Route::post('/protected', function () {});
+});
+
+Route::post('/unprotected', function () {});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/custom.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues()); // Only the route outside the group
+    }
+
+    public function test_tracks_multiple_separate_web_groups(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['middleware' => 'web'], function () {
+    Route::post('/group1', function () {});
+});
+
+Route::post('/between', function () {});
+
+Route::group(['middleware' => 'web'], function () {
+    Route::post('/group2', function () {});
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/custom.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues()); // Only /between route
     }
 
     // ==================== shouldRun Tests (4 tests) ====================

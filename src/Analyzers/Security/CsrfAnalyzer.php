@@ -312,13 +312,13 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                                 'line' => $lineNumber + 1,
                             ]
                         );
-                    } elseif (preg_match('/\*/', $exception) && ! str_contains($exception, 'api/')) {
+                    } elseif (preg_match('/\*/', $exception) && $this->isBroadCsrfException($exception)) {
                         $issues[] = $this->createIssueWithSnippet(
                             message: sprintf('Broad CSRF exception pattern: %s', $exception),
                             filePath: $middlewarePath,
                             lineNumber: $lineNumber + 1,
                             severity: Severity::High,
-                            recommendation: 'Use more specific route patterns for CSRF exceptions',
+                            recommendation: 'Use more specific route patterns for CSRF exceptions (e.g., "service/webhooks/*" instead of "webhooks/*")',
                             metadata: [
                                 'exception' => $exception,
                                 'file' => 'VerifyCsrfToken.php',
@@ -330,6 +330,51 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 }
             }
         }
+    }
+
+    /**
+     * Determine if a CSRF exception pattern is overly broad.
+     *
+     * Patterns are considered broad if they:
+     * - Have only one path segment before wildcard (e.g., 'admin/*', 'webhook/*')
+     * - Exception: 'api/*' patterns are allowed as APIs typically use token auth
+     *
+     * Patterns are considered specific if they:
+     * - Have 2+ path segments (e.g., 'service/webhooks/*', '/clock/switch/*')
+     * - Are for known webhook/integration services (e.g., 'stripe/*', 'mailgun/*')
+     */
+    private function isBroadCsrfException(string $exception): bool
+    {
+        // Allow API routes - they typically use token authentication
+        if (str_contains($exception, 'api/')) {
+            return false;
+        }
+
+        // Allow known webhook/integration services (single segment is OK for these)
+        $allowedServices = [
+            'stripe', 'mailgun', 'mailslurp', 'twilio', 'slack',
+            'github', 'gitlab', 'bitbucket', 'webhooks',
+            'paddle', 'paypal', 'braintree', 'plaid',
+        ];
+
+        $cleanException = trim($exception, '/');
+        foreach ($allowedServices as $service) {
+            if (str_starts_with($cleanException, $service.'/')) {
+                return false;
+            }
+        }
+
+        // Count path segments (excluding wildcard)
+        $pathWithoutWildcard = str_replace('*', '', $exception);
+        $segments = array_filter(explode('/', $pathWithoutWildcard), fn ($seg) => $seg !== '');
+
+        // If 2+ segments before wildcard, it's specific enough (e.g., '/clock/switch/*')
+        if (count($segments) >= 2) {
+            return false;
+        }
+
+        // Single segment patterns are broad (e.g., 'admin/*', 'dashboard/*')
+        return true;
     }
 
     /**

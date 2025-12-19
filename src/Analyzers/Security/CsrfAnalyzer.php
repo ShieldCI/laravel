@@ -799,14 +799,16 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
+        $normalizedPath = str_replace('\\', '/', $file);
+
         // Skip api.php - API routes typically use token authentication
-        if (str_contains($file, 'api.php')) {
+        if (str_ends_with($normalizedPath, '/routes/api.php')) {
             return;
         }
 
         // Skip web.php - routes in web.php automatically get 'web' middleware applied globally
         // via RouteServiceProvider (Laravel 10) or bootstrap/app.php (Laravel 11+)
-        if (str_contains($file, 'web.php')) {
+        if (str_ends_with($normalizedPath, '/routes/web.php')) {
             return;
         }
 

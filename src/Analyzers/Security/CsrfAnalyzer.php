@@ -105,6 +105,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     /**
      * Check Blade templates for forms without @csrf directive.
      *
+     * ALL forms in Blade templates require CSRF protection - no exceptions.
+     * Blade templates are web views; if building an API, use JSON responses instead of forms.
+     *
      * Accepts multiple CSRF protection patterns:
      * - @csrf or @csrf() - Blade directive
      * - <x-csrf /> or <x-csrf/> - Blade component
@@ -154,7 +157,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                     }
                 }
 
-                if (! $hasCsrf && ! $this->isApiRoute($content)) {
+                if (! $hasCsrf) {
                     $issues[] = $this->createIssueWithSnippet(
                         message: 'Form without CSRF protection - missing @csrf directive',
                         filePath: $file,
@@ -881,17 +884,6 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         return $files;
-    }
-
-    /**
-     * Check if content indicates an API route.
-     */
-    private function isApiRoute(string $content): bool
-    {
-        return str_contains($content, 'api/') ||
-               str_contains($content, 'sanctum') ||
-               str_contains($content, 'bearer') ||
-               str_contains($content, 'Authorization:');
     }
 
     /**

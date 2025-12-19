@@ -610,8 +610,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 $hasValidateCsrfTokenInUse = true;
             }
 
-            // Check for end of use() method
-            if ($inUseMethod && str_contains($line, ']);')) {
+            // Check for end of use() method (both ']); ' and '])' patterns)
+            if ($inUseMethod && (str_contains($line, ']);') || preg_match('/\]\s*\)\s*;?/', $line))) {
                 $inUseMethod = false;
 
                 // If use() method was found but ValidateCsrfToken wasn't in it

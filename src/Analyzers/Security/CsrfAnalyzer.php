@@ -211,6 +211,13 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check JavaScript files for AJAX without CSRF token.
+     *
+     * Only flags POST/PUT/PATCH/DELETE requests:
+     * - axios.post/put/patch/delete - method explicit in function name
+     * - fetch(url, {method: 'POST'}) - checks for method property
+     * - $.ajax({method: 'POST'}) - checks for method property
+     *
+     * GET requests (fetch(url) without method, or method: 'GET') are not flagged.
      */
     private function checkJavaScriptAjaxForCsrf(string $file, array &$issues): void
     {
@@ -228,19 +235,35 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
             // Check for fetch API or axios with POST methods
             if (preg_match('/fetch\s*\(|axios\.(post|put|patch|delete)|\.ajax\s*\(/i', $line, $jsMatch)) {
-                // Look for CSRF token in the next few lines
                 $searchRange = min($lineNumber + 10, count($lines));
                 $hasCsrfToken = false;
+                $hasPostMethod = false;
                 $ajaxLibrary = str_contains($jsMatch[0], 'axios') ? 'axios' : (str_contains($jsMatch[0], 'fetch') ? 'fetch' : 'jQuery');
 
+                // For axios.post/put/patch/delete, the method is explicit in the function name
+                if (preg_match('/axios\.(post|put|patch|delete)/i', $jsMatch[0])) {
+                    $hasPostMethod = true;
+                }
+
+                // For fetch() and $.ajax(), check if method is POST/PUT/PATCH/DELETE
                 for ($i = $lineNumber; $i < $searchRange; $i++) {
+                    // Check for method: 'POST' or method:'POST' (with or without quotes)
+                    if (preg_match('/method\s*:\s*["\']?\s*(POST|PUT|PATCH|DELETE)\s*["\']?/i', $lines[$i])) {
+                        $hasPostMethod = true;
+                    }
+
                     if (preg_match('/X-CSRF-TOKEN|csrf[-_]?token|_token/i', $lines[$i])) {
                         $hasCsrfToken = true;
+                    }
+
+                    // Stop searching if we hit a semicolon or closing brace at statement level
+                    if (preg_match('/^\s*[;}]\s*$/', $lines[$i])) {
                         break;
                     }
                 }
 
-                if (! $hasCsrfToken) {
+                // Only flag if it's a POST/PUT/PATCH/DELETE request without CSRF token
+                if ($hasPostMethod && ! $hasCsrfToken) {
                     $issues[] = $this->createIssueWithSnippet(
                         message: 'JavaScript AJAX request may be missing CSRF token',
                         filePath: $file,

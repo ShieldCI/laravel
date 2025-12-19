@@ -885,8 +885,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                         break;
                     }
 
-                    // Stop at semicolon (end of route definition)
-                    if (str_contains($lines[$i], ';')) {
+                    // Stop at semicolon that's at the end of a route chain (not inside a function body)
+                    // Look for patterns like '); or ->something();
+                    if (preg_match('/^\s*\)\s*;\s*$/', trim($lines[$i])) || preg_match('/^\s*;\s*$/', trim($lines[$i]))) {
                         break;
                     }
                 }

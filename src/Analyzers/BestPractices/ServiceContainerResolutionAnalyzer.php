@@ -29,8 +29,15 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - app()->bind() / singleton() outside service providers
  * - Recommends constructor injection
  *
+ * Whitelisted contexts (where manual resolution is legitimate):
+ * - Migrations: Don't support constructor DI, must use app() helper
+ * - Seeders: Often need dynamic service resolution
+ * - Factories: May need service resolution for test data
+ * - Commands: Sometimes need conditional service resolution
+ * - Service Providers: Legitimate container binding location
+ *
  * Configuration:
- * - whitelist_dirs: Directories to skip (e.g., tests, database/seeders)
+ * - whitelist_dirs: Directories to skip (e.g., tests, database/migrations, database/seeders)
  * - whitelist_classes: Class name patterns to skip (e.g., *Command, *Seeder)
  * - whitelist_methods: Methods to skip (e.g., environment, isLocal)
  */
@@ -74,6 +81,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
         // Load whitelist_dirs
         $configDirs = $this->config->get("{$baseKey}.whitelist_dirs", [
             'tests',
+            'database/migrations',  // Migrations don't support constructor DI
             'database/seeders',
             'database/factories',
         ]);

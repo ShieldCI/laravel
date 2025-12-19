@@ -571,10 +571,13 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                         'middleware' => 'ValidateCsrfToken',
                     ]
                 );
-            } else {
-                // Check if CSRF protection is explicitly disabled
-                $this->checkCsrfDisabledInBootstrap($lines, $file, $issues);
             }
+
+            /**
+             * ALWAYS inspect $middleware->use([...])
+             * If CSRF is missing, this must emit the Critical issue
+             */
+            $this->checkCsrfDisabledInBootstrap($lines, $file, $issues);
         }
 
         // Check for CSRF exception patterns in validateCsrfTokens() method

@@ -102,8 +102,8 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        // Load configuration from config file (best_practices.framework-override)
-        $analyzerConfig = $this->config->get('shieldci.analyzers.best_practices.framework-override', []);
+        // Load configuration from config file (best-practices.framework-override)
+        $analyzerConfig = $this->config->get('shieldci.analyzers.best-practices.framework-override', []);
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
         $this->neverExtend = $analyzerConfig['never_extend'] ?? self::NEVER_EXTEND;

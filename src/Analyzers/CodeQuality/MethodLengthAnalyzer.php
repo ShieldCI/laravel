@@ -57,8 +57,8 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        // Load configuration from config file (code_quality.method-length)
-        $analyzerConfig = $this->config->get('shieldci.analyzers.code_quality.method-length', []);
+        // Load configuration from config file (code-quality.method-length)
+        $analyzerConfig = $this->config->get('shieldci.analyzers.code-quality.method-length', []);
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
         $this->threshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;

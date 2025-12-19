@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -23,8 +24,14 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  */
 class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * @var array<string, string>
+     */
+    private array $dangerousPatterns = [];
+
     public function __construct(
-        private ParserInterface $parser
+        private ParserInterface $parser,
+        private Config $config
     ) {}
 
     protected function metadata(): AnalyzerMetadata
@@ -67,6 +74,8 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
+        $this->loadDangerousPatterns();
+
         $issues = [];
 
         foreach ($this->getPhpFiles() as $file) {
@@ -167,12 +176,9 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
      */
     private function checkField(string $file, Node\Stmt\Property $stmt, string $modelName, string $fieldName, array &$issues): void
     {
-        // Get dangerous patterns (configurable)
-        $dangerousPatterns = $this->getDangerousPatterns();
-
         // Check dangerous patterns FIRST (prevents duplicates)
-        if (array_key_exists($fieldName, $dangerousPatterns)) {
-            $relationship = $dangerousPatterns[$fieldName];
+        if (array_key_exists($fieldName, $this->dangerousPatterns)) {
+            $relationship = $this->dangerousPatterns[$fieldName];
 
             $issues[] = $this->createIssueWithSnippet(
                 message: sprintf(
@@ -231,11 +237,9 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Get dangerous foreign key patterns (configurable).
-     *
-     * @return array<string, string>
+     * Load dangerous foreign key patterns from configuration.
      */
-    private function getDangerousPatterns(): array
+    private function loadDangerousPatterns(): void
     {
         $defaults = [
             'user_id' => 'user ownership',
@@ -250,10 +254,15 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
             'account_id' => 'account ownership',
         ];
 
-        // Allow configuration override
-        /** @var array<string, string> $custom */
-        $custom = config('shieldci.fillable_foreign_key.dangerous_patterns', []);
+        $configPatterns = $this->config->get('shieldci.analyzers.security.fillable-foreign-key.dangerous_patterns', []);
 
-        return array_merge($defaults, $custom);
+        // Ensure configPatterns is an array
+        if (! is_array($configPatterns)) {
+            $configPatterns = [];
+        }
+
+        // Merge config patterns with defaults
+        // Config patterns take precedence (can override the relationship description)
+        $this->dangerousPatterns = array_merge($defaults, $configPatterns);
     }
 }

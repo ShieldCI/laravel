@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\BestPractices;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -13,7 +14,13 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
- * Detects production apps without error tracking service.
+ * Detects applications without error tracking service.
+ *
+ * Checks for:
+ * - Popular error tracking packages (Sentry, Bugsnag, etc.)
+ * - Custom error tracking implementations in Handler.php (Laravel <=10)
+ * - Custom error tracking in bootstrap/app.php (Laravel 11+)
+ * - CloudWatch/Datadog logging configurations
  */
 class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
 {
@@ -31,15 +38,41 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
      */
     protected ?array $relevantEnvironments = ['production', 'staging'];
 
+    /**
+     * error tracking checks are not applicable in CI environments.
+     */
+    public static bool $runInCI = false;
+
+    /**
+     * Known error tracking packages to check for.
+     *
+     * @var array<string>
+     */
+    private array $knownPackages = [];
+
+    public function __construct(
+        private Config $config
+    ) {}
+
+    /**
+     * Set known packages (for testing).
+     *
+     * @param  array<string>  $packages
+     */
+    public function setKnownPackages(array $packages): void
+    {
+        $this->knownPackages = $packages;
+    }
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
             id: 'missing-error-tracking',
             name: 'Missing Error Tracking Analyzer',
-            description: 'Detects production applications without error tracking services like Sentry',
+            description: 'Detects production applications without error tracking services or custom error monitoring',
             category: Category::BestPractices,
-            severity: Severity::Medium,
-            tags: ['laravel', 'monitoring', 'production', 'error-tracking'],
+            severity: Severity::Info,
+            tags: ['laravel', 'monitoring', 'production', 'error-tracking', 'observability'],
             docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/missing-error-tracking',
             timeToFix: 30
         );
@@ -47,47 +80,110 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        // Check if relevant for current environment first
-        return $this->isRelevantForCurrentEnvironment();
-    }
-
-    protected function runAnalysis(): ResultInterface
-    {
-        $issues = [];
-
-        // Check composer.json for error tracking packages
-        $composerPath = $this->basePath.'/composer.json';
-        if (! file_exists($composerPath)) {
-            return $this->passed('No composer.json found');
+        // Check environment relevance first
+        if (! $this->isRelevantForCurrentEnvironment()) {
+            return false;
         }
 
-        $composer = json_decode(FileParser::readFile($composerPath) ?? '{}', true);
-        $require = is_array($composer['require'] ?? null) ? $composer['require'] : [];
-        $requireDev = is_array($composer['require-dev'] ?? null) ? $composer['require-dev'] : [];
-        $dependencies = array_merge($require, $requireDev);
+        // Only run if composer.json exists
+        $composerPath = $this->basePath.'/composer.json';
 
-        $errorTrackingServices = [
+        return file_exists($composerPath);
+    }
+
+    public function getSkipReason(): string
+    {
+        if (! $this->isRelevantForCurrentEnvironment()) {
+            $currentEnv = $this->getEnvironment();
+            $relevantEnvs = implode(', ', $this->relevantEnvironments ?? []);
+
+            return "Not relevant in '{$currentEnv}' environment (only relevant in: {$relevantEnvs})";
+        }
+
+        return 'No composer.json found';
+    }
+
+    /**
+     * Load configuration from config repository.
+     */
+    private function loadConfiguration(): void
+    {
+        // Default known error tracking packages
+        $defaultPackages = [
+            // Dedicated error tracking services
             'sentry/sentry-laravel',
             'bugsnag/bugsnag-laravel',
             'rollbar/rollbar-laravel',
             'airbrake/phpbrake',
             'honeybadger-io/honeybadger-laravel',
+
+            // Additional monitoring services
+            'facade/ignition',
+            'spatie/laravel-ray',
+            'spatie/flare-client-php',
+
+            // APM with error tracking
+            'aws/aws-sdk-php',
         ];
 
-        $hasErrorTracking = false;
-        foreach ($errorTrackingServices as $service) {
-            if (isset($dependencies[$service])) {
-                $hasErrorTracking = true;
-                break;
-            }
+        // Load from config
+        $configPackages = $this->config->get('shieldci.analyzers.best-practices.missing-error-tracking.known_packages', []);
+
+        // Ensure configPackages is an array
+        if (! is_array($configPackages)) {
+            $configPackages = [];
         }
 
+        // If config has packages, use them; otherwise use defaults
+        // This allows complete override rather than merge
+        if (! empty($configPackages)) {
+            $this->knownPackages = array_values(array_unique($configPackages));
+        } else {
+            $this->knownPackages = $defaultPackages;
+        }
+    }
+
+    protected function runAnalysis(): ResultInterface
+    {
+        // Load configuration
+        $this->loadConfiguration();
+
+        $issues = [];
+
+        // Check composer.json for error tracking packages (we know it exists from shouldRun())
+        $composerPath = $this->basePath.'/composer.json';
+
+        $composer = $this->parseComposerJson($composerPath);
+        if ($composer === null) {
+            // Malformed JSON - fail with error
+            return $this->failed(
+                'composer.json contains invalid JSON',
+                [$this->createIssue(
+                    message: 'composer.json contains invalid JSON and cannot be parsed',
+                    location: new Location('composer.json'),
+                    severity: Severity::High,
+                    recommendation: 'Fix JSON syntax errors in composer.json. Run: composer validate',
+                )]
+            );
+        }
+
+        // Check for error tracking packages
+        $hasErrorTracking = $this->checkForErrorTrackingPackages($composer);
+
+        // If no package found, check for custom implementations
+        if (! $hasErrorTracking) {
+            $hasErrorTracking = $this->checkForCustomErrorTracking();
+        }
+
+        // If still no error tracking found, report it as info
         if (! $hasErrorTracking) {
             $issues[] = $this->createIssue(
-                message: 'No error tracking service found in composer.json',
+                message: 'No error tracking service detected',
                 location: new Location('composer.json'),
-                severity: Severity::Medium,
-                recommendation: 'Install an error tracking service like Sentry (sentry/sentry-laravel), Bugsnag, or Rollbar for production error monitoring. This provides better visibility into production errors, automatic error grouping, and faster debugging',
+                severity: Severity::Info,
+                recommendation: 'Consider installing an error tracking service like Sentry (sentry/sentry-laravel), Bugsnag, or Rollbar for better production error visibility. '.
+                    'This provides automatic error grouping, stack traces, release tracking, and faster debugging. '.
+                    'If you\'re using custom error logging (CloudWatch, Datadog, New Relic APM, or custom solutions), you can safely ignore this recommendation.',
             );
         }
 
@@ -99,5 +195,157 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
             'No error tracking service detected',
             $issues
         );
+    }
+
+    /**
+     * Parse composer.json with proper error handling.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function parseComposerJson(string $path): ?array
+    {
+        $content = FileParser::readFile($path);
+        if ($content === null) {
+            return null;
+        }
+
+        $decoded = json_decode($content, true);
+
+        // Check for JSON decode errors
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            return null;
+        }
+
+        // Ensure it's an array
+        if (! is_array($decoded)) {
+            return null;
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * Check for known error tracking packages in composer dependencies.
+     *
+     * @param  array<string, mixed>  $composer
+     */
+    private function checkForErrorTrackingPackages(array $composer): bool
+    {
+        $require = is_array($composer['require'] ?? null) ? $composer['require'] : [];
+        $requireDev = is_array($composer['require-dev'] ?? null) ? $composer['require-dev'] : [];
+        $dependencies = array_merge($require, $requireDev);
+
+        foreach ($this->knownPackages as $service) {
+            if (isset($dependencies[$service])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check for custom error tracking implementations.
+     *
+     * Looks for:
+     * - Custom error reporting in Handler.php (Laravel <=10)
+     * - Custom error reporting in bootstrap/app.php (Laravel 11+)
+     * - CloudWatch configuration in logging.php
+     * - Datadog/New Relic mentions
+     */
+    private function checkForCustomErrorTracking(): bool
+    {
+        // Check Exception Handler for custom error reporting (Laravel <=10)
+        $handlerPath = $this->basePath.'/app/Exceptions/Handler.php';
+        if (file_exists($handlerPath)) {
+            $handlerContent = FileParser::readFile($handlerPath);
+            if ($handlerContent !== null && $this->hasCustomErrorReporting($handlerContent)) {
+                return true;
+            }
+        }
+
+        // Check bootstrap/app.php for exception handling (Laravel 11+)
+        $bootstrapAppPath = $this->basePath.'/bootstrap/app.php';
+        if (file_exists($bootstrapAppPath)) {
+            $bootstrapContent = FileParser::readFile($bootstrapAppPath);
+            if ($bootstrapContent !== null && $this->hasCustomErrorReporting($bootstrapContent)) {
+                return true;
+            }
+        }
+
+        // Check logging configuration for CloudWatch or other services
+        $loggingConfigPath = $this->basePath.'/config/logging.php';
+        if (file_exists($loggingConfigPath)) {
+            $loggingContent = FileParser::readFile($loggingConfigPath);
+            if ($loggingContent !== null && $this->hasCustomLoggingSetup($loggingContent)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if Handler.php has custom error reporting logic.
+     */
+    private function hasCustomErrorReporting(string $content): bool
+    {
+        // Look for common custom error tracking patterns
+        $patterns = [
+            'CloudWatch',
+            'cloudwatch',
+            'Datadog',
+            'datadog',
+            'NewRelic',
+            'new_relic',
+            'custom.*error.*track',
+            'external.*error.*service',
+        ];
+
+        foreach ($patterns as $pattern) {
+            if (preg_match('/'.$pattern.'/i', $content)) {
+                return true;
+            }
+        }
+
+        // Check for significantly customized report() method (>10 lines of logic)
+        if (preg_match('/public function report.*?\{(.*?)\}/s', $content, $matches)) {
+            $reportMethod = $matches[1];
+            // Count non-empty, non-comment lines
+            $lines = array_filter(
+                explode("\n", $reportMethod),
+                fn ($line) => trim($line) !== '' && ! str_starts_with(trim($line), '//')
+            );
+
+            // If report() has more than 10 lines, likely custom implementation
+            if (count($lines) > 10) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if logging config has custom setup (CloudWatch, Datadog, etc.).
+     */
+    private function hasCustomLoggingSetup(string $content): bool
+    {
+        $patterns = [
+            'cloudwatch',
+            'datadog',
+            'newrelic',
+            'logtail',
+            'papertrail',
+            'logentries',
+        ];
+
+        foreach ($patterns as $pattern) {
+            if (preg_match('/'.$pattern.'/i', $content)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

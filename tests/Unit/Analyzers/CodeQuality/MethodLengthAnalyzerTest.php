@@ -21,7 +21,7 @@ class MethodLengthAnalyzerTest extends AnalyzerTestCase
         $configRepo = new Repository([
             'shieldci' => [
                 'analyzers' => [
-                    'code_quality' => $config,
+                    'code-quality' => $config,
                 ],
             ],
         ]);

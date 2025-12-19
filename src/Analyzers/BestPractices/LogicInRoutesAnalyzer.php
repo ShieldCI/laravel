@@ -49,7 +49,7 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         // Load configuration
-        $analyzerConfig = $this->config->get('shieldci.analyzers.best_practices.logic-in-routes', []);
+        $analyzerConfig = $this->config->get('shieldci.analyzers.best-practices.logic-in-routes', []);
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
         $this->maxClosureLines = $analyzerConfig['max_closure_lines'] ?? self::DEFAULT_MAX_CLOSURE_LINES;

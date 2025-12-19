@@ -2,7 +2,7 @@
 
 > **⚠️ Initial Development Release (v0.1.x)** - This package is under active development. APIs may change between minor versions until v1.0.0 is released.
 
-Modern security and code quality analysis for Laravel applications with 91 comprehensive analyzers covering security, performance, reliability, and code quality.
+Modern security and code quality analysis for Laravel applications with 73 comprehensive analyzers covering security, performance, reliability, and code quality.
 
 Built on top of [`shieldci/analyzers-core`](https://github.com/shieldci/analyzers-core) (v0.1.x) - a shared, framework-agnostic foundation for static analysis tools.
 
@@ -148,12 +148,12 @@ Example: AutoloaderOptimizationAnalyzer only runs in production/staging environm
 
 ## Available Analyzers
 
-ShieldCI includes **90 comprehensive analyzers** across five categories:
+ShieldCI includes **73 comprehensive analyzers** across five categories:
 - **22 Security Analyzers** - Complete OWASP Top 10 2021 coverage
 - **18 Performance Analyzers** - Optimize application speed and efficiency
-- **25 Reliability Analyzers** - Ensure application stability and correctness
+- **13 Reliability Analyzers** - Ensure application stability and correctness
 - **5 Code Quality Analyzers** - Improve maintainability and code standards
-- **20 Best Practices Analyzers** - Enforce Laravel-specific best practices
+- **15 Best Practices Analyzers** - Enforce Laravel-specific best practices
 
 ### Security Analyzers (22)
 
@@ -225,11 +225,11 @@ Optimize your Laravel application for production:
 - **Unused Global Middleware Analyzer** - Detects unnecessary global middleware
 - **View Caching Analyzer** - Validates Blade view compilation caching
 
-### Reliability Analyzers (25)
+### Reliability Analyzers (13)
 
 Ensure application stability and correctness:
 
-**Configuration & Infrastructure (9):**
+**Configuration & Infrastructure (8):**
 - **Cache Prefix Analyzer** - Prevents cache collisions in shared environments
 - **Cache Status Analyzer** - Validates cache connectivity
 - **Composer Validation Analyzer** - Ensures composer.json integrity
@@ -238,26 +238,27 @@ Ensure application stability and correctness:
 - **Env File Analyzer** - Validates .env file existence, readability, and checks for broken symlinks
 - **Env Variable Analyzer** - Ensures all required variables from .env.example are defined in .env
 - **Env Example Analyzer** - Ensures all variables from .env are documented in .env.example
-- **Queue Timeout Analyzer** - Prevents job duplication with proper timeouts
 
-**PHPStan-Powered Static Analysis (13):**
-- **Dead Code Analyzer** - Detects unreachable code
-- **Deprecated Code Analyzer** - Identifies deprecated features
-- **Foreach Iterable Analyzer** - Validates iterable types
-- **Invalid Function Call Analyzer** - Catches undefined functions
-- **Invalid Import Analyzer** - Detects invalid use statements
-- **Invalid Method Call Analyzer** - Finds non-existent methods
-- **Invalid Method Override Analyzer** - Validates signatures
-- **Invalid Offset Analyzer** - Checks array access
-- **Invalid Property Access Analyzer** - Detects undefined properties
-- **Missing Model Relation Analyzer** - Finds missing Eloquent relations
-- **Missing Return Statement Analyzer** - Ensures proper returns
-- **Undefined Constant Analyzer** - Catches undefined constants
-- **Undefined Variable Analyzer** - Detects undefined variables
+**PHPStan Static Analysis (1 consolidated analyzer, 13 categories):**
+- **PHPStan Analyzer** - Comprehensive static analysis detecting 13 categories:
+  - Dead Code - Unreachable statements, unused variables
+  - Deprecated Code - Usage of deprecated methods/classes
+  - Foreach Iterable - Invalid foreach with non-iterable values
+  - Invalid Function Calls - Undefined or incorrectly parameterized functions
+  - Invalid Imports - Invalid use statements for non-existent classes
+  - Invalid Method Calls - Undefined or incorrectly parameterized methods
+  - Invalid Method Overrides - Incompatible method signature overrides
+  - Invalid Offset Access - Invalid array offset access and type mismatches
+  - Invalid Property Access - Access to undefined or inaccessible properties
+  - Missing Model Relations - References to non-existent Eloquent relations
+  - Missing Return Statements - Methods with missing return statements
+  - Undefined Constants - References to undefined constants
+  - Undefined Variables - References to undefined variables
 
-**Application State (3):**
+**Application State (4):**
 - **Custom Error Page Analyzer** - Validates error page customization
 - **Maintenance Mode Analyzer** - Checks maintenance status
+- **Queue Timeout Analyzer** - Prevents job duplication with proper timeouts
 - **Up-to-Date Migrations Analyzer** - Detects pending migrations
 
 ### Code Quality Analyzers (5)
@@ -270,25 +271,20 @@ Improve code maintainability and enforce best practices:
 - **Naming Convention Analyzer** - Enforces PSR naming conventions (classes, methods, properties)
 - **Nesting Depth Analyzer** - Detects excessive nesting levels that reduce readability
 
-### Best Practices Analyzers (20)
+### Best Practices Analyzers (15)
 
 Enforce Laravel-specific best practices and architectural patterns:
 
-**Query & Database Best Practices (8):**
+**Query & Database Best Practices (5):**
 - **Eloquent N+1 Query Analyzer** - Identifies missing eager loading causing N+1 queries
-- **Missing Model Scope Analyzer** - Detects repeated query patterns that should be extracted to model scopes
 - **Mixed Query Builder Eloquent Analyzer** - Detects inconsistent mixing of Query Builder and Eloquent ORM
-- **Raw Eloquent Avoidance Analyzer** - Identifies overuse of raw SQL queries instead of Eloquent
-- **Select Asterisk Analyzer** - Detects SELECT * queries that should specify columns
 - **Chunk Missing Analyzer** - Identifies large dataset queries missing chunk() for memory efficiency
 - **Missing Database Transactions Analyzer** - Detects operations that should be wrapped in transactions
 - **PHP Side Filtering Analyzer** - Finds filtering done in PHP that should be in SQL queries
 
-**Architecture & Structure (5):**
-- **MVC Structure Violation Analyzer** - Detects violations of MVC pattern separation
+**Architecture & Structure (3):**
 - **Logic in Routes Analyzer** - Identifies business logic in route files
 - **Logic in Blade Analyzer** - Detects complex logic in Blade templates
-- **Query Builder in Controller Analyzer** - Detects DB queries in controllers (recommends repository pattern)
 - **Fat Model Analyzer** - Identifies models with too many responsibilities
 
 **Dependency Injection & Service Container (2):**

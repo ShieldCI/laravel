@@ -66,8 +66,8 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        // Load configuration from config file (best_practices.helper-function-abuse)
-        $analyzerConfig = $this->config->get('shieldci.analyzers.best_practices.helper-function-abuse', []);
+        // Load configuration from config file (best-practices.helper-function-abuse)
+        $analyzerConfig = $this->config->get('shieldci.analyzers.best-practices.helper-function-abuse', []);
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
         $this->threshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;

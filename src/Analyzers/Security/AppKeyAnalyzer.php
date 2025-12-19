@@ -125,7 +125,8 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $appKeyValue = trim($matches[1]);
+                $rawValue = $this->stripInlineComment($matches[1]);
+                $appKeyValue = $this->normalizeKeyValue($rawValue);
 
                 // Detect multiple APP_KEY definitions
                 if ($appKeyCount > 1) {
@@ -275,11 +276,28 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Remove inline comments from env values.
+     */
+    private function stripInlineComment(string $value): string
+    {
+        return preg_replace('/\s+#.*$/', '', trim($value)) ?? trim($value);
+    }
+
+    /**
      * Normalize key value by removing quotes and whitespace.
      */
     private function normalizeKeyValue(string $value): string
     {
-        return trim($value, '"\'  ');
+        $value = trim($value);
+
+        if (
+            (str_starts_with($value, '"') && str_ends_with($value, '"')) ||
+            (str_starts_with($value, "'") && str_ends_with($value, "'"))
+        ) {
+            return substr($value, 1, -1);
+        }
+
+        return $value;
     }
 
     /**

@@ -58,8 +58,8 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        // Load configuration from config file (best_practices.fat-model)
-        $analyzerConfig = $this->config->get('shieldci.analyzers.best_practices.fat-model', []);
+        // Load configuration from config file (best-practices.fat-model)
+        $analyzerConfig = $this->config->get('shieldci.analyzers.best-practices.fat-model', []);
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
         $this->methodThreshold = $analyzerConfig['method_threshold'] ?? self::METHOD_THRESHOLD;

@@ -30,6 +30,12 @@ class DebugLogAnalyzer extends AbstractAnalyzer
      */
     public static bool $runInCI = false;
 
+    /**
+     * Only check debug logging in production and staging environments.
+     * Debug logging is acceptable in local, development, and testing environments.
+     */
+    protected ?array $relevantEnvironments = ['production', 'staging'];
+
     public function __construct(
         private ConfigRepository $config
     ) {
@@ -50,16 +56,28 @@ class DebugLogAnalyzer extends AbstractAnalyzer
         );
     }
 
+    public function shouldRun(): bool
+    {
+        return $this->isRelevantForCurrentEnvironment();
+    }
+
+    public function getSkipReason(): string
+    {
+        if (! $this->isRelevantForCurrentEnvironment()) {
+            $currentEnv = $this->getEnvironment();
+            $relevantEnvs = implode(', ', $this->relevantEnvironments ?? []);
+
+            return "Not relevant in '{$currentEnv}' environment (only relevant in: {$relevantEnvs})";
+        }
+
+        return 'Analyzer is not applicable in current context';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $environment = $this->getEnvironment();
 
-        // Debug logging is acceptable in local, development, and testing environments
-        if (in_array($environment, ['local', 'development', 'testing'], true)) {
-            return $this->passed("Debug logging is acceptable in {$environment} environment");
-        }
-
-        // For production/staging, check for issues
+        // Check for debug logging issues in production/staging
         $issues = [];
         $channels = $this->getChannelsToCheck();
 

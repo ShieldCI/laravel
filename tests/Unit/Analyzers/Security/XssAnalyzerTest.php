@@ -38,6 +38,7 @@ class XssAnalyzerTest extends AnalyzerTestCase
     {
         $appUrl = config('app.url');
         if ($appUrl && is_string($appUrl)) {
+            /** @phpstan-ignore-next-line */
             URL::forceRootUrl($appUrl);
         }
 
@@ -245,7 +246,7 @@ BLADE;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('User data in JavaScript', $result);
+        $this->assertHasIssueContaining('User data injected into JavaScript', $result);
     }
 
     public function test_allows_unescaped_output_for_safe_html(): void
@@ -534,7 +535,7 @@ BLADE;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('User data in JavaScript', $result);
+        $this->assertHasIssueContaining('User data injected into JavaScript', $result);
     }
 
     public function test_detects_multiline_script_with_user_input(): void
@@ -557,7 +558,7 @@ BLADE;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('User data in JavaScript', $result);
+        $this->assertHasIssueContaining('User data injected into JavaScript', $result);
     }
 
     public function test_detects_print_statement_with_user_input(): void

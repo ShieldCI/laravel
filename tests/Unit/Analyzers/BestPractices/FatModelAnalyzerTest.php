@@ -20,7 +20,7 @@ class FatModelAnalyzerTest extends AnalyzerTestCase
         $configRepo = new Repository([
             'shieldci' => [
                 'analyzers' => [
-                    'best_practices' => $config,
+                    'best-practices' => $config,
                 ],
             ],
         ]);

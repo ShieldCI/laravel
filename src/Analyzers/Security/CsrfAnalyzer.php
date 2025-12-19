@@ -29,7 +29,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             name: 'CSRF Protection Analyzer',
             description: 'Detects missing CSRF (Cross-Site Request Forgery) protection',
             category: Category::Security,
-            severity: Severity::High,
+            severity: Severity::Critical,
             tags: ['csrf', 'cross-site-request-forgery', 'security', 'forms'],
             docsUrl: 'https://docs.shieldci.com/analyzers/security/csrf-protection',
             timeToFix: 20

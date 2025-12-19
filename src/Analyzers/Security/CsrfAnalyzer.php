@@ -104,6 +104,14 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check Blade templates for forms without @csrf directive.
+     *
+     * Accepts multiple CSRF protection patterns:
+     * - @csrf or @csrf() - Blade directive
+     * - <x-csrf /> or <x-csrf/> - Blade component
+     * - csrf_field() - Helper function
+     * - <input name="_token" ... /> - Manual token input
+     *
+     * Scans until </form> is found (no hardcoded line limit).
      */
     private function checkBladeFormsForCsrf(string $file, array &$issues): void
     {
@@ -121,13 +129,21 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
             // Check for form opening tags (POST, PUT, PATCH, DELETE)
             if (preg_match('/<form[^>]*method\s*=\s*["\'](?:POST|PUT|PATCH|DELETE)["\'][^>]*>/i', $line, $matches)) {
-                // Look ahead to check if @csrf is present in the next few lines
                 $hasCsrf = false;
-                $searchRange = min($lineNumber + 10, count($lines));
                 $method = preg_match('/method\s*=\s*["\']([^"\']+)["\']/', $matches[0], $methodMatch) ? strtoupper($methodMatch[1]) : 'POST';
 
-                for ($i = $lineNumber; $i < $searchRange; $i++) {
-                    if (preg_match('/@csrf|csrf_field\(\)|<input[^>]*name\s*=\s*["\']_token["\']/', $lines[$i])) {
+                // Scan from form opening until </form> is found
+                for ($i = $lineNumber; $i < count($lines); $i++) {
+                    if (! isset($lines[$i]) || ! is_string($lines[$i])) {
+                        continue;
+                    }
+
+                    // Check for CSRF token patterns:
+                    // - @csrf or @csrf() - Blade directive (with or without parentheses)
+                    // - <x-csrf /> or <x-csrf/> - Blade component
+                    // - csrf_field() - Helper function
+                    // - <input name="_token" ... /> - Manual token input
+                    if (preg_match('/@csrf(\(\))?|<x-csrf\s*\/?>|csrf_field\(\)|<input[^>]*name\s*=\s*["\']_token["\']/', $lines[$i])) {
                         $hasCsrf = true;
                         break;
                     }
@@ -144,7 +160,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
                         severity: Severity::High,
-                        recommendation: 'Add @csrf directive inside the form or use {{ csrf_field() }}',
+                        recommendation: 'Add @csrf or <x-csrf /> inside the form, or use {{ csrf_field() }}',
                         metadata: [
                             'file' => basename($file),
                             'form_method' => $method,
@@ -158,6 +174,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check for AJAX requests without CSRF token in Blade files.
+     *
+     * Scans until natural boundary (closing parenthesis + semicolon) instead of hardcoded line limit.
+     * Uses parenthesis depth tracking to find the end of AJAX call.
      */
     private function checkAjaxRequestsForCsrf(string $file, array &$issues): void
     {
@@ -175,19 +194,44 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
             // Check for jQuery AJAX with POST/PUT/PATCH/DELETE
             if (preg_match('/\$\.ajax\s*\(|fetch\s*\(/i', $line, $ajaxMatch)) {
-                // Look for method: POST/PUT/PATCH/DELETE
-                $searchRange = min($lineNumber + 15, count($lines));
                 $hasPostMethod = false;
                 $hasCsrfToken = false;
                 $ajaxType = str_contains($ajaxMatch[0], 'fetch') ? 'fetch' : 'jQuery';
+                $parenDepth = 0;
+                $foundOpeningParen = false;
 
-                for ($i = $lineNumber; $i < $searchRange; $i++) {
-                    if (preg_match('/method\s*:\s*["\'](?:POST|PUT|PATCH|DELETE)["\']|method:\s*["\']POST["\']/i', $lines[$i])) {
+                // Scan until we find the closing statement (closing paren + semicolon, or just semicolon)
+                for ($i = $lineNumber; $i < count($lines); $i++) {
+                    if (! isset($lines[$i]) || ! is_string($lines[$i])) {
+                        continue;
+                    }
+
+                    $currentLine = $lines[$i];
+
+                    // Track parenthesis depth to find end of AJAX call
+                    $parenDepth += substr_count($currentLine, '(') - substr_count($currentLine, ')');
+                    if (substr_count($currentLine, '(') > 0) {
+                        $foundOpeningParen = true;
+                    }
+
+                    // Check for method: POST/PUT/PATCH/DELETE
+                    if (preg_match('/method\s*:\s*["\']?\s*(?:POST|PUT|PATCH|DELETE)\s*["\']?/i', $currentLine)) {
                         $hasPostMethod = true;
                     }
 
-                    if (preg_match('/X-CSRF-TOKEN|_token|csrf|@csrf/i', $lines[$i])) {
+                    // Check for CSRF token
+                    if (preg_match('/X-CSRF-TOKEN|_token|csrf|@csrf/i', $currentLine)) {
                         $hasCsrfToken = true;
+                    }
+
+                    // Stop if we've closed all parentheses and hit a semicolon, or exceeded reasonable search range
+                    if ($foundOpeningParen && $parenDepth <= 0 && str_contains($currentLine, ';')) {
+                        break;
+                    }
+
+                    // Safety limit: don't scan more than 30 lines for a single AJAX call
+                    if ($i - $lineNumber > 30) {
+                        break;
                     }
                 }
 

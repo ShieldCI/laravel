@@ -291,7 +291,11 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         $levelConfig = $this->config->get('shieldci.analyzers.reliability.phpstan.level', 5);
         $level = is_int($levelConfig) ? $levelConfig : (is_numeric($levelConfig) ? (int) $levelConfig : 5);
 
-        $pathsConfig = $this->config->get('shieldci.paths.analyze', ['app']);
+        // Use PHPStan-specific paths if configured, otherwise fall back to global paths
+        $pathsConfig = $this->config->get(
+            'shieldci.analyzers.reliability.phpstan.paths',
+            $this->config->get('shieldci.paths.analyze', ['app'])
+        );
         /** @var array<string> $paths */
         $paths = is_array($pathsConfig) ? $pathsConfig : [$pathsConfig];
 

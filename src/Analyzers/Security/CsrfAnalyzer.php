@@ -394,7 +394,6 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                             metadata: [
                                 'exception' => $exception,
                                 'file' => 'VerifyCsrfToken.php',
-                                'risk_level' => 'critical',
                                 'line' => $lineNumber + 1,
                             ]
                         );
@@ -408,7 +407,6 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                             metadata: [
                                 'exception' => $exception,
                                 'file' => 'VerifyCsrfToken.php',
-                                'risk_level' => 'high',
                                 'line' => $lineNumber + 1,
                             ]
                         );

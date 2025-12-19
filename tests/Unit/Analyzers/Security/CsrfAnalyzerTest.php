@@ -974,7 +974,7 @@ Route::post('/submit', function () {
 });
 PHP;
 
-        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+        $tempDir = $this->createTempDirectory(['routes/admin.php' => $routes]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -982,8 +982,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('route missing', $result);
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('route', $result);
     }
 
     public function test_detects_post_route_with_chained_middleware(): void
@@ -993,10 +993,10 @@ PHP;
 
 Route::post('/submit', function () {
     return 'submitted';
-})->middleware('web');
+})->middleware('auth');
 PHP;
 
-        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+        $tempDir = $this->createTempDirectory(['routes/custom.php' => $routes]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -1004,9 +1004,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // The analyzer still flags it because it looks for 'web' or 'auth' within the search range
-        // but the line break may cause it to not detect properly. This is acceptable behavior.
-        $this->assertWarning($result);
+        // Flags routes with 'auth' middleware (no CSRF protection) in custom route files
+        $this->assertFailed($result);
     }
 
     public function test_passes_put_route_with_middleware(): void
@@ -1040,7 +1039,7 @@ Route::group([], function () {
 });
 PHP;
 
-        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+        $tempDir = $this->createTempDirectory(['routes/custom.php' => $routes]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -1048,8 +1047,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('route missing', $result);
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('route', $result);
     }
 
     public function test_detects_multiple_unprotected_routes(): void
@@ -1063,7 +1062,7 @@ Route::patch('/route3', function () {});
 Route::delete('/route4', function () {});
 PHP;
 
-        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+        $tempDir = $this->createTempDirectory(['routes/custom.php' => $routes]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -1071,7 +1070,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertWarning($result);
+        $this->assertFailed($result);
         $this->assertCount(4, $result->getIssues());
     }
 
@@ -1155,7 +1154,7 @@ PHP;
     {
         $routes = 'Route::post("/test", function () {});';
 
-        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+        $tempDir = $this->createTempDirectory(['routes/custom.php' => $routes]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -1163,7 +1162,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertWarning($result);
+        $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
         $metadata = $issues[0]->metadata;

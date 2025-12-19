@@ -771,6 +771,13 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     /**
      * Check route files for routes that should have CSRF middleware.
      *
+     * IMPORTANT: routes/web.php automatically has 'web' middleware applied globally
+     * via RouteServiceProvider (Laravel 10) or bootstrap/app.php (Laravel 11+).
+     *
+     * This check only flags routes in:
+     * - Custom route files (not web.php or api.php)
+     * - That are missing explicit 'web' middleware
+     *
      * Only accepts explicit 'web' middleware:
      * - middleware('web')
      * - middleware(['web', ...])
@@ -789,8 +796,14 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        // Skip API routes - they typically use token authentication
+        // Skip api.php - API routes typically use token authentication
         if (str_contains($file, 'api.php')) {
+            return;
+        }
+
+        // Skip web.php - routes in web.php automatically get 'web' middleware applied globally
+        // via RouteServiceProvider (Laravel 10) or bootstrap/app.php (Laravel 11+)
+        if (str_contains($file, 'web.php')) {
             return;
         }
 
@@ -875,16 +888,16 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
                 if (! $hasWebMiddleware) {
                     $issues[] = $this->createIssueWithSnippet(
-                        message: sprintf('%s route missing CSRF protection - no "web" middleware detected', $method),
+                        message: sprintf('%s route in custom route file missing CSRF protection - no "web" middleware detected', $method),
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
-                        severity: Severity::Medium,
-                        recommendation: 'Add ->middleware(\'web\') to the route or wrap it in Route::group([\'middleware\' => \'web\'], ...)',
+                        severity: Severity::High,
+                        recommendation: 'Add ->middleware(\'web\') to the route or wrap it in Route::group([\'middleware\' => \'web\'], ...).',
                         metadata: [
                             'method' => $method,
                             'file' => basename($file),
                             'line' => $lineNumber + 1,
-                            'severity_reason' => 'Medium severity because routes in routes/web.php may inherit web middleware globally',
+                            'severity_reason' => 'High severity for custom route files - web.php is automatically protected',
                         ]
                     );
                 }

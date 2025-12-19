@@ -280,7 +280,12 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
      */
     private function stripInlineComment(string $value): string
     {
-        return preg_replace('/\s+#.*$/', '', trim($value)) ?? trim($value);
+        // Only strip comments outside quotes
+        if (preg_match('/^([\'"])(.*)\1$/', trim($value))) {
+            return trim($value);
+        }
+
+        return preg_replace('/\s*(#|\/\/|;).*$/', '', trim($value)) ?? trim($value);
     }
 
     /**

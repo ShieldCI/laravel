@@ -339,7 +339,6 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
         }
 
         $octal = substr(sprintf('%o', $perms), -3);
-        $numericPerms = octdec($octal);
 
         // Check if file is world-readable or world-writable (Critical)
         if (($perms & self::WORLD_READABLE) || ($perms & self::WORLD_WRITABLE)) {

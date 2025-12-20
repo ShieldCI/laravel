@@ -69,8 +69,6 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $basePath = $this->getBasePath();
-
         $issues = [];
 
         // Check .env files for APP_DEBUG=true
@@ -113,13 +111,16 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
+        // Get APP_DEBUG
+        $debugValue = $this->getEnvValue($lines, 'APP_DEBUG');
+
         // Check for APP_DEBUG=true
         foreach ($lines as $lineNumber => $line) {
             if (! is_string($line)) {
                 continue;
             }
 
-            if (preg_match('/^APP_DEBUG\s*=\s*true/i', trim($line))) {
+            if ($debugValue !== null && in_array(strtolower($debugValue), ['true', '1', 'yes', 'on'], true)) {
                 $issues[] = $this->createIssueWithSnippet(
                     message: 'Debug mode is enabled (APP_DEBUG=true) in '.($appEnv ?: 'unknown').' environment',
                     filePath: $envFile,

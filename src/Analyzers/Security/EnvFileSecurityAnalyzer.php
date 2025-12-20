@@ -247,7 +247,8 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
         }
 
         // Check if .env is ignored
-        if (! str_contains($content, '.env') && ! str_contains($content, '*.env')) {
+        $ignored = preg_match('/^\s*(?:\.env|\*\.env)\s*$/m', $content) === 1;
+        if (! $ignored) {
             $issues[] = $this->createIssueWithSnippet(
                 message: '.env file is not excluded in .gitignore',
                 filePath: $gitignorePath,

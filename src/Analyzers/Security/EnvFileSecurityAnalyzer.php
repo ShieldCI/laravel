@@ -193,6 +193,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                     }
 
                     $value = trim($matches[1]);
+                    $value = trim($value, "\"'");
 
                     // Skip if empty or it's a common placeholder
                     if ($value === '') {

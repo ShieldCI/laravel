@@ -42,6 +42,11 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
         'JWT_SECRET',
         'STRIPE_SECRET',
         'PUSHER_APP_SECRET',
+        'DATABASE_URL',
+        'API_KEY',
+        'SECRET_KEY',
+        'PRIVATE_KEY',
+        'OAUTH_CLIENT_SECRET',
     ];
 
     private array $placeholderKeywords = ['null', '""', "''", 'your-', 'change-', 'example'];

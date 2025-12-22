@@ -96,135 +96,138 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $content = FileParser::readFile($hashingConfig);
-        if ($content === null) {
+        $configArray = $this->loadHashingConfigArray($hashingConfig);
+
+        if (! is_array($configArray)) {
             return;
         }
-
-        $lines = FileParser::getLines($hashingConfig);
         $config = $this->getConfiguration();
+        $lineMap = $this->mapConfigKeyLines($hashingConfig);
 
-        foreach ($lines as $lineNumber => $line) {
-            if (! is_string($line)) {
-                continue;
-            }
+        /**
+         * ------------------------------------------------------------
+         * Default driver
+         * ------------------------------------------------------------
+         */
+        if (isset($configArray['driver'])) {
+            $driver = strtolower((string) $configArray['driver']);
 
-            // Check bcrypt rounds
-            /** @var int $bcryptMinRounds */
-            $bcryptMinRounds = $config['bcrypt_min_rounds'];
-            $this->checkConfigParameter(
-                'rounds',
-                $bcryptMinRounds,
-                '',
-                Severity::Critical,
-                $issues,
-                $hashingConfig,
-                $lineNumber,
-                $line,
-                'Bcrypt rounds',
-                'Set bcrypt rounds to at least %d for better protection against brute-force attacks'
-            );
-
-            // Check argon2 memory
-            /** @var int $argon2MinMemory */
-            $argon2MinMemory = $config['argon2_min_memory'];
-            $this->checkConfigParameter(
-                'memory',
-                $argon2MinMemory,
-                ' KB',
-                Severity::Critical,
-                $issues,
-                $hashingConfig,
-                $lineNumber,
-                $line,
-                'Argon2 memory',
-                'Set argon2 memory to at least %d KB (64 MB)'
-            );
-
-            // Check argon2 time cost
-            /** @var int $argon2MinTime */
-            $argon2MinTime = $config['argon2_min_time'];
-            $this->checkConfigParameter(
-                'time',
-                $argon2MinTime,
-                '',
-                Severity::Medium,
-                $issues,
-                $hashingConfig,
-                $lineNumber,
-                $line,
-                'Argon2 time cost',
-                'Set argon2 time cost to at least %d'
-            );
-
-            // Check argon2 threads
-            /** @var int $argon2MinThreads */
-            $argon2MinThreads = $config['argon2_min_threads'];
-            $this->checkConfigParameter(
-                'threads',
-                $argon2MinThreads,
-                '',
-                Severity::Low,
-                $issues,
-                $hashingConfig,
-                $lineNumber,
-                $line,
-                'Argon2 threads',
-                'Set argon2 threads to at least %d'
-            );
-
-            // Check for weak default driver
-            if (preg_match('/["\']driver["\']\s*=>\s*["\'](md5|sha1|sha256)["\']/i', $line, $matches)) {
-                $driver = $matches[1];
-
+            if (in_array($driver, ['md5', 'sha1', 'sha256'], true)) {
                 $issues[] = $this->createIssueWithSnippet(
                     message: sprintf('Weak hashing driver "%s" configured', $driver),
                     filePath: $hashingConfig,
-                    lineNumber: $lineNumber + 1,
+                    lineNumber: $lineMap['driver'] ?? 1,
                     severity: Severity::Critical,
                     recommendation: 'Use "bcrypt" or "argon2id" as the hashing driver',
                     metadata: ['driver' => $driver, 'issue_type' => 'weak_driver']
                 );
             }
         }
-    }
 
-    /**
-     * Check configuration parameter against minimum threshold.
-     *
-     * @param  array<int, mixed>  $issues
-     */
-    private function checkConfigParameter(
-        string $param,
-        int $minValue,
-        string $unit,
-        Severity $severity,
-        array &$issues,
-        string $file,
-        int $lineNumber,
-        string $line,
-        string $displayName,
-        string $recommendationTemplate
-    ): void {
-        $pattern = sprintf('/["\']%s["\']\s*=>\s*(\d+)/i', preg_quote($param, '/'));
+        /**
+         * ------------------------------------------------------------
+         * Bcrypt
+         * ------------------------------------------------------------
+         */
+        $minRounds = $config['bcrypt_min_rounds'];
 
-        if (preg_match($pattern, $line, $matches)) {
-            $value = (int) $matches[1];
+        if (isset($configArray['bcrypt']['rounds']) && is_int($configArray['bcrypt']['rounds']) && $configArray['bcrypt']['rounds'] < $minRounds) {
+            $issues[] = $this->createIssueWithSnippet(
+                message: sprintf(
+                    'Bcrypt rounds (%d) is below recommended minimum of %d',
+                    $configArray['bcrypt']['rounds'],
+                    $minRounds
+                ),
+                filePath: $hashingConfig,
+                lineNumber: $lineMap['rounds'] ?? ($lineMap['bcrypt'] ?? 1),
+                severity: Severity::Critical,
+                recommendation: sprintf(
+                    'Set bcrypt rounds to at least %d for better protection against brute-force attacks',
+                    $minRounds
+                ),
+                metadata: [
+                    'rounds' => $configArray['bcrypt']['rounds'],
+                    'issue_type' => 'weak_bcrypt_rounds',
+                ]
+            );
+        }
 
-            if ($value < $minValue) {
+        /**
+         * ------------------------------------------------------------
+         * Argon / Argon2id
+         * ------------------------------------------------------------
+         */
+        $argon = $configArray['argon'] ?? $configArray['argon2id'] ?? null;
+
+        if (is_array($argon)) {
+            $minArgonMemory = $config['argon2_min_memory'];
+
+            if (
+                isset($argon['memory']) &&
+                is_int($argon['memory']) &&
+                $argon['memory'] < $minArgonMemory
+            ) {
                 $issues[] = $this->createIssueWithSnippet(
-                    message: sprintf('%s (%d%s) is below recommended minimum of %d%s',
-                        $displayName,
-                        $value,
-                        $unit,
-                        $minValue,
-                        $unit
+                    message: sprintf(
+                        'Argon2 memory (%d KB) is below recommended minimum of %d KB',
+                        $argon['memory'],
+                        $minArgonMemory
                     ),
-                    filePath: $file,
-                    lineNumber: $lineNumber + 1,
-                    severity: $severity,
-                    recommendation: sprintf($recommendationTemplate, $minValue),
-                    metadata: [$param => $value, 'issue_type' => 'weak_'.$param]
+                    filePath: $hashingConfig,
+                    lineNumber: $lineMap['memory'] ?? ($lineMap['argon'] ?? 1),
+                    severity: Severity::Critical,
+                    recommendation: sprintf(
+                        'Set argon2 memory to at least %d KB',
+                        $minArgonMemory
+                    ),
+                    metadata: [
+                        'memory' => $argon['memory'],
+                        'issue_type' => 'weak_argon2_memory',
+                    ]
+                );
+            }
+
+            $minArgonTime = $config['argon2_min_time'];
+            if (isset($argon['time']) && is_int($argon['time']) && $argon['time'] < $minArgonTime) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf(
+                        'Argon2 time cost (%d) is below recommended minimum of %d',
+                        $argon['time'],
+                        $minArgonTime
+                    ),
+                    filePath: $hashingConfig,
+                    lineNumber: $lineMap['time'] ?? ($lineMap['argon'] ?? 1),
+                    severity: Severity::Medium,
+                    recommendation: sprintf(
+                        'Set argon2 time cost to at least %d',
+                        $minArgonTime
+                    ),
+                    metadata: [
+                        'time' => $argon['time'],
+                        'issue_type' => 'weak_argon2_time',
+                    ]
+                );
+            }
+
+            $minArgonThreads = $config['argon2_min_threads'];
+            if (isset($argon['threads']) && is_int($argon['threads']) && $argon['threads'] < $minArgonThreads) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf(
+                        'Argon2 threads (%d) is below recommended minimum of %d',
+                        $argon['threads'],
+                        $minArgonThreads
+                    ),
+                    filePath: $hashingConfig,
+                    lineNumber: $lineMap['threads'] ?? ($lineMap['argon'] ?? 1),
+                    severity: Severity::Low,
+                    recommendation: sprintf(
+                        'Set argon2 threads to at least %d',
+                        $minArgonThreads
+                    ),
+                    metadata: [
+                        'threads' => $argon['threads'],
+                        'issue_type' => 'weak_argon2_threads',
+                    ]
                 );
             }
         }
@@ -386,25 +389,85 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
     /**
      * Get analyzer configuration.
      *
-     * @return array<string, mixed>
-     */
+     * @return array{
+     *    bcrypt_min_rounds: int,
+     *    argon2_min_memory: int,
+     *    argon2_min_time: int,
+     *    argon2_min_threads: int,
+     *    ignored_paths: array<int, string>,
+     *    allowed_weak_hash_patterns: array<int, string>
+     * }
+     * */
     private function getConfiguration(): array
     {
-        /** @var array<string, mixed> $config */
+        /** @var array{
+         *    bcrypt_min_rounds?: int,
+         *    argon2_min_memory?: int,
+         *    argon2_min_time?: int,
+         *    argon2_min_threads?: int,
+         *    ignored_paths?: array<int, string>,
+         *    allowed_weak_hash_patterns?: array<int, string>
+         * } $config
+         */
         $config = config('shieldci.hashing_strength', []);
 
-        return array_merge([
-            'bcrypt_min_rounds' => 12,
-            'argon2_min_memory' => 65536,
-            'argon2_min_time' => 2,
-            'argon2_min_threads' => 2,
-            'ignored_paths' => [],
-            'allowed_weak_hash_patterns' => [
-                'cache',
-                'fingerprint',
-                'checksum',
-                'etag',
-            ],
-        ], $config);
+        return [
+            'bcrypt_min_rounds' => ($config['bcrypt_min_rounds'] ?? 12),
+            'argon2_min_memory' => ($config['argon2_min_memory'] ?? 65536),
+            'argon2_min_time' => ($config['argon2_min_time'] ?? 2),
+            'argon2_min_threads' => ($config['argon2_min_threads'] ?? 2),
+            'ignored_paths' => is_array($config['ignored_paths'] ?? null)
+                ? $config['ignored_paths']
+                : [],
+            'allowed_weak_hash_patterns' => is_array($config['allowed_weak_hash_patterns'] ?? null)
+                ? $config['allowed_weak_hash_patterns']
+                : [
+                    'cache',
+                    'fingerprint',
+                    'checksum',
+                    'etag',
+                ],
+        ];
+    }
+
+    /**
+     * Safely load a PHP config file without bootstrapping the app.
+     */
+    private function loadHashingConfigArray(string $path): ?array
+    {
+        try {
+            $config = require $path;
+
+            return is_array($config) ? $config : null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * Map config keys to their line numbers.
+     *
+     * @return array<string, int>
+     */
+    private function mapConfigKeyLines(string $file): array
+    {
+        $lines = FileParser::getLines($file);
+        $map = [];
+
+        foreach ($lines as $lineNumber => $line) {
+            if (! is_string($line)) {
+                continue;
+            }
+
+            // Matches: 'rounds' =>, "memory" =>, etc.
+            if (preg_match('/[\'"]([\w]+)[\'"]\s*=>/', $line, $matches)) {
+                $key = $matches[1];
+
+                // Only record first occurrence
+                $map[$key] ??= $lineNumber + 1;
+            }
+        }
+
+        return $map;
     }
 }

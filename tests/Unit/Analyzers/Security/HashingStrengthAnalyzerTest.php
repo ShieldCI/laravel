@@ -42,6 +42,19 @@ class HashingStrengthAnalyzerTest extends AnalyzerTestCase
         $this->assertTrue($analyzer->shouldRun());
     }
 
+    public function test_should_run_returns_true_when_php_files_exist_even_without_hashing_config(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/User.php' => '<?php class User {}',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertTrue($analyzer->shouldRun());
+    }
+
     public function test_get_skip_reason_returns_correct_message(): void
     {
         $analyzer = $this->createAnalyzer();

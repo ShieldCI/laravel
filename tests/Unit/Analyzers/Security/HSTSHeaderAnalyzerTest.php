@@ -175,6 +175,93 @@ PHP;
         $this->assertHasIssueContaining('HSTS', $result);
     }
 
+    public function test_detects_https_from_app_service_provider_force_scheme(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\URL;
+
+class AppServiceProvider
+{
+    public function boot(): void
+    {
+        URL::forceScheme('https');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $provider,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('HSTS', $result);
+    }
+
+    public function test_does_not_detect_commented_force_scheme(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+class AppServiceProvider
+{
+    public function boot(): void
+    {
+        // URL::forceScheme('https');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $provider,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertSkipped($result);
+    }
+
+    public function test_does_not_detect_non_url_force_scheme(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+class AppServiceProvider
+{
+    public function boot(): void
+    {
+        $this->forceScheme('https');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $provider,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertSkipped($result);
+    }
+
     // ============================================
     // HSTS Middleware Detection Tests
     // ============================================

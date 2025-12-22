@@ -115,6 +115,11 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
             }
         }
 
+        // AppServiceProvider URL::forceScheme('https')
+        if ($this->hasForceHttpsInServiceProvider()) {
+            return true;
+        }
+
         // Check for HTTPS enforcement middleware in Kernel.php
         $kernelFile = $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Kernel.php';
         if (file_exists($kernelFile)) {
@@ -128,6 +133,29 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
         }
 
         return false;
+    }
+
+    /**
+     * Check for HTTPS enforcement middleware in AppServiceProvider.php
+     */
+    private function hasForceHttpsInServiceProvider(): bool
+    {
+        $providerPath = $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Providers'.DIRECTORY_SEPARATOR.'AppServiceProvider.php';
+
+        if (! file_exists($providerPath)) {
+            return false;
+        }
+
+        $content = FileParser::readFile($providerPath);
+        if (! is_string($content)) {
+            return false;
+        }
+
+        // Strip comments
+        $content = preg_replace('/^\s*\/\/.*$/m', '', $content) ?? '';
+        $content = preg_replace('/\/\*.*?\*\//s', '', $content) ?? '';
+
+        return preg_match('/URL::forceScheme\s*\(\s*[\'"]https[\'"]\s*\)/i', $content) === 1;
     }
 
     /**

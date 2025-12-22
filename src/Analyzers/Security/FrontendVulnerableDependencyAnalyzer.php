@@ -162,7 +162,7 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
             }
 
             // Build command
-            $command = $tool === 'npm' ? 'npm audit --json 2>&1' : 'yarn audit --json 2>&1';
+            $command = $tool === 'npm' ? 'npm audit --json --ignore-scripts' : 'yarn audit --json --no-progress';
 
             // Use proc_open for timeout control
             $descriptors = [
@@ -391,21 +391,63 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         // Only create summary issue if no detailed issues were created
-        if (! $detailedIssuesCreated && isset($results['summary']['vulnerabilities']) && is_numeric($results['summary']['vulnerabilities'])) {
-            $total = (int) $results['summary']['vulnerabilities'];
-            if ($total > 0) {
-                // Use High severity for summaries (less severe than always Critical)
-                $issues[] = $this->createIssue(
-                    message: sprintf('Found %d frontend package vulnerabilities', $total),
-                    location: new Location($this->getRelativePath($yarnLock)),
-                    severity: Severity::High,
-                    recommendation: 'Run "yarn audit" to see details and upgrade vulnerable packages',
-                    code: FileParser::getCodeSnippet($yarnLock, 1),
-                    metadata: [
-                        'total_vulnerabilities' => $total,
-                        'issue_type' => 'summary',
-                    ]
-                );
+        if (! $detailedIssuesCreated && isset($results['summary']) && is_array($results['summary'])) {
+            $summary = $results['summary'];
+
+            // Case A: vulnerabilities is a breakdown object (preferred)
+            if (isset($summary['vulnerabilities']) && is_array($summary['vulnerabilities'])) {
+                $breakdown = $summary['vulnerabilities'];
+
+                // Compute total from breakdown
+                $total = 0;
+                foreach ($breakdown as $count) {
+                    if (is_numeric($count)) {
+                        $total += (int) $count;
+                    }
+                }
+
+                if ($total > 0) {
+                    // Map yarn's "info" to your "low" bucket (optional)
+                    if (isset($breakdown['info']) && is_numeric($breakdown['info']) && ! isset($breakdown['low'])) {
+                        $breakdown['low'] = (int) $breakdown['info'];
+                    }
+
+                    $severity = $this->determineSeverityFromSummary($breakdown);
+
+                    $issues[] = $this->createIssue(
+                        message: sprintf('Found %d frontend package vulnerabilities', $total),
+                        location: new Location($this->getRelativePath($yarnLock)),
+                        severity: $severity,
+                        recommendation: 'Run "yarn audit" to see details and upgrade vulnerable packages',
+                        code: FileParser::getCodeSnippet($yarnLock, 1),
+                        metadata: [
+                            'total_vulnerabilities' => $total,
+                            'issue_type' => 'summary',
+                            'breakdown' => $breakdown,
+                        ]
+                    );
+                }
+
+                return;
+            }
+
+            // Case B: vulnerabilities is a numeric total (fallback)
+            if (isset($summary['vulnerabilities']) && is_numeric($summary['vulnerabilities'])) {
+                $total = (int) $summary['vulnerabilities'];
+
+                if ($total > 0) {
+                    $issues[] = $this->createIssue(
+                        message: sprintf('Found %d frontend package vulnerabilities', $total),
+                        location: new Location($this->getRelativePath($yarnLock)),
+                        severity: Severity::High,
+                        recommendation: 'Run "yarn audit" to see details and upgrade vulnerable packages',
+                        code: FileParser::getCodeSnippet($yarnLock, 1),
+                        metadata: [
+                            'total_vulnerabilities' => $total,
+                            'issue_type' => 'summary',
+                        ]
+                    );
+                }
             }
         }
     }

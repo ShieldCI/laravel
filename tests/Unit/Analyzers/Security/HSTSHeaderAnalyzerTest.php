@@ -262,6 +262,37 @@ PHP;
         $this->assertSkipped($result);
     }
 
+    public function test_detects_https_from_force_https_helper_laravel_11(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\URL;
+
+class AppServiceProvider
+{
+    public function boot(): void
+    {
+        URL::forceHttps();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $provider,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('HSTS', $result);
+    }
+
     // ============================================
     // HSTS Middleware Detection Tests
     // ============================================

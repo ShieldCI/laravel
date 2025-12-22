@@ -155,7 +155,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
         $content = preg_replace('/^\s*\/\/.*$/m', '', $content) ?? '';
         $content = preg_replace('/\/\*.*?\*\//s', '', $content) ?? '';
 
-        return preg_match('/URL::forceScheme\s*\(\s*[\'"]https[\'"]\s*\)/i', $content) === 1;
+        return preg_match('/\bURL::force(?:Scheme\s*\(\s*[\'"]https[\'"]\s*\)|Https\s*\(\s*\))/i', $content) === 1;
     }
 
     /**

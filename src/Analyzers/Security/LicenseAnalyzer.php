@@ -334,7 +334,15 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
                 // Extract individual licenses from the expression
                 // Remove parentheses and split by 'and'
                 $cleanedLicense = preg_replace('/[()]/', '', $license);
+                if ($cleanedLicense === null) {
+                    return ['licenses' => [$license], 'is_conjunctive' => false];
+                }
+
                 $parts = preg_split('/\s+and\s+/i', $cleanedLicense);
+                if ($parts === false) {
+                    return ['licenses' => [$license], 'is_conjunctive' => false];
+                }
+
                 $licenses = array_map('trim', $parts);
 
                 return [
@@ -348,7 +356,15 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
             if (preg_match('/\bor\b/i', $license)) {
                 // Extract individual licenses from the expression
                 $cleanedLicense = preg_replace('/[()]/', '', $license);
+                if ($cleanedLicense === null) {
+                    return ['licenses' => [$license], 'is_conjunctive' => false];
+                }
+
                 $parts = preg_split('/\s+or\s+/i', $cleanedLicense);
+                if ($parts === false) {
+                    return ['licenses' => [$license], 'is_conjunctive' => false];
+                }
+
                 $licenses = array_map('trim', $parts);
 
                 return [

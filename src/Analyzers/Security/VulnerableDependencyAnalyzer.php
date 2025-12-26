@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Support\Composer;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryAnalyzerInterface;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryFetcherInterface;
 use ShieldCI\Support\SecurityAdvisories\ComposerDependencyReader;
@@ -105,7 +106,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $lineNumber = $this->findPackageLineNumber($composerLock, $package);
+                $lineNumber = Composer::findPackageLineNumber($composerLock, $package);
 
                 $issues[] = $this->createIssue(
                     message: sprintf(
@@ -172,7 +173,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                 ? sprintf('Replace with "%s": composer require %s', $replacement, $replacement)
                 : sprintf('Find an alternative package and remove "%s"', $packageName);
 
-            $lineNumber = $this->findPackageLineNumber($composerLock, $packageName);
+            $lineNumber = Composer::findPackageLineNumber($composerLock, $packageName);
 
             $issues[] = $this->createIssue(
                 message: sprintf('Package "%s" is abandoned and no longer maintained', $packageName),
@@ -236,30 +237,6 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         return $lockData;
-    }
-
-    /**
-     * Find the line number where a package is defined in composer.lock.
-     */
-    private function findPackageLineNumber(string $composerLock, string $package): int
-    {
-        $lines = FileParser::getLines($composerLock);
-        if (empty($lines)) {
-            return 1;
-        }
-
-        foreach ($lines as $lineNumber => $line) {
-            if (! is_string($line)) {
-                continue;
-            }
-
-            // Look for package name in composer.lock format: "name": "vendor/package"
-            if (preg_match('/"name":\s*"'.preg_quote($package, '/').'"/i', $line)) {
-                return $lineNumber + 1;
-            }
-        }
-
-        return 1;
     }
 
     /**

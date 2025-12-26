@@ -191,7 +191,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
             $issues[] = $this->createIssueWithSnippet(
                 message: 'EncryptCookies middleware is not registered in HTTP Kernel',
                 filePath: $kernelFile,
-                lineNumber: 1,
+                lineNumber: null,
                 severity: Severity::Critical,
                 recommendation: 'Add \\App\\Http\\Middleware\\EncryptCookies::class to $middleware array in app/Http/Kernel.php',
                 code: 'EncryptCookies',
@@ -323,7 +323,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                     $issues[] = $this->createIssueWithSnippet(
                         message: 'EncryptCookies middleware is not registered globally',
                         filePath: $configFile,
-                        lineNumber: 1,
+                        lineNumber: null,
                         severity: Severity::Critical,
                         recommendation: 'Register EncryptCookies middleware globally in app/Http/Kernel.php (Laravel 9/10) or bootstrap/app.php (Laravel 11+) to enable cookie encryption',
                         code: 'EncryptCookies',
@@ -369,7 +369,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
             $issues[] = $this->createIssueWithSnippet(
                 message: 'EncryptCookies middleware may not be properly configured in bootstrap/app.php',
                 filePath: $file,
-                lineNumber: 1,
+                lineNumber: null,
                 severity: Severity::High,
                 recommendation: 'Add EncryptCookies middleware using ->withMiddleware() in bootstrap/app.php to enable cookie encryption',
                 code: 'EncryptCookies',

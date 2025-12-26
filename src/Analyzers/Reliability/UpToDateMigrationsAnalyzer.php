@@ -55,7 +55,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                 [$this->createIssueWithSnippet(
                     message: 'Cannot check migration status - Artisan facade not found',
                     filePath: $migrationsPath,
-                    lineNumber: 1,
+                    lineNumber: null,
                     severity: Severity::Medium,
                     recommendation: 'Ensure Laravel is properly bootstrapped. Migration status checks require the Artisan facade to be available.',
                     column: null,
@@ -95,7 +95,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                 [$this->createIssueWithSnippet(
                     message: 'Pending migrations detected',
                     filePath: $migrationsPath,
-                    lineNumber: 1,
+                    lineNumber: null,
                     severity: Severity::High,
                     recommendation: $this->getPendingMigrationsRecommendation($pendingMigrations),
                     column: null,
@@ -117,7 +117,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                     [$this->createIssueWithSnippet(
                         message: 'Migration status check failed due to database connection issue',
                         filePath: $migrationsPath,
-                        lineNumber: 1,
+                        lineNumber: null,
                         severity: Severity::High,
                         recommendation: $this->getDatabaseErrorRecommendation($e),
                         column: null,
@@ -135,7 +135,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                     [$this->createIssueWithSnippet(
                         message: 'Migration status check failed: '.$e->getMessage(),
                         filePath: $migrationsPath,
-                        lineNumber: 1,
+                        lineNumber: null,
                         severity: Severity::High,
                         recommendation: 'Ensure the database connection is working and the migrations table exists. If this is a new installation, run "php artisan migrate:install" followed by "php artisan migrate". Error: '.$e->getMessage(),
                         code: 'migration-check-error',

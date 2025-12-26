@@ -192,7 +192,7 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
             $issues[] = $this->createIssueWithSnippet(
                 message: 'APP_KEY is not defined in .env file',
                 filePath: $envFile,
-                lineNumber: 1,
+                lineNumber: null,
                 severity: Severity::Critical,
                 recommendation: 'Add APP_KEY to your .env file and run "php artisan key:generate"',
                 metadata: ['file' => basename($envFile)]

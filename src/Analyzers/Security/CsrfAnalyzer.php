@@ -492,7 +492,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             $issues[] = $this->createIssueWithSnippet(
                 message: 'CSRF middleware is not registered in HTTP Kernel',
                 filePath: $kernelFile,
-                lineNumber: 1,
+                lineNumber: null,
                 severity: Severity::Critical,
                 recommendation: 'Add \\App\\Http\\Middleware\\VerifyCsrfToken::class (Laravel 10) or \\App\\Http\\Middleware\\ValidateCsrfToken::class (Laravel 11+) to $middleware or $middlewareGroups[\'web\'] array',
                 metadata: [
@@ -562,7 +562,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 $issues[] = $this->createIssueWithSnippet(
                     message: 'CSRF middleware may not be properly configured',
                     filePath: $file,
-                    lineNumber: 1,
+                    lineNumber: null,
                     severity: Severity::High,
                     recommendation: 'Ensure CSRF protection is enabled. Laravel 11+ includes ValidateCsrfToken in the web middleware group by default, but verify it hasn\'t been removed.',
                     metadata: [

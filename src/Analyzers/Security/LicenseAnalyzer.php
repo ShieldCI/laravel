@@ -66,7 +66,7 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
             name: 'Dependency License Compliance Analyzer',
             description: 'Validates that all dependencies use legally acceptable licenses for your application type',
             category: Category::Security,
-            severity: Severity::Critical,
+            severity: Severity::High,
             tags: ['licenses', 'legal', 'compliance', 'dependencies', 'gpl', 'commercial'],
             docsUrl: 'https://docs.shieldci.com/analyzers/security/license-compliance',
             timeToFix: 120

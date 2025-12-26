@@ -638,4 +638,165 @@ class LicenseAnalyzerTest extends AnalyzerTestCase
         $this->assertWarning($result);
         $this->assertHasIssueContaining('non-standard license', $result);
     }
+
+    public function test_handles_conjunctive_licenses_with_safe_licenses(): void
+    {
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'vendor/dual-safe',
+                    'version' => '1.0.0',
+                    'license' => '(MIT and Apache-2.0)',
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because both MIT and Apache-2.0 are whitelisted
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_conjunctive_licenses_with_gpl(): void
+    {
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'vendor/mixed-license',
+                    'version' => '1.0.0',
+                    'license' => '(MIT and GPL-3.0)',
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because GPL-3.0 is restrictive even though MIT is safe
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('conjunctive', $result);
+        $this->assertHasIssueContaining('ALL apply', $result);
+    }
+
+    public function test_passes_disjunctive_licenses_with_gpl_and_safe_option(): void
+    {
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'vendor/choice-license',
+                    'version' => '1.0.0',
+                    'license' => 'MIT or GPL-3.0',
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because MIT is an option (disjunctive/OR)
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_conjunctive_licenses_without_parentheses(): void
+    {
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'vendor/and-license',
+                    'version' => '1.0.0',
+                    'license' => 'MIT and GPL-3.0',
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - conjunctive license with GPL
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('GPL', $result);
+    }
+
+    public function test_metadata_includes_license_type_for_conjunctive(): void
+    {
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'vendor/conjunctive-pkg',
+                    'version' => '1.0.0',
+                    'license' => '(BSD-3-Clause and GPL-3.0)',
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertEquals('conjunctive', $issues[0]->metadata['license_type']);
+    }
+
+    public function test_metadata_includes_license_type_for_disjunctive(): void
+    {
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'vendor/disjunctive-pkg',
+                    'version' => '1.0.0',
+                    'license' => ['MIT', 'GPL-3.0'],
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because MIT is available (disjunctive)
+        $this->assertPassed($result);
+    }
 }

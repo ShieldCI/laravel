@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Support\Composer;
 
 /**
  * Validates that dependencies use legally acceptable licenses.
@@ -166,8 +167,13 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
                 ? $package['name']
                 : 'Unknown';
 
-            // Normalize license to array (handle both string and array)
-            $licenses = $this->normalizeLicenseField($package);
+            // Find the line number where this package is defined
+            $lineNumber = Composer::findPackageLineNumber($composerLock, $packageName);
+
+            // Normalize license to array and detect if it's conjunctive (AND) or disjunctive (OR)
+            $licenseData = $this->parseLicenseField($package);
+            $licenses = $licenseData['licenses'];
+            $isConjunctive = $licenseData['is_conjunctive'];
 
             // Skip if no license information
             if (empty($licenses)) {
@@ -175,10 +181,10 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
                 if (! $isDevDependency) {
                     $issues[] = $this->createIssue(
                         message: sprintf('Package "%s" has no license information', $packageName),
-                        location: new Location($composerLock),
+                        location: new Location($composerLock, $lineNumber),
                         severity: Severity::Medium,
                         recommendation: sprintf('Investigate license for "%s" or contact the package maintainer', $packageName),
-                        code: FileParser::getCodeSnippet($composerLock, 1),
+                        code: FileParser::getCodeSnippet($composerLock, $lineNumber),
                         metadata: [
                             'package' => $packageName,
                             'issue_type' => 'missing_license',
@@ -198,11 +204,11 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
             /** @var array<int, string> $restrictiveLicenses */
             $restrictiveLicenses = $config['restrictive_licenses'];
 
-            // Check if any license is whitelisted
-            $hasWhitelistedLicense = ! empty(array_intersect(
+            // Check which licenses are whitelisted
+            $whitelistedMatches = array_intersect(
                 $normalizedLicenses,
                 array_map('strtoupper', $whitelistedLicenses)
-            ));
+            );
 
             // Check for restrictive licenses
             $restrictiveMatches = array_intersect(
@@ -210,32 +216,50 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
                 array_map('strtoupper', $restrictiveLicenses)
             );
 
-            // If package has whitelisted license, it's OK (dual-license scenario)
-            if ($hasWhitelistedLicense) {
+            // Determine if package is acceptable based on license type:
+            // - Disjunctive (OR): If ANY license is whitelisted, package is OK
+            // - Conjunctive (AND): ALL licenses must be whitelisted, otherwise problematic
+            $isAcceptable = false;
+            if ($isConjunctive) {
+                // For AND licenses, ALL must be whitelisted (no restrictive licenses allowed)
+                $isAcceptable = count($whitelistedMatches) === count($licenses) && empty($restrictiveMatches);
+            } else {
+                // For OR licenses, ANY whitelisted license makes it acceptable
+                $isAcceptable = ! empty($whitelistedMatches);
+            }
+
+            // If package is acceptable, skip it
+            if ($isAcceptable) {
                 continue;
             }
 
-            // Check for restrictive licenses (only if no whitelisted license exists)
+            // Check for restrictive licenses
             if (! empty($restrictiveMatches)) {
                 $severity = $isDevDependency ? Severity::Low : Severity::Critical;
                 $prefix = $isDevDependency ? 'Dev package' : 'Package';
 
+                $licenseType = $isConjunctive ? ' (conjunctive - ALL apply)' : ' (disjunctive - choose one)';
+
                 $issues[] = $this->createIssue(
                     message: sprintf(
-                        '%s "%s" uses restrictive license: %s',
+                        '%s "%s" uses restrictive license: %s%s',
                         $prefix,
                         $packageName,
-                        implode(', ', $licenses)
+                        implode(', ', $licenses),
+                        $licenseType
                     ),
-                    location: new Location($composerLock),
+                    location: new Location($composerLock, $lineNumber),
                     severity: $severity,
                     recommendation: $isDevDependency
                         ? sprintf('Dev dependency "%s" has GPL/AGPL license. This is generally safe for development tools, but verify it\'s not distributed with your application', $packageName)
-                        : sprintf('GPL/AGPL licenses may require your application to be open-source. Review "%s" license implications or find an alternative package', $packageName),
-                    code: FileParser::getCodeSnippet($composerLock, 1),
+                        : ($isConjunctive
+                            ? sprintf('Package "%s" has conjunctive license (AND) including GPL/AGPL - ALL licenses apply simultaneously. You must comply with GPL/AGPL terms. Consider finding an alternative package', $packageName)
+                            : sprintf('GPL/AGPL licenses may require your application to be open-source. Review "%s" license implications or find an alternative package', $packageName)),
+                    code: FileParser::getCodeSnippet($composerLock, $lineNumber),
                     metadata: [
                         'package' => $packageName,
                         'licenses' => $licenses,
+                        'license_type' => $isConjunctive ? 'conjunctive' : 'disjunctive',
                         'issue_type' => 'restrictive_license',
                         'type' => $isDevDependency ? 'dev_dependency' : 'production_dependency',
                     ]
@@ -243,22 +267,27 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
             } else {
                 // License is not whitelisted and not explicitly restrictive - flag for review (production only)
                 if (! $isDevDependency) {
+                    $licenseType = $isConjunctive ? ' (conjunctive - ALL apply)' : ' (disjunctive - choose one)';
+
                     $issues[] = $this->createIssue(
                         message: sprintf(
-                            'Package "%s" uses non-standard license: %s',
+                            'Package "%s" uses non-standard license: %s%s',
                             $packageName,
-                            implode(', ', $licenses)
+                            implode(', ', $licenses),
+                            $licenseType
                         ),
-                        location: new Location($composerLock),
+                        location: new Location($composerLock, $lineNumber),
                         severity: Severity::Low,
                         recommendation: sprintf(
-                            'Review the "%s" license terms to ensure compatibility with your application. Common safe licenses: MIT, Apache-2.0, BSD',
-                            $packageName
+                            'Review the "%s" license terms to ensure compatibility with your application. %s Common safe licenses: MIT, Apache-2.0, BSD',
+                            $packageName,
+                            $isConjunctive ? 'Note: This is a conjunctive license (AND) - ALL licenses apply simultaneously.' : ''
                         ),
-                        code: FileParser::getCodeSnippet($composerLock, 1),
+                        code: FileParser::getCodeSnippet($composerLock, $lineNumber),
                         metadata: [
                             'package' => $packageName,
                             'licenses' => $licenses,
+                            'license_type' => $isConjunctive ? 'conjunctive' : 'disjunctive',
                             'issue_type' => 'unknown_license',
                         ]
                     );
@@ -268,30 +297,74 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Normalize license field to array (handle both string and array).
+     * Parse license field and detect if it's conjunctive (AND) or disjunctive (OR).
+     *
+     * Composer/SPDX supports three license formats:
+     * 1. String: "MIT" (single license)
+     * 2. Array: ["MIT", "GPL-3.0"] (disjunctive - OR - choose one)
+     * 3. SPDX expression: "(MIT and GPL-3.0)" or "MIT or GPL-3.0" (conjunctive or disjunctive)
      *
      * @param  array<string, mixed>  $package
-     * @return array<int, string>
+     * @return array{licenses: array<int, string>, is_conjunctive: bool}
      */
-    private function normalizeLicenseField(array $package): array
+    private function parseLicenseField(array $package): array
     {
         if (! isset($package['license'])) {
-            return [];
+            return ['licenses' => [], 'is_conjunctive' => false];
         }
 
         $license = $package['license'];
 
+        // Handle array license (composer format - always disjunctive/OR)
+        if (is_array($license)) {
+            return [
+                'licenses' => $license,
+                'is_conjunctive' => false,  // Arrays in composer.json are always OR
+            ];
+        }
+
         // Handle string license
         if (is_string($license)) {
-            return [$license];
+            // Check for SPDX expressions with operators
+            $lowercaseLicense = strtolower($license);
+
+            // Detect conjunctive (AND) licenses
+            // Patterns: "MIT and GPL-3.0", "(MIT and GPL-3.0)", "MIT AND GPL-3.0"
+            if (preg_match('/\band\b/i', $license)) {
+                // Extract individual licenses from the expression
+                // Remove parentheses and split by 'and'
+                $cleanedLicense = preg_replace('/[()]/', '', $license);
+                $parts = preg_split('/\s+and\s+/i', $cleanedLicense);
+                $licenses = array_map('trim', $parts);
+
+                return [
+                    'licenses' => $licenses,
+                    'is_conjunctive' => true,
+                ];
+            }
+
+            // Detect disjunctive (OR) licenses in string format
+            // Patterns: "MIT or GPL-3.0", "(MIT or GPL-3.0)", "MIT OR GPL-3.0"
+            if (preg_match('/\bor\b/i', $license)) {
+                // Extract individual licenses from the expression
+                $cleanedLicense = preg_replace('/[()]/', '', $license);
+                $parts = preg_split('/\s+or\s+/i', $cleanedLicense);
+                $licenses = array_map('trim', $parts);
+
+                return [
+                    'licenses' => $licenses,
+                    'is_conjunctive' => false,
+                ];
+            }
+
+            // Single license (no operators)
+            return [
+                'licenses' => [$license],
+                'is_conjunctive' => false,
+            ];
         }
 
-        // Handle array license
-        if (is_array($license)) {
-            return $license;
-        }
-
-        return [];
+        return ['licenses' => [], 'is_conjunctive' => false];
     }
 
     /**

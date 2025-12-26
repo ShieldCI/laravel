@@ -526,4 +526,187 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    public function test_passes_with_route_group_throttle(): void
+    {
+        $routeCode = <<<'PHP'
+<?php
+
+Route::group(['middleware' => 'throttle:5,1'], function () {
+    Route::post('/login', [LoginController::class, 'login']);
+    Route::post('/authenticate', [AuthController::class, 'authenticate']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_route_group_without_throttle(): void
+    {
+        $routeCode = <<<'PHP'
+<?php
+
+Route::group(['prefix' => 'auth'], function () {
+    Route::post('/login', [LoginController::class, 'login']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('login', $result);
+    }
+
+    public function test_passes_with_middleware_before_route_method(): void
+    {
+        $routeCode = <<<'PHP'
+<?php
+
+Route::middleware('throttle:5,1')->post('/login', [LoginController::class, 'login']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_auth_routes_and_throttle(): void
+    {
+        $routeCode = <<<'PHP'
+<?php
+
+Auth::routes();
+
+Route::middleware('throttle:5,1')->group(function () {
+    Auth::routes();
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // First Auth::routes() should fail (no throttle)
+        // Second Auth::routes() should pass (in throttle group)
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Auth::routes()', $result);
+    }
+
+    public function test_detects_fortify_without_throttle(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [
+        {
+            "name": "laravel/fortify",
+            "version": "1.0.0"
+        }
+    ]
+}
+JSON;
+
+        $fortifyConfig = <<<'PHP'
+<?php
+
+return [
+    'features' => [
+        'registration' => true,
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+            'config/fortify.php' => $fortifyConfig,
+            'routes/web.php' => '<?php // empty',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes', 'config']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Fortify', $result);
+    }
+
+    public function test_passes_with_fortify_custom_rate_limiter(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [
+        {
+            "name": "laravel/fortify",
+            "version": "1.0.0"
+        }
+    ]
+}
+JSON;
+
+        $providerCode = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Cache\RateLimiting\Limit;
+
+class FortifyServiceProvider
+{
+    public function boot()
+    {
+        RateLimiter::for('login', function () {
+            return Limit::perMinute(5);
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+            'app/Providers/FortifyServiceProvider.php' => $providerCode,
+            'routes/web.php' => '<?php // empty',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes', 'app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

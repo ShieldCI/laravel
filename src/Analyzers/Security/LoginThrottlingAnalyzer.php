@@ -67,6 +67,11 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         // Check authentication controllers
         $this->checkAuthControllers($issues);
 
+        // Check Fortify/Breeze/Jetstream configuration
+        if (! $hasGlobalRateLimiter) {
+            $this->checkAuthenticationPackages($issues);
+        }
+
         $summary = empty($issues)
             ? 'Login throttling/rate limiting is properly configured'
             : sprintf('Found %d login throttling issue%s', count($issues), count($issues) === 1 ? '' : 's');
@@ -75,19 +80,160 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if RateLimiter is used in the codebase.
+     * Check if login-specific RateLimiter is used in authentication contexts.
+     *
+     * Only searches auth-related files and looks for login-specific rate limiting patterns:
+     * - RateLimiter::attempt('login:...')
+     * - RateLimiter::for('login', ...)
+     * - tooManyAttempts() / hasTooManyLoginAttempts()
+     * - RateLimiter::hit() / clear() near auth methods
      */
     private function hasRateLimiterUsage(): bool
     {
-        foreach ($this->getPhpFiles() as $file) {
-            $content = FileParser::readFile($file);
-            if ($content === null || ! is_string($content)) {
+        $authFiles = $this->getAuthenticationFiles();
+
+        foreach ($authFiles as $file) {
+            if ($this->hasLoginThrottlingInFile($file)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Get authentication-related files (controllers, middleware, traits).
+     *
+     * @return array<int, string>
+     */
+    private function getAuthenticationFiles(): array
+    {
+        $basePath = $this->getBasePath();
+        $authFiles = [];
+
+        // Check auth controllers
+        $authPaths = [
+            $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Controllers'.DIRECTORY_SEPARATOR.'Auth',
+            $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Controllers',
+        ];
+
+        foreach ($authPaths as $path) {
+            if (! is_dir($path)) {
                 continue;
             }
 
-            if (str_contains($content, 'RateLimiter') ||
-                str_contains($content, 'RateLimiter::')) {
-                return true;
+            try {
+                $iterator = new \RecursiveIteratorIterator(
+                    new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
+                );
+
+                foreach ($iterator as $file) {
+                    if (! $file instanceof \SplFileInfo) {
+                        continue;
+                    }
+
+                    if ($file->isFile() && $file->getExtension() === 'php') {
+                        $filename = strtolower($file->getFilename());
+                        // Only check auth-related controllers
+                        if (str_contains($filename, 'auth') ||
+                            str_contains($filename, 'login') ||
+                            str_contains($filename, 'session')) {
+                            $authFiles[] = $file->getPathname();
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                continue;
+            }
+        }
+
+        // Check middleware
+        $middlewarePath = $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Middleware';
+        if (is_dir($middlewarePath)) {
+            try {
+                foreach (new \DirectoryIterator($middlewarePath) as $file) {
+                    if ($file->isFile() && $file->getExtension() === 'php') {
+                        $authFiles[] = $file->getPathname();
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Ignore
+            }
+        }
+
+        return $authFiles;
+    }
+
+    /**
+     * Check if a file contains login-specific throttling patterns.
+     */
+    private function hasLoginThrottlingInFile(string $file): bool
+    {
+        $content = FileParser::readFile($file);
+        if ($content === null || ! is_string($content)) {
+            return false;
+        }
+
+        // Pattern 1: Login-specific RateLimiter keys
+        // RateLimiter::attempt('login:', ...), RateLimiter::for('login', ...)
+        if (preg_match('/RateLimiter::(attempt|for)\s*\(\s*["\']login[:_\-]?/i', $content)) {
+            return true;
+        }
+
+        // Pattern 2: ThrottlesLogins trait methods
+        // tooManyAttempts(), hasTooManyLoginAttempts(), clearLoginAttempts()
+        if (preg_match('/\b(tooManyAttempts|hasTooManyLoginAttempts|clearLoginAttempts)\s*\(/i', $content)) {
+            return true;
+        }
+
+        // Pattern 3: RateLimiter hit/clear/tooManyAttempts near auth methods
+        // Check if RateLimiter::hit() or RateLimiter::clear() appears near login/authenticate methods
+        if ($this->hasRateLimiterNearAuthMethod($content)) {
+            return true;
+        }
+
+        // Pattern 4: Simple check - if file is an auth controller and uses RateLimiter at all
+        // (fallback for cases where method detection fails)
+        $filename = basename($file);
+        if (preg_match('/(Login|Auth|Session)Controller/i', $filename) &&
+            str_contains($content, 'RateLimiter::')) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if RateLimiter methods appear near authentication methods.
+     */
+    private function hasRateLimiterNearAuthMethod(string $content): bool
+    {
+        $lines = explode("\n", $content);
+        $inAuthMethod = false;
+        $authMethodDepth = 0;
+        $braceDepth = 0;
+
+        foreach ($lines as $line) {
+            // Detect auth method start
+            if (preg_match('/function\s+(login|authenticate|attempt|postLogin|handleLogin)\s*\(/i', $line)) {
+                $inAuthMethod = true;
+                $authMethodDepth = $braceDepth;
+            }
+
+            // Track brace depth
+            $braceDepth += substr_count($line, '{') - substr_count($line, '}');
+
+            // If we're in an auth method, check for RateLimiter usage
+            if ($inAuthMethod) {
+                // Look for RateLimiter::hit(), RateLimiter::clear(), RateLimiter::attempt()
+                if (preg_match('/RateLimiter::(hit|clear|attempt|tooManyAttempts|availableIn)\s*\(/i', $line)) {
+                    return true;
+                }
+
+                // Exit auth method when braces close back to method level
+                if ($braceDepth <= $authMethodDepth) {
+                    $inAuthMethod = false;
+                }
             }
         }
 
@@ -124,17 +270,59 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
                 $lines = FileParser::getLines($filePath);
 
+                // Track route groups for context
+                $inWebGroup = false;
+                $groupDepth = 0;
+                $braceDepth = 0;
+
                 foreach ($lines as $lineNumber => $line) {
                     if (! is_string($line)) {
                         continue;
                     }
 
-                    // Check for login-related routes (improved regex to catch GET, MATCH, RESOURCE)
+                    // Track brace depth for group nesting
+                    $braceDepth += substr_count($line, '{') - substr_count($line, '}');
+
+                    // Detect Route::group with middleware
+                    if (preg_match('/Route::group\s*\(\s*\[/i', $line)) {
+                        $groupDepth = $braceDepth;
+                        // Check if group has throttle middleware
+                        if (preg_match('/["\']middleware["\']\s*=>\s*.*["\']throttle/i', $line)) {
+                            $inWebGroup = true;
+                        }
+                    }
+
+                    // Exit group when braces close
+                    if ($inWebGroup && $braceDepth <= $groupDepth - 1) {
+                        $inWebGroup = false;
+                    }
+
+                    // Check for Auth::routes() helper
+                    if (preg_match('/Auth::routes\s*\(/i', $line)) {
+                        // Auth::routes() includes login routes - check if throttled
+                        $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber);
+
+                        if (! $hasThrottle && ! $hasGlobalThrottling && ! $inWebGroup) {
+                            $issues[] = $this->createIssueWithSnippet(
+                                message: 'Auth::routes() includes login endpoint without explicit rate limiting',
+                                filePath: $filePath,
+                                lineNumber: $lineNumber + 1,
+                                severity: Severity::High,
+                                recommendation: 'Add ->middleware("throttle:5,1") to Auth::routes() or configure rate limiting in AuthServiceProvider',
+                                metadata: [
+                                    'route' => 'Auth::routes()',
+                                    'issue_type' => 'missing_route_throttle',
+                                ]
+                            );
+                        }
+                    }
+
+                    // Check for login-related routes (expanded to catch more patterns)
                     if (preg_match('/Route::(post|get|any|match|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $matches)) {
                         $routeUri = $matches[2];
 
                         // Check if this route or surrounding lines have throttle middleware
-                        $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber);
+                        $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber) || $inWebGroup;
 
                         if (! $hasThrottle && ! $hasGlobalThrottling) {
                             $issues[] = $this->createIssueWithSnippet(
@@ -158,23 +346,47 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if a route has throttling in nearby lines.
+     * Check if a route has throttling in nearby lines or on the same line (before/after).
      */
     private function checkRouteHasThrottling(array $lines, int $lineNumber): bool
     {
-        // Check current line and next 5 lines for throttle middleware
-        $searchRange = min($lineNumber + 5, count($lines));
+        // Check current line first (for patterns like: Route::middleware('throttle')->post(...))
+        if (isset($lines[$lineNumber]) && is_string($lines[$lineNumber])) {
+            if ($this->lineHasThrottle($lines[$lineNumber])) {
+                return true;
+            }
+        }
 
-        for ($i = $lineNumber; $i < $searchRange; $i++) {
+        // Check previous 3 lines (for multi-line route definitions)
+        $startLine = max(0, $lineNumber - 3);
+        for ($i = $startLine; $i < $lineNumber; $i++) {
             if (! isset($lines[$i]) || ! is_string($lines[$i])) {
                 continue;
             }
 
-            // Improved patterns to catch more throttle variations
-            if (preg_match('/->middleware\(["\']throttle/i', $lines[$i]) ||  // Single string
-                preg_match('/->middleware\(\[.*["\']throttle/i', $lines[$i]) ||  // Array with quotes
-                preg_match('/->middleware\(["\'][^"\']*["\'],\s*["\']throttle/i', $lines[$i]) ||  // Varargs
-                preg_match('/ThrottleRequests::class/i', $lines[$i])) {  // Class reference
+            if ($this->lineHasThrottle($lines[$i])) {
+                // Make sure we haven't hit a semicolon between the throttle and current line
+                $hasSemicolon = false;
+                for ($j = $i; $j < $lineNumber; $j++) {
+                    if (isset($lines[$j]) && is_string($lines[$j]) && str_contains($lines[$j], ';')) {
+                        $hasSemicolon = true;
+                        break;
+                    }
+                }
+                if (! $hasSemicolon) {
+                    return true;
+                }
+            }
+        }
+
+        // Check next 5 lines (for routes defined across multiple lines)
+        $searchRange = min($lineNumber + 5, count($lines));
+        for ($i = $lineNumber + 1; $i < $searchRange; $i++) {
+            if (! isset($lines[$i]) || ! is_string($lines[$i])) {
+                continue;
+            }
+
+            if ($this->lineHasThrottle($lines[$i])) {
                 return true;
             }
 
@@ -185,6 +397,18 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         }
 
         return false;
+    }
+
+    /**
+     * Check if a single line contains throttle middleware.
+     */
+    private function lineHasThrottle(string $line): bool
+    {
+        // Improved patterns to catch more throttle variations
+        return preg_match('/->middleware\(["\']throttle/i', $line) ||  // Single string
+               preg_match('/->middleware\(\[.*["\']throttle/i', $line) ||  // Array with quotes
+               preg_match('/->middleware\(["\'][^"\']*["\'],\s*["\']throttle/i', $line) ||  // Varargs
+               preg_match('/ThrottleRequests::class/i', $line);  // Class reference
     }
 
     /**
@@ -215,11 +439,10 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                // Check if controller uses throttling traits or has throttle middleware
+                // Check if controller uses login-specific throttling
                 $hasThrottling = str_contains($content, 'ThrottlesLogins') ||
-                               str_contains($content, 'RateLimiter') ||
-                               str_contains($content, 'throttle') ||
-                               str_contains($content, 'AuthenticatesUsers'); // Laravel UI trait includes throttling
+                               str_contains($content, 'AuthenticatesUsers') || // Laravel UI trait includes throttling
+                               $this->hasLoginThrottlingInFile($controllerPath);
 
                 if (! $hasThrottling) {
                     $classes = $this->parser->findClasses($ast);
@@ -261,6 +484,185 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             } catch (\Throwable $e) {
                 // Silently fail if parsing fails
                 continue;
+            }
+        }
+    }
+
+    /**
+     * Check Fortify/Breeze/Jetstream configuration for throttling.
+     */
+    private function checkAuthenticationPackages(array &$issues): void
+    {
+        $basePath = $this->getBasePath();
+
+        // Check if Fortify is installed
+        $composerLock = $basePath.DIRECTORY_SEPARATOR.'composer.lock';
+        $hasFortify = false;
+        $hasBreeze = false;
+        $hasJetstream = false;
+
+        if (file_exists($composerLock)) {
+            $lockContent = FileParser::readFile($composerLock);
+            if ($lockContent !== null && is_string($lockContent)) {
+                $hasFortify = str_contains($lockContent, '"name": "laravel/fortify"');
+                $hasBreeze = str_contains($lockContent, '"name": "laravel/breeze"');
+                $hasJetstream = str_contains($lockContent, '"name": "laravel/jetstream"');
+            }
+        }
+
+        // If none are installed, skip
+        if (! $hasFortify && ! $hasBreeze && ! $hasJetstream) {
+            return;
+        }
+
+        // Check Fortify configuration
+        if ($hasFortify) {
+            $this->checkFortifyThrottling($issues);
+        }
+
+        // Check Breeze/Jetstream service providers
+        if ($hasBreeze || $hasJetstream) {
+            $this->checkBreezeJetstreamThrottling($issues, $hasBreeze, $hasJetstream);
+        }
+    }
+
+    /**
+     * Check Fortify-specific throttling configuration.
+     */
+    private function checkFortifyThrottling(array &$issues): void
+    {
+        $basePath = $this->getBasePath();
+
+        // Check all provider files for RateLimiter configuration
+        $providerPath = $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Providers';
+        $hasLoginRateLimiter = false;
+        $hasDisabledThrottling = false;
+        $throttleDisabledFile = null;
+
+        if (is_dir($providerPath)) {
+            try {
+                $iterator = new \RecursiveIteratorIterator(
+                    new \RecursiveDirectoryIterator($providerPath, \RecursiveDirectoryIterator::SKIP_DOTS)
+                );
+
+                foreach ($iterator as $file) {
+                    if (! $file instanceof \SplFileInfo) {
+                        continue;
+                    }
+
+                    if ($file->isFile() && $file->getExtension() === 'php') {
+                        $content = FileParser::readFile($file->getPathname());
+                        if ($content === null || ! is_string($content)) {
+                            continue;
+                        }
+
+                        // Check if Fortify throttling is explicitly disabled
+                        if (preg_match('/RateLimiter::for\s*\(\s*["\']login["\']\s*,\s*.*Limit::none\(\)/is', $content)) {
+                            $hasDisabledThrottling = true;
+                            $throttleDisabledFile = $file->getPathname();
+                        }
+
+                        // Check if custom login rate limiter is defined
+                        if (preg_match('/RateLimiter::for\s*\(\s*["\']login["\']\s*,/i', $content)) {
+                            $hasLoginRateLimiter = true;
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Silently fail if directory iterator fails
+            }
+        }
+
+        // If throttling is explicitly disabled, flag as critical
+        if ($hasDisabledThrottling && $throttleDisabledFile !== null) {
+            $issues[] = $this->createIssueWithSnippet(
+                message: 'Fortify login throttling is explicitly disabled',
+                filePath: $throttleDisabledFile,
+                lineNumber: 1,
+                severity: Severity::Critical,
+                recommendation: 'Enable Fortify login throttling by configuring RateLimiter::for(\'login\', ...) with appropriate limits',
+                metadata: [
+                    'framework' => 'fortify',
+                    'issue_type' => 'fortify_throttle_disabled',
+                ]
+            );
+
+            return;
+        }
+
+        // If custom login rate limiter is defined, we're good
+        if ($hasLoginRateLimiter) {
+            return;
+        }
+
+        // Check Fortify configuration file
+        $fortifyConfigPath = $basePath.DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'fortify.php';
+        if (file_exists($fortifyConfigPath)) {
+            $fortifyConfig = FileParser::readFile($fortifyConfigPath);
+            if ($fortifyConfig !== null && is_string($fortifyConfig)) {
+                // Check if limiters configuration exists
+                if (! preg_match('/["\']limiters["\']\s*=>/i', $fortifyConfig)) {
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: 'Fortify authentication lacks custom rate limiter configuration',
+                        filePath: $fortifyConfigPath,
+                        lineNumber: 1,
+                        severity: Severity::High,
+                        recommendation: 'Configure rate limiters in config/fortify.php or define RateLimiter::for(\'login\', ...) in a service provider',
+                        metadata: [
+                            'framework' => 'fortify',
+                            'issue_type' => 'fortify_no_custom_limiter',
+                        ]
+                    );
+                }
+            }
+        }
+    }
+
+    /**
+     * Check Breeze/Jetstream throttling in their routes/configuration.
+     */
+    private function checkBreezeJetstreamThrottling(array &$issues, bool $hasBreeze, bool $hasJetstream): void
+    {
+        $basePath = $this->getBasePath();
+
+        // Breeze and Jetstream typically install auth routes in routes/auth.php
+        $authRoutesPath = $basePath.DIRECTORY_SEPARATOR.'routes'.DIRECTORY_SEPARATOR.'auth.php';
+
+        if (file_exists($authRoutesPath)) {
+            $authRoutes = FileParser::readFile($authRoutesPath);
+            if ($authRoutes !== null && is_string($authRoutes)) {
+                // Check if login routes have throttling
+                $hasLoginRoute = preg_match('/Route::(post|get|any)\s*\(["\'][^"\']*login[^"\']*["\']/i', $authRoutes);
+                $hasThrottling = str_contains($authRoutes, 'throttle') ||
+                               str_contains($authRoutes, 'ThrottleRequests');
+
+                if ($hasLoginRoute && ! $hasThrottling) {
+                    $framework = $hasBreeze ? 'Breeze' : ($hasJetstream ? 'Jetstream' : 'Laravel');
+
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: sprintf('%s authentication routes lack rate limiting in routes/auth.php', $framework),
+                        filePath: $authRoutesPath,
+                        lineNumber: 1,
+                        severity: Severity::High,
+                        recommendation: sprintf('Add throttle middleware to %s login routes to prevent brute force attacks', $framework),
+                        metadata: [
+                            'framework' => strtolower($framework),
+                            'issue_type' => 'framework_routes_no_throttle',
+                        ]
+                    );
+                }
+            }
+        }
+
+        // Also check if Jetstream has custom configuration
+        if ($hasJetstream) {
+            $jetstreamConfigPath = $basePath.DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'jetstream.php';
+            if (file_exists($jetstreamConfigPath)) {
+                $jetstreamConfig = FileParser::readFile($jetstreamConfigPath);
+                if ($jetstreamConfig !== null && is_string($jetstreamConfig)) {
+                    // Jetstream uses Fortify under the hood, so we should check Fortify config as well
+                    // But if routes/auth.php exists and was already checked above, we're covered
+                }
             }
         }
     }

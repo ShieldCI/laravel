@@ -934,6 +934,21 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
                         return true;
                     }
+
+                    // IMPORTANT: Catch ANY variable with Request-specific methods
+                    // This handles: function store(Request $r) { User::create($r->all()); }
+                    // Methods like all(), input(), post(), query(), json() are very Request-specific
+                    // so we can safely assume any variable using them is a Request instance
+                    if ($node->var instanceof Node\Expr\Variable) {
+                        // Same argument filtering logic
+                        if (in_array($methodName, ['input', 'get', 'post', 'query', 'json'], true)) {
+                            if (! empty($node->args)) {
+                                return false;
+                            }
+                        }
+
+                        return true;
+                    }
                 }
 
                 // Check for ->only() or ->validated() - these are safe

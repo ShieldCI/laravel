@@ -257,6 +257,12 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
             foreach ($calls as $call) {
                 if ($call instanceof Node\Expr\MethodCall) {
+                    // Skip if this is already being handled by query builder check
+                    // e.g., User::where()->update() should be handled by builder check, not instance check
+                    if ($this->isQueryBuilderCall($call, $file)) {
+                        continue; // Already handled by checkQueryBuilderCalls
+                    }
+
                     $this->checkCallForRequestData($call, $method, 'instance', $file, $issues);
                 }
             }
@@ -324,6 +330,54 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
             }
         }
 
+        // Check if the file has a use statement importing from known non-model namespaces
+        if ($content !== null) {
+            // Match use statements for common non-model namespaces
+            $nonModelNamespacePatterns = [
+                '/use\s+App\\\\Services\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Repositories\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Actions\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Jobs\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Handlers\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Helpers\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Support\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+[\w\\\\]+\\\\Services\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+[\w\\\\]+\\\\Repositories\\\\'.$quotedClassName.'\s*;/i',
+            ];
+
+            foreach ($nonModelNamespacePatterns as $pattern) {
+                if (preg_match($pattern, $content)) {
+                    return false;
+                }
+            }
+        }
+
+        // Check if class name follows common non-model naming patterns
+        // Services, Repositories, Jobs, etc. are unlikely to be models
+        $nonModelSuffixes = [
+            'Service',
+            'Repository',
+            'Action',
+            'Job',
+            'Handler',
+            'Helper',
+            'Facade',
+            'Provider',
+            'Middleware',
+            'Command',
+            'Rule',
+            'Policy',
+            'Resource',
+            'Request',
+            'Controller',
+        ];
+
+        foreach ($nonModelSuffixes as $suffix) {
+            if (str_ends_with($className, $suffix)) {
+                return false;
+            }
+        }
+
         // If we can't determine it's NOT a model, be conservative and check it
         // This ensures we don't miss actual models while reducing obvious false positives
         // Only skip if it's clearly a known non-model class
@@ -366,7 +420,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
             foreach ($calls as $call) {
                 // Check if it's called on a query builder
-                if ($call instanceof Node\Expr\MethodCall && $this->isQueryBuilderCall($call)) {
+                if ($call instanceof Node\Expr\MethodCall && $this->isQueryBuilderCall($call, $file)) {
                     $this->checkCallForRequestData($call, $method, 'builder', $file, $issues);
                 }
             }
@@ -407,34 +461,156 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if a method call is on a query builder.
+     *
+     * Detects:
+     * - DB::table()->update()
+     * - User::query()->update()
+     * - User::where()->update()
+     * - User::whereIn()->orderBy()->update()
      */
-    private function isQueryBuilderCall(Node\Expr\MethodCall $call): bool
+    private function isQueryBuilderCall(Node\Expr\MethodCall $call, string $file): bool
+    {
+        return $this->isQueryBuilderChain($call->var, $file);
+    }
+
+    /**
+     * Recursively check if a node represents a query builder chain.
+     *
+     * This traverses the method chain to detect query builder origins:
+     * - Static calls to Model classes with query builder methods
+     * - DB facade calls
+     * - Common query builder method chains
+     *
+     * @param  string  $file  The file being analyzed (for model verification)
+     */
+    private function isQueryBuilderChain(Node\Expr $node, string $file = ''): bool
     {
         // Check if called on DB facade
-        if ($call->var instanceof Node\Expr\StaticCall) {
-            if ($call->var->class instanceof Node\Name) {
-                $className = $call->var->class->toString();
+        if ($node instanceof Node\Expr\StaticCall) {
+            if ($node->class instanceof Node\Name) {
+                $className = $node->class->toString();
                 if ($className === 'DB' || str_ends_with($className, '\\DB')) {
                     return true;
                 }
             }
-        }
 
-        // Check if called on ->query() result
-        if ($call->var instanceof Node\Expr\MethodCall) {
-            if ($call->var->name instanceof Node\Identifier && $call->var->name->toString() === 'query') {
-                return true;
+            // Check if it's a static call to a query builder method on a model
+            // e.g., User::where(), User::whereIn(), User::find()
+            if ($node->name instanceof Node\Identifier) {
+                $methodName = $node->name->toString();
+                if ($this->isQueryBuilderMethod($methodName)) {
+                    // IMPORTANT: Verify this is actually a model class to avoid false positives
+                    // SomeService::where() should NOT be treated as a query builder
+                    if ($this->isLikelyModelClass($node, $file)) {
+                        return true;
+                    }
+                }
             }
         }
 
-        // Check if called on table() result
-        if ($call->var instanceof Node\Expr\MethodCall) {
-            if ($call->var->name instanceof Node\Identifier && $call->var->name->toString() === 'table') {
-                return true;
+        // Check if it's a method call in a chain
+        if ($node instanceof Node\Expr\MethodCall) {
+            if ($node->name instanceof Node\Identifier) {
+                $methodName = $node->name->toString();
+
+                // If it's a known query builder method, recursively check the chain
+                if ($this->isQueryBuilderMethod($methodName)) {
+                    return $this->isQueryBuilderChain($node->var, $file);
+                }
             }
         }
 
         return false;
+    }
+
+    /**
+     * Check if a method name is a query builder method.
+     *
+     * These methods return a query builder instance and can be chained.
+     */
+    private function isQueryBuilderMethod(string $methodName): bool
+    {
+        $queryBuilderMethods = [
+            // Query builder initiators
+            'query',
+            'table',
+            'newQuery',
+
+            // Where clauses
+            'where',
+            'whereIn',
+            'whereNotIn',
+            'whereBetween',
+            'whereNotBetween',
+            'whereNull',
+            'whereNotNull',
+            'whereDate',
+            'whereMonth',
+            'whereDay',
+            'whereYear',
+            'whereTime',
+            'whereColumn',
+            'whereExists',
+            'whereNotExists',
+            'whereRaw',
+            'orWhere',
+            'orWhereIn',
+            'orWhereNotIn',
+            'orWhereBetween',
+            'orWhereNotBetween',
+            'orWhereNull',
+            'orWhereNotNull',
+
+            // Joins
+            'join',
+            'leftJoin',
+            'rightJoin',
+            'crossJoin',
+            'joinSub',
+            'leftJoinSub',
+            'rightJoinSub',
+
+            // Ordering and grouping
+            'orderBy',
+            'orderByDesc',
+            'orderByRaw',
+            'groupBy',
+            'groupByRaw',
+            'having',
+            'havingRaw',
+            'orHaving',
+            'orHavingRaw',
+
+            // Limiting
+            'limit',
+            'offset',
+            'skip',
+            'take',
+            'forPage',
+
+            // Selects
+            'select',
+            'selectRaw',
+            'selectSub',
+            'addSelect',
+            'distinct',
+
+            // Locking
+            'lockForUpdate',
+            'sharedLock',
+
+            // Other common methods
+            'with',
+            'withCount',
+            'withTrashed',
+            'onlyTrashed',
+            'latest',
+            'oldest',
+            'when',
+            'unless',
+        ];
+
+        return in_array($methodName, $queryBuilderMethods, true);
     }
 
     /**
@@ -735,8 +911,9 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     if ($node->var instanceof Node\Expr\FuncCall) {
                         if ($node->var->name instanceof Node\Name && $node->var->name->toString() === 'request') {
                             // Check if no arguments (e.g., request()->input() with no args = all input)
-                            if (in_array($methodName, ['input', 'get', 'post', 'query'], true)) {
-                                // If has args, it's filtering - OK
+                            // These methods are only dangerous when called without arguments
+                            if (in_array($methodName, ['input', 'get', 'post', 'query', 'json'], true)) {
+                                // If has args, it's filtering to a specific key - OK
                                 if (! empty($node->args)) {
                                     return false;
                                 }
@@ -749,7 +926,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     // Called on $request variable
                     if ($node->var instanceof Node\Expr\Variable && $node->var->name === 'request') {
                         // Same logic for instance methods
-                        if (in_array($methodName, ['input', 'get', 'post', 'query'], true)) {
+                        if (in_array($methodName, ['input', 'get', 'post', 'query', 'json'], true)) {
                             if (! empty($node->args)) {
                                 return false;
                             }

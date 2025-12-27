@@ -120,8 +120,7 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check PHP ini settings.
-     */
-    /**
+     *
      * @param  array<int, Issue>  $issues
      * @param  array<string, bool>  $secureSettings
      */
@@ -140,11 +139,11 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
 
             // Check if current value matches expected
             if ($expectedValue && ! $isEnabled) {
-                $issues[] = $this->createPhpIniIssue(
+                $issues[] = $this->createPhpIniIssueWithValue(
                     phpIniPath: $phpIniPath,
                     setting: $setting,
+                    expectedValue: true,
                     message: sprintf('PHP ini setting "%s" should be enabled but is %s', $setting, $actual),
-                    recommendation: sprintf('Set %s = On in php.ini', $setting),
                     severity: $this->getSeverityForSetting($setting),
                     metadata: [
                         'setting' => $setting,
@@ -153,11 +152,11 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
                     ]
                 );
             } elseif (! $expectedValue && $isEnabled) {
-                $issues[] = $this->createPhpIniIssue(
+                $issues[] = $this->createPhpIniIssueWithValue(
                     phpIniPath: $phpIniPath,
                     setting: $setting,
+                    expectedValue: false,
                     message: sprintf('PHP ini setting "%s" should be disabled but is %s', $setting, $actual),
-                    recommendation: sprintf('Set %s = Off in php.ini', $setting),
                     severity: $this->getSeverityForSetting($setting),
                     metadata: [
                         'setting' => $setting,
@@ -286,7 +285,142 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Get all PHP configuration sources (main php.ini + additional ini files).
+     *
+     * @return array{main: string|null, additional: array<int, string>}
+     */
+    private function getConfigurationSources(): array
+    {
+        $sources = [
+            'main' => null,
+            'additional' => [],
+        ];
+
+        // Get main php.ini file (respecting override for testing)
+        if (is_string($this->phpIniPathOverride) && $this->phpIniPathOverride !== '') {
+            $sources['main'] = $this->phpIniPathOverride;
+        } else {
+            $mainIni = php_ini_loaded_file();
+            if ($mainIni !== false && is_string($mainIni) && $mainIni !== '') {
+                $sources['main'] = $mainIni;
+            }
+        }
+
+        // Get additional .ini files from conf.d/ directories
+        // Note: In test mode with override, we don't scan for additional files
+        if (! is_string($this->phpIniPathOverride) || $this->phpIniPathOverride === '') {
+            $scannedFiles = php_ini_scanned_files();
+            if ($scannedFiles !== false && is_string($scannedFiles) && $scannedFiles !== '') {
+                $files = array_filter(
+                    array_map('trim', explode(',', $scannedFiles)),
+                    fn ($file) => $file !== '' && is_string($file)
+                );
+                $sources['additional'] = $files;
+            }
+        }
+
+        return $sources;
+    }
+
+    /**
+     * Find the actual source file where a setting is defined.
+     *
+     * @return array{file: string, type: string, line: int}|null
+     */
+    private function findSettingSource(string $setting): ?array
+    {
+        $sources = $this->getConfigurationSources();
+
+        // Check additional ini files first (they override main php.ini)
+        // Process in reverse order because later files override earlier ones
+        if (! empty($sources['additional'])) {
+            foreach (array_reverse($sources['additional']) as $iniFile) {
+                if ($this->settingExistsInFile($iniFile, $setting)) {
+                    return [
+                        'file' => $iniFile,
+                        'type' => 'additional_ini',
+                        'line' => $this->getSettingLine($iniFile, $setting),
+                    ];
+                }
+            }
+        }
+
+        // Check main php.ini
+        if ($sources['main'] !== null) {
+            if ($this->settingExistsInFile($sources['main'], $setting)) {
+                return [
+                    'file' => $sources['main'],
+                    'type' => 'main_ini',
+                    'line' => $this->getSettingLine($sources['main'], $setting),
+                ];
+            }
+        }
+
+        // Setting not found in any file (might be PHP default or runtime override)
+        return null;
+    }
+
+    /**
+     * Check if a setting exists (uncommented) in a specific ini file.
+     */
+    private function settingExistsInFile(string $file, string $setting): bool
+    {
+        $lines = $this->getPhpIniLines($file);
+
+        foreach ($lines as $line) {
+            if (! is_string($line)) {
+                continue;
+            }
+
+            // Remove comments from the line
+            $lineWithoutComments = preg_replace('/[;#].*$/', '', $line);
+            $lineWithoutComments = preg_replace('/\/\/.*$/', '', $lineWithoutComments ?? '');
+
+            // Check if setting is defined (not commented out)
+            $pattern = '/^\s*'.preg_quote($setting, '/').'\s*=/i';
+            if (preg_match($pattern, $lineWithoutComments ?? '') === 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Create an issue for a PHP ini setting with expected value context.
+     *
+     * This is a convenience wrapper that generates appropriate recommendations
+     * based on the expected value.
+     *
+     * @param  array<string, mixed>  $metadata
+     */
+    private function createPhpIniIssueWithValue(
+        string $phpIniPath,
+        string $setting,
+        bool $expectedValue,
+        string $message,
+        Severity $severity,
+        array $metadata = []
+    ): Issue {
+        $recommendedValue = $expectedValue ? 'On' : 'Off';
+        $baseRecommendation = sprintf('Set %s = %s', $setting, $recommendedValue);
+
+        return $this->createPhpIniIssue(
+            phpIniPath: $phpIniPath,
+            setting: $setting,
+            message: $message,
+            recommendation: $baseRecommendation,
+            severity: $severity,
+            metadata: $metadata,
+            expectedValue: $recommendedValue
+        );
+    }
+
+    /**
      * Create an issue for a PHP ini setting with automatic location and code snippet.
+     *
+     * Uses actual source detection to find where the setting is really defined,
+     * rather than just pointing to the main php.ini file.
      *
      * @param  array<string, mixed>  $metadata
      */
@@ -296,16 +430,71 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
         string $message,
         string $recommendation,
         Severity $severity,
-        array $metadata = []
+        array $metadata = [],
+        ?string $expectedValue = null
     ): Issue {
-        $line = $this->getSettingLine($phpIniPath, $setting);
+        // Try to find the actual source of this setting
+        $source = $this->findSettingSource($setting);
+
+        if ($source !== null) {
+            // We found the actual file where the setting is defined
+            $actualFile = $source['file'];
+            $line = $source['line'];
+            $sourceType = $source['type'] === 'additional_ini' ? 'additional configuration file' : 'main php.ini';
+
+            // Update recommendation to point to the correct file
+            if ($expectedValue !== null) {
+                $recommendation = sprintf(
+                    'Set %s = %s in %s (%s)',
+                    $setting,
+                    $expectedValue,
+                    basename($actualFile),
+                    $sourceType
+                );
+            } else {
+                $recommendation = sprintf(
+                    'Update %s in %s (%s)',
+                    $setting,
+                    basename($actualFile),
+                    $sourceType
+                );
+            }
+        } else {
+            // Setting not found in any file - might be PHP default or runtime override
+            $actualFile = $phpIniPath;
+            $line = 1;
+            $sources = $this->getConfigurationSources();
+
+            // Build list of all loaded ini files
+            $allFiles = array_filter([
+                $sources['main'] ?? null,
+                ...($sources['additional'] ?? []),
+            ]);
+
+            $fileList = ! empty($allFiles)
+                ? implode(', ', array_map('basename', $allFiles))
+                : 'php.ini';
+
+            // Add warning about unknown source
+            $recommendation .= sprintf(
+                ' | WARNING: Setting "%s" not found in any loaded .ini file (checked: %s). '.
+                'The runtime value may come from PHP defaults, .user.ini, .htaccess, or web server configuration (Apache php_value, Nginx fastcgi_param). '.
+                'Check per-directory overrides and server configuration files.',
+                $setting,
+                $fileList
+            );
+        }
+
+        // Add metadata about configuration sources for debugging
+        $metadata['configuration_sources'] = $this->getConfigurationSources();
+        $metadata['actual_source'] = $source;
 
         return $this->createIssue(
             message: $message,
-            location: new Location($phpIniPath, $line),
+            location: new Location($actualFile, $line),
             severity: $severity,
             recommendation: $recommendation,
-            code: FileParser::getCodeSnippet($phpIniPath, $line),
+            code: FileParser::getCodeSnippet($actualFile, $line),
             metadata: $metadata
         );
     }

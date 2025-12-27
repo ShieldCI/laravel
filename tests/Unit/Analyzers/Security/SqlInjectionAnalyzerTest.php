@@ -248,6 +248,87 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_passes_with_request_in_bindings_array(): void
+    {
+        $code = <<<'PHP'
+<?php
+use Illuminate\Support\Facades\DB;
+
+class UserController
+{
+    public function search()
+    {
+        // SAFE: request() is in bindings array, not concatenated
+        $results = DB::select('SELECT * FROM users WHERE id = ?', [request('id')]);
+        return $results;
+    }
+
+    public function filter()
+    {
+        // SAFE: $_GET is in bindings array
+        return DB::table('users')
+            ->whereRaw('status = ?', [$_GET['status']])
+            ->get();
+    }
+
+    public function findByEmail()
+    {
+        // SAFE: Request::input in bindings
+        return DB::table('users')
+            ->whereRaw('email = ?', [Request::input('email')])
+            ->first();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_request_in_sql_string_without_bindings(): void
+    {
+        $code = <<<'PHP'
+<?php
+use Illuminate\Support\Facades\DB;
+
+class DangerousController
+{
+    public function search()
+    {
+        // DANGEROUS: request() value directly in SQL (no bindings)
+        $id = request('id');
+        return DB::select("SELECT * FROM users WHERE id = $id");
+    }
+
+    public function filter()
+    {
+        // DANGEROUS: $_GET directly in SQL
+        return DB::table('users')
+            ->whereRaw("status = '{$_GET['status']}'")
+            ->get();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['DangerousController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(2, $result);
+    }
+
     public function test_detects_multiple_sql_injection_vulnerabilities(): void
     {
         $code = <<<'PHP'

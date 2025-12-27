@@ -6,7 +6,6 @@ namespace ShieldCI\Analyzers\Security;
 
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use PhpParser\Node;
-use PhpParser\PrettyPrinter\Standard as PrettyPrinter;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -79,14 +78,10 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
 
     private array $nativePdoClasses = ['PDO', 'mysqli'];
 
-    private ?PrettyPrinter $printer = null;
-
     public function __construct(
         private ParserInterface $parser,
         private ?ConfigRepository $config = null
-    ) {
-        $this->printer = new PrettyPrinter;
-    }
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -265,12 +260,54 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if a node is vulnerable (has concatenation or user input or interpolation).
+     *
+     * IMPORTANT: For methods that support parameter binding (e.g., DB::select, whereRaw),
+     * we only check the SQL query argument (first arg), NOT the bindings array (second arg).
+     * User input in bindings is safe.
      */
     private function isVulnerable(Node $node): bool
     {
+        // For method calls and static calls, check if they support parameter binding
+        if ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\StaticCall) {
+            return $this->isVulnerableCall($node);
+        }
+
+        // For other nodes, use the basic checks
         return $this->hasStringConcatenation($node)
             || $this->hasVariableInterpolation($node)
-            || $this->hasUserInput($node);
+            || $this->hasUserInputInNode($node);
+    }
+
+    /**
+     * Check if a method/static call is vulnerable.
+     *
+     * For methods that support parameter binding, only check the first argument (SQL query).
+     * The second argument is the bindings array, which is safe for user input.
+     */
+    private function isVulnerableCall(Node\Expr\MethodCall|Node\Expr\StaticCall $call): bool
+    {
+        // Get the first argument (SQL query)
+        if (empty($call->args)) {
+            return false;
+        }
+
+        $firstArg = $call->args[0]->value;
+
+        // Check if the first argument has concatenation or interpolation
+        if ($this->hasStringConcatenation($firstArg) || $this->hasVariableInterpolation($firstArg)) {
+            return true;
+        }
+
+        // For user input detection, ONLY check the first argument
+        // If there are 2+ arguments, the second is likely bindings (safe)
+        // If there's only 1 argument, check it for user input
+        if (count($call->args) >= 2) {
+            // Has bindings argument - only check first arg for user input
+            return $this->hasUserInputInNode($firstArg);
+        }
+
+        // Single argument - check for user input (might be vulnerable)
+        return $this->hasUserInputInNode($firstArg);
     }
 
     /**
@@ -365,40 +402,73 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if a node contains user input sources.
+     * Check if a node contains user input sources using AST structure.
+     *
+     * This method recursively checks the AST for user input patterns without
+     * converting to string, avoiding false positives from bindings arrays.
      */
-    private function hasUserInput(Node $node): bool
+    private function hasUserInputInNode(Node $node): bool
     {
-        $code = $this->nodeToString($node);
+        // Check for superglobals ($_GET, $_POST, $_REQUEST, $_COOKIE)
+        if ($node instanceof Node\Expr\ArrayDimFetch) {
+            if ($node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
+                $varName = '$'.$node->var->name;
+                if (in_array($varName, ['$_GET', '$_POST', '$_REQUEST', '$_COOKIE'], true)) {
+                    return true;
+                }
+            }
+        }
 
-        foreach ($this->userInputSources as $source) {
-            if (str_contains($code, $source)) {
+        // Check for request() helper function
+        if ($node instanceof Node\Expr\FuncCall && $node->name instanceof Node\Name) {
+            if ($node->name->toString() === 'request') {
                 return true;
             }
         }
 
-        return false;
-    }
-
-    /**
-     * Convert a node to string representation using PhpParser printer.
-     */
-    private function nodeToString(Node $node): string
-    {
-        if ($this->printer === null) {
-            $this->printer = new PrettyPrinter;
-        }
-
-        try {
-            if ($node instanceof Node\Expr) {
-                return $this->printer->prettyPrintExpr($node);
+        // Check for Request facade static calls (Request::input, Request::get, etc.)
+        if ($node instanceof Node\Expr\StaticCall && $node->class instanceof Node\Name) {
+            $className = $node->class->toString();
+            if ($className === 'Request' || $className === 'Input') {
+                if ($node->name instanceof Node\Identifier) {
+                    $methodName = $node->name->toString();
+                    $requestMethods = ['input', 'get', 'all', 'query', 'post', 'cookie', 'header', 'route'];
+                    if (in_array($methodName, $requestMethods, true)) {
+                        return true;
+                    }
+                }
             }
-
-            // For non-expression nodes, use prettyPrint
-            return $this->printer->prettyPrint([$node]);
-        } catch (\Exception $e) {
-            // Fallback to empty string if printing fails
-            return '';
         }
+
+        // Check for $request->input(), $request->get(), etc.
+        if ($node instanceof Node\Expr\MethodCall) {
+            if ($node->var instanceof Node\Expr\Variable && $node->var->name === 'request') {
+                if ($node->name instanceof Node\Identifier) {
+                    $methodName = $node->name->toString();
+                    $requestMethods = ['input', 'get', 'all', 'query', 'post', 'cookie', 'header', 'route'];
+                    if (in_array($methodName, $requestMethods, true)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Recursively check child nodes
+        foreach ($node->getSubNodeNames() as $name) {
+            $subNode = $node->$name;
+            if ($subNode instanceof Node) {
+                if ($this->hasUserInputInNode($subNode)) {
+                    return true;
+                }
+            } elseif (is_array($subNode)) {
+                foreach ($subNode as $item) {
+                    if ($item instanceof Node && $this->hasUserInputInNode($item)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 }

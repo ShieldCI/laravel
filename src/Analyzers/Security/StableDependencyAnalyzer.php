@@ -251,7 +251,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $line = $this->findPackageLine($composerJson, $package, $section);
+            $line = Composer::findPackageLineInJson($composerJson, $package, $section);
 
             // Check for dev versions (dev-master, dev-main, 2.0.x-dev)
             if ($this->isUnstableVersion($version)) {
@@ -303,6 +303,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         $unstablePackages = [];
+        $firstUnstablePackageName = null;
 
         foreach ($packages as $package) {
             if (! is_array($package)) {
@@ -320,6 +321,10 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             // Check for unstable versions using the same logic as checkVersionConstraints
             if ($this->isUnstableVersion($version)) {
                 $unstablePackages[] = sprintf('%s (%s)', $packageName, $version);
+                // Track the first unstable package for accurate line reporting
+                if ($firstUnstablePackageName === null && $packageName !== 'Unknown') {
+                    $firstUnstablePackageName = $packageName;
+                }
             }
         }
 
@@ -327,16 +332,21 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             $count = count($unstablePackages);
             $examples = implode(', ', array_slice($unstablePackages, 0, 3));
 
+            // Use the first unstable package's line number for better location reporting
+            $line = $firstUnstablePackageName !== null
+                ? Composer::findPackageLineNumber($composerLock, $firstUnstablePackageName)
+                : 1;
+
             $issues[] = $this->createIssue(
                 message: sprintf('Found %d unstable package versions installed', $count),
-                location: new Location($this->getRelativePath($composerLock)),
+                location: new Location($this->getRelativePath($composerLock), $line),
                 severity: Severity::Low,
                 recommendation: sprintf(
                     'Update to stable versions: %s%s. Run "composer update --prefer-stable"',
                     $examples,
                     $count > 3 ? sprintf(' and %d more', $count - 3) : ''
                 ),
-                code: FileParser::getCodeSnippet($composerLock, 1),
+                code: FileParser::getCodeSnippet($composerLock, $line),
                 metadata: [
                     'count' => $count,
                     'examples' => array_slice($unstablePackages, 0, 3),
@@ -354,49 +364,6 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         return false;
-    }
-
-    /**
-     * Find the line number where a package is defined in composer.json.
-     */
-    private function findPackageLine(string $composerJson, string $package, string $section = 'require'): int
-    {
-        if (! file_exists($composerJson)) {
-            return 1;
-        }
-
-        $lines = FileParser::getLines($composerJson);
-        if (empty($lines)) {
-            return 1;
-        }
-
-        $inSection = false;
-        $pattern = '/^\s*"'.preg_quote($package, '/').'"\s*:/';
-
-        foreach ($lines as $index => $line) {
-            if (! is_string($line)) {
-                continue;
-            }
-
-            // Check if we're entering the target section
-            if (preg_match('/^\s*"'.$section.'"\s*:/', $line) === 1) {
-                $inSection = true;
-
-                continue;
-            }
-
-            // Check if we're leaving the section (closing brace)
-            if ($inSection && preg_match('/^\s*}/', $line) === 1) {
-                $inSection = false;
-            }
-
-            // If in section, look for package name
-            if ($inSection && preg_match($pattern, $line) === 1) {
-                return $index + 1;
-            }
-        }
-
-        return 1;
     }
 
     /**

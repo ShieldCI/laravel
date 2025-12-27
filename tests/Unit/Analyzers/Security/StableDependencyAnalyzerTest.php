@@ -900,4 +900,59 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $this->assertTrue($found, 'Should find issue for vendor/unstable-package');
     }
+
+    public function test_reports_accurate_line_numbers_for_composer_lock(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        // Create a composer.lock with unstable package on a specific line
+        $composerLock = <<<'JSON'
+        {
+            "packages": [
+                {
+                    "name": "vendor/stable-package",
+                    "version": "1.0.0"
+                },
+                {
+                    "name": "vendor/unstable-package",
+                    "version": "dev-master"
+                }
+            ]
+        }
+        JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+
+        // Should find the issue and report it on the line where the first unstable package is defined
+        $found = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'unstable package versions')) {
+                // The first unstable package "vendor/unstable-package" is on line 8
+                $this->assertEquals(8, $issue->location->line);
+                $found = true;
+                break;
+            }
+        }
+
+        $this->assertTrue($found, 'Should find unstable package issue with accurate line number');
+    }
 }

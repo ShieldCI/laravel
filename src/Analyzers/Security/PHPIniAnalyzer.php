@@ -67,10 +67,13 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
 
     private ?string $phpIniPathOverride = null;
 
-    private ?string $cachedPhpIniPath = null;
-
-    /** @var array<int, string>|null */
-    private ?array $phpIniLinesCache = null;
+    /**
+     * Cache for multiple ini file contents.
+     * Key: file path, Value: array of lines.
+     *
+     * @var array<string, array<int, string>>
+     */
+    private array $phpIniLinesCache = [];
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -249,8 +252,7 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
     public function setPhpIniPath(string $phpIniPath): void
     {
         $this->phpIniPathOverride = $phpIniPath;
-        $this->cachedPhpIniPath = null;
-        $this->phpIniLinesCache = null;
+        $this->phpIniLinesCache = [];
     }
 
     /**
@@ -600,25 +602,26 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Get lines from a PHP ini file with per-file caching.
+     *
+     * Now supports multiple files (main php.ini + additional .ini files from conf.d/).
+     * Each file is cached separately by its full path.
+     *
      * @return array<int, string>
      */
     private function getPhpIniLines(string $phpIniPath): array
     {
-        if ($this->cachedPhpIniPath !== $phpIniPath) {
-            $this->phpIniLinesCache = null;
-            $this->cachedPhpIniPath = $phpIniPath;
-        }
-
-        if ($this->phpIniLinesCache === null) {
+        // Check if this specific file is already cached
+        if (! isset($this->phpIniLinesCache[$phpIniPath])) {
             // Try to read the file, but handle open_basedir restrictions gracefully
             try {
-                $this->phpIniLinesCache = FileParser::getLines($phpIniPath);
+                $this->phpIniLinesCache[$phpIniPath] = FileParser::getLines($phpIniPath);
             } catch (\Throwable $e) {
-                // If we can't read the file (e.g., due to open_basedir restrictions), return empty array
-                $this->phpIniLinesCache = [];
+                // If we can't read the file (e.g., due to open_basedir restrictions), cache empty array
+                $this->phpIniLinesCache[$phpIniPath] = [];
             }
         }
 
-        return $this->phpIniLinesCache ?? [];
+        return $this->phpIniLinesCache[$phpIniPath];
     }
 }

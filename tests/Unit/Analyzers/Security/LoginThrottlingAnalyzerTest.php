@@ -1109,4 +1109,106 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('sanctum/token', $result);
     }
+
+    public function test_passes_with_invoke_controller_using_rate_limiter(): void
+    {
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\RateLimiter;
+
+class LoginController
+{
+    public function __invoke()
+    {
+        if (RateLimiter::tooManyAttempts('login:'.$request->ip(), 5)) {
+            return response()->json(['error' => 'Too many attempts'], 429);
+        }
+
+        return $this->attemptLogin();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/LoginController.php' => $controllerCode,
+            'routes/web.php' => '<?php // empty',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - single-action controller with RateLimiter
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_with_invoke_controller_without_throttle(): void
+    {
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class LoginController
+{
+    public function __invoke()
+    {
+        // No rate limiting
+        return $this->attemptLogin();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/LoginController.php' => $controllerCode,
+            'routes/web.php' => '<?php // empty',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - single-action controller without RateLimiter
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('__invoke', $result);
+    }
+
+    public function test_detects_invoke_in_auth_controller(): void
+    {
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+class AuthenticateController
+{
+    public function __invoke()
+    {
+        // Authenticate user without throttling
+        auth()->attempt($credentials);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/Auth/AuthenticateController.php' => $controllerCode,
+            'routes/web.php' => '<?php Route::post("/authenticate", AuthenticateController::class);',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - __invoke in Auth directory without throttle
+        $this->assertFailed($result);
+    }
 }

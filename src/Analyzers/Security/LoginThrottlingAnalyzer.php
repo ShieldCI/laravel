@@ -237,7 +237,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     $methodName = $stmt->name->toString();
 
                     // Check if this is an auth-related method
-                    $authMethods = ['login', 'authenticate', 'attempt', 'postLogin', 'handleLogin', 'store'];
+                    // Note: __invoke is included for single-action controllers (Laravel best practice)
+                    // e.g., class LoginController { public function __invoke() {...} }
+                    $authMethods = ['login', 'authenticate', 'attempt', 'postLogin', 'handleLogin', 'store', '__invoke'];
                     if (! in_array(strtolower($methodName), array_map('strtolower', $authMethods), true)) {
                         continue;
                     }
@@ -835,7 +837,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                             if ($stmt instanceof Node\Stmt\ClassMethod) {
                                 $methodName = $stmt->name->toString();
 
-                                if (in_array($methodName, ['login', 'authenticate', 'postLogin', 'attempt'], true)) {
+                                // Check for auth methods including __invoke (single-action controllers)
+                                if (in_array($methodName, ['login', 'authenticate', 'postLogin', 'attempt', '__invoke'], true)) {
                                     $issues[] = $this->createIssueWithSnippet(
                                         message: sprintf('Authentication method %s::%s() lacks rate limiting', $className, $methodName),
                                         filePath: $controllerPath,

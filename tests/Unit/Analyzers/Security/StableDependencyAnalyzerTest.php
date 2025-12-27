@@ -1270,4 +1270,189 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         // Should not flag this as operations
         $this->assertPassed($result);
     }
+
+    public function test_require_dev_unstable_with_stable_minimum_is_low_severity(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+            'require-dev' => [
+                'vendor/dev-tool' => 'dev-master',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be warning (Low severity) not failed (Medium severity)
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('dev-master', $result);
+        $this->assertHasIssueContaining('require-dev', $result);
+
+        // Verify severity is Low
+        $issues = $result->getIssues();
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'dev-master')) {
+                $this->assertEquals('low', $issue->severity->value);
+                break;
+            }
+        }
+    }
+
+    public function test_require_dev_unstable_without_explicit_stability_is_low_severity(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            // No minimum-stability (defaults to 'stable')
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+            'require-dev' => [
+                'vendor/dev-tool' => '1.0.0-beta',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be warning (Low severity)
+        $this->assertWarning($result);
+
+        // Verify the beta package has Low severity
+        $issues = $result->getIssues();
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, '1.0.0-beta')) {
+                $this->assertEquals('low', $issue->severity->value);
+                break;
+            }
+        }
+    }
+
+    public function test_require_dev_unstable_with_dev_minimum_is_medium_severity(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'dev',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+            'require-dev' => [
+                'vendor/dev-tool' => 'dev-master',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Verify the dev-master package has Medium severity (not Low)
+        // because minimum-stability is 'dev' (not 'stable')
+        $issues = $result->getIssues();
+        $foundMediumSeverity = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'dev-master') && str_contains($issue->message, 'require-dev')) {
+                $this->assertEquals('medium', $issue->severity->value);
+                $foundMediumSeverity = true;
+                break;
+            }
+        }
+        $this->assertTrue($foundMediumSeverity, 'Should find dev-master issue with Medium severity');
+    }
+
+    public function test_require_unstable_always_medium_severity(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+                'vendor/package' => 'dev-master',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should have at least one Medium severity issue
+        $issues = $result->getIssues();
+        $foundMediumSeverity = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'dev-master') && str_contains($issue->message, 'require')) {
+                $this->assertEquals('medium', $issue->severity->value);
+                $foundMediumSeverity = true;
+                break;
+            }
+        }
+        $this->assertTrue($foundMediumSeverity, 'Should find dev-master in require with Medium severity');
+    }
+
+    public function test_require_unstable_with_beta_minimum_is_medium_severity(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'beta',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+                'vendor/package' => '1.0.0-alpha',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Verify the alpha package in require has Medium severity
+        // Packages in 'require' always get Medium severity regardless of minimum-stability
+        $issues = $result->getIssues();
+        $foundMediumSeverity = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, '1.0.0-alpha') && str_contains($issue->message, 'require ')) {
+                $this->assertEquals('medium', $issue->severity->value);
+                $foundMediumSeverity = true;
+                break;
+            }
+        }
+        $this->assertTrue($foundMediumSeverity, 'Should find alpha package in require with Medium severity');
+    }
 }

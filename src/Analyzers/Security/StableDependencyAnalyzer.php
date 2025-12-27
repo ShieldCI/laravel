@@ -188,15 +188,18 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             );
         }
 
+        // Determine effective minimum-stability (null defaults to 'stable')
+        $effectiveStability = $minimumStability ?? 'stable';
+
         // Check for dev version constraints in require section
         if (isset($data['require']) && is_array($data['require'])) {
-            $this->checkVersionConstraints($data['require'], 'require', $issues, $composerJson);
+            $this->checkVersionConstraints($data['require'], 'require', $issues, $composerJson, $effectiveStability);
         }
 
         // Check for dev version constraints in require-dev section
-        // These can leak into production if minimum-stability is not "stable"
+        // Risk is lower when minimum-stability is "stable" since dev dependencies are isolated
         if (isset($data['require-dev']) && is_array($data['require-dev'])) {
-            $this->checkVersionConstraints($data['require-dev'], 'require-dev', $issues, $composerJson);
+            $this->checkVersionConstraints($data['require-dev'], 'require-dev', $issues, $composerJson, $effectiveStability);
         }
     }
 
@@ -250,9 +253,19 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check version constraints for unstable patterns.
+     *
+     * Severity is risk-based:
+     * - require-dev + stable minimum-stability: Low (isolated to dev environment)
+     * - require OR non-stable minimum-stability: Medium (can affect production)
      */
-    private function checkVersionConstraints(array $packages, string $section, array &$issues, string $composerJson): void
+    private function checkVersionConstraints(array $packages, string $section, array &$issues, string $composerJson, string $minimumStability): void
     {
+        // Calculate severity based on section and minimum-stability
+        // require-dev with stable minimum-stability is low risk (isolated to development)
+        $severity = ($section === 'require-dev' && $minimumStability === 'stable')
+            ? Severity::Low
+            : Severity::Medium;
+
         foreach ($packages as $package => $version) {
             if (! is_string($package) || ! is_string($version)) {
                 continue;
@@ -270,7 +283,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                 $issues[] = $this->createIssue(
                     message: sprintf('Package "%s" in %s requires unstable dev version: %s', $package, $section, $version),
                     location: new Location($this->getRelativePath($composerJson), $line),
-                    severity: Severity::Medium,
+                    severity: $severity,
                     recommendation: sprintf('Update "%s" to use a stable version constraint', $package),
                     code: FileParser::getCodeSnippet($composerJson, $line),
                     metadata: ['package' => $package, 'version' => $version, 'section' => $section]
@@ -286,7 +299,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                 $issues[] = $this->createIssue(
                     message: sprintf('Package "%s" in %s requires unstable version: %s', $package, $section, $version),
                     location: new Location($this->getRelativePath($composerJson), $line),
-                    severity: Severity::Medium,
+                    severity: $severity,
                     recommendation: sprintf('Remove @%s flag and use stable version for "%s"', $stabilityFlag, $package),
                     code: FileParser::getCodeSnippet($composerJson, $line),
                     metadata: ['package' => $package, 'version' => $version, 'stability' => $stabilityFlag, 'section' => $section]

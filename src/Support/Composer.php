@@ -139,4 +139,72 @@ class Composer extends BaseComposer
         // Fallback to line 1 if package not found
         return 1;
     }
+
+    /**
+     * Find the line number where a package is defined in composer.json.
+     *
+     * Searches for the package name within a specific section (require, require-dev)
+     * and returns the line number where it's defined (1-indexed).
+     *
+     * Handles nested objects by tracking brace depth to ensure accurate section boundaries.
+     *
+     * Format: "vendor/package": "^1.0"
+     *
+     * @param  string  $composerJsonPath  Path to composer.json file
+     * @param  string  $packageName  Composer package name (e.g., "vendor/package")
+     * @param  string  $section  Section name (require, require-dev, etc.)
+     * @return int Line number (1-indexed) or 1 if not found
+     */
+    public static function findPackageLineInJson(string $composerJsonPath, string $packageName, string $section = 'require'): int
+    {
+        if (! file_exists($composerJsonPath)) {
+            return 1;
+        }
+
+        $lines = file($composerJsonPath, FILE_IGNORE_NEW_LINES);
+
+        if ($lines === false || empty($lines)) {
+            return 1;
+        }
+
+        $inSection = false;
+        $braceDepth = 0;
+        $pattern = '/^\s*"'.preg_quote($packageName, '/').'"\s*:/';
+
+        foreach ($lines as $index => $line) {
+            // Check if we're entering the target section
+            if (! $inSection && preg_match('/^\s*"'.$section.'"\s*:/', $line) === 1) {
+                $inSection = true;
+                // Check if opening brace is on the same line
+                if (str_contains($line, '{')) {
+                    $braceDepth = substr_count($line, '{') - substr_count($line, '}');
+                }
+
+                continue;
+            }
+
+            // Track brace depth when in section to handle nested objects
+            if ($inSection) {
+                // Count opening and closing braces
+                $openBraces = substr_count($line, '{');
+                $closeBraces = substr_count($line, '}');
+                $braceDepth += $openBraces - $closeBraces;
+
+                // If depth returns to 0 or below, we've exited the section
+                if ($braceDepth <= 0) {
+                    $inSection = false;
+
+                    continue;
+                }
+
+                // Look for package name while in section
+                if (preg_match($pattern, $line) === 1) {
+                    return $index + 1;
+                }
+            }
+        }
+
+        // Fallback to line 1 if package not found
+        return 1;
+    }
 }

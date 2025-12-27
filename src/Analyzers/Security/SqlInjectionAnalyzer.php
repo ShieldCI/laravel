@@ -25,37 +25,76 @@ use ShieldCI\AnalyzersCore\ValueObjects\Issue;
  */
 class SqlInjectionAnalyzer extends AbstractFileAnalyzer
 {
-    private array $dangerousMethods = [
-        'raw',
-        'whereRaw',
-        'havingRaw',
-        'orderByRaw',
-        'selectRaw',
-        'unprepared',
-    ];
-
-    private array $userInputSources = [
-        '$_GET',
-        '$_POST',
-        '$_REQUEST',
-        '$_COOKIE',
-        'request(',
-        'Request::input',
-        'Request::get',
-        'Request::all',
-        'Request::query',
-        'Request::post',
-        'Request::cookie',
-        'Request::header',
-        'Request::route',
-        'Input::get',
-        'Input::all',
-        '$request->input',
-        '$request->get',
-        '$request->all',
-        '$request->query',
-        '$request->post',
-        '$request->cookie',
+    /**
+     * Database methods to check for SQL injection.
+     *
+     * Configuration:
+     * - alwaysFlag: If true, always flag (no vulnerability check needed)
+     * - checkStatic: Check static calls like DB::method()
+     * - checkInstance: Check instance calls like ->method()
+     * - recommendation: Custom recommendation message (optional)
+     */
+    private array $dbMethods = [
+        'raw' => [
+            'alwaysFlag' => false,
+            'checkStatic' => true,
+            'checkInstance' => false,
+            'recommendation' => 'Use parameter binding instead of string concatenation. Example: DB::raw("SELECT * FROM users WHERE id = ?", [$id])',
+        ],
+        'unprepared' => [
+            'alwaysFlag' => true,
+            'checkStatic' => true,
+            'checkInstance' => false,
+            'recommendation' => 'Avoid DB::unprepared() - use prepared statements with DB::select(), DB::insert(), etc. with parameter binding',
+        ],
+        'whereRaw' => [
+            'alwaysFlag' => false,
+            'checkStatic' => false,
+            'checkInstance' => true,
+            'recommendation' => 'Use parameter binding: ->whereRaw(\'column = ?\', [$value]) instead of concatenation',
+        ],
+        'havingRaw' => [
+            'alwaysFlag' => false,
+            'checkStatic' => false,
+            'checkInstance' => true,
+            'recommendation' => 'Use parameter binding: ->havingRaw(\'column = ?\', [$value]) instead of concatenation',
+        ],
+        'orderByRaw' => [
+            'alwaysFlag' => false,
+            'checkStatic' => false,
+            'checkInstance' => true,
+            'recommendation' => 'Use parameter binding: ->orderByRaw(\'column = ?\', [$value]) instead of concatenation',
+        ],
+        'selectRaw' => [
+            'alwaysFlag' => false,
+            'checkStatic' => false,
+            'checkInstance' => true,
+            'recommendation' => 'Use parameter binding: ->selectRaw(\'column = ?\', [$value]) instead of concatenation',
+        ],
+        'select' => [
+            'alwaysFlag' => false,
+            'checkStatic' => true,
+            'checkInstance' => false,
+            'recommendation' => 'Use parameter binding with placeholders',
+        ],
+        'insert' => [
+            'alwaysFlag' => false,
+            'checkStatic' => true,
+            'checkInstance' => false,
+            'recommendation' => 'Use parameter binding with placeholders',
+        ],
+        'update' => [
+            'alwaysFlag' => false,
+            'checkStatic' => true,
+            'checkInstance' => false,
+            'recommendation' => 'Use parameter binding with placeholders',
+        ],
+        'delete' => [
+            'alwaysFlag' => false,
+            'checkStatic' => true,
+            'checkInstance' => false,
+            'recommendation' => 'Use parameter binding with placeholders',
+        ],
     ];
 
     /**
@@ -118,75 +157,37 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            // Check for DB::raw() with string concatenation or variable interpolation
-            $rawCalls = $this->parser->findStaticCalls($ast, 'DB', 'raw');
-            foreach ($rawCalls as $call) {
-                if ($this->isVulnerable($call)) {
-                    $issues[] = $this->createSqlInjectionIssue(
-                        $file,
-                        $call,
-                        'DB::raw()',
-                        'Use parameter binding instead of string concatenation. Example: DB::raw("SELECT * FROM users WHERE id = ?", [$id])'
-                    );
-                }
-            }
-
-            // Check for DB::unprepared() - explicitly unsafe method
-            $unpreparedCalls = $this->parser->findStaticCalls($ast, 'DB', 'unprepared');
-            foreach ($unpreparedCalls as $call) {
-                $issues[] = $this->createSqlInjectionIssue(
-                    $file,
-                    $call,
-                    'DB::unprepared()',
-                    'Avoid DB::unprepared() - use prepared statements with DB::select(), DB::insert(), etc. with parameter binding'
-                );
-            }
-
-            // Check for dangerous query methods
-            foreach ($this->dangerousMethods as $method) {
-                if ($method === 'unprepared') {
-                    continue; // Already handled above
-                }
-
+            // Check all configured database methods in a single unified loop
+            foreach ($this->dbMethods as $method => $config) {
                 // Check static calls (DB::method)
-                $staticCalls = $this->parser->findStaticCalls($ast, 'DB', $method);
-                foreach ($staticCalls as $call) {
-                    if ($this->isVulnerable($call)) {
-                        $issues[] = $this->createSqlInjectionIssue(
-                            $file,
-                            $call,
-                            "DB::{$method}()",
-                            "Use parameter binding: DB::{$method}('column = ?', [\$value]) instead of concatenation"
-                        );
+                if ($config['checkStatic']) {
+                    $staticCalls = $this->parser->findStaticCalls($ast, 'DB', $method);
+                    foreach ($staticCalls as $call) {
+                        // Always flag if configured, otherwise check for vulnerabilities
+                        if ($config['alwaysFlag'] || $this->isVulnerable($call)) {
+                            $issues[] = $this->createSqlInjectionIssue(
+                                $file,
+                                $call,
+                                "DB::{$method}()",
+                                $config['recommendation']
+                            );
+                        }
                     }
                 }
 
-                // Check method calls (->method)
-                $methodCalls = $this->parser->findMethodCalls($ast, $method);
-                foreach ($methodCalls as $call) {
-                    if ($this->isVulnerable($call)) {
-                        $issues[] = $this->createSqlInjectionIssue(
-                            $file,
-                            $call,
-                            "{$method}()",
-                            "Use parameter binding: ->{$method}('column = ?', [\$value]) instead of concatenation"
-                        );
-                    }
-                }
-            }
-
-            // Check for DB::select/insert/update/delete with concatenation
-            $queryMethods = ['select', 'insert', 'update', 'delete'];
-            foreach ($queryMethods as $method) {
-                $calls = $this->parser->findStaticCalls($ast, 'DB', $method);
-                foreach ($calls as $call) {
-                    if ($this->isVulnerable($call)) {
-                        $issues[] = $this->createSqlInjectionIssue(
-                            $file,
-                            $call,
-                            "DB::{$method}()",
-                            'Use parameter binding with placeholders'
-                        );
+                // Check instance calls (->method)
+                if ($config['checkInstance']) {
+                    $methodCalls = $this->parser->findMethodCalls($ast, $method);
+                    foreach ($methodCalls as $call) {
+                        // Always flag if configured, otherwise check for vulnerabilities
+                        if ($config['alwaysFlag'] || $this->isVulnerable($call)) {
+                            $issues[] = $this->createSqlInjectionIssue(
+                                $file,
+                                $call,
+                                "{$method}()",
+                                $config['recommendation']
+                            );
+                        }
                     }
                 }
             }

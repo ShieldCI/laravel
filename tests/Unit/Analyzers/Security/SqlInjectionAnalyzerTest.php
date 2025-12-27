@@ -685,8 +685,8 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        // DB::raw gets detected twice (as static call and in method list), so 6 issues
-        $this->assertIssueCount(6, $result);
+        // 5 dangerous methods: raw, whereRaw, havingRaw, orderByRaw, selectRaw
+        $this->assertIssueCount(5, $result);
     }
 
     public function test_detects_multiple_native_functions_with_injection(): void

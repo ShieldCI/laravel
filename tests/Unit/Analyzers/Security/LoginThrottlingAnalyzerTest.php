@@ -709,4 +709,121 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    public function test_ast_based_detection_finds_rate_limiter_in_nested_auth_method(): void
+    {
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\RateLimiter;
+
+class AuthController
+{
+    public function login()
+    {
+        // Complex nested structure that might confuse brace-depth tracking
+        $validator = function () {
+            if (true) {
+                return ['error' => 'Invalid {braces} in string'];
+            }
+        };
+
+        // RateLimiter usage nested deep in the method
+        if (RateLimiter::tooManyAttempts('login:'.$request->ip(), 5)) {
+            return response()->json(['error' => 'Too many attempts'], 429);
+        }
+
+        return $this->attemptLogin();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/AuthController.php' => $controllerCode,
+            'routes/web.php' => '<?php // empty',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because AST detects RateLimiter usage in login method
+        $this->assertPassed($result);
+    }
+
+    public function test_breeze_with_default_fortify_passes(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [
+        {
+            "name": "laravel/breeze",
+            "version": "1.0.0"
+        },
+        {
+            "name": "laravel/fortify",
+            "version": "1.0.0"
+        }
+    ]
+}
+JSON;
+
+        // Breeze with default Fortify routes (no custom routes/auth.php)
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+            'routes/web.php' => '<?php // empty - uses Fortify routes',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - Breeze uses Fortify which includes throttling by default
+        // No custom routes/auth.php means using defaults
+        $this->assertPassed($result);
+    }
+
+    public function test_breeze_with_custom_unthrottled_routes_fails(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [
+        {
+            "name": "laravel/breeze",
+            "version": "1.0.0"
+        }
+    ]
+}
+JSON;
+
+        $authRoutes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Auth\LoginController;
+
+Route::post('/login', [LoginController::class, 'store']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+            'routes/auth.php' => $authRoutes,
+            'routes/web.php' => '<?php // empty',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - custom routes without throttling
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('custom authentication routes', $result);
+    }
 }

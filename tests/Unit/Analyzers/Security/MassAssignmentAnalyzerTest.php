@@ -1406,4 +1406,204 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    public function test_detects_fully_qualified_model_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController extends Controller
+{
+    public function store()
+    {
+        return \App\Models\User::create(request()->all());
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('create()', $result);
+        $this->assertHasIssueContaining('unfiltered request data', $result);
+    }
+
+    public function test_detects_model_with_use_statement(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController extends Controller
+{
+    public function store()
+    {
+        return User::create(request()->all());
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('create()', $result);
+    }
+
+    public function test_skips_non_model_facade_classes(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class CacheController extends Controller
+{
+    public function store()
+    {
+        // Cache::create() is not a model - should not be flagged
+        Cache::create(['key' => request()->all()]);
+
+        // Storage::insert() is not a model - should not be flagged
+        Storage::insert(['data' => request()->all()]);
+
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/CacheController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because Cache and Storage are not models
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_model_in_custom_namespace(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Domain\Users\Models\User;
+
+class UserController extends Controller
+{
+    public function store()
+    {
+        return User::create(request()->all());
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('create()', $result);
+    }
+
+    public function test_detects_model_existing_in_models_directory(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController extends Controller
+{
+    public function store()
+    {
+        // Even without use statement, if User.php exists in app/Models, detect it
+        return User::create(request()->all());
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('create()', $result);
+    }
+
+    public function test_handles_factory_class_without_false_positive(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class TestController extends Controller
+{
+    public function test()
+    {
+        // Factory::create() should not be flagged as it's not a model
+        Factory::create(['data' => request()->all()]);
+
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/TestController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

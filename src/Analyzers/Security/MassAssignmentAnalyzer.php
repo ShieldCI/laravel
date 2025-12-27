@@ -244,7 +244,10 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
             $calls = $this->findStaticMethodCalls($ast, $method);
 
             foreach ($calls as $call) {
-                $this->checkCallForRequestData($call, $method, 'static', $file, $issues);
+                // Only check if it's likely a model class to avoid false positives
+                if ($this->isLikelyModelClass($call, $file)) {
+                    $this->checkCallForRequestData($call, $method, 'static', $file, $issues);
+                }
             }
         }
 
@@ -258,6 +261,98 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 }
             }
         }
+    }
+
+    /**
+     * Check if a static call is likely on an Eloquent model.
+     *
+     * This reduces false positives by filtering out service classes, factories, etc.
+     * that might have create() methods but aren't Eloquent models.
+     */
+    private function isLikelyModelClass(Node\Expr\StaticCall $call, string $file): bool
+    {
+        if (! $call->class instanceof Node\Name) {
+            return false;
+        }
+
+        $className = $call->class->toString();
+
+        // Handle fully-qualified class names like \App\Models\User
+        if (str_starts_with($className, '\\')) {
+            // Remove leading backslash for checking
+            $normalizedClassName = ltrim($className, '\\');
+
+            // Check if it's in App\Models namespace
+            if (str_starts_with($normalizedClassName, 'App\\Models\\') ||
+                str_starts_with($normalizedClassName, 'App\\Model\\')) {
+                return true;
+            }
+
+            // Check if it matches common model namespaces
+            if (str_contains($normalizedClassName, '\\Models\\') ||
+                str_contains($normalizedClassName, '\\Model\\')) {
+                return true;
+            }
+        }
+
+        // For unqualified names, check if the model exists in app/Models
+        $modelsPath = $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Models';
+        $modelFile = $modelsPath.DIRECTORY_SEPARATOR.$className.'.php';
+
+        if (file_exists($modelFile)) {
+            return true;
+        }
+
+        // Check if the file has a use statement importing this class from Models namespace
+        $content = FileParser::readFile($file);
+        if ($content !== null) {
+            $quotedClassName = preg_quote($className, '/');
+
+            // Match: use App\Models\ClassName;
+            if (preg_match('/use\s+App\\\\Models\\\\'.$quotedClassName.'\s*;/i', $content)) {
+                return true;
+            }
+
+            // Match: use App\Model\ClassName;
+            if (preg_match('/use\s+App\\\\Model\\\\'.$quotedClassName.'\s*;/i', $content)) {
+                return true;
+            }
+
+            // Match any namespace with Models in it
+            if (preg_match('/use\s+[\w\\\\]+\\\\Models\\\\'.$quotedClassName.'\s*;/i', $content)) {
+                return true;
+            }
+        }
+
+        // If we can't determine it's NOT a model, be conservative and check it
+        // This ensures we don't miss actual models while reducing obvious false positives
+        // Only skip if it's clearly a known non-model class
+        $nonModelPatterns = [
+            'DB',
+            'Cache',
+            'Session',
+            'Auth',
+            'Hash',
+            'Crypt',
+            'Storage',
+            'File',
+            'Queue',
+            'Event',
+            'Mail',
+            'Notification',
+            'Log',
+            'Validator',
+            'Factory',
+            'Seeder',
+        ];
+
+        if (in_array($className, $nonModelPatterns, true)) {
+            return false;
+        }
+
+        // Default to true for unknown classes to avoid missing models
+        // Better to have occasional false positive than miss actual vulnerabilities
+        return true;
     }
 
     /**

@@ -25,8 +25,6 @@ use Throwable;
  */
 class StableDependencyAnalyzer extends AbstractFileAnalyzer
 {
-    private const PREFER_STABLE_CHANGE_PATTERNS = ['Upgrading', 'Downgrading'];
-
     public function __construct(
         private Composer $composer
     ) {}
@@ -369,15 +367,57 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
         }
     }
 
+    /**
+     * Check if composer update --prefer-stable would make changes.
+     *
+     * Uses locale-independent pattern matching to detect package changes:
+     * - Looks for package name patterns (vendor/package)
+     * - Detects indented lines starting with "-" (package operations)
+     * - Checks for version number patterns
+     *
+     * This avoids reliance on English text like "Upgrading" or "Downgrading"
+     * which break with non-English locales or Composer output changes.
+     */
     private function preferStableRunChangesDependencies(string $output): bool
     {
-        foreach (self::PREFER_STABLE_CHANGE_PATTERNS as $pattern) {
-            if (str_contains($output, $pattern)) {
-                return true;
+        if (empty($output)) {
+            return false;
+        }
+
+        // Split output into lines for analysis
+        $lines = explode("\n", $output);
+
+        // Track if we see package operations
+        $hasPackageOperations = false;
+
+        foreach ($lines as $line) {
+            $trimmedLine = trim($line);
+
+            // Skip empty lines
+            if ($trimmedLine === '') {
+                continue;
+            }
+
+            // Pattern 1: Look for indented lines starting with "-" (Composer's operation indicator)
+            // Example: "  - Upgrading vendor/package (1.0 => 2.0)"
+            // The "-" is locale-independent
+            if (preg_match('/^\s+-\s/', $line)) {
+                // Verify it contains a package name pattern (vendor/package)
+                if (preg_match('/[a-z0-9_-]+\/[a-z0-9_-]+/i', $line)) {
+                    $hasPackageOperations = true;
+                    break;
+                }
+            }
+
+            // Pattern 2: Look for version change indicators (locale-independent)
+            // Example: "vendor/package (1.0.0 => 2.0.0)" or "vendor/package (1.0.0 -> 2.0.0)"
+            if (preg_match('/[a-z0-9_-]+\/[a-z0-9_-]+\s+\([^)]*(?:=>|->)[^)]*\)/i', $trimmedLine)) {
+                $hasPackageOperations = true;
+                break;
             }
         }
 
-        return false;
+        return $hasPackageOperations;
     }
 
     /**

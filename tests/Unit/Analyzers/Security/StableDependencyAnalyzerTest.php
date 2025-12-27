@@ -1067,4 +1067,207 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
             'build-metadata' => ['1.0.0+20240101', 'Build metadata'],
         ];
     }
+
+    public function test_detects_composer_changes_with_english_output(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        // Mock Composer output with English text (current format)
+        $composerOutput = <<<'OUTPUT'
+        Loading composer repositories with package information
+        Updating dependencies
+        Lock file operations: 0 installs, 1 update, 0 removals
+          - Upgrading vendor/package (1.0.0 => 2.0.0)
+        Writing lock file
+        OUTPUT;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock->method('updateDryRun')->willReturn($composerOutput);
+
+        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('would modify installed packages', $result);
+    }
+
+    public function test_detects_composer_changes_with_arrow_notation(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        // Mock output using -> instead of => (alternative format)
+        $composerOutput = <<<'OUTPUT'
+        Package operations:
+        vendor/package (1.0.0 -> 2.0.0)
+        vendor/another (dev-master -> 1.0.0)
+        OUTPUT;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock->method('updateDryRun')->willReturn($composerOutput);
+
+        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('would modify installed packages', $result);
+    }
+
+    public function test_detects_composer_changes_locale_independent(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        // Mock output in hypothetical non-English format
+        // The key is the structural pattern: "  - vendor/package (...)"
+        $composerOutput = <<<'OUTPUT'
+        Chargement des dépôts
+        Mise à jour des dépendances
+          - symfony/console (5.0.0 => 6.0.0)
+          - doctrine/orm (2.0.0 => 3.0.0)
+        OUTPUT;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock->method('updateDryRun')->willReturn($composerOutput);
+
+        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect changes despite French text
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('would modify installed packages', $result);
+    }
+
+    public function test_no_false_positive_when_no_changes(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        // Mock output when no changes would be made
+        $composerOutput = <<<'OUTPUT'
+        Loading composer repositories with package information
+        Updating dependencies
+        Nothing to modify in lock file
+        Writing lock file
+        OUTPUT;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock->method('updateDryRun')->willReturn($composerOutput);
+
+        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass when no changes detected
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_empty_composer_output(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock->method('updateDryRun')->willReturn('');
+
+        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass when output is empty
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_package_names_in_non_operation_lines(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        // Output that mentions packages but has no actual operations
+        $composerOutput = <<<'OUTPUT'
+        Analyzing vendor/package-a
+        Analyzing vendor/package-b
+        All packages are up to date
+        OUTPUT;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock->method('updateDryRun')->willReturn($composerOutput);
+
+        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should not flag this as operations
+        $this->assertPassed($result);
+    }
 }

@@ -139,11 +139,29 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         // Check minimum-stability setting
-        $minimumStability = isset($data['minimum-stability']) && is_string($data['minimum-stability'])
-            ? $data['minimum-stability']
-            : 'stable';
+        // Differentiate between explicit "stable", implicit default (missing), and dangerous values
+        $hasExplicitStability = isset($data['minimum-stability']) && is_string($data['minimum-stability']);
+        $minimumStability = $hasExplicitStability ? $data['minimum-stability'] : null;
 
-        if ($minimumStability !== 'stable') {
+        if ($minimumStability === null) {
+            // Case 1: Missing (implicit default) - using Composer's default but possibly unaware
+            $issues[] = $this->createIssue(
+                message: 'Composer minimum-stability is not explicitly set (using implicit default "stable")',
+                location: new Location($this->getRelativePath($composerJson), 1),
+                severity: Severity::Low,
+                recommendation: 'Explicitly set "minimum-stability": "stable" in composer.json to document your stability requirements',
+                code: FileParser::getCodeSnippet($composerJson, 1),
+                metadata: [
+                    'minimum_stability' => 'implicit_default',
+                    'composer_default' => 'stable',
+                    'issue_type' => 'missing_explicit_stability',
+                ]
+            );
+        } elseif ($minimumStability !== 'stable' && $minimumStability !== null) {
+            // Case 2: Dangerous values (dev, alpha, beta, RC)
+            // Type assertion for PHPStan: $minimumStability is guaranteed to be a string here
+            assert(is_string($minimumStability));
+
             $line = $this->findMinimumStabilityLine($composerJson);
             $issues[] = $this->createIssue(
                 message: sprintf('Composer minimum-stability is set to "%s" instead of "stable"', $minimumStability),
@@ -151,9 +169,13 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                 severity: Severity::Medium,
                 recommendation: 'Set "minimum-stability": "stable" in composer.json to prefer stable package versions',
                 code: FileParser::getCodeSnippet($composerJson, $line),
-                metadata: ['minimum_stability' => $minimumStability]
+                metadata: [
+                    'minimum_stability' => $minimumStability,
+                    'issue_type' => 'unstable_minimum_stability',
+                ]
             );
         }
+        // Case 3: Explicit "stable" - good! No issue to report
 
         // Check if prefer-stable is enabled
         if (! isset($data['prefer-stable']) || $data['prefer-stable'] !== true) {

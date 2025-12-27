@@ -90,6 +90,44 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
+    public function test_flags_missing_minimum_stability_as_low_severity(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            // Missing minimum-stability - using implicit default
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+                'laravel/framework' => '^10.0',
+            ],
+        ]);
+
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'laravel/framework',
+                    'version' => '10.0.0',
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be warning (Low severity), not failed
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('minimum-stability is not explicitly set', $result);
+        $this->assertHasIssueContaining('implicit default', $result);
+    }
+
     public function test_fails_when_minimum_stability_is_dev(): void
     {
         $composerJson = json_encode([

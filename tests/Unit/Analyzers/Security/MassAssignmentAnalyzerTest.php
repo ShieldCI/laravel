@@ -734,6 +734,58 @@ PHP;
         $this->assertHasIssueContaining('create()', $result);
     }
 
+    public function test_detects_request_except_with_correct_severity_and_message(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController extends Controller
+{
+    public function update()
+    {
+        $user = User::find(1);
+        $user->update(request()->except(['password']));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name", "email"]; }',
+            'Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        // Verify the issue is reported with High severity (not Critical)
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        $exceptIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'blacklist filtering')) {
+                $exceptIssue = $issue;
+                break;
+            }
+        }
+
+        $this->assertNotNull($exceptIssue, 'Should find an issue with blacklist filtering message');
+        $this->assertEquals('high', $exceptIssue->severity->value);
+        $this->assertStringContainsString('blacklist filtering', $exceptIssue->message);
+        $this->assertStringContainsString('except', $exceptIssue->message);
+        $this->assertStringContainsString('only', $exceptIssue->recommendation);
+        $this->assertStringContainsString('Whitelist', $exceptIssue->recommendation);
+    }
+
     public function test_detects_input_facade(): void
     {
         $code = <<<'PHP'

@@ -63,7 +63,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
     ];
 
     /**
-     * Request data retrieval methods that are dangerous.
+     * Request data retrieval methods that are dangerous (unfiltered).
      */
     private const REQUEST_DATA_METHODS = [
         'all',
@@ -71,8 +71,18 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
         'post',
         'get',
         'query',
-        'except',
         'json',
+    ];
+
+    /**
+     * Request data methods using blacklist filtering (less safe than whitelist).
+     *
+     * These methods DO filter data, but use negative filtering (blacklist)
+     * rather than positive filtering (whitelist). New fields are automatically
+     * included, making them less safe than only() or validated().
+     */
+    private const BLACKLIST_REQUEST_METHODS = [
+        'except',
     ];
 
     public function __construct(
@@ -347,6 +357,33 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
         }
 
         foreach ($call->args as $arg) {
+            // Check for blacklist filtering first (except)
+            if ($this->isBlacklistRequestData($arg->value)) {
+                $callTypeLabel = match ($callType) {
+                    'static' => 'Static call to',
+                    'instance' => 'Instance call to',
+                    'builder' => 'Query builder call to',
+                    default => 'Call to',
+                };
+
+                $issues[] = $this->createIssueWithSnippet(
+                    message: "{$callTypeLabel} {$method}() uses blacklist filtering (except) which may allow unintended fields",
+                    filePath: $file,
+                    lineNumber: $call->getLine(),
+                    severity: Severity::High,
+                    recommendation: 'Use request()->only([...]) or request()->validated() instead of except() for better security. Whitelist (only) is safer than blacklist (except) as new fields are excluded by default',
+                    metadata: [
+                        'method' => $method,
+                        'call_type' => $callType,
+                        'filtering_type' => 'blacklist',
+                        'issue_type' => 'dangerous_method_with_blacklist_filtering',
+                    ]
+                );
+
+                return; // Don't double-report
+            }
+
+            // Check for unfiltered request data
             if ($this->isRequestData($arg->value)) {
                 $callTypeLabel = match ($callType) {
                     'static' => 'Static call to',
@@ -364,6 +401,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     metadata: [
                         'method' => $method,
                         'call_type' => $callType,
+                        'filtering_type' => 'none',
                         'issue_type' => 'dangerous_method_with_request_data',
                     ]
                 );
@@ -372,6 +410,62 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 break;
             }
         }
+    }
+
+    /**
+     * Check if a node represents blacklist-filtered request data (except).
+     *
+     * These methods DO filter, but use blacklist approach which is less safe.
+     */
+    private function isBlacklistRequestData(Node $node): bool
+    {
+        // Check for request()->except() patterns
+        if ($node instanceof Node\Expr\MethodCall) {
+            if ($node->name instanceof Node\Identifier) {
+                $methodName = $node->name->toString();
+
+                // Check if it's a blacklist request method
+                if (in_array($methodName, self::BLACKLIST_REQUEST_METHODS, true)) {
+                    // Called on request() function
+                    if ($node->var instanceof Node\Expr\FuncCall) {
+                        if ($node->var->name instanceof Node\Name && $node->var->name->toString() === 'request') {
+                            // Only flag if except() has arguments (it should always have args)
+                            // except() with no args would be meaningless and return all data
+                            return true;
+                        }
+                    }
+
+                    // Called on $request variable
+                    if ($node->var instanceof Node\Expr\Variable && $node->var->name === 'request') {
+                        return true;
+                    }
+
+                    // Called on Request facade or type-hinted parameter
+                    if ($node->var instanceof Node\Expr\Variable) {
+                        // This could be a FormRequest or Request parameter
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Check for Request::except() static calls
+        if ($node instanceof Node\Expr\StaticCall) {
+            if ($node->name instanceof Node\Identifier) {
+                $methodName = $node->name->toString();
+
+                if (in_array($methodName, self::BLACKLIST_REQUEST_METHODS, true)) {
+                    if ($node->class instanceof Node\Name) {
+                        $className = $node->class->toString();
+                        if (str_contains($className, 'Request')) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

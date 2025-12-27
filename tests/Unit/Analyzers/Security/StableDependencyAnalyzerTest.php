@@ -955,4 +955,116 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $this->assertTrue($found, 'Should find unstable package issue with accurate line number');
     }
+
+    /**
+     * @dataProvider unstableVersionFormatsProvider
+     */
+    public function test_detects_all_composer_unstable_version_formats(string $version, string $description): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+                'vendor/package' => $version,
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining($version, $result);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function unstableVersionFormatsProvider(): array
+    {
+        return [
+            'dash-alpha' => ['1.0.0-alpha', 'Standard alpha with dash'],
+            'no-dash-alpha' => ['1.0.0alpha', 'Alpha without dash'],
+            'v-prefix-alpha' => ['v1.0.0-alpha', 'Alpha with v prefix and dash'],
+            'v-prefix-no-dash-alpha' => ['v1.0.0alpha', 'Alpha with v prefix no dash'],
+            'alpha-dot-number' => ['1.0.0-alpha.1', 'Alpha with dot separator'],
+            'alpha-number' => ['1.0.0-alpha1', 'Alpha with number suffix'],
+            'alpha-no-dash-number' => ['1.0.0alpha1', 'Alpha no dash with number'],
+
+            'dash-beta' => ['1.0.0-beta', 'Standard beta with dash'],
+            'no-dash-beta' => ['1.0.0beta', 'Beta without dash'],
+            'v-prefix-beta' => ['v1.0.0-beta', 'Beta with v prefix and dash'],
+            'v-prefix-no-dash-beta' => ['v1.0.0beta', 'Beta with v prefix no dash'],
+            'beta-dot-number' => ['1.0.0-beta.2', 'Beta with dot separator'],
+            'beta-number' => ['1.0.0-beta2', 'Beta with number suffix'],
+            'beta-no-dash-number' => ['1.0.0beta2', 'Beta no dash with number'],
+
+            'dash-rc' => ['1.0.0-RC', 'Standard RC with dash'],
+            'no-dash-rc' => ['1.0.0RC', 'RC without dash'],
+            'v-prefix-rc' => ['v1.0.0-RC', 'RC with v prefix and dash'],
+            'v-prefix-no-dash-rc' => ['v1.0.0RC', 'RC with v prefix no dash'],
+            'rc-dot-number' => ['1.0.0-RC.1', 'RC with dot separator'],
+            'rc-number' => ['1.0.0-RC1', 'RC with number suffix'],
+            'rc-no-dash-number' => ['1.0.0RC1', 'RC no dash with number'],
+
+            'dev-master' => ['dev-master', 'Dev master branch'],
+            'dev-main' => ['dev-main', 'Dev main branch'],
+            'version-dev' => ['2.0.x-dev', 'Dev version suffix'],
+        ];
+    }
+
+    /**
+     * @dataProvider stableVersionFormatsProvider
+     */
+    public function test_does_not_flag_stable_version_formats(string $version, string $description): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+                'vendor/package' => $version,
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - no unstable versions detected
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function stableVersionFormatsProvider(): array
+    {
+        return [
+            'simple-version' => ['1.0.0', 'Simple semantic version'],
+            'v-prefix-stable' => ['v1.0.0', 'Stable with v prefix'],
+            'caret-constraint' => ['^1.0', 'Caret version constraint'],
+            'tilde-constraint' => ['~1.0.0', 'Tilde version constraint'],
+            'exact-constraint' => ['1.0.0', 'Exact version'],
+            'wildcard' => ['1.0.*', 'Wildcard version'],
+            'range' => ['>=1.0.0 <2.0.0', 'Version range'],
+            'patch-suffix' => ['1.0.0-patch1', 'Patch suffix (not unstable flag)'],
+            'build-metadata' => ['1.0.0+20240101', 'Build metadata'],
+        ];
+    }
 }

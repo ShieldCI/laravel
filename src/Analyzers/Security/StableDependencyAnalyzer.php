@@ -204,6 +204,12 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if version string indicates an unstable release.
+     *
+     * Matches Composer's stability flags including:
+     * - dev-master, dev-main, 2.0.x-dev
+     * - 1.0.0-alpha, 1.0.0alpha, v1.0.0-alpha
+     * - 1.0.0-beta.2, 1.0.0beta1, v1.0.0-beta
+     * - 1.0.0-RC1, 1.0.0RC, v1.0.0RC1
      */
     private function isUnstableVersion(string $version): bool
     {
@@ -214,9 +220,17 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             return true;
         }
 
-        // Check for alpha/beta/RC with various formats
-        // Matches: 1.0.0-alpha, v1.0.0-beta1, 2.0.0-RC1, etc.
-        if (preg_match('/-(alpha|beta|rc)([.\d-]*)$/i', $lowerVersion)) {
+        // Strip optional 'v' prefix for consistent matching
+        $cleanVersion = preg_replace('/^v/', '', $lowerVersion);
+        if ($cleanVersion === null) {
+            return false; // preg_replace error
+        }
+
+        // Check for alpha/beta/RC with various Composer-valid formats
+        // Matches with or without dash: 1.0.0-alpha, 1.0.0alpha, 1.0.0RC1
+        // Matches with dot separators: 1.0.0-beta.2, 1.0.0alpha.1
+        // Matches with numeric suffixes: 1.0.0-RC1, 1.0.0beta2
+        if (preg_match('/-?(alpha|beta|rc)([.\d-]*)$/i', $cleanVersion)) {
             return true;
         }
 

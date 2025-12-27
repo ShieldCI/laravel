@@ -508,12 +508,12 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_skips_api_routes_file(): void
+    public function test_detects_api_login_routes(): void
     {
         $routeCode = <<<'PHP'
 <?php
 
-// API routes typically use token auth
+// API routes also need throttling to prevent brute force
 Route::post('/auth/login', [ApiAuthController::class, 'login']);
 PHP;
 
@@ -527,8 +527,9 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // api.php is skipped (line 147-148)
-        $this->assertPassed($result);
+        // Should fail - API login route without throttle
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('auth/login', $result);
     }
 
     public function test_detects_signin_route_variant(): void
@@ -961,5 +962,151 @@ PHP;
         // Should fail - no throttle in web middleware group
         $this->assertFailed($result);
         $this->assertHasIssueContaining('login', $result);
+    }
+
+    public function test_passes_with_throttle_in_api_middleware_group(): void
+    {
+        $kernelCode = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+use Illuminate\Routing\Middleware\ThrottleRequests;
+
+class Kernel extends HttpKernel
+{
+    protected $middlewareGroups = [
+        'api' => [
+            ThrottleRequests::class.':60,1',
+        ],
+    ];
+}
+PHP;
+
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/login', [ApiAuthController::class, 'login']);
+Route::post('/token', [OAuthController::class, 'issueToken']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Kernel.php' => $kernelCode,
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - throttle is in api middleware group
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_laravel_11_throttle_in_api_bootstrap(): void
+    {
+        $bootstrapCode = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Routing\Middleware\ThrottleRequests;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function (Middleware $middleware) {
+        $middleware->api(append: [
+            ThrottleRequests::class.':60,1',
+        ]);
+    })
+    ->create();
+PHP;
+
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/login', [ApiAuthController::class, 'login']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapCode,
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - Laravel 11+ throttle in api middleware
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_api_route_without_throttle(): void
+    {
+        $kernelCode = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+
+class Kernel extends HttpKernel
+{
+    protected $middlewareGroups = [
+        'api' => [
+            // No throttle middleware
+        ],
+    ];
+}
+PHP;
+
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/login', [ApiAuthController::class, 'login']);
+Route::post('/oauth/token', [AccessTokenController::class, 'issueToken']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Kernel.php' => $kernelCode,
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - API routes without throttle
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('API authentication', $result);
+    }
+
+    public function test_detects_sanctum_token_endpoints(): void
+    {
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/sanctum/token', [SanctumController::class, 'createToken']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - token endpoint without throttle
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('sanctum/token', $result);
     }
 }

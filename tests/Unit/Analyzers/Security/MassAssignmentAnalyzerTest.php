@@ -1106,4 +1106,304 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('updateOrInsert()', $result);
     }
+
+    public function test_detects_nested_request_data_in_array(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController extends Controller
+{
+    public function store()
+    {
+        return User::create([
+            'name' => request()->all()['name'],
+            'email' => request()->all()['email'],
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('create()', $result);
+        $this->assertHasIssueContaining('unfiltered request data', $result);
+    }
+
+    public function test_detects_nested_request_except_in_array(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController extends Controller
+{
+    public function store()
+    {
+        return User::create([
+            'name' => request()->except(['password'])['name'],
+            'email' => request()->except(['password'])['email'],
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('create()', $result);
+        $this->assertHasIssueContaining('blacklist filtering', $result);
+
+        // Verify it's High severity (not Critical)
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        $found = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'blacklist filtering')) {
+                $this->assertEquals('high', $issue->severity->value);
+                $found = true;
+                break;
+            }
+        }
+
+        $this->assertTrue($found, 'Should find a blacklist filtering issue');
+    }
+
+    public function test_detects_array_dimension_fetch_with_request_data(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController extends Controller
+{
+    public function update()
+    {
+        $user = User::find(1);
+        $user->update([
+            'name' => request()->input()['name'],
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('update()', $result);
+    }
+
+    public function test_detects_request_data_in_ternary(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController extends Controller
+{
+    public function store()
+    {
+        return User::create([
+            'name' => true ? request()->all()['name'] : 'default',
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('create()', $result);
+    }
+
+    public function test_detects_request_data_in_string_concatenation(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController extends Controller
+{
+    public function store()
+    {
+        return User::create([
+            'name' => 'Mr. ' . request()->all()['name'],
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('create()', $result);
+    }
+
+    public function test_detects_request_data_in_cast(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController extends Controller
+{
+    public function store()
+    {
+        return User::create([
+            'name' => (string) request()->all()['name'],
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('create()', $result);
+    }
+
+    public function test_passes_with_nested_validated_data(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController extends Controller
+{
+    public function store()
+    {
+        return User::create([
+            'name' => request()->validated()['name'],
+            'email' => request()->validated()['email'],
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name", "email"]; }',
+            'Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_nested_only_data(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController extends Controller
+{
+    public function store()
+    {
+        return User::create([
+            'name' => request()->only(['name', 'email'])['name'],
+            'email' => request()->only(['name', 'email'])['email'],
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name", "email"]; }',
+            'Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

@@ -357,8 +357,8 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
         }
 
         foreach ($call->args as $arg) {
-            // Check for blacklist filtering first (except)
-            if ($this->isBlacklistRequestData($arg->value)) {
+            // Recursively check for blacklist filtering first (except)
+            if ($this->containsBlacklistRequestData($arg->value)) {
                 $callTypeLabel = match ($callType) {
                     'static' => 'Static call to',
                     'instance' => 'Instance call to',
@@ -383,8 +383,8 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 return; // Don't double-report
             }
 
-            // Check for unfiltered request data
-            if ($this->isRequestData($arg->value)) {
+            // Recursively check for unfiltered request data
+            if ($this->containsRequestData($arg->value)) {
                 $callTypeLabel = match ($callType) {
                     'static' => 'Static call to',
                     'instance' => 'Instance call to',
@@ -410,6 +410,162 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 break;
             }
         }
+    }
+
+    /**
+     * Recursively check if a node or its children contain blacklist-filtered request data.
+     *
+     * This traverses the entire expression tree to find nested request data patterns
+     * like: ['name' => $request->except(['password'])['name']]
+     */
+    private function containsBlacklistRequestData(Node $node): bool
+    {
+        // Direct check: is this node itself blacklist request data?
+        if ($this->isBlacklistRequestData($node)) {
+            return true;
+        }
+
+        // Traverse arrays: check all array items
+        if ($node instanceof Node\Expr\Array_) {
+            foreach ($node->items as $item) {
+                if ($item === null) {
+                    continue;
+                }
+
+                // Check both key and value
+                if ($item->key !== null && $this->containsBlacklistRequestData($item->key)) {
+                    return true;
+                }
+
+                if ($this->containsBlacklistRequestData($item->value)) {
+                    return true;
+                }
+            }
+        }
+
+        // Traverse array dimension access: $request->except()['name']
+        if ($node instanceof Node\Expr\ArrayDimFetch) {
+            if ($this->containsBlacklistRequestData($node->var)) {
+                return true;
+            }
+
+            if ($node->dim !== null && $this->containsBlacklistRequestData($node->dim)) {
+                return true;
+            }
+        }
+
+        // Traverse ternary expressions: condition ? true : false
+        if ($node instanceof Node\Expr\Ternary) {
+            if ($this->containsBlacklistRequestData($node->cond)) {
+                return true;
+            }
+
+            if ($node->if !== null && $this->containsBlacklistRequestData($node->if)) {
+                return true;
+            }
+
+            if ($this->containsBlacklistRequestData($node->else)) {
+                return true;
+            }
+        }
+
+        // Traverse binary operations: $a . $b, $a + $b, etc.
+        if ($node instanceof Node\Expr\BinaryOp) {
+            if ($this->containsBlacklistRequestData($node->left)) {
+                return true;
+            }
+
+            if ($this->containsBlacklistRequestData($node->right)) {
+                return true;
+            }
+        }
+
+        // Traverse cast expressions: (string) $request->except()
+        if ($node instanceof Node\Expr\Cast) {
+            if ($this->containsBlacklistRequestData($node->expr)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Recursively check if a node or its children contain unfiltered request data.
+     *
+     * This traverses the entire expression tree to find nested request data patterns
+     * like: ['name' => $request->all()['name']]
+     */
+    private function containsRequestData(Node $node): bool
+    {
+        // Direct check: is this node itself request data?
+        if ($this->isRequestData($node)) {
+            return true;
+        }
+
+        // Traverse arrays: check all array items
+        if ($node instanceof Node\Expr\Array_) {
+            foreach ($node->items as $item) {
+                if ($item === null) {
+                    continue;
+                }
+
+                // Check both key and value
+                if ($item->key !== null && $this->containsRequestData($item->key)) {
+                    return true;
+                }
+
+                if ($this->containsRequestData($item->value)) {
+                    return true;
+                }
+            }
+        }
+
+        // Traverse array dimension access: $request->all()['name']
+        if ($node instanceof Node\Expr\ArrayDimFetch) {
+            if ($this->containsRequestData($node->var)) {
+                return true;
+            }
+
+            if ($node->dim !== null && $this->containsRequestData($node->dim)) {
+                return true;
+            }
+        }
+
+        // Traverse ternary expressions: condition ? true : false
+        if ($node instanceof Node\Expr\Ternary) {
+            if ($this->containsRequestData($node->cond)) {
+                return true;
+            }
+
+            if ($node->if !== null && $this->containsRequestData($node->if)) {
+                return true;
+            }
+
+            if ($this->containsRequestData($node->else)) {
+                return true;
+            }
+        }
+
+        // Traverse binary operations: $a . $b, $a + $b, etc.
+        if ($node instanceof Node\Expr\BinaryOp) {
+            if ($this->containsRequestData($node->left)) {
+                return true;
+            }
+
+            if ($this->containsRequestData($node->right)) {
+                return true;
+            }
+        }
+
+        // Traverse cast expressions: (string) $request->all()
+        if ($node instanceof Node\Expr\Cast) {
+            if ($this->containsRequestData($node->expr)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

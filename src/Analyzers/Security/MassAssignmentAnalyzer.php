@@ -166,7 +166,25 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        if (str_contains($content, 'namespace App\\Models')) {
+        // Check if in App\Models namespace (but NOT subdirectories like Scopes, Observers, Casts)
+        // Match "namespace App\Models;" or "namespace App\Models\{ModelName}"
+        // but exclude "namespace App\Models\Scopes", "namespace App\Models\Observers", etc.
+        if (preg_match('/namespace\s+App\\\\Models\s*;/', $content)) {
+            return true;
+        }
+
+        // Check for specific model subdirectories (e.g., Domain\Users\Models)
+        // but exclude helper subdirectories
+        if (preg_match('/namespace\s+App\\\\Models\\\\Scopes\b/', $content) ||
+            preg_match('/namespace\s+App\\\\Models\\\\Observers\b/', $content) ||
+            preg_match('/namespace\s+App\\\\Models\\\\Casts\b/', $content) ||
+            preg_match('/namespace\s+App\\\\Models\\\\Collections\b/', $content) ||
+            preg_match('/namespace\s+App\\\\Models\\\\Traits\b/', $content)) {
+            return false;
+        }
+
+        // Check for models in subdirectories like "namespace App\Models\Admin"
+        if (preg_match('/namespace\s+App\\\\Models\\\\[A-Z]/', $content)) {
             return true;
         }
 
@@ -341,6 +359,10 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 '/use\s+App\\\\Handlers\\\\'.$quotedClassName.'\s*;/i',
                 '/use\s+App\\\\Helpers\\\\'.$quotedClassName.'\s*;/i',
                 '/use\s+App\\\\Support\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Models\\\\Scopes\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Models\\\\Observers\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Models\\\\Casts\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Models\\\\Collections\\\\'.$quotedClassName.'\s*;/i',
                 '/use\s+[\w\\\\]+\\\\Services\\\\'.$quotedClassName.'\s*;/i',
                 '/use\s+[\w\\\\]+\\\\Repositories\\\\'.$quotedClassName.'\s*;/i',
             ];
@@ -370,6 +392,10 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
             'Resource',
             'Request',
             'Controller',
+            'Scope',
+            'Observer',
+            'Cast',
+            'Collection',
         ];
 
         foreach ($nonModelSuffixes as $suffix) {

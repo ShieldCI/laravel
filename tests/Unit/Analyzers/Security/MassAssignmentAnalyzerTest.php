@@ -2279,4 +2279,107 @@ PHP;
         }
         $this->assertTrue($found);
     }
+
+    public function test_skips_scope_classes_without_false_positive(): void
+    {
+        $scopeContent = <<<'PHP'
+<?php
+namespace App\Models\Scopes;
+
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Scope;
+
+class TeamScope implements Scope
+{
+    public function apply(Builder $builder, Model $model): void
+    {
+        $builder->join('team_user', function ($join) {
+            $join->on('users.id', '=', 'team_user.user_id')
+                ->where('team_user.team_id', config('services.team.id'));
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Scopes/TeamScope.php' => $scopeContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_observer_classes_without_false_positive(): void
+    {
+        $observerContent = <<<'PHP'
+<?php
+namespace App\Models\Observers;
+
+use App\Models\User;
+use Illuminate\Http\Request;
+
+class UserObserver
+{
+    public function creating(User $user): void
+    {
+        // Even though this uses Request, it's not a model static call
+        $request = request();
+        $user->created_by = $request->user()->id;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Observers/UserObserver.php' => $observerContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_cast_classes_without_false_positive(): void
+    {
+        $castContent = <<<'PHP'
+<?php
+namespace App\Models\Casts;
+
+use Illuminate\Contracts\Database\Eloquent\CastsAttributes;
+
+class JsonCast implements CastsAttributes
+{
+    public function get($model, string $key, $value, array $attributes)
+    {
+        return json_decode($value, true);
+    }
+
+    public function set($model, string $key, $value, array $attributes)
+    {
+        return json_encode($value);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Casts/JsonCast.php' => $castContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

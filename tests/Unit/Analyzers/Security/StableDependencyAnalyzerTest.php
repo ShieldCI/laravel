@@ -90,8 +90,11 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
-    public function test_flags_missing_minimum_stability_as_low_severity(): void
+    public function test_flags_missing_minimum_stability_when_enforce_explicit_enabled(): void
     {
+        // Enable the enforcement config
+        config(['shieldci.analyzers.security.stable-dependencies.enforce_explicit_minimum_stability' => true]);
+
         $composerJson = json_encode([
             'name' => 'test/app',
             // Missing minimum-stability - using implicit default
@@ -126,6 +129,45 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         $this->assertWarning($result);
         $this->assertHasIssueContaining('minimum-stability is not explicitly set', $result);
         $this->assertHasIssueContaining('implicit default', $result);
+    }
+
+    public function test_does_not_flag_missing_minimum_stability_by_default(): void
+    {
+        // Default behavior: don't flag implicit minimum-stability
+        config(['shieldci.analyzers.security.stable-dependencies.enforce_explicit_minimum_stability' => false]);
+
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            // Missing minimum-stability - using implicit default
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+                'laravel/framework' => '^10.0',
+            ],
+        ]);
+
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'laravel/framework',
+                    'version' => '10.0.0',
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - implicit minimum-stability not flagged by default
+        $this->assertPassed($result);
     }
 
     public function test_fails_when_minimum_stability_is_dev(): void

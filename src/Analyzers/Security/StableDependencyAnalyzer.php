@@ -143,18 +143,23 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
 
         if ($minimumStability === null) {
             // Case 1: Missing (implicit default) - using Composer's default but possibly unaware
-            $issues[] = $this->createIssue(
-                message: 'Composer minimum-stability is not explicitly set (using implicit default "stable")',
-                location: new Location($this->getRelativePath($composerJson), 1),
-                severity: Severity::Low,
-                recommendation: 'Explicitly set "minimum-stability": "stable" in composer.json to document your stability requirements',
-                code: FileParser::getCodeSnippet($composerJson, 1),
-                metadata: [
-                    'minimum_stability' => 'implicit_default',
-                    'composer_default' => 'stable',
-                    'issue_type' => 'missing_explicit_stability',
-                ]
-            );
+            // Only flag this if explicitly configured to enforce explicit stability
+            $enforceExplicit = config('shieldci.analyzers.security.stable-dependencies.enforce_explicit_minimum_stability', false);
+
+            if ($enforceExplicit) {
+                $issues[] = $this->createIssue(
+                    message: 'Composer minimum-stability is not explicitly set (using implicit default "stable")',
+                    location: new Location($this->getRelativePath($composerJson), 1),
+                    severity: Severity::Low,
+                    recommendation: 'Explicitly set "minimum-stability": "stable" in composer.json to document your stability requirements',
+                    code: FileParser::getCodeSnippet($composerJson, 1),
+                    metadata: [
+                        'minimum_stability' => 'implicit_default',
+                        'composer_default' => 'stable',
+                        'issue_type' => 'missing_explicit_stability',
+                    ]
+                );
+            }
         } elseif ($minimumStability !== 'stable' && $minimumStability !== null) {
             // Case 2: Dangerous values (dev, alpha, beta, RC)
             // Type assertion for PHPStan: $minimumStability is guaranteed to be a string here

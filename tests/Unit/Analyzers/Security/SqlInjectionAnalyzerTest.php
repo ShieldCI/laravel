@@ -551,6 +551,47 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_ignores_interpolation_in_non_sql_arguments(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class DatabaseHelper
+{
+    public function dynamicConnection($host, $dbName)
+    {
+        // SAFE: Interpolation in connection string (1st arg), not SQL query
+        $conn = mysqli_connect("$host", 'user', 'pass', "$dbName");
+
+        // SAFE: Static SQL query without variables
+        $result = mysqli_query($conn, "SELECT * FROM users WHERE active = 1");
+
+        return $result;
+    }
+
+    public function safeQueryWithDynamicConnection($server)
+    {
+        // SAFE: Variable in connection (1st arg), static SQL (2nd arg)
+        $pgConn = pg_connect("host=$server dbname=test");
+        $result = pg_query($pgConn, "SELECT * FROM posts");
+
+        return $result;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['DatabaseHelper.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because interpolation is only in connection args, not SQL args
+        $this->assertPassed($result);
+    }
+
     public function test_detects_request_object_input(): void
     {
         $code = <<<'PHP'

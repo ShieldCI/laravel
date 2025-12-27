@@ -258,6 +258,11 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             return $this->isVulnerableCall($node);
         }
 
+        // For function calls (mysqli_query, pg_query, etc.), check only the SQL argument
+        if ($node instanceof Node\Expr\FuncCall) {
+            return $this->isVulnerableFuncCall($node);
+        }
+
         // For other nodes, use the basic checks
         return $this->hasStringConcatenation($node)
             || $this->hasVariableInterpolation($node)
@@ -297,6 +302,34 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
         // Single argument without bindings: check for user input
         // Example: DB::select($userControlledVar) with no bindings is dangerous
         return $this->hasUserInputInNode($firstArg);
+    }
+
+    /**
+     * Check if a native function call is vulnerable.
+     *
+     * For native database functions (mysqli_query, pg_query, etc.), the SQL query
+     * is typically the second argument (after the connection). We only check that
+     * specific argument for interpolation/concatenation.
+     *
+     * Examples:
+     * - mysqli_query($conn, $query) - SQL is arg[1]
+     * - pg_query($conn, $query) - SQL is arg[1]
+     */
+    private function isVulnerableFuncCall(Node\Expr\FuncCall $call): bool
+    {
+        // For native mysqli/pg functions, SQL is typically the second argument (index 1)
+        // mysqli_query($conn, $query)
+        // pg_query($conn, $query)
+        if (count($call->args) < 2) {
+            return false;
+        }
+
+        $sqlArg = $call->args[1]->value;
+
+        // Check only the SQL argument for concatenation/interpolation
+        return $this->hasStringConcatenation($sqlArg)
+            || $this->hasVariableInterpolation($sqlArg)
+            || $this->hasUserInputInNode($sqlArg);
     }
 
     /**

@@ -32,6 +32,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
      * - alwaysFlag: If true, always flag (no vulnerability check needed)
      * - checkStatic: Check static calls like DB::method()
      * - checkInstance: Check instance calls like ->method()
+     * - severity: Severity level (Critical for full query control, High for fragments)
      * - recommendation: Custom recommendation message (optional)
      */
     private array $dbMethods = [
@@ -39,60 +40,70 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             'alwaysFlag' => false,
             'checkStatic' => true,
             'checkInstance' => false,
+            'severity' => Severity::Critical,  // Full query construction
             'recommendation' => 'Use parameter binding instead of string concatenation. Example: DB::raw("SELECT * FROM users WHERE id = ?", [$id])',
         ],
         'unprepared' => [
             'alwaysFlag' => true,
             'checkStatic' => true,
             'checkInstance' => false,
+            'severity' => Severity::Critical,  // Inherently unsafe
             'recommendation' => 'Avoid DB::unprepared() - use prepared statements with DB::select(), DB::insert(), etc. with parameter binding',
         ],
         'whereRaw' => [
             'alwaysFlag' => false,
             'checkStatic' => false,
             'checkInstance' => true,
+            'severity' => Severity::High,  // Query fragment only
             'recommendation' => 'Use parameter binding: ->whereRaw(\'column = ?\', [$value]) instead of concatenation',
         ],
         'havingRaw' => [
             'alwaysFlag' => false,
             'checkStatic' => false,
             'checkInstance' => true,
+            'severity' => Severity::High,  // Query fragment only
             'recommendation' => 'Use parameter binding: ->havingRaw(\'column = ?\', [$value]) instead of concatenation',
         ],
         'orderByRaw' => [
             'alwaysFlag' => false,
             'checkStatic' => false,
             'checkInstance' => true,
+            'severity' => Severity::High,  // Query fragment only
             'recommendation' => 'Use parameter binding: ->orderByRaw(\'column = ?\', [$value]) instead of concatenation',
         ],
         'selectRaw' => [
             'alwaysFlag' => false,
             'checkStatic' => false,
             'checkInstance' => true,
+            'severity' => Severity::High,  // Query fragment only
             'recommendation' => 'Use parameter binding: ->selectRaw(\'column = ?\', [$value]) instead of concatenation',
         ],
         'select' => [
             'alwaysFlag' => false,
             'checkStatic' => true,
             'checkInstance' => false,
+            'severity' => Severity::Critical,  // Full query construction
             'recommendation' => 'Use parameter binding with placeholders',
         ],
         'insert' => [
             'alwaysFlag' => false,
             'checkStatic' => true,
             'checkInstance' => false,
+            'severity' => Severity::Critical,  // Full query construction
             'recommendation' => 'Use parameter binding with placeholders',
         ],
         'update' => [
             'alwaysFlag' => false,
             'checkStatic' => true,
             'checkInstance' => false,
+            'severity' => Severity::Critical,  // Full query construction
             'recommendation' => 'Use parameter binding with placeholders',
         ],
         'delete' => [
             'alwaysFlag' => false,
             'checkStatic' => true,
             'checkInstance' => false,
+            'severity' => Severity::Critical,  // Full query construction
             'recommendation' => 'Use parameter binding with placeholders',
         ],
     ];
@@ -169,7 +180,8 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
                                 $file,
                                 $call,
                                 "DB::{$method}()",
-                                $config['recommendation']
+                                $config['recommendation'],
+                                $config['severity']
                             );
                         }
                     }
@@ -185,7 +197,8 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
                                 $file,
                                 $call,
                                 "{$method}()",
-                                $config['recommendation']
+                                $config['recommendation'],
+                                $config['severity']
                             );
                         }
                     }
@@ -209,7 +222,8 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
                                 $file,
                                 $call,
                                 "{$functionName}()",
-                                'Use prepared statements with parameter binding instead of string concatenation. Better yet, use Laravel\'s DB facade or Eloquent ORM'
+                                'Use prepared statements with parameter binding instead of string concatenation. Better yet, use Laravel\'s DB facade or Eloquent ORM',
+                                Severity::High  // Native functions less common in Laravel, rated High
                             );
                         }
                     }
@@ -234,13 +248,14 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
         string $file,
         Node $node,
         string $method,
-        string $recommendation
+        string $recommendation,
+        Severity $severity = Severity::Critical
     ): Issue {
         return $this->createIssueWithSnippet(
             message: "Potential SQL injection: {$method} with string concatenation or user input",
             filePath: $file,
             lineNumber: $node->getLine(),
-            severity: Severity::Critical,
+            severity: $severity,
             recommendation: $recommendation
         );
     }

@@ -21,8 +21,12 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - allow_url_include disabled
  * - expose_php disabled
  * - display_errors disabled in production
+ * - display_startup_errors disabled in production
  * - log_errors enabled
- * - Proper error reporting settings
+ * - ignore_repeated_errors disabled
+ *
+ * Note: error_reporting is intentionally NOT checked because Laravel
+ * sets error_reporting(-1) by design and controls visibility via display_errors.
  */
 class PHPIniAnalyzer extends AbstractFileAnalyzer
 {

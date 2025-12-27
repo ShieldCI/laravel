@@ -127,6 +127,15 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
         'pg_send_query',  // Sends async query
     ];
 
+    /**
+     * Cache for node vulnerability checks to avoid redundant subtree traversals.
+     * Key: spl_object_id($node) . ':' . check_type
+     * Value: boolean result
+     *
+     * @var array<string, bool>
+     */
+    private array $nodeCheckCache = [];
+
     public function __construct(
         private ParserInterface $parser,
         private ?ConfigRepository $config = null
@@ -383,9 +392,26 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if a node contains string concatenation.
+     * Check if a node contains string concatenation (cached wrapper).
      */
     private function hasStringConcatenation(Node $node): bool
+    {
+        $cacheKey = spl_object_id($node).':concat';
+
+        if (array_key_exists($cacheKey, $this->nodeCheckCache)) {
+            return $this->nodeCheckCache[$cacheKey];
+        }
+
+        $result = $this->checkStringConcatenation($node);
+        $this->nodeCheckCache[$cacheKey] = $result;
+
+        return $result;
+    }
+
+    /**
+     * Internal method to check if a node contains string concatenation.
+     */
+    private function checkStringConcatenation(Node $node): bool
     {
         // Check if the node or its children contain string concatenation
         if ($node instanceof Node\Expr\BinaryOp\Concat) {
@@ -411,9 +437,26 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if a node contains variable interpolation in strings.
+     * Check if a node contains variable interpolation in strings (cached wrapper).
      */
     private function hasVariableInterpolation(Node $node): bool
+    {
+        $cacheKey = spl_object_id($node).':interpolation';
+
+        if (array_key_exists($cacheKey, $this->nodeCheckCache)) {
+            return $this->nodeCheckCache[$cacheKey];
+        }
+
+        $result = $this->checkVariableInterpolation($node);
+        $this->nodeCheckCache[$cacheKey] = $result;
+
+        return $result;
+    }
+
+    /**
+     * Internal method to check if a node contains variable interpolation in strings.
+     */
+    private function checkVariableInterpolation(Node $node): bool
     {
         // Check for Encapsed strings (strings with variables like "value $var")
         if ($node instanceof Node\Scalar\Encapsed) {
@@ -440,12 +483,29 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if a node contains user input sources using AST structure.
+     * Check if a node contains user input sources using AST structure (cached wrapper).
      *
      * This method recursively checks the AST for user input patterns without
      * converting to string, avoiding false positives from bindings arrays.
      */
     private function hasUserInputInNode(Node $node): bool
+    {
+        $cacheKey = spl_object_id($node).':userinput';
+
+        if (array_key_exists($cacheKey, $this->nodeCheckCache)) {
+            return $this->nodeCheckCache[$cacheKey];
+        }
+
+        $result = $this->checkUserInputInNode($node);
+        $this->nodeCheckCache[$cacheKey] = $result;
+
+        return $result;
+    }
+
+    /**
+     * Internal method to check if a node contains user input sources using AST structure.
+     */
+    private function checkUserInputInNode(Node $node): bool
     {
         // Check for superglobals ($_GET, $_POST, $_REQUEST, $_COOKIE)
         if ($node instanceof Node\Expr\ArrayDimFetch) {

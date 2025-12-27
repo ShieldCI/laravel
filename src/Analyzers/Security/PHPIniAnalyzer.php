@@ -225,8 +225,11 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
      */
     private function getSeverityForSetting(string $setting): Severity
     {
-        $criticalSettings = ['allow_url_include', 'expose_php'];
-        $highSettings = ['allow_url_fopen', 'display_errors', 'display_startup_errors'];
+        // Critical: Settings that can directly lead to RCE or similar severe vulnerabilities
+        $criticalSettings = ['allow_url_include'];
+
+        // High: Settings that enable dangerous features or expose sensitive information
+        $highSettings = ['allow_url_fopen', 'display_errors', 'display_startup_errors', 'expose_php'];
 
         if (in_array($setting, $criticalSettings)) {
             return Severity::Critical;
@@ -236,6 +239,7 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
             return Severity::High;
         }
 
+        // Medium: Settings that should be configured securely but aren't immediately exploitable
         return Severity::Medium;
     }
 
@@ -431,13 +435,19 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if a setting exists (uncommented) in a specific ini file.
+     * Find a setting in an ini file and return its line number.
+     *
+     * Returns array with 'found' (bool) and 'line' (int).
+     * Searches for active (uncommented) settings first, then commented ones as fallback.
+     *
+     * @return array{found: bool, line: int, commented: bool}
      */
-    private function settingExistsInFile(string $file, string $setting): bool
+    private function findSettingInFile(string $file, string $setting): array
     {
         $lines = $this->getPhpIniLines($file);
+        $commentedLine = null;
 
-        foreach ($lines as $line) {
+        foreach ($lines as $index => $line) {
             if (! is_string($line)) {
                 continue;
             }
@@ -449,11 +459,45 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
             // Check if setting is defined (not commented out)
             $pattern = '/^\s*'.preg_quote($setting, '/').'\s*=/i';
             if (preg_match($pattern, $lineWithoutComments ?? '') === 1) {
-                return true;
+                return [
+                    'found' => true,
+                    'line' => $index + 1,
+                    'commented' => false,
+                ];
+            }
+
+            // Also check for commented settings (as fallback)
+            if ($commentedLine === null) {
+                $commentedPattern = '/^\s*[;#]\s*'.preg_quote($setting, '/').'\s*=/i';
+                if (preg_match($commentedPattern, $line) === 1) {
+                    $commentedLine = $index + 1;
+                }
             }
         }
 
-        return false;
+        // If we found a commented version, return that
+        if ($commentedLine !== null) {
+            return [
+                'found' => false,
+                'line' => $commentedLine,
+                'commented' => true,
+            ];
+        }
+
+        // Not found at all
+        return [
+            'found' => false,
+            'line' => 1,
+            'commented' => false,
+        ];
+    }
+
+    /**
+     * Check if a setting exists (uncommented) in a specific ini file.
+     */
+    private function settingExistsInFile(string $file, string $setting): bool
+    {
+        return $this->findSettingInFile($file, $setting)['found'];
     }
 
     /**
@@ -541,18 +585,18 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
                 ...($sources['additional'] ?? []),
             ]);
 
-            $fileList = ! empty($allFiles)
-                ? implode(', ', array_map('basename', $allFiles))
-                : 'php.ini';
+            // Keep recommendation concise - details go in metadata
+            $recommendation .= ' | WARNING: Setting not found in loaded .ini files. May be from PHP defaults, .user.ini, .htaccess, or web server config.';
 
-            // Add warning about unknown source
-            $recommendation .= sprintf(
-                ' | WARNING: Setting "%s" not found in any loaded .ini file (checked: %s). '.
-                'The runtime value may come from PHP defaults, .user.ini, .htaccess, or web server configuration (Apache php_value, Nginx fastcgi_param). '.
-                'Check per-directory overrides and server configuration files.',
-                $setting,
-                $fileList
-            );
+            // Add detailed information to metadata for debugging
+            $metadata['possible_sources'] = [
+                'php_defaults' => 'PHP compiled-in default value',
+                'user_ini' => '.user.ini files in directory hierarchy',
+                'htaccess' => '.htaccess php_value/php_flag directives',
+                'apache_config' => 'Apache VirtualHost or Directory php_value directives',
+                'nginx_config' => 'Nginx fastcgi_param PHP_VALUE/PHP_ADMIN_VALUE',
+            ];
+            $metadata['checked_files'] = $allFiles;
         }
 
         // Add metadata about configuration sources for debugging
@@ -571,34 +615,7 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
 
     private function getSettingLine(string $phpIniPath, string $setting): int
     {
-        $lines = $this->getPhpIniLines($phpIniPath);
-        $commentedLine = null;
-
-        foreach ($lines as $index => $line) {
-            if (! is_string($line)) {
-                continue;
-            }
-
-            // First, check for active (uncommented) settings
-            $lineWithoutComments = preg_replace('/[;#].*$/', '', $line);
-            $lineWithoutComments = preg_replace('/\/\/.*$/', '', $lineWithoutComments ?? '');
-
-            $pattern = '/^\s*'.preg_quote($setting, '/').'\s*=/i';
-            if (preg_match($pattern, $lineWithoutComments ?? '') === 1) {
-                return $index + 1;
-            }
-
-            // Also check for commented settings (as fallback)
-            if ($commentedLine === null) {
-                $commentedPattern = '/^\s*[;#]\s*'.preg_quote($setting, '/').'\s*=/i';
-                if (preg_match($commentedPattern, $line) === 1) {
-                    $commentedLine = $index + 1;
-                }
-            }
-        }
-
-        // Return commented line if found, otherwise default to 1
-        return $commentedLine ?? 1;
+        return $this->findSettingInFile($phpIniPath, $setting)['line'];
     }
 
     /**

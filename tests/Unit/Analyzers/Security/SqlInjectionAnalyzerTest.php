@@ -455,8 +455,14 @@ class DatabaseHelper
 {
     public function executeQuery($conn, $userId)
     {
-        $query = "SELECT * FROM users WHERE id = " . $userId;
-        return mysqli_query($conn, $query);
+        // Direct concatenation in the function call
+        return mysqli_query($conn, "SELECT * FROM users WHERE id = " . $userId);
+    }
+
+    public function unsafeInterpolation($conn, $name)
+    {
+        // Variable interpolation in the function call
+        return mysqli_query($conn, "SELECT * FROM users WHERE name = '$name'");
     }
 }
 PHP;
@@ -470,7 +476,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('mysqli_query()', $result);
+        $this->assertIssueCount(2, $result);
     }
 
     public function test_detects_native_pg_query(): void
@@ -499,22 +505,42 @@ PHP;
         $this->assertHasIssueContaining('pg_query()', $result);
     }
 
-    public function test_detects_pdo_instantiation(): void
+    public function test_passes_with_safe_native_prepared_statements(): void
     {
         $code = <<<'PHP'
 <?php
 
-class DatabaseConnection
+class DatabaseHelper
 {
+    public function safeMysqliQuery($conn, $userId)
+    {
+        // SAFE: Using mysqli prepared statements
+        $stmt = mysqli_prepare($conn, 'SELECT * FROM users WHERE id = ?');
+        mysqli_stmt_bind_param($stmt, 'i', $userId);
+        mysqli_stmt_execute($stmt);
+        return mysqli_stmt_get_result($stmt);
+    }
+
+    public function safePdoQuery($pdo, $email)
+    {
+        // SAFE: Using PDO prepared statements
+        $stmt = $pdo->prepare('SELECT * FROM users WHERE email = ?');
+        $stmt->execute([$email]);
+        return $stmt->fetchAll();
+    }
+
     public function connect()
     {
-        $dsn = "mysql:host=localhost;dbname=mydb";
-        return new PDO($dsn, 'user', 'password');
+        // SAFE: Just connecting (not a query)
+        $pdo = new PDO('mysql:host=localhost;dbname=test', 'user', 'pass');
+        $mysqli = new mysqli('localhost', 'user', 'pass', 'db');
+        mysqli_connect('localhost', 'user', 'pass');
+        return $pdo;
     }
 }
 PHP;
 
-        $tempDir = $this->createTempDirectory(['DatabaseConnection.php' => $code]);
+        $tempDir = $this->createTempDirectory(['DatabaseHelper.php' => $code]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -522,34 +548,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('new PDO()', $result);
-    }
-
-    public function test_detects_mysqli_instantiation(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-class MysqliConnection
-{
-    public function connect()
-    {
-        return new mysqli('localhost', 'user', 'password', 'database');
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['MysqliConnection.php' => $code]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('new mysqli()', $result);
+        $this->assertPassed($result);
     }
 
     public function test_detects_request_object_input(): void
@@ -649,19 +648,25 @@ PHP;
         $this->assertIssueCount(6, $result);
     }
 
-    public function test_detects_multiple_native_functions(): void
+    public function test_detects_multiple_native_functions_with_injection(): void
     {
         $code = <<<'PHP'
 <?php
 
 class NativeDatabaseCode
 {
-    public function queries($conn)
+    public function queries($conn, $userId, $name)
     {
+        // SAFE: These are not flagged (no concatenation/interpolation)
         mysqli_connect('localhost', 'user', 'pass');
-        mysqli_query($conn, "SELECT * FROM users");
+        mysqli_query($conn, "SELECT * FROM users WHERE id = 1");
         pg_connect("host=localhost");
-        pg_query($conn, "SELECT * FROM posts");
+
+        // DANGEROUS: These have concatenation/interpolation
+        mysqli_query($conn, "SELECT * FROM users WHERE id = " . $userId);
+        mysqli_real_query($conn, "SELECT * FROM posts WHERE title = '$name'");
+        pg_query($conn, "SELECT * FROM posts WHERE id = " . $userId);
+        pg_send_query($conn, "DELETE FROM users WHERE name = '$name'");
     }
 }
 PHP;
@@ -675,6 +680,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
+        // Should detect 4 dangerous queries with concatenation/interpolation
         $this->assertIssueCount(4, $result);
     }
 }

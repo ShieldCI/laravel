@@ -58,25 +58,24 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
         '$request->cookie',
     ];
 
+    /**
+     * Native MySQLi functions that execute queries (not connection, prepare, or fetch).
+     * Only these can have SQL injection vulnerabilities through concatenation.
+     */
     private array $nativeMysqliFunctions = [
-        'mysqli_connect', 'mysqli_execute', 'mysqli_stmt_execute', 'mysqli_stmt_close',
-        'mysqli_stmt_fetch', 'mysqli_stmt_get_result', 'mysqli_stmt_more_results',
-        'mysqli_stmt_next_result', 'mysqli_stmt_prepare', 'mysqli_close', 'mysqli_commit',
-        'mysqli_begin_transaction', 'mysqli_init', 'mysqli_insert_id', 'mysqli_prepare',
-        'mysqli_query', 'mysqli_real_connect', 'mysqli_real_query', 'mysqli_store_result',
-        'mysqli_use_result', 'mysqli_multi_query',
+        'mysqli_query',       // Executes a query (most common)
+        'mysqli_real_query',  // Executes a query without buffering
+        'mysqli_multi_query', // Executes multiple queries
     ];
 
+    /**
+     * Native PostgreSQL functions that execute queries.
+     * Only these can have SQL injection vulnerabilities through concatenation.
+     */
     private array $nativePostgresFunctions = [
-        'pg_connect', 'pg_close', 'pg_affected_rows', 'pg_delete', 'pg_execute',
-        'pg_fetch_all', 'pg_fetch_result', 'pg_fetch_row', 'pg_fetch_all_columns',
-        'pg_fetch_array', 'pg_fetch_assoc', 'pg_fetch_object', 'pg_flush', 'pg_insert',
-        'pg_get_result', 'pg_pconnect', 'pg_prepare', 'pg_query', 'pg_query_params',
-        'pg_select', 'pg_send_execute', 'pg_send_prepare', 'pg_send_query',
-        'pg_send_query_params',
+        'pg_query',       // Executes a query
+        'pg_send_query',  // Sends async query
     ];
-
-    private array $nativePdoClasses = ['PDO', 'mysqli'];
 
     public function __construct(
         private ParserInterface $parser,
@@ -192,7 +191,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
                 }
             }
 
-            // Check for native PHP database functions
+            // Check for native PHP database query functions (only actual query execution)
             $nativeFunctions = array_merge(
                 $this->getNativeMysqliFunctions(),
                 $this->getNativePostgresFunctions()
@@ -203,28 +202,15 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
                 if ($call instanceof Node\Expr\FuncCall && $call->name instanceof Node\Name) {
                     $functionName = $call->name->toString();
                     if (in_array($functionName, $nativeFunctions, true)) {
-                        $issues[] = $this->createSqlInjectionIssue(
-                            $file,
-                            $call,
-                            "{$functionName}()",
-                            'Avoid native PHP database functions. Use Laravel\'s DB facade or Eloquent ORM for better security and parameter binding'
-                        );
-                    }
-                }
-            }
-
-            // Check for PDO/mysqli instantiation
-            $newExpressions = $this->parser->findNodes($ast, Node\Expr\New_::class);
-            foreach ($newExpressions as $node) {
-                if ($node instanceof Node\Expr\New_ && $node->class instanceof Node\Name) {
-                    $className = $node->class->toString();
-                    if (in_array($className, $this->nativePdoClasses, true)) {
-                        $issues[] = $this->createSqlInjectionIssue(
-                            $file,
-                            $node,
-                            "new {$className}()",
-                            'Avoid direct PDO/mysqli usage. Use Laravel\'s DB facade or Eloquent ORM for better security'
-                        );
+                        // Only flag if the query has concatenation/interpolation (like Laravel methods)
+                        if ($this->isVulnerable($call)) {
+                            $issues[] = $this->createSqlInjectionIssue(
+                                $file,
+                                $call,
+                                "{$functionName}()",
+                                'Use prepared statements with parameter binding instead of string concatenation. Better yet, use Laravel\'s DB facade or Eloquent ORM'
+                            );
+                        }
                     }
                 }
             }

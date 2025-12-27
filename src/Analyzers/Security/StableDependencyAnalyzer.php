@@ -144,7 +144,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
         if ($minimumStability === null) {
             // Case 1: Missing (implicit default) - using Composer's default but possibly unaware
             // Only flag this if explicitly configured to enforce explicit stability
-            $enforceExplicit = config('shieldci.analyzers.security.stable-dependencies.enforce_explicit_minimum_stability', false);
+            $enforceExplicit = function_exists('config') ? config('shieldci.analyzers.security.stable-dependencies.enforce_explicit_minimum_stability', false) : false;
 
             if ($enforceExplicit) {
                 $issues[] = $this->createIssue(

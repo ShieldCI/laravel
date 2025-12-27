@@ -172,6 +172,8 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
         $issues = [];
 
         foreach ($this->getPhpFiles() as $file) {
+            $this->nodeCheckCache = [];
+
             $ast = $this->parser->parseFile($file);
             if (empty($ast)) {
                 continue;

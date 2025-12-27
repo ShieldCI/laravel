@@ -59,16 +59,24 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         $issues = [];
 
         // Check for RateLimiter usage in code (global check)
-        $hasGlobalRateLimiter = $this->hasRateLimiterUsage();
+        $hasLoginRateLimiting = $this->hasRateLimiterUsage();
+
+        // Check if throttle is in the 'web' middleware group (Laravel 10 and earlier)
+        $hasWebMiddlewareThrottle = $this->hasThrottleInWebMiddlewareGroup();
+
+        // Check if throttle is in the 'web' middleware (Laravel 11+)
+        if (! $hasWebMiddlewareThrottle) {
+            $hasWebMiddlewareThrottle = $this->hasThrottleInLaravel11Middleware();
+        }
 
         // Check route files for login routes without throttling
-        $this->checkRouteFiles($issues, $hasGlobalRateLimiter);
+        $this->checkRouteFiles($issues, $hasLoginRateLimiting || $hasWebMiddlewareThrottle);
 
         // Check authentication controllers
         $this->checkAuthControllers($issues);
 
         // Check Fortify/Breeze/Jetstream configuration
-        if (! $hasGlobalRateLimiter) {
+        if (! $hasLoginRateLimiting && ! $hasWebMiddlewareThrottle) {
             $this->checkAuthenticationPackages($issues);
         }
 
@@ -290,6 +298,208 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         return true;
                     }
                 }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if throttle middleware is configured in the 'web' middleware group (Laravel 10 and earlier).
+     *
+     * Checks app/Http/Kernel.php for:
+     * protected $middlewareGroups = [
+     *     'web' => [
+     *         ThrottleRequests::class,
+     *         // or
+     *         'throttle:60,1',
+     *     ],
+     * ];
+     */
+    private function hasThrottleInWebMiddlewareGroup(): bool
+    {
+        $basePath = $this->getBasePath();
+        $kernelPath = $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Kernel.php';
+
+        if (! file_exists($kernelPath)) {
+            return false;
+        }
+
+        try {
+            $ast = $this->parser->parseFile($kernelPath);
+            if (empty($ast)) {
+                return false;
+            }
+
+            $classes = $this->parser->findClasses($ast);
+            foreach ($classes as $class) {
+                if (! isset($class->stmts) || ! is_array($class->stmts)) {
+                    continue;
+                }
+
+                // Look for $middlewareGroups property
+                foreach ($class->stmts as $stmt) {
+                    if (! $stmt instanceof Node\Stmt\Property) {
+                        continue;
+                    }
+
+                    $propertyName = $stmt->props[0]->name->toString();
+                    if ($propertyName !== 'middlewareGroups') {
+                        continue;
+                    }
+
+                    // Check if property has a default value (array)
+                    if (! isset($stmt->props[0]->default)) {
+                        continue;
+                    }
+
+                    $default = $stmt->props[0]->default;
+                    if (! $default instanceof Node\Expr\Array_) {
+                        continue;
+                    }
+
+                    // Look for 'web' key in the array
+                    foreach ($default->items as $item) {
+                        if (! $item instanceof Node\Expr\ArrayItem) {
+                            continue;
+                        }
+
+                        // Check if key is 'web'
+                        if ($item->key instanceof Node\Scalar\String_ && $item->key->value === 'web') {
+                            // Check if value (middleware array) contains throttle
+                            if ($item->value instanceof Node\Expr\Array_) {
+                                if ($this->arrayContainsThrottle($item->value)) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            // If parsing fails, fall back to string matching
+            return $this->hasThrottleInWebMiddlewareGroupFallback($kernelPath);
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if an AST array contains throttle middleware references.
+     */
+    private function arrayContainsThrottle(Node\Expr\Array_ $array): bool
+    {
+        foreach ($array->items as $item) {
+            if (! $item instanceof Node\Expr\ArrayItem) {
+                continue;
+            }
+
+            // Check for string 'throttle' or 'throttle:60,1'
+            if ($item->value instanceof Node\Scalar\String_) {
+                if (str_contains($item->value->value, 'throttle')) {
+                    return true;
+                }
+            }
+
+            // Check for ThrottleRequests::class
+            if ($item->value instanceof Node\Expr\ClassConstFetch) {
+                if ($item->value->class instanceof Node\Name) {
+                    $className = $item->value->class->toString();
+                    if (str_contains($className, 'ThrottleRequests')) {
+                        return true;
+                    }
+                }
+            }
+
+            // Check for concatenation like ThrottleRequests::class.':60,1'
+            if ($item->value instanceof Node\Expr\BinaryOp\Concat) {
+                if ($this->concatContainsThrottle($item->value)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a concatenation expression contains ThrottleRequests.
+     */
+    private function concatContainsThrottle(Node\Expr\BinaryOp\Concat $concat): bool
+    {
+        // Check left side
+        if ($concat->left instanceof Node\Expr\ClassConstFetch) {
+            if ($concat->left->class instanceof Node\Name) {
+                $className = $concat->left->class->toString();
+                if (str_contains($className, 'ThrottleRequests')) {
+                    return true;
+                }
+            }
+        }
+
+        // Recursively check if left is also a concat
+        if ($concat->left instanceof Node\Expr\BinaryOp\Concat) {
+            if ($this->concatContainsThrottle($concat->left)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Fallback string-based detection for Kernel.php middleware groups.
+     */
+    private function hasThrottleInWebMiddlewareGroupFallback(string $kernelPath): bool
+    {
+        $content = FileParser::readFile($kernelPath);
+        if ($content === null || ! is_string($content)) {
+            return false;
+        }
+
+        // Look for $middlewareGroups['web'] or $middlewareGroups = ['web' => [
+        // containing ThrottleRequests or 'throttle'
+        if (preg_match('/\$middlewareGroups\s*=\s*\[/s', $content)) {
+            // Extract the middlewareGroups array section
+            if (preg_match('/["\']web["\']\s*=>\s*\[(.*?)\]/s', $content, $matches)) {
+                $webMiddleware = $matches[1];
+                if (str_contains($webMiddleware, 'ThrottleRequests') || str_contains($webMiddleware, 'throttle')) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if throttle middleware is configured in Laravel 11+ bootstrap/app.php.
+     *
+     * Checks for:
+     * ->withMiddleware(function (Middleware $middleware) {
+     *     $middleware->web(append: [ThrottleRequests::class]);
+     * })
+     */
+    private function hasThrottleInLaravel11Middleware(): bool
+    {
+        $basePath = $this->getBasePath();
+        $bootstrapPath = $basePath.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'app.php';
+
+        if (! file_exists($bootstrapPath)) {
+            return false;
+        }
+
+        $content = FileParser::readFile($bootstrapPath);
+        if ($content === null || ! is_string($content)) {
+            return false;
+        }
+
+        // Look for $middleware->web() containing ThrottleRequests or 'throttle'
+        // Pattern: $middleware->web(...)
+        if (preg_match('/\$middleware\s*->\s*web\s*\(/s', $content)) {
+            // Check if the web() call contains throttle references
+            if (preg_match('/\$middleware\s*->\s*web\s*\([^)]*?(ThrottleRequests|throttle)[^)]*?\)/s', $content)) {
+                return true;
             }
         }
 

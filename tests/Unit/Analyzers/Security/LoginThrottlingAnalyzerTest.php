@@ -15,7 +15,48 @@ class LoginThrottlingAnalyzerTest extends AnalyzerTestCase
         return new LoginThrottlingAnalyzer($this->parser);
     }
 
-    public function test_passes_with_throttle_middleware_in_kernel(): void
+    public function test_passes_with_throttle_in_web_middleware_group(): void
+    {
+        $kernelCode = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+use Illuminate\Routing\Middleware\ThrottleRequests;
+
+class Kernel extends HttpKernel
+{
+    protected $middlewareGroups = [
+        'web' => [
+            ThrottleRequests::class.':60,1',
+        ],
+    ];
+}
+PHP;
+
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/login', [LoginController::class, 'login']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Kernel.php' => $kernelCode,
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - throttle is in web middleware group
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_throttle_string_in_web_middleware_group(): void
     {
         $kernelCode = <<<'PHP'
 <?php
@@ -26,15 +67,23 @@ use Illuminate\Foundation\Http\Kernel as HttpKernel;
 
 class Kernel extends HttpKernel
 {
-    protected $middlewareAliases = [
-        'throttle' => \Illuminate\Routing\Middleware\ThrottleRequests::class,
+    protected $middlewareGroups = [
+        'web' => [
+            'throttle:60,1',
+        ],
     ];
 }
 PHP;
 
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/login', [LoginController::class, 'login']);
+PHP;
+
         $tempDir = $this->createTempDirectory([
             'app/Http/Kernel.php' => $kernelCode,
-            'routes/web.php' => '<?php // empty routes',
+            'routes/web.php' => $routeCode,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -43,6 +92,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
+        // Should pass - throttle string is in web middleware group
         $this->assertPassed($result);
     }
 
@@ -825,5 +875,91 @@ PHP;
         // Should fail - custom routes without throttling
         $this->assertFailed($result);
         $this->assertHasIssueContaining('custom authentication routes', $result);
+    }
+
+    public function test_passes_with_laravel_11_throttle_in_bootstrap(): void
+    {
+        $bootstrapCode = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Exceptions;
+use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Routing\Middleware\ThrottleRequests;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        commands: __DIR__.'/../routes/console.php',
+        health: '/up',
+    )
+    ->withMiddleware(function (Middleware $middleware) {
+        $middleware->web(append: [
+            ThrottleRequests::class.':60,1',
+        ]);
+    })
+    ->create();
+PHP;
+
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/login', [LoginController::class, 'login']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapCode,
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - Laravel 11+ throttle in bootstrap/app.php
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_without_web_middleware_throttle(): void
+    {
+        $kernelCode = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+
+class Kernel extends HttpKernel
+{
+    protected $middlewareGroups = [
+        'web' => [
+            // No throttle middleware
+        ],
+    ];
+}
+PHP;
+
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/login', [LoginController::class, 'login']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Kernel.php' => $kernelCode,
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - no throttle in web middleware group
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('login', $result);
     }
 }

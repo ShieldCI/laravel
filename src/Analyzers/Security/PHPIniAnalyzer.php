@@ -129,12 +129,57 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
         foreach ($secureSettings as $setting => $expectedValue) {
             $currentValue = $this->getIniValue($setting);
 
-            // Normalize values
+            // Handle non-existent settings (ini_get() returns false)
+            if ($currentValue === false) {
+                $issues[] = $this->createPhpIniIssueWithValue(
+                    phpIniPath: $phpIniPath,
+                    setting: $setting,
+                    expectedValue: $expectedValue,
+                    message: sprintf('PHP ini setting "%s" is not configured (setting does not exist)', $setting),
+                    severity: $this->getSeverityForSetting($setting),
+                    metadata: [
+                        'setting' => $setting,
+                        'current_value' => 'not_configured',
+                        'expected_value' => $expectedValue ? 'enabled' : 'disabled',
+                        'issue_type' => 'missing_setting',
+                    ]
+                );
+
+                continue;
+            }
+
+            // Normalize values for comparison
+            // IMPORTANT: Empty string is now treated separately - it's ambiguous
             $normalized = strtolower($currentValue);
             $isEnabled = in_array($normalized, ['1', 'on', 'yes', 'true'], true);
-            $isDisabled = in_array($normalized, ['0', 'off', '', 'no', 'false'], true);
+            // Removed '' from disabled check - empty is now treated as ambiguous
+            $isDisabled = in_array($normalized, ['0', 'off', 'no', 'false'], true);
+            $isAmbiguous = $normalized === '';
 
             $expected = $expectedValue ? 'enabled' : 'disabled';
+
+            // Handle ambiguous empty values
+            if ($isAmbiguous) {
+                $issues[] = $this->createPhpIniIssueWithValue(
+                    phpIniPath: $phpIniPath,
+                    setting: $setting,
+                    expectedValue: $expectedValue,
+                    message: sprintf(
+                        'PHP ini setting "%s" is set to empty string (ambiguous - could be misconfigured)',
+                        $setting
+                    ),
+                    severity: $this->getSeverityForSetting($setting),
+                    metadata: [
+                        'setting' => $setting,
+                        'current_value' => '',
+                        'expected_value' => $expected,
+                        'issue_type' => 'ambiguous_value',
+                    ]
+                );
+
+                continue;
+            }
+
             $actual = $isEnabled ? 'enabled' : ($isDisabled ? 'disabled' : $currentValue);
 
             // Check if current value matches expected
@@ -256,13 +301,32 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
         return $phpIniPath !== false && is_string($phpIniPath) ? $phpIniPath : 'php.ini';
     }
 
-    private function getIniValue(string $setting): string
+    /**
+     * Get INI value with special handling for non-existent settings.
+     *
+     * @return string|false Returns false if setting doesn't exist, string value otherwise
+     */
+    private function getIniValue(string $setting): string|false
     {
         if (is_array($this->iniValueOverrides) && array_key_exists($setting, $this->iniValueOverrides)) {
-            return $this->normalizeIniValue($this->iniValueOverrides[$setting]);
+            $overrideValue = $this->iniValueOverrides[$setting];
+
+            // IMPORTANT: Preserve false values from test overrides
+            // This allows tests to simulate non-existent settings
+            if ($overrideValue === false) {
+                return false;
+            }
+
+            return $this->normalizeIniValue($overrideValue);
         }
 
         $value = ini_get($setting);
+
+        // IMPORTANT: ini_get() returns false when setting doesn't exist
+        // We preserve this to distinguish between "not configured" and "disabled"
+        if ($value === false) {
+            return false;
+        }
 
         return $this->normalizeIniValue($value);
     }

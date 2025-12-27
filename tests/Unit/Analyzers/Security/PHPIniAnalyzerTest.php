@@ -476,6 +476,190 @@ class PHPIniAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('Set log_errors = On', $logErrorsIssue->recommendation);
     }
 
+    public function test_it_detects_non_existent_settings(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'expose_php = Off',
+            'display_errors = Off',
+            // NOTE: allow_url_fopen is intentionally NOT defined
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        // Simulate ini_get() returning false for non-existent setting
+        $analyzer->setIniValues([
+            'allow_url_fopen' => false,  // Non-existent
+            'expose_php' => '0',
+            'display_errors' => '0',
+            'log_errors' => '1',
+            'allow_url_include' => '0',
+            'display_startup_errors' => '0',
+            'ignore_repeated_errors' => '0',
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        // Find the allow_url_fopen issue
+        $allowUrlFopenIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'allow_url_fopen')) {
+                $allowUrlFopenIssue = $issue;
+                break;
+            }
+        }
+
+        $this->assertNotNull($allowUrlFopenIssue, 'Should detect non-existent setting');
+
+        // Should clearly indicate the setting doesn't exist
+        $this->assertStringContainsString('not configured', $allowUrlFopenIssue->message);
+        $this->assertStringContainsString('does not exist', $allowUrlFopenIssue->message);
+
+        // Metadata should indicate missing setting
+        $this->assertArrayHasKey('issue_type', $allowUrlFopenIssue->metadata);
+        $this->assertEquals('missing_setting', $allowUrlFopenIssue->metadata['issue_type']);
+        $this->assertEquals('not_configured', $allowUrlFopenIssue->metadata['current_value']);
+    }
+
+    public function test_it_detects_ambiguous_empty_string_values(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'allow_url_fopen = ',  // Empty value - ambiguous!
+            'expose_php = Off',
+            'display_errors = Off',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues(array_merge($this->secureIniValues(), [
+            'allow_url_fopen' => '',  // Empty string - ambiguous
+        ]));
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        // Find the allow_url_fopen issue
+        $allowUrlFopenIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'allow_url_fopen')) {
+                $allowUrlFopenIssue = $issue;
+                break;
+            }
+        }
+
+        $this->assertNotNull($allowUrlFopenIssue, 'Should detect ambiguous empty value');
+
+        // Should clearly indicate the value is ambiguous
+        $this->assertStringContainsString('empty string', $allowUrlFopenIssue->message);
+        $this->assertStringContainsString('ambiguous', $allowUrlFopenIssue->message);
+
+        // Metadata should indicate ambiguous value
+        $this->assertArrayHasKey('issue_type', $allowUrlFopenIssue->metadata);
+        $this->assertEquals('ambiguous_value', $allowUrlFopenIssue->metadata['issue_type']);
+        $this->assertEquals('', $allowUrlFopenIssue->metadata['current_value']);
+    }
+
+    public function test_it_distinguishes_between_zero_and_empty(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'allow_url_fopen = 0',  // Explicitly disabled
+            'allow_url_include = ',  // Empty - ambiguous
+            'expose_php = Off',
+            'display_errors = Off',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues([
+            'allow_url_fopen' => '0',  // Explicitly '0'
+            'allow_url_include' => '',  // Empty string
+            'expose_php' => '0',
+            'display_errors' => '0',
+            'display_startup_errors' => '0',
+            'log_errors' => '1',
+            'ignore_repeated_errors' => '0',
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+
+        // allow_url_fopen should NOT have an issue (correctly disabled with '0')
+        $hasAllowUrlFopenIssue = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'allow_url_fopen')) {
+                $hasAllowUrlFopenIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasAllowUrlFopenIssue, 'allow_url_fopen = 0 should be valid (not ambiguous)');
+
+        // allow_url_include SHOULD have an issue (ambiguous empty string)
+        $allowUrlIncludeIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'allow_url_include')) {
+                $allowUrlIncludeIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($allowUrlIncludeIssue, 'Empty string should be flagged as ambiguous');
+        $this->assertStringContainsString('ambiguous', $allowUrlIncludeIssue->message);
+    }
+
+    public function test_it_handles_false_vs_zero_correctly(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'expose_php = 0',
+            'display_errors = 0',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues([
+            'allow_url_fopen' => false,  // ini_get() returned false (doesn't exist)
+            'allow_url_include' => '0',  // Explicitly set to '0'
+            'expose_php' => '0',
+            'display_errors' => '0',
+            'display_startup_errors' => '0',
+            'log_errors' => '1',
+            'ignore_repeated_errors' => '0',
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+
+        // allow_url_fopen should have "not configured" issue
+        $allowUrlFopenIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'allow_url_fopen')) {
+                $allowUrlFopenIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($allowUrlFopenIssue);
+        $this->assertStringContainsString('not configured', $allowUrlFopenIssue->message);
+        $this->assertEquals('missing_setting', $allowUrlFopenIssue->metadata['issue_type']);
+
+        // allow_url_include should NOT have an issue (properly disabled with '0')
+        $hasAllowUrlIncludeIssue = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'allow_url_include')) {
+                $hasAllowUrlIncludeIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasAllowUrlIncludeIssue, 'allow_url_include = 0 should be valid');
+    }
+
     /**
      * @param  array<string, string>  $overrides
      * @return array<string, string>

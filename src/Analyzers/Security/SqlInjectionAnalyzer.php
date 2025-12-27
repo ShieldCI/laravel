@@ -281,8 +281,12 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     /**
      * Check if a method/static call is vulnerable.
      *
-     * For methods that support parameter binding, only check the first argument (SQL query).
-     * The second argument is the bindings array, which is safe for user input.
+     * For methods that support parameter binding, only flag when SQL is constructed
+     * unsafely (concatenation/interpolation) or when bindings are missing.
+     *
+     * Strategy:
+     * - With bindings (2+ args): Only flag concatenation/interpolation in SQL string
+     * - Without bindings (1 arg): Flag concatenation/interpolation/user input
      */
     private function isVulnerableCall(Node\Expr\MethodCall|Node\Expr\StaticCall $call): bool
     {
@@ -293,20 +297,19 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
 
         $firstArg = $call->args[0]->value;
 
-        // Check if the first argument has concatenation or interpolation
+        // Always flag concatenation or interpolation in SQL - these are construction issues
         if ($this->hasStringConcatenation($firstArg) || $this->hasVariableInterpolation($firstArg)) {
             return true;
         }
 
-        // For user input detection, ONLY check the first argument
-        // If there are 2+ arguments, the second is likely bindings (safe)
-        // If there's only 1 argument, check it for user input
+        // If bindings are present (2+ arguments), trust the parameter binding
+        // Don't flag user input in bindings - that's the correct, safe pattern
         if (count($call->args) >= 2) {
-            // Has bindings argument - only check first arg for user input
-            return $this->hasUserInputInNode($firstArg);
+            return false;
         }
 
-        // Single argument - check for user input (might be vulnerable)
+        // Single argument without bindings: check for user input
+        // Example: DB::select($userControlledVar) with no bindings is dangerous
         return $this->hasUserInputInNode($firstArg);
     }
 

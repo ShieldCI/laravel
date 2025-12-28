@@ -243,18 +243,40 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
         // - Operation counts are Composer's official structured summary
         // - Plugins can output "Installing..." logs but won't fake this line
         // - Less affected by locale/translation
-        if (preg_match('/(package|lock file) operations:\s*(\d+)\s*installs?,\s*(\d+)\s*updates?,\s*(\d+)\s*removals?/i', $normalizedOutput, $matches)) {
-            $installs = (int) $matches[2];
-            $updates = (int) $matches[3];
-            $removals = (int) $matches[4];
+        //
+        // Match counts independently (not positionally) to handle:
+        // - Different field ordering
+        // - Missing fields (e.g., no removals mentioned)
+        // - Singular vs plural variations
+        if (preg_match('/(package|lock file) operations:/i', $normalizedOutput, $operationMatch)) {
+            // Extract the line containing operation counts
+            $operationLineStart = (int) stripos($normalizedOutput, $operationMatch[0]);
+            $operationLineEnd = strpos($normalizedOutput, "\n", $operationLineStart);
+            $operationLine = $operationLineEnd !== false
+                ? substr($normalizedOutput, $operationLineStart, $operationLineEnd - $operationLineStart)
+                : substr($normalizedOutput, $operationLineStart);
 
-            // If any operation count is non-zero, updates are needed
-            if ($installs > 0 || $updates > 0 || $removals > 0) {
-                return false;
+            // Match each operation type independently (order-agnostic, optional fields)
+            $totalOperations = 0;
+
+            // Match: "5 installs" or "5 install" or "1 install"
+            if (preg_match('/(\d+)\s*installs?/i', $operationLine, $installMatch)) {
+                $totalOperations += (int) $installMatch[1];
             }
 
-            // All counts are zero - dependencies are up-to-date
-            return true;
+            // Match: "3 updates" or "3 update" or "1 update"
+            if (preg_match('/(\d+)\s*updates?/i', $operationLine, $updateMatch)) {
+                $totalOperations += (int) $updateMatch[1];
+            }
+
+            // Match: "2 removals" or "2 removal" or "1 removal"
+            if (preg_match('/(\d+)\s*removals?/i', $operationLine, $removalMatch)) {
+                $totalOperations += (int) $removalMatch[1];
+            }
+
+            // If total operations is zero, dependencies are up-to-date
+            // If non-zero, updates are needed
+            return $totalOperations === 0;
         }
 
         // STEP 3: Check for update operation verb patterns (fallback)

@@ -567,6 +567,132 @@ OUTPUT;
         $this->assertStringContainsString('development', strtolower($message));
     }
 
+    public function test_handles_operation_counts_in_different_order(): void
+    {
+        // Test that order-independent regex works: updates before installs
+        $allDepsOutput = <<<'OUTPUT'
+Package operations: 2 updates, 1 install
+  - Updating vendor/package1 (v1.0.0 => v1.0.1)
+  - Installing vendor/package2 (v1.0.0)
+OUTPUT;
+
+        $composerJsonPath = sys_get_temp_dir().'/composer_order_'.uniqid().'.json';
+
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $allDepsOutput,
+            composerJsonPath: $composerJsonPath,
+            composerJsonData: [
+                'require' => ['vendor/package1' => '^1.0'],
+                'require-dev' => ['vendor/package2' => '^1.0'],
+            ]
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('dependencies are not up-to-date', $result);
+    }
+
+    public function test_handles_operation_counts_with_missing_fields(): void
+    {
+        // Test that missing "removals" field doesn't break parsing
+        $allDepsOutput = <<<'OUTPUT'
+Package operations: 0 installs, 3 updates
+  - Updating vendor/prod-pkg (v1.0.0 => v1.0.1)
+OUTPUT;
+
+        $composerJsonPath = sys_get_temp_dir().'/composer_missing_'.uniqid().'.json';
+
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $allDepsOutput,
+            composerJsonPath: $composerJsonPath,
+            composerJsonData: [
+                'require' => ['vendor/prod-pkg' => '^1.0'],
+                'require-dev' => [],
+            ]
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('Production dependencies are not up-to-date', $result);
+    }
+
+    public function test_handles_singular_operation_counts(): void
+    {
+        // Test singular forms: "1 update" instead of "1 updates"
+        $allDepsOutput = <<<'OUTPUT'
+Package operations: 0 installs, 1 update, 0 removals
+  - Updating vendor/package (v1.0.0 => v1.0.1)
+OUTPUT;
+
+        $composerJsonPath = sys_get_temp_dir().'/composer_singular_'.uniqid().'.json';
+
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $allDepsOutput,
+            composerJsonPath: $composerJsonPath,
+            composerJsonData: [
+                'require' => ['vendor/package' => '^1.0'],
+                'require-dev' => [],
+            ]
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+    }
+
+    public function test_handles_lock_file_operations_format(): void
+    {
+        // Test "Lock file operations:" instead of "Package operations:"
+        $allDepsOutput = <<<'OUTPUT'
+Loading composer repositories with package information
+Updating dependencies
+Lock file operations: 2 updates, 0 removals
+  - Upgrading vendor/package1 (1.0.0 => 1.0.1)
+  - Upgrading vendor/package2 (2.0.0 => 2.1.0)
+OUTPUT;
+
+        $composerJsonPath = sys_get_temp_dir().'/composer_lockfile_'.uniqid().'.json';
+
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $allDepsOutput,
+            composerJsonPath: $composerJsonPath,
+            composerJsonData: [
+                'require' => ['vendor/package1' => '^1.0'],
+                'require-dev' => ['vendor/package2' => '^2.0'],
+            ]
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('dependencies are not up-to-date', $result);
+    }
+
+    public function test_handles_all_zero_counts_with_different_formats(): void
+    {
+        // Test that all-zero counts in various formats result in "up-to-date"
+        $allDepsOutput = <<<'OUTPUT'
+Package operations: 0 updates, 0 installs, 0 removals
+Nothing to install or update
+OUTPUT;
+
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $allDepsOutput
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString('up-to-date', $result->getMessage());
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();

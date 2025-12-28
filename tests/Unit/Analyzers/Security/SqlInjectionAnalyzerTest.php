@@ -248,6 +248,87 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_passes_with_request_in_bindings_array(): void
+    {
+        $code = <<<'PHP'
+<?php
+use Illuminate\Support\Facades\DB;
+
+class UserController
+{
+    public function search()
+    {
+        // SAFE: request() is in bindings array, not concatenated
+        $results = DB::select('SELECT * FROM users WHERE id = ?', [request('id')]);
+        return $results;
+    }
+
+    public function filter()
+    {
+        // SAFE: $_GET is in bindings array
+        return DB::table('users')
+            ->whereRaw('status = ?', [$_GET['status']])
+            ->get();
+    }
+
+    public function findByEmail()
+    {
+        // SAFE: Request::input in bindings
+        return DB::table('users')
+            ->whereRaw('email = ?', [Request::input('email')])
+            ->first();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_request_in_sql_string_without_bindings(): void
+    {
+        $code = <<<'PHP'
+<?php
+use Illuminate\Support\Facades\DB;
+
+class DangerousController
+{
+    public function search()
+    {
+        // DANGEROUS: request() value directly in SQL (no bindings)
+        $id = request('id');
+        return DB::select("SELECT * FROM users WHERE id = $id");
+    }
+
+    public function filter()
+    {
+        // DANGEROUS: $_GET directly in SQL
+        return DB::table('users')
+            ->whereRaw("status = '{$_GET['status']}'")
+            ->get();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['DangerousController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(2, $result);
+    }
+
     public function test_detects_multiple_sql_injection_vulnerabilities(): void
     {
         $code = <<<'PHP'
@@ -374,8 +455,14 @@ class DatabaseHelper
 {
     public function executeQuery($conn, $userId)
     {
-        $query = "SELECT * FROM users WHERE id = " . $userId;
-        return mysqli_query($conn, $query);
+        // Direct concatenation in the function call
+        return mysqli_query($conn, "SELECT * FROM users WHERE id = " . $userId);
+    }
+
+    public function unsafeInterpolation($conn, $name)
+    {
+        // Variable interpolation in the function call
+        return mysqli_query($conn, "SELECT * FROM users WHERE name = '$name'");
     }
 }
 PHP;
@@ -389,7 +476,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('mysqli_query()', $result);
+        $this->assertIssueCount(2, $result);
     }
 
     public function test_detects_native_pg_query(): void
@@ -418,22 +505,42 @@ PHP;
         $this->assertHasIssueContaining('pg_query()', $result);
     }
 
-    public function test_detects_pdo_instantiation(): void
+    public function test_passes_with_safe_native_prepared_statements(): void
     {
         $code = <<<'PHP'
 <?php
 
-class DatabaseConnection
+class DatabaseHelper
 {
+    public function safeMysqliQuery($conn, $userId)
+    {
+        // SAFE: Using mysqli prepared statements
+        $stmt = mysqli_prepare($conn, 'SELECT * FROM users WHERE id = ?');
+        mysqli_stmt_bind_param($stmt, 'i', $userId);
+        mysqli_stmt_execute($stmt);
+        return mysqli_stmt_get_result($stmt);
+    }
+
+    public function safePdoQuery($pdo, $email)
+    {
+        // SAFE: Using PDO prepared statements
+        $stmt = $pdo->prepare('SELECT * FROM users WHERE email = ?');
+        $stmt->execute([$email]);
+        return $stmt->fetchAll();
+    }
+
     public function connect()
     {
-        $dsn = "mysql:host=localhost;dbname=mydb";
-        return new PDO($dsn, 'user', 'password');
+        // SAFE: Just connecting (not a query)
+        $pdo = new PDO('mysql:host=localhost;dbname=test', 'user', 'pass');
+        $mysqli = new mysqli('localhost', 'user', 'pass', 'db');
+        mysqli_connect('localhost', 'user', 'pass');
+        return $pdo;
     }
 }
 PHP;
 
-        $tempDir = $this->createTempDirectory(['DatabaseConnection.php' => $code]);
+        $tempDir = $this->createTempDirectory(['DatabaseHelper.php' => $code]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -441,25 +548,39 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('new PDO()', $result);
+        $this->assertPassed($result);
     }
 
-    public function test_detects_mysqli_instantiation(): void
+    public function test_ignores_interpolation_in_non_sql_arguments(): void
     {
         $code = <<<'PHP'
 <?php
 
-class MysqliConnection
+class DatabaseHelper
 {
-    public function connect()
+    public function dynamicConnection($host, $dbName)
     {
-        return new mysqli('localhost', 'user', 'password', 'database');
+        // SAFE: Interpolation in connection string (1st arg), not SQL query
+        $conn = mysqli_connect("$host", 'user', 'pass', "$dbName");
+
+        // SAFE: Static SQL query without variables
+        $result = mysqli_query($conn, "SELECT * FROM users WHERE active = 1");
+
+        return $result;
+    }
+
+    public function safeQueryWithDynamicConnection($server)
+    {
+        // SAFE: Variable in connection (1st arg), static SQL (2nd arg)
+        $pgConn = pg_connect("host=$server dbname=test");
+        $result = pg_query($pgConn, "SELECT * FROM posts");
+
+        return $result;
     }
 }
 PHP;
 
-        $tempDir = $this->createTempDirectory(['MysqliConnection.php' => $code]);
+        $tempDir = $this->createTempDirectory(['DatabaseHelper.php' => $code]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -467,8 +588,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('new mysqli()', $result);
+        // Should pass because interpolation is only in connection args, not SQL args
+        $this->assertPassed($result);
     }
 
     public function test_detects_request_object_input(): void
@@ -564,23 +685,29 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        // DB::raw gets detected twice (as static call and in method list), so 6 issues
-        $this->assertIssueCount(6, $result);
+        // 5 dangerous methods: raw, whereRaw, havingRaw, orderByRaw, selectRaw
+        $this->assertIssueCount(5, $result);
     }
 
-    public function test_detects_multiple_native_functions(): void
+    public function test_detects_multiple_native_functions_with_injection(): void
     {
         $code = <<<'PHP'
 <?php
 
 class NativeDatabaseCode
 {
-    public function queries($conn)
+    public function queries($conn, $userId, $name)
     {
+        // SAFE: These are not flagged (no concatenation/interpolation)
         mysqli_connect('localhost', 'user', 'pass');
-        mysqli_query($conn, "SELECT * FROM users");
+        mysqli_query($conn, "SELECT * FROM users WHERE id = 1");
         pg_connect("host=localhost");
-        pg_query($conn, "SELECT * FROM posts");
+
+        // DANGEROUS: These have concatenation/interpolation
+        mysqli_query($conn, "SELECT * FROM users WHERE id = " . $userId);
+        mysqli_real_query($conn, "SELECT * FROM posts WHERE title = '$name'");
+        pg_query($conn, "SELECT * FROM posts WHERE id = " . $userId);
+        pg_send_query($conn, "DELETE FROM users WHERE name = '$name'");
     }
 }
 PHP;
@@ -594,6 +721,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
+        // Should detect 4 dangerous queries with concatenation/interpolation
         $this->assertIssueCount(4, $result);
     }
 }

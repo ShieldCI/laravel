@@ -163,7 +163,7 @@ return [
 
     'dont_report' => [
         // 'missing-error-tracking',
-        // 'missing-docblock',
+        // 'helper-function-abuse',
     ],
 
     /*

@@ -117,6 +117,23 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
      */
     private function findCommentedCodeBlocks(string $content, int $minLines): array
     {
+        $singleLineBlocks = $this->findSingleLineCommentBlocks($content, $minLines);
+        $blockCommentBlocks = $this->findBlockCommentBlocks($content, $minLines);
+
+        // Merge and sort by line number
+        $allBlocks = array_merge($singleLineBlocks, $blockCommentBlocks);
+        usort($allBlocks, fn ($a, $b) => $a['startLine'] <=> $b['startLine']);
+
+        return $allBlocks;
+    }
+
+    /**
+     * Find single-line comment blocks.
+     *
+     * @return array<int, array{startLine: int, endLine: int, lineCount: int, preview: string}>
+     */
+    private function findSingleLineCommentBlocks(string $content, int $minLines): array
+    {
         $lines = explode("\n", $content);
         $blocks = [];
         $currentBlock = null;
@@ -169,6 +186,97 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
         }
 
         return $blocks;
+    }
+
+    /**
+     * Find block comment blocks using tokenization.
+     *
+     * @return array<int, array{startLine: int, endLine: int, lineCount: int, preview: string}>
+     */
+    private function findBlockCommentBlocks(string $content, int $minLines): array
+    {
+        $blocks = [];
+
+        // Tokenize the content
+        $tokens = @token_get_all($content);
+
+        foreach ($tokens as $token) {
+            if (! is_array($token)) {
+                continue;
+            }
+
+            [$tokenType, $tokenContent, $tokenLine] = $token;
+
+            // Only process T_COMMENT tokens (block comments /* */)
+            // Exclude T_DOC_COMMENT (/** */) - those are documentation
+            if ($tokenType !== T_COMMENT) {
+                continue;
+            }
+
+            // Only process block comments (/* ... */)
+            // Skip single-line // and # comments (already handled)
+            if (! str_starts_with($tokenContent, '/*')) {
+                continue;
+            }
+
+            // Skip PHPDoc comments (/** ... */)
+            if (str_starts_with($tokenContent, '/**')) {
+                continue;
+            }
+
+            // Extract comment content (remove /* and */)
+            $commentContent = $this->extractBlockCommentContent($tokenContent);
+
+            // Count lines in the comment
+            $commentLines = explode("\n", $commentContent);
+            $lineCount = count($commentLines);
+
+            // Only process multi-line blocks
+            if ($lineCount < $minLines) {
+                continue;
+            }
+
+            // Check if the comment content looks like code
+            $codeLineCount = 0;
+            $codeLines = [];
+
+            foreach ($commentLines as $line) {
+                $trimmed = trim($line);
+                // Remove leading * if present (common in block comments)
+                $trimmed = ltrim($trimmed, '* ');
+
+                if ($this->looksLikeCode($trimmed)) {
+                    $codeLineCount++;
+                    $codeLines[] = $trimmed;
+                }
+            }
+
+            // If majority of lines look like code, flag it
+            if ($codeLineCount >= max(1, (int) ($lineCount * 0.5))) {
+                $endLine = $tokenLine + $lineCount - 1;
+
+                $blocks[] = [
+                    'startLine' => $tokenLine,
+                    'endLine' => $endLine,
+                    'lineCount' => $lineCount,
+                    'preview' => $this->getPreview($codeLines),
+                ];
+            }
+        }
+
+        return $blocks;
+    }
+
+    /**
+     * Extract content from block comment (remove opening and closing markers).
+     */
+    private function extractBlockCommentContent(string $comment): string
+    {
+        // Remove opening /* and closing */
+        $content = preg_replace('/^\/\*+/', '', $comment);
+        $content = preg_replace('/\*+\/$/', '', $content ?? '');
+
+        return trim($content ?? '');
     }
 
     /**

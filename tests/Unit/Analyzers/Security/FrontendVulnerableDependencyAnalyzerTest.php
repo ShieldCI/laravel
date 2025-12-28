@@ -470,6 +470,151 @@ YARN;
         }
     }
 
+    public function test_yarn_summary_with_breakdown_creates_summary_issue(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('parseYarnAuditResults');
+        $method->setAccessible(true);
+
+        $issues = [];
+
+        $results = [
+            'summary' => [
+                'vulnerabilities' => [
+                    'low' => 2,
+                    'moderate' => 1,
+                    'high' => 0,
+                    'critical' => 0,
+                ],
+            ],
+        ];
+
+        $method->invokeArgs($analyzer, [$results, &$issues, 'yarn.lock']);
+
+        $this->assertCount(1, $issues);
+
+        $issue = reset($issues);
+        $this->assertNotFalse($issue);
+        $this->assertEquals(Severity::Medium, $issue->severity);
+        $this->assertEquals('summary', $issue->metadata['issue_type']);
+    }
+
+    public function test_yarn_summary_with_info_only_maps_to_low_severity(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('parseYarnAuditResults');
+        $method->setAccessible(true);
+
+        $issues = [];
+
+        $results = [
+            'summary' => [
+                'vulnerabilities' => [
+                    'info' => 3,
+                ],
+            ],
+        ];
+
+        $method->invokeArgs($analyzer, [$results, &$issues, 'yarn.lock']);
+
+        $this->assertCount(1, $issues);
+
+        $issue = reset($issues);
+        $this->assertNotFalse($issue);
+        $this->assertEquals(Severity::Low, $issue->severity);
+    }
+
+    public function test_yarn_numeric_summary_creates_high_severity_issue(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('parseYarnAuditResults');
+        $method->setAccessible(true);
+
+        $issues = [];
+
+        $results = [
+            'summary' => [
+                'vulnerabilities' => 4,
+            ],
+        ];
+
+        $method->invokeArgs($analyzer, [$results, &$issues, 'yarn.lock']);
+
+        $this->assertCount(1, $issues);
+
+        $issue = reset($issues);
+        $this->assertNotFalse($issue);
+        $this->assertEquals(Severity::High, $issue->severity);
+    }
+
+    public function test_yarn_summary_not_created_when_advisories_exist(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('parseYarnAuditResults');
+        $method->setAccessible(true);
+
+        $issues = [];
+
+        $results = [
+            'advisories' => [
+                [
+                    'module_name' => 'lodash',
+                    'severity' => 'high',
+                    'title' => 'Prototype pollution',
+                ],
+            ],
+            'summary' => [
+                'vulnerabilities' => [
+                    'high' => 1,
+                ],
+            ],
+        ];
+
+        $method->invokeArgs($analyzer, [$results, &$issues, 'yarn.lock']);
+
+        // Only advisory issue should exist, no summary
+        $this->assertCount(1, $issues);
+
+        $issue = reset($issues);
+        $this->assertNotFalse($issue);
+        $this->assertEquals('vulnerability', $issue->metadata['issue_type']);
+    }
+
+    public function test_yarn_summary_metadata_contains_breakdown(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('parseYarnAuditResults');
+        $method->setAccessible(true);
+
+        $issues = [];
+
+        $results = [
+            'summary' => [
+                'vulnerabilities' => [
+                    'low' => 1,
+                    'moderate' => 2,
+                ],
+            ],
+        ];
+
+        $method->invokeArgs($analyzer, [$results, &$issues, 'yarn.lock']);
+
+        $issue = reset($issues);
+        $this->assertNotFalse($issue);
+        $this->assertArrayHasKey('breakdown', $issue->metadata);
+        $this->assertEquals(2, $issue->metadata['breakdown']['moderate']);
+    }
+
     // ==================== Plain Text Parsing Tests ====================
 
     public function test_parses_npm_plain_text_output(): void

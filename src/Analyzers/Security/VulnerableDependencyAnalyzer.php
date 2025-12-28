@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Support\Composer;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryAnalyzerInterface;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryFetcherInterface;
 use ShieldCI\Support\SecurityAdvisories\ComposerDependencyReader;
@@ -46,23 +47,23 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         );
     }
 
+    public function shouldRun(): bool
+    {
+        $composerLock = $this->buildPath('composer.lock');
+
+        return file_exists($composerLock);
+    }
+
+    public function getSkipReason(): string
+    {
+        return 'No composer.lock file found';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
 
         $composerLock = $this->buildPath('composer.lock');
-
-        if (! file_exists($composerLock)) {
-            $issues[] = $this->createIssue(
-                message: 'composer.lock file not found',
-                location: new Location('composer.lock'),
-                severity: Severity::Medium,
-                recommendation: 'Run "composer install" to generate composer.lock for dependency tracking.',
-                metadata: []
-            );
-
-            return $this->failed('composer.lock file not found', $issues);
-        }
 
         try {
             $dependencies = $this->dependencyReader->read($composerLock);
@@ -81,7 +82,16 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         $vulnerabilities = $this->advisoryAnalyzer->analyze($dependencies, $advisories);
+        if (! is_array($vulnerabilities)) {
+            return $this->error('Invalid advisory analysis result');
+        }
 
+        // Cache for package line numbers to avoid repeated lookups
+        // Key: package name, Value: line number
+        $lineNumberCache = [];
+
+        // Aggregate advisories per package to avoid flooding output with multiple issues
+        // for the same package (e.g., a package with 5 CVEs creates 5 issues → now 1 issue)
         foreach ($vulnerabilities as $package => $details) {
             if (! is_string($package) || $package === '') {
                 continue;
@@ -95,42 +105,69 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                 ? $details['advisories']
                 : [];
 
-            foreach ($packageAdvisories as $advisory) {
-                if (! is_array($advisory) || empty($advisory)) {
-                    continue;
-                }
+            // Filter out invalid advisories
+            $validAdvisories = array_filter($packageAdvisories, function ($advisory) {
+                return is_array($advisory)
+                    && ! empty($advisory)
+                    && isset($advisory['title'])
+                    && is_string($advisory['title']);
+            });
 
-                // Validate advisory has at least a title
-                if (! isset($advisory['title']) || ! is_string($advisory['title'])) {
-                    continue;
-                }
-
-                $lineNumber = $this->findPackageLineNumber($composerLock, $package);
-
-                $issues[] = $this->createIssue(
-                    message: sprintf(
-                        'Package "%s" (%s) has a known vulnerability: %s',
-                        $package,
-                        $version,
-                        $advisory['title']
-                    ),
-                    location: new Location($this->getRelativePath($composerLock), $lineNumber
-                    ),
-                    severity: Severity::Critical,
-                    recommendation: $this->formatRecommendation($package, $advisory),
-                    code: FileParser::getCodeSnippet($composerLock, $lineNumber),
-                    metadata: [
-                        'package' => $package,
-                        'version' => $version,
-                        'cve' => isset($advisory['cve']) && is_string($advisory['cve']) ? $advisory['cve'] : null,
-                        'link' => isset($advisory['link']) && is_string($advisory['link']) ? $advisory['link'] : null,
-                        'affected_versions' => isset($advisory['affected_versions']) ? $advisory['affected_versions'] : null,
-                    ]
-                );
+            if (empty($validAdvisories)) {
+                continue;
             }
+
+            $lineNumber = $this->getPackageLineNumber($composerLock, $package, $lineNumberCache);
+            $advisoryCount = count($validAdvisories);
+
+            // Build aggregated message
+            $message = $advisoryCount === 1
+                ? sprintf('Package "%s" (%s) has a known vulnerability', $package, $version)
+                : sprintf('Package "%s" (%s) has %d known vulnerabilities', $package, $version, $advisoryCount);
+
+            // Build comprehensive recommendation mentioning all CVEs
+            $recommendation = $this->formatAggregatedRecommendation($package, $validAdvisories, $version);
+
+            // Extract all CVEs and links for metadata
+            $cves = [];
+            $links = [];
+            $advisoriesMetadata = [];
+
+            foreach ($validAdvisories as $advisory) {
+                if (isset($advisory['cve']) && is_string($advisory['cve']) && $advisory['cve'] !== '') {
+                    $cves[] = $advisory['cve'];
+                }
+                if (isset($advisory['link']) && is_string($advisory['link']) && $advisory['link'] !== '') {
+                    $links[] = $advisory['link'];
+                }
+
+                // Store full advisory details
+                $advisoriesMetadata[] = [
+                    'title' => $advisory['title'] ?? '',
+                    'cve' => $advisory['cve'] ?? null,
+                    'link' => $advisory['link'] ?? null,
+                    'affected_versions' => $advisory['affected_versions'] ?? null,
+                ];
+            }
+
+            $issues[] = $this->createIssue(
+                message: $message,
+                location: new Location($this->getRelativePath($composerLock), $lineNumber),
+                severity: Severity::Critical,
+                recommendation: $recommendation,
+                code: FileParser::getCodeSnippet($composerLock, $lineNumber),
+                metadata: [
+                    'package' => $package,
+                    'version' => $version,
+                    'vulnerability_count' => $advisoryCount,
+                    'cves' => array_unique($cves),
+                    'links' => array_unique($links),
+                    'advisories' => $advisoriesMetadata,
+                ]
+            );
         }
 
-        $this->checkAbandonedPackages($issues, $composerLock);
+        $this->checkAbandonedPackages($issues, $composerLock, $lineNumberCache);
 
         if (empty($issues)) {
             return $this->passed('No vulnerable dependencies detected');
@@ -144,8 +181,10 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check for abandoned packages in composer.lock.
+     *
+     * @param  array<string, int>  $lineNumberCache  Cache of package line numbers
      */
-    private function checkAbandonedPackages(array &$issues, string $composerLock): void
+    private function checkAbandonedPackages(array &$issues, string $composerLock, array &$lineNumberCache): void
     {
         $lockData = $this->parseComposerLock($composerLock);
 
@@ -172,7 +211,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                 ? sprintf('Replace with "%s": composer require %s', $replacement, $replacement)
                 : sprintf('Find an alternative package and remove "%s"', $packageName);
 
-            $lineNumber = $this->findPackageLineNumber($composerLock, $packageName);
+            $lineNumber = $this->getPackageLineNumber($composerLock, $packageName, $lineNumberCache);
 
             $issues[] = $this->createIssue(
                 message: sprintf('Package "%s" is abandoned and no longer maintained', $packageName),
@@ -189,23 +228,70 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * @param  array<string, mixed>  $advisory
+     * Get package line number with caching to avoid repeated lookups.
+     *
+     * Line number lookups involve parsing composer.lock, which is expensive.
+     * Cache results to avoid repeated lookups for the same package.
+     *
+     * @param  array<string, int>  $cache  Cache reference (modified by this method)
      */
-    private function formatRecommendation(string $package, array $advisory): string
+    private function getPackageLineNumber(string $composerLock, string $packageName, array &$cache): int
     {
-        $recommendation = sprintf('Update "%s" to a patched version.', $package);
-
-        if (isset($advisory['link']) && is_string($advisory['link'])) {
-            $recommendation .= sprintf(' See %s for details.', $advisory['link']);
+        // Check cache first
+        if (isset($cache[$packageName])) {
+            return $cache[$packageName];
         }
 
-        if (isset($advisory['affected_versions'])) {
-            $affected = is_array($advisory['affected_versions'])
-                ? implode(', ', array_map('strval', array_filter($advisory['affected_versions'], 'is_scalar')))
-                : (is_string($advisory['affected_versions']) ? $advisory['affected_versions'] : null);
+        // Cache miss - perform lookup and store result
+        $lineNumber = Composer::findPackageLineNumber($composerLock, $packageName);
+        $cache[$packageName] = $lineNumber;
 
-            if ($affected !== null && $affected !== '') {
-                $recommendation .= sprintf(' Affected versions: %s.', $affected);
+        return $lineNumber;
+    }
+
+    /**
+     * Format aggregated recommendation for multiple advisories affecting the same package.
+     *
+     * @param  array<int, array<string, mixed>>  $advisories
+     */
+    private function formatAggregatedRecommendation(string $package, array $advisories, string $version): string
+    {
+        $recommendation = sprintf('Update "%s" (currently %s) to a patched version.', $package, $version);
+
+        // Extract and list all CVEs
+        $cves = [];
+        foreach ($advisories as $advisory) {
+            if (isset($advisory['cve']) && is_string($advisory['cve']) && $advisory['cve'] !== '') {
+                $cves[] = $advisory['cve'];
+            }
+        }
+
+        if (! empty($cves)) {
+            $cveList = implode(', ', array_unique($cves));
+            $recommendation .= sprintf(' Known CVEs: %s.', $cveList);
+        }
+
+        // List vulnerability titles for context
+        $titles = [];
+        foreach ($advisories as $advisory) {
+            if (isset($advisory['title']) && is_string($advisory['title'])) {
+                $titles[] = $advisory['title'];
+            }
+        }
+
+        if (! empty($titles)) {
+            $recommendation .= ' Vulnerabilities: '.implode('; ', array_slice($titles, 0, 3));
+            if (count($titles) > 3) {
+                $recommendation .= sprintf(' (and %d more)', count($titles) - 3);
+            }
+            $recommendation .= '.';
+        }
+
+        // Add primary advisory link if available
+        foreach ($advisories as $advisory) {
+            if (isset($advisory['link']) && is_string($advisory['link'])) {
+                $recommendation .= sprintf(' See %s for details.', $advisory['link']);
+                break; // Only show first link to keep recommendation concise
             }
         }
 
@@ -236,30 +322,6 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         return $lockData;
-    }
-
-    /**
-     * Find the line number where a package is defined in composer.lock.
-     */
-    private function findPackageLineNumber(string $composerLock, string $package): int
-    {
-        $lines = FileParser::getLines($composerLock);
-        if (empty($lines)) {
-            return 1;
-        }
-
-        foreach ($lines as $lineNumber => $line) {
-            if (! is_string($line)) {
-                continue;
-            }
-
-            // Look for package name in composer.lock format: "name": "vendor/package"
-            if (preg_match('/"name":\s*"'.preg_quote($package, '/').'"/i', $line)) {
-                return $lineNumber + 1;
-            }
-        }
-
-        return 1;
     }
 
     /**

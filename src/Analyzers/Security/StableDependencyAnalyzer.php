@@ -25,8 +25,6 @@ use Throwable;
  */
 class StableDependencyAnalyzer extends AbstractFileAnalyzer
 {
-    private const PREFER_STABLE_CHANGE_PATTERNS = ['Upgrading', 'Downgrading'];
-
     public function __construct(
         private Composer $composer
     ) {}
@@ -139,11 +137,34 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         // Check minimum-stability setting
-        $minimumStability = isset($data['minimum-stability']) && is_string($data['minimum-stability'])
-            ? $data['minimum-stability']
-            : 'stable';
+        // Differentiate between explicit "stable", implicit default (missing), and dangerous values
+        $hasExplicitStability = isset($data['minimum-stability']) && is_string($data['minimum-stability']);
+        $minimumStability = $hasExplicitStability ? $data['minimum-stability'] : null;
 
-        if ($minimumStability !== 'stable') {
+        if ($minimumStability === null) {
+            // Case 1: Missing (implicit default) - using Composer's default but possibly unaware
+            // Only flag this if explicitly configured to enforce explicit stability
+            $enforceExplicit = function_exists('config') ? config('shieldci.analyzers.security.stable-dependencies.enforce_explicit_minimum_stability', false) : false;
+
+            if ($enforceExplicit) {
+                $issues[] = $this->createIssue(
+                    message: 'Composer minimum-stability is not explicitly set (using implicit default "stable")',
+                    location: new Location($this->getRelativePath($composerJson), 1),
+                    severity: Severity::Low,
+                    recommendation: 'Explicitly set "minimum-stability": "stable" in composer.json to document your stability requirements',
+                    code: FileParser::getCodeSnippet($composerJson, 1),
+                    metadata: [
+                        'minimum_stability' => 'implicit_default',
+                        'composer_default' => 'stable',
+                        'issue_type' => 'missing_explicit_stability',
+                    ]
+                );
+            }
+        } elseif ($minimumStability !== 'stable' && $minimumStability !== null) {
+            // Case 2: Dangerous values (dev, alpha, beta, RC)
+            // Type assertion for PHPStan: $minimumStability is guaranteed to be a string here
+            assert(is_string($minimumStability));
+
             $line = $this->findMinimumStabilityLine($composerJson);
             $issues[] = $this->createIssue(
                 message: sprintf('Composer minimum-stability is set to "%s" instead of "stable"', $minimumStability),
@@ -151,9 +172,13 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                 severity: Severity::Medium,
                 recommendation: 'Set "minimum-stability": "stable" in composer.json to prefer stable package versions',
                 code: FileParser::getCodeSnippet($composerJson, $line),
-                metadata: ['minimum_stability' => $minimumStability]
+                metadata: [
+                    'minimum_stability' => $minimumStability,
+                    'issue_type' => 'unstable_minimum_stability',
+                ]
             );
         }
+        // Case 3: Explicit "stable" - good! No issue to report
 
         // Check if prefer-stable is enabled
         if (! isset($data['prefer-stable']) || $data['prefer-stable'] !== true) {
@@ -168,20 +193,29 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             );
         }
 
+        // Determine effective minimum-stability (null defaults to 'stable')
+        $effectiveStability = $minimumStability ?? 'stable';
+
         // Check for dev version constraints in require section
         if (isset($data['require']) && is_array($data['require'])) {
-            $this->checkVersionConstraints($data['require'], 'require', $issues, $composerJson);
+            $this->checkVersionConstraints($data['require'], 'require', $issues, $composerJson, $effectiveStability);
         }
 
         // Check for dev version constraints in require-dev section
-        // These can leak into production if minimum-stability is not "stable"
+        // Risk is lower when minimum-stability is "stable" since dev dependencies are isolated
         if (isset($data['require-dev']) && is_array($data['require-dev'])) {
-            $this->checkVersionConstraints($data['require-dev'], 'require-dev', $issues, $composerJson);
+            $this->checkVersionConstraints($data['require-dev'], 'require-dev', $issues, $composerJson, $effectiveStability);
         }
     }
 
     /**
      * Check if version string indicates an unstable release.
+     *
+     * Matches Composer's stability flags including:
+     * - dev-master, dev-main, 2.0.x-dev
+     * - 1.0.0-alpha, 1.0.0alpha, v1.0.0-alpha
+     * - 1.0.0-beta.2, 1.0.0beta1, v1.0.0-beta
+     * - 1.0.0-RC1, 1.0.0RC, v1.0.0RC1
      */
     private function isUnstableVersion(string $version): bool
     {
@@ -192,9 +226,17 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             return true;
         }
 
-        // Check for alpha/beta/RC with various formats
-        // Matches: 1.0.0-alpha, v1.0.0-beta1, 2.0.0-RC1, etc.
-        if (preg_match('/-(alpha|beta|rc)([.\d-]*)$/i', $lowerVersion)) {
+        // Strip optional 'v' prefix for consistent matching
+        $cleanVersion = preg_replace('/^v/', '', $lowerVersion);
+        if ($cleanVersion === null) {
+            return false; // preg_replace error
+        }
+
+        // Check for alpha/beta/RC with various Composer-valid formats
+        // Matches with or without dash: 1.0.0-alpha, 1.0.0alpha, 1.0.0RC1
+        // Matches with dot separators: 1.0.0-beta.2, 1.0.0alpha.1
+        // Matches with numeric suffixes: 1.0.0-RC1, 1.0.0beta2
+        if (preg_match('/-?(alpha|beta|rc)([.\d-]*)$/i', $cleanVersion)) {
             return true;
         }
 
@@ -216,9 +258,19 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check version constraints for unstable patterns.
+     *
+     * Severity is risk-based:
+     * - require-dev + stable minimum-stability: Low (isolated to dev environment)
+     * - require OR non-stable minimum-stability: Medium (can affect production)
      */
-    private function checkVersionConstraints(array $packages, string $section, array &$issues, string $composerJson): void
+    private function checkVersionConstraints(array $packages, string $section, array &$issues, string $composerJson, string $minimumStability): void
     {
+        // Calculate severity based on section and minimum-stability
+        // require-dev with stable minimum-stability is low risk (isolated to development)
+        $severity = ($section === 'require-dev' && $minimumStability === 'stable')
+            ? Severity::Low
+            : Severity::Medium;
+
         foreach ($packages as $package => $version) {
             if (! is_string($package) || ! is_string($version)) {
                 continue;
@@ -229,14 +281,14 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $line = $this->findPackageLine($composerJson, $package, $section);
+            $line = Composer::findPackageLineInJson($composerJson, $package, $section);
 
             // Check for dev versions (dev-master, dev-main, 2.0.x-dev)
             if ($this->isUnstableVersion($version)) {
                 $issues[] = $this->createIssue(
                     message: sprintf('Package "%s" in %s requires unstable dev version: %s', $package, $section, $version),
                     location: new Location($this->getRelativePath($composerJson), $line),
-                    severity: Severity::Medium,
+                    severity: $severity,
                     recommendation: sprintf('Update "%s" to use a stable version constraint', $package),
                     code: FileParser::getCodeSnippet($composerJson, $line),
                     metadata: ['package' => $package, 'version' => $version, 'section' => $section]
@@ -252,7 +304,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                 $issues[] = $this->createIssue(
                     message: sprintf('Package "%s" in %s requires unstable version: %s', $package, $section, $version),
                     location: new Location($this->getRelativePath($composerJson), $line),
-                    severity: Severity::Medium,
+                    severity: $severity,
                     recommendation: sprintf('Remove @%s flag and use stable version for "%s"', $stabilityFlag, $package),
                     code: FileParser::getCodeSnippet($composerJson, $line),
                     metadata: ['package' => $package, 'version' => $version, 'stability' => $stabilityFlag, 'section' => $section]
@@ -281,6 +333,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         $unstablePackages = [];
+        $firstUnstablePackageName = null;
 
         foreach ($packages as $package) {
             if (! is_array($package)) {
@@ -298,6 +351,10 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             // Check for unstable versions using the same logic as checkVersionConstraints
             if ($this->isUnstableVersion($version)) {
                 $unstablePackages[] = sprintf('%s (%s)', $packageName, $version);
+                // Track the first unstable package for accurate line reporting
+                if ($firstUnstablePackageName === null && $packageName !== 'Unknown') {
+                    $firstUnstablePackageName = $packageName;
+                }
             }
         }
 
@@ -305,16 +362,21 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             $count = count($unstablePackages);
             $examples = implode(', ', array_slice($unstablePackages, 0, 3));
 
+            // Use the first unstable package's line number for better location reporting
+            $line = $firstUnstablePackageName !== null
+                ? Composer::findPackageLineNumber($composerLock, $firstUnstablePackageName)
+                : 1;
+
             $issues[] = $this->createIssue(
                 message: sprintf('Found %d unstable package versions installed', $count),
-                location: new Location($this->getRelativePath($composerLock)),
+                location: new Location($this->getRelativePath($composerLock), $line),
                 severity: Severity::Low,
                 recommendation: sprintf(
                     'Update to stable versions: %s%s. Run "composer update --prefer-stable"',
                     $examples,
                     $count > 3 ? sprintf(' and %d more', $count - 3) : ''
                 ),
-                code: FileParser::getCodeSnippet($composerLock, 1),
+                code: FileParser::getCodeSnippet($composerLock, $line),
                 metadata: [
                     'count' => $count,
                     'examples' => array_slice($unstablePackages, 0, 3),
@@ -323,58 +385,57 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
         }
     }
 
+    /**
+     * Check if composer update --prefer-stable would make changes.
+     *
+     * Uses locale-independent pattern matching to detect package changes:
+     * - Looks for package name patterns (vendor/package)
+     * - Detects indented lines starting with "-" (package operations)
+     * - Checks for version number patterns
+     *
+     * This avoids reliance on English text like "Upgrading" or "Downgrading"
+     * which break with non-English locales or Composer output changes.
+     */
     private function preferStableRunChangesDependencies(string $output): bool
     {
-        foreach (self::PREFER_STABLE_CHANGE_PATTERNS as $pattern) {
-            if (str_contains($output, $pattern)) {
-                return true;
-            }
+        if (empty($output)) {
+            return false;
         }
 
-        return false;
-    }
+        // Split output into lines for analysis
+        $lines = explode("\n", $output);
 
-    /**
-     * Find the line number where a package is defined in composer.json.
-     */
-    private function findPackageLine(string $composerJson, string $package, string $section = 'require'): int
-    {
-        if (! file_exists($composerJson)) {
-            return 1;
-        }
+        // Track if we see package operations
+        $hasPackageOperations = false;
 
-        $lines = FileParser::getLines($composerJson);
-        if (empty($lines)) {
-            return 1;
-        }
+        foreach ($lines as $line) {
+            $trimmedLine = trim($line);
 
-        $inSection = false;
-        $pattern = '/^\s*"'.preg_quote($package, '/').'"\s*:/';
-
-        foreach ($lines as $index => $line) {
-            if (! is_string($line)) {
+            // Skip empty lines
+            if ($trimmedLine === '') {
                 continue;
             }
 
-            // Check if we're entering the target section
-            if (preg_match('/^\s*"'.$section.'"\s*:/', $line) === 1) {
-                $inSection = true;
-
-                continue;
+            // Pattern 1: Look for indented lines starting with "-" (Composer's operation indicator)
+            // Example: "  - Upgrading vendor/package (1.0 => 2.0)"
+            // The "-" is locale-independent
+            if (preg_match('/^\s+-\s/', $line)) {
+                // Verify it contains a package name pattern (vendor/package)
+                if (preg_match('/[a-z0-9_-]+\/[a-z0-9_-]+/i', $line)) {
+                    $hasPackageOperations = true;
+                    break;
+                }
             }
 
-            // Check if we're leaving the section (closing brace)
-            if ($inSection && preg_match('/^\s*}/', $line) === 1) {
-                $inSection = false;
-            }
-
-            // If in section, look for package name
-            if ($inSection && preg_match($pattern, $line) === 1) {
-                return $index + 1;
+            // Pattern 2: Look for version change indicators (locale-independent)
+            // Example: "vendor/package (1.0.0 => 2.0.0)" or "vendor/package (1.0.0 -> 2.0.0)"
+            if (preg_match('/[a-z0-9_-]+\/[a-z0-9_-]+\s+\([^)]*(?:=>|->)[^)]*\)/i', $trimmedLine)) {
+                $hasPackageOperations = true;
+                break;
             }
         }
 
-        return 1;
+        return $hasPackageOperations;
     }
 
     /**

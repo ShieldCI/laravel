@@ -77,7 +77,7 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
             [$this->createIssueWithSnippet(
                 message: 'Undocumented environment variables',
                 filePath: $envExamplePath,
-                lineNumber: 1,
+                lineNumber: null,
                 severity: Severity::Low,
                 recommendation: $this->buildUndocumentedVariablesRecommendation($undocumentedVars),
                 column: null,

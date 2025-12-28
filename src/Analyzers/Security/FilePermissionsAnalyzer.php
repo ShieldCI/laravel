@@ -8,7 +8,6 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -24,17 +23,22 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 {
+    /** Mask to isolate permission bits (strip file type and special bits) */
+    private const PERMISSION_MASK = 0x01FF; // 0777
+
     private const WORLD_WRITABLE = 0x0002;
 
     private const WORLD_READABLE = 0x0004;
 
     private const WORLD_EXECUTE = 0x0001;
 
-    private const GROUP_WRITABLE = 0x0020;
+    private const GROUP_WRITABLE = 0x0010;
 
-    private const GROUP_READABLE = 0x0040;
+    private const GROUP_READABLE = 0x0020;
 
-    private const GROUP_EXECUTE = 0x0010;
+    private const GROUP_EXECUTE = 0x0008;
+
+    private const USER_EXECUTE = 0x0040;
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -92,7 +96,16 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
     /**
      * Get paths to check with their configuration.
      *
-     * Format: ['path' => ['type' => 'file|directory', 'max' => 644, 'recommended' => 600, 'critical' => true, 'executable' => true]]
+     * Format:
+     * [
+     *   'path' => [
+     *     'type' => 'file|directory',
+     *     'max' => 0755,         // Permission bitmask (allowed bits), not a numeric comparison
+     *     'recommended' => 0644,
+     *     'critical' => true,
+     *     'executable' => true
+     *   ]
+     * ]
      *
      * @return array<string, array{type: string, max: int, recommended: int, critical?: bool, executable?: bool}>
      */
@@ -129,7 +142,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 
         // Allow configuration override
         /** @var array<string, array{type: string, max: int, recommended: int, critical?: bool, executable?: bool}> $config */
-        $config = config('shieldci.file_permissions', []);
+        $config = function_exists('config') ? config('shieldci.file_permissions', []) : [];
 
         return array_merge($defaults, $config);
     }
@@ -180,8 +193,38 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
             return; // Don't check further - world-writable is the main issue
         }
 
-        // Check 2: Exceeds maximum permissions
-        if ($permissions['numeric'] > $max) {
+        // Check 2: World-readable on critical files (CRITICAL - for sensitive files)
+        if ($isCritical && $this->isWorldReadable($permissions['raw'])) {
+            $issues[] = $this->createIssue(
+                message: sprintf('Critical file "%s" is world-readable (permissions: %s)', $relativePath, $permissions['octal']),
+                location: new Location($relativePath),
+                severity: Severity::Critical,
+                recommendation: sprintf(
+                    'Remove world read permissions: chmod %s %s',
+                    decoct($recommended),
+                    $relativePath
+                ),
+                code: null,
+                metadata: [
+                    'path' => $relativePath,
+                    'permissions' => $permissions['octal'],
+                    'numeric_permissions' => $permissions['numeric'],
+                    'type' => $type,
+                    'world_writable' => false,
+                    'world_readable' => true,
+                    'group_writable' => $this->isGroupWritable($permissions['raw']),
+                    'group_readable' => $this->isGroupReadable($permissions['raw']),
+                ]
+            );
+
+            return; // Don't check further
+        }
+
+        // Check 3: Exceeds maximum permissions (using bit mask comparison, not numeric magnitude)
+        // Check if actual permissions have bits set that max permissions don't allow
+        // Example: actual=0777, max=0755 → (0777 & ~0755) = 0022 (group/other write bits) → exceeds
+        $exceededBits = $permissions['numeric'] & (~$max & self::PERMISSION_MASK);
+        if ($exceededBits !== 0) {
             $severity = $isCritical ? Severity::Critical : Severity::High;
 
             $issues[] = $this->createIssue(
@@ -195,7 +238,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
                     decoct($recommended),
                     $relativePath
                 ),
-                code: FileParser::getCodeSnippet($path, 1),
+                code: null,
                 metadata: [
                     'path' => $relativePath,
                     'permissions' => $permissions['octal'],
@@ -203,6 +246,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
                     'type' => $type,
                     'max_allowed' => $max,
                     'recommended' => $recommended,
+                    'exceeded_bits' => sprintf('%03o', $exceededBits),
                     'world_writable' => false,
                     'world_readable' => $this->isWorldReadable($permissions['raw']),
                     'group_writable' => $this->isGroupWritable($permissions['raw']),
@@ -213,7 +257,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
             return; // Don't check further
         }
 
-        // Check 3: Group-writable on critical files (Medium severity)
+        // Check 4: Group-writable on critical files (Medium severity)
         if ($isCritical && $this->isGroupWritable($permissions['raw'])) {
             $issues[] = $this->createIssue(
                 message: sprintf('Critical file "%s" is group-writable (permissions: %s)', $relativePath, $permissions['octal']),
@@ -224,7 +268,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
                     decoct($recommended),
                     $relativePath
                 ),
-                code: FileParser::getCodeSnippet($path, 1),
+                code: null,
                 metadata: [
                     'path' => $relativePath,
                     'permissions' => $permissions['octal'],
@@ -240,7 +284,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
             return; // Don't check executable if already flagged
         }
 
-        // Check 4: Executable permissions on non-executable files (Medium severity)
+        // Check 5: Executable permissions on non-executable files (Medium severity)
         if ($type === 'file' && ! $isExecutable && $this->hasExecutePermissions($permissions['raw'])) {
             $issues[] = $this->createIssue(
                 message: sprintf('Non-executable file "%s" has execute permissions (%s)', $relativePath, $permissions['octal']),
@@ -251,7 +295,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
                     decoct($recommended),
                     $relativePath
                 ),
-                code: FileParser::getCodeSnippet($path, 1),
+                code: null,
                 metadata: [
                     'path' => $relativePath,
                     'permissions' => $permissions['octal'],
@@ -259,6 +303,33 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
                     'type' => $type,
                     'has_execute' => true,
                     'should_be_executable' => false,
+                    'world_writable' => false,
+                    'world_readable' => $this->isWorldReadable($permissions['raw']),
+                    'group_writable' => $this->isGroupWritable($permissions['raw']),
+                    'group_readable' => $this->isGroupReadable($permissions['raw']),
+                ]
+            );
+        }
+
+        // Check 6: Directory without owner execute (usability issue - directory becomes unusable)
+        if ($type === 'directory' && ! $this->hasOwnerExecute($permissions['raw'])) {
+            $issues[] = $this->createIssue(
+                message: sprintf('Directory "%s" lacks owner execute permission (%s) - unusable', $relativePath, $permissions['octal']),
+                location: new Location($relativePath),
+                severity: Severity::Medium,
+                recommendation: sprintf(
+                    'Add owner execute permission: chmod u+x %s (or chmod %s %s)',
+                    $relativePath,
+                    decoct($recommended),
+                    $relativePath
+                ),
+                code: null,
+                metadata: [
+                    'path' => $relativePath,
+                    'permissions' => $permissions['octal'],
+                    'numeric_permissions' => $permissions['numeric'],
+                    'type' => $type,
+                    'owner_execute' => false,
                     'world_writable' => false,
                     'world_readable' => $this->isWorldReadable($permissions['raw']),
                     'group_writable' => $this->isGroupWritable($permissions['raw']),
@@ -280,12 +351,15 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
             return null;
         }
 
-        $octal = substr(sprintf('%o', $perms), -3);
+        // Isolate permission bits only (strip file type and special bits)
+        $permissionBits = $perms & self::PERMISSION_MASK;
+
+        $octal = sprintf('%03o', $permissionBits);
 
         return [
-            'raw' => $perms,
+            'raw' => $permissionBits,
             'octal' => $octal,
-            'numeric' => (int) octdec($octal),
+            'numeric' => $permissionBits,
         ];
     }
 
@@ -326,6 +400,16 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
      */
     private function hasExecutePermissions(int $perms): bool
     {
-        return (bool) ($perms & (0x0040 | self::GROUP_EXECUTE | self::WORLD_EXECUTE));
+        $permBits = $perms & self::PERMISSION_MASK;
+
+        return (bool) ($permBits & (self::USER_EXECUTE | self::GROUP_EXECUTE | self::WORLD_EXECUTE));
+    }
+
+    /**
+     * Check if path has owner (user) execute permission.
+     */
+    private function hasOwnerExecute(int $perms): bool
+    {
+        return (bool) ($perms & self::USER_EXECUTE);
     }
 }

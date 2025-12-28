@@ -63,7 +63,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
     ];
 
     /**
-     * Request data retrieval methods that are dangerous.
+     * Request data retrieval methods that are dangerous (unfiltered).
      */
     private const REQUEST_DATA_METHODS = [
         'all',
@@ -71,8 +71,18 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
         'post',
         'get',
         'query',
-        'except',
         'json',
+    ];
+
+    /**
+     * Request data methods using blacklist filtering (less safe than whitelist).
+     *
+     * These methods DO filter data, but use negative filtering (blacklist)
+     * rather than positive filtering (whitelist). New fields are automatically
+     * included, making them less safe than only() or validated().
+     */
+    private const BLACKLIST_REQUEST_METHODS = [
+        'except',
     ];
 
     public function __construct(
@@ -156,7 +166,25 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        if (str_contains($content, 'namespace App\\Models')) {
+        // Check if in App\Models namespace (but NOT subdirectories like Scopes, Observers, Casts)
+        // Match "namespace App\Models;" or "namespace App\Models\{ModelName}"
+        // but exclude "namespace App\Models\Scopes", "namespace App\Models\Observers", etc.
+        if (preg_match('/namespace\s+App\\\\Models\s*;/', $content)) {
+            return true;
+        }
+
+        // Check for specific model subdirectories (e.g., Domain\Users\Models)
+        // but exclude helper subdirectories
+        if (preg_match('/namespace\s+App\\\\Models\\\\Scopes\b/', $content) ||
+            preg_match('/namespace\s+App\\\\Models\\\\Observers\b/', $content) ||
+            preg_match('/namespace\s+App\\\\Models\\\\Casts\b/', $content) ||
+            preg_match('/namespace\s+App\\\\Models\\\\Collections\b/', $content) ||
+            preg_match('/namespace\s+App\\\\Models\\\\Traits\b/', $content)) {
+            return false;
+        }
+
+        // Check for models in subdirectories like "namespace App\Models\Admin"
+        if (preg_match('/namespace\s+App\\\\Models\\\\[A-Z]/', $content)) {
             return true;
         }
 
@@ -234,7 +262,10 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
             $calls = $this->findStaticMethodCalls($ast, $method);
 
             foreach ($calls as $call) {
-                $this->checkCallForRequestData($call, $method, 'static', $file, $issues);
+                // Only check if it's likely a model class to avoid false positives
+                if ($this->isLikelyModelClass($call, $file)) {
+                    $this->checkCallForRequestData($call, $method, 'static', $file, $issues);
+                }
             }
         }
 
@@ -244,10 +275,164 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
             foreach ($calls as $call) {
                 if ($call instanceof Node\Expr\MethodCall) {
+                    // Skip if this is already being handled by query builder check
+                    // e.g., User::where()->update() should be handled by builder check, not instance check
+                    if ($this->isQueryBuilderCall($call, $file)) {
+                        continue; // Already handled by checkQueryBuilderCalls
+                    }
+
                     $this->checkCallForRequestData($call, $method, 'instance', $file, $issues);
                 }
             }
         }
+    }
+
+    /**
+     * Check if a static call is likely on an Eloquent model.
+     *
+     * This reduces false positives by filtering out service classes, factories, etc.
+     * that might have create() methods but aren't Eloquent models.
+     */
+    private function isLikelyModelClass(Node\Expr\StaticCall $call, string $file): bool
+    {
+        if (! $call->class instanceof Node\Name) {
+            return false;
+        }
+
+        $className = $call->class->toString();
+
+        // Handle fully-qualified class names like \App\Models\User
+        if (str_starts_with($className, '\\')) {
+            // Remove leading backslash for checking
+            $normalizedClassName = ltrim($className, '\\');
+
+            // Check if it's in App\Models namespace
+            if (str_starts_with($normalizedClassName, 'App\\Models\\') ||
+                str_starts_with($normalizedClassName, 'App\\Model\\')) {
+                return true;
+            }
+
+            // Check if it matches common model namespaces
+            if (str_contains($normalizedClassName, '\\Models\\') ||
+                str_contains($normalizedClassName, '\\Model\\')) {
+                return true;
+            }
+        }
+
+        // For unqualified names, check if the model exists in app/Models
+        $modelsPath = $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Models';
+        $modelFile = $modelsPath.DIRECTORY_SEPARATOR.$className.'.php';
+
+        if (file_exists($modelFile)) {
+            return true;
+        }
+
+        // Check if the file has a use statement importing this class from Models namespace
+        $content = FileParser::readFile($file);
+        if ($content !== null) {
+            $quotedClassName = preg_quote($className, '/');
+
+            // Match: use App\Models\ClassName;
+            if (preg_match('/use\s+App\\\\Models\\\\'.$quotedClassName.'\s*;/i', $content)) {
+                return true;
+            }
+
+            // Match: use App\Model\ClassName;
+            if (preg_match('/use\s+App\\\\Model\\\\'.$quotedClassName.'\s*;/i', $content)) {
+                return true;
+            }
+
+            // Match any namespace with Models in it
+            if (preg_match('/use\s+[\w\\\\]+\\\\Models\\\\'.$quotedClassName.'\s*;/i', $content)) {
+                return true;
+            }
+        }
+
+        // Check if the file has a use statement importing from known non-model namespaces
+        if ($content !== null) {
+            // Match use statements for common non-model namespaces
+            $nonModelNamespacePatterns = [
+                '/use\s+App\\\\Services\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Repositories\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Actions\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Jobs\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Handlers\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Helpers\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Support\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Models\\\\Scopes\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Models\\\\Observers\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Models\\\\Casts\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+App\\\\Models\\\\Collections\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+[\w\\\\]+\\\\Services\\\\'.$quotedClassName.'\s*;/i',
+                '/use\s+[\w\\\\]+\\\\Repositories\\\\'.$quotedClassName.'\s*;/i',
+            ];
+
+            foreach ($nonModelNamespacePatterns as $pattern) {
+                if (preg_match($pattern, $content)) {
+                    return false;
+                }
+            }
+        }
+
+        // Check if class name follows common non-model naming patterns
+        // Services, Repositories, Jobs, etc. are unlikely to be models
+        $nonModelSuffixes = [
+            'Service',
+            'Repository',
+            'Action',
+            'Job',
+            'Handler',
+            'Helper',
+            'Facade',
+            'Provider',
+            'Middleware',
+            'Command',
+            'Rule',
+            'Policy',
+            'Resource',
+            'Request',
+            'Controller',
+            'Scope',
+            'Observer',
+            'Cast',
+            'Collection',
+        ];
+
+        foreach ($nonModelSuffixes as $suffix) {
+            if (str_ends_with($className, $suffix)) {
+                return false;
+            }
+        }
+
+        // If we can't determine it's NOT a model, be conservative and check it
+        // This ensures we don't miss actual models while reducing obvious false positives
+        // Only skip if it's clearly a known non-model class
+        $nonModelPatterns = [
+            'DB',
+            'Cache',
+            'Session',
+            'Auth',
+            'Hash',
+            'Crypt',
+            'Storage',
+            'File',
+            'Queue',
+            'Event',
+            'Mail',
+            'Notification',
+            'Log',
+            'Validator',
+            'Factory',
+            'Seeder',
+        ];
+
+        if (in_array($className, $nonModelPatterns, true)) {
+            return false;
+        }
+
+        // Default to true for unknown classes to avoid missing models
+        // Better to have occasional false positive than miss actual vulnerabilities
+        return true;
     }
 
     /**
@@ -261,7 +446,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
             foreach ($calls as $call) {
                 // Check if it's called on a query builder
-                if ($call instanceof Node\Expr\MethodCall && $this->isQueryBuilderCall($call)) {
+                if ($call instanceof Node\Expr\MethodCall && $this->isQueryBuilderCall($call, $file)) {
                     $this->checkCallForRequestData($call, $method, 'builder', $file, $issues);
                 }
             }
@@ -302,34 +487,156 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if a method call is on a query builder.
+     *
+     * Detects:
+     * - DB::table()->update()
+     * - User::query()->update()
+     * - User::where()->update()
+     * - User::whereIn()->orderBy()->update()
      */
-    private function isQueryBuilderCall(Node\Expr\MethodCall $call): bool
+    private function isQueryBuilderCall(Node\Expr\MethodCall $call, string $file): bool
+    {
+        return $this->isQueryBuilderChain($call->var, $file);
+    }
+
+    /**
+     * Recursively check if a node represents a query builder chain.
+     *
+     * This traverses the method chain to detect query builder origins:
+     * - Static calls to Model classes with query builder methods
+     * - DB facade calls
+     * - Common query builder method chains
+     *
+     * @param  string  $file  The file being analyzed (for model verification)
+     */
+    private function isQueryBuilderChain(Node\Expr $node, string $file = ''): bool
     {
         // Check if called on DB facade
-        if ($call->var instanceof Node\Expr\StaticCall) {
-            if ($call->var->class instanceof Node\Name) {
-                $className = $call->var->class->toString();
+        if ($node instanceof Node\Expr\StaticCall) {
+            if ($node->class instanceof Node\Name) {
+                $className = $node->class->toString();
                 if ($className === 'DB' || str_ends_with($className, '\\DB')) {
                     return true;
                 }
             }
-        }
 
-        // Check if called on ->query() result
-        if ($call->var instanceof Node\Expr\MethodCall) {
-            if ($call->var->name instanceof Node\Identifier && $call->var->name->toString() === 'query') {
-                return true;
+            // Check if it's a static call to a query builder method on a model
+            // e.g., User::where(), User::whereIn(), User::find()
+            if ($node->name instanceof Node\Identifier) {
+                $methodName = $node->name->toString();
+                if ($this->isQueryBuilderMethod($methodName)) {
+                    // IMPORTANT: Verify this is actually a model class to avoid false positives
+                    // SomeService::where() should NOT be treated as a query builder
+                    if ($this->isLikelyModelClass($node, $file)) {
+                        return true;
+                    }
+                }
             }
         }
 
-        // Check if called on table() result
-        if ($call->var instanceof Node\Expr\MethodCall) {
-            if ($call->var->name instanceof Node\Identifier && $call->var->name->toString() === 'table') {
-                return true;
+        // Check if it's a method call in a chain
+        if ($node instanceof Node\Expr\MethodCall) {
+            if ($node->name instanceof Node\Identifier) {
+                $methodName = $node->name->toString();
+
+                // If it's a known query builder method, recursively check the chain
+                if ($this->isQueryBuilderMethod($methodName)) {
+                    return $this->isQueryBuilderChain($node->var, $file);
+                }
             }
         }
 
         return false;
+    }
+
+    /**
+     * Check if a method name is a query builder method.
+     *
+     * These methods return a query builder instance and can be chained.
+     */
+    private function isQueryBuilderMethod(string $methodName): bool
+    {
+        $queryBuilderMethods = [
+            // Query builder initiators
+            'query',
+            'table',
+            'newQuery',
+
+            // Where clauses
+            'where',
+            'whereIn',
+            'whereNotIn',
+            'whereBetween',
+            'whereNotBetween',
+            'whereNull',
+            'whereNotNull',
+            'whereDate',
+            'whereMonth',
+            'whereDay',
+            'whereYear',
+            'whereTime',
+            'whereColumn',
+            'whereExists',
+            'whereNotExists',
+            'whereRaw',
+            'orWhere',
+            'orWhereIn',
+            'orWhereNotIn',
+            'orWhereBetween',
+            'orWhereNotBetween',
+            'orWhereNull',
+            'orWhereNotNull',
+
+            // Joins
+            'join',
+            'leftJoin',
+            'rightJoin',
+            'crossJoin',
+            'joinSub',
+            'leftJoinSub',
+            'rightJoinSub',
+
+            // Ordering and grouping
+            'orderBy',
+            'orderByDesc',
+            'orderByRaw',
+            'groupBy',
+            'groupByRaw',
+            'having',
+            'havingRaw',
+            'orHaving',
+            'orHavingRaw',
+
+            // Limiting
+            'limit',
+            'offset',
+            'skip',
+            'take',
+            'forPage',
+
+            // Selects
+            'select',
+            'selectRaw',
+            'selectSub',
+            'addSelect',
+            'distinct',
+
+            // Locking
+            'lockForUpdate',
+            'sharedLock',
+
+            // Other common methods
+            'with',
+            'withCount',
+            'withTrashed',
+            'onlyTrashed',
+            'latest',
+            'oldest',
+            'when',
+            'unless',
+        ];
+
+        return in_array($methodName, $queryBuilderMethods, true);
     }
 
     /**
@@ -347,7 +654,34 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
         }
 
         foreach ($call->args as $arg) {
-            if ($this->isRequestData($arg->value)) {
+            // Recursively check for blacklist filtering first (except)
+            if ($this->containsBlacklistRequestData($arg->value)) {
+                $callTypeLabel = match ($callType) {
+                    'static' => 'Static call to',
+                    'instance' => 'Instance call to',
+                    'builder' => 'Query builder call to',
+                    default => 'Call to',
+                };
+
+                $issues[] = $this->createIssueWithSnippet(
+                    message: "{$callTypeLabel} {$method}() uses blacklist filtering (except) which may allow unintended fields",
+                    filePath: $file,
+                    lineNumber: $call->getLine(),
+                    severity: Severity::High,
+                    recommendation: 'Use request()->only([...]) or request()->validated() instead of except() for better security. Whitelist (only) is safer than blacklist (except) as new fields are excluded by default',
+                    metadata: [
+                        'method' => $method,
+                        'call_type' => $callType,
+                        'filtering_type' => 'blacklist',
+                        'issue_type' => 'dangerous_method_with_blacklist_filtering',
+                    ]
+                );
+
+                return; // Don't double-report
+            }
+
+            // Recursively check for unfiltered request data
+            if ($this->containsRequestData($arg->value)) {
                 $callTypeLabel = match ($callType) {
                     'static' => 'Static call to',
                     'instance' => 'Instance call to',
@@ -364,6 +698,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     metadata: [
                         'method' => $method,
                         'call_type' => $callType,
+                        'filtering_type' => 'none',
                         'issue_type' => 'dangerous_method_with_request_data',
                     ]
                 );
@@ -372,6 +707,218 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 break;
             }
         }
+    }
+
+    /**
+     * Recursively check if a node or its children contain blacklist-filtered request data.
+     *
+     * This traverses the entire expression tree to find nested request data patterns
+     * like: ['name' => $request->except(['password'])['name']]
+     */
+    private function containsBlacklistRequestData(Node $node): bool
+    {
+        // Direct check: is this node itself blacklist request data?
+        if ($this->isBlacklistRequestData($node)) {
+            return true;
+        }
+
+        // Traverse arrays: check all array items
+        if ($node instanceof Node\Expr\Array_) {
+            foreach ($node->items as $item) {
+                if ($item === null) {
+                    continue;
+                }
+
+                // Check both key and value
+                if ($item->key !== null && $this->containsBlacklistRequestData($item->key)) {
+                    return true;
+                }
+
+                if ($this->containsBlacklistRequestData($item->value)) {
+                    return true;
+                }
+            }
+        }
+
+        // Traverse array dimension access: $request->except()['name']
+        if ($node instanceof Node\Expr\ArrayDimFetch) {
+            if ($this->containsBlacklistRequestData($node->var)) {
+                return true;
+            }
+
+            if ($node->dim !== null && $this->containsBlacklistRequestData($node->dim)) {
+                return true;
+            }
+        }
+
+        // Traverse ternary expressions: condition ? true : false
+        if ($node instanceof Node\Expr\Ternary) {
+            if ($this->containsBlacklistRequestData($node->cond)) {
+                return true;
+            }
+
+            if ($node->if !== null && $this->containsBlacklistRequestData($node->if)) {
+                return true;
+            }
+
+            if ($this->containsBlacklistRequestData($node->else)) {
+                return true;
+            }
+        }
+
+        // Traverse binary operations: $a . $b, $a + $b, etc.
+        if ($node instanceof Node\Expr\BinaryOp) {
+            if ($this->containsBlacklistRequestData($node->left)) {
+                return true;
+            }
+
+            if ($this->containsBlacklistRequestData($node->right)) {
+                return true;
+            }
+        }
+
+        // Traverse cast expressions: (string) $request->except()
+        if ($node instanceof Node\Expr\Cast) {
+            if ($this->containsBlacklistRequestData($node->expr)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Recursively check if a node or its children contain unfiltered request data.
+     *
+     * This traverses the entire expression tree to find nested request data patterns
+     * like: ['name' => $request->all()['name']]
+     */
+    private function containsRequestData(Node $node): bool
+    {
+        // Direct check: is this node itself request data?
+        if ($this->isRequestData($node)) {
+            return true;
+        }
+
+        // Traverse arrays: check all array items
+        if ($node instanceof Node\Expr\Array_) {
+            foreach ($node->items as $item) {
+                if ($item === null) {
+                    continue;
+                }
+
+                // Check both key and value
+                if ($item->key !== null && $this->containsRequestData($item->key)) {
+                    return true;
+                }
+
+                if ($this->containsRequestData($item->value)) {
+                    return true;
+                }
+            }
+        }
+
+        // Traverse array dimension access: $request->all()['name']
+        if ($node instanceof Node\Expr\ArrayDimFetch) {
+            if ($this->containsRequestData($node->var)) {
+                return true;
+            }
+
+            if ($node->dim !== null && $this->containsRequestData($node->dim)) {
+                return true;
+            }
+        }
+
+        // Traverse ternary expressions: condition ? true : false
+        if ($node instanceof Node\Expr\Ternary) {
+            if ($this->containsRequestData($node->cond)) {
+                return true;
+            }
+
+            if ($node->if !== null && $this->containsRequestData($node->if)) {
+                return true;
+            }
+
+            if ($this->containsRequestData($node->else)) {
+                return true;
+            }
+        }
+
+        // Traverse binary operations: $a . $b, $a + $b, etc.
+        if ($node instanceof Node\Expr\BinaryOp) {
+            if ($this->containsRequestData($node->left)) {
+                return true;
+            }
+
+            if ($this->containsRequestData($node->right)) {
+                return true;
+            }
+        }
+
+        // Traverse cast expressions: (string) $request->all()
+        if ($node instanceof Node\Expr\Cast) {
+            if ($this->containsRequestData($node->expr)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a node represents blacklist-filtered request data (except).
+     *
+     * These methods DO filter, but use blacklist approach which is less safe.
+     */
+    private function isBlacklistRequestData(Node $node): bool
+    {
+        // Check for request()->except() patterns
+        if ($node instanceof Node\Expr\MethodCall) {
+            if ($node->name instanceof Node\Identifier) {
+                $methodName = $node->name->toString();
+
+                // Check if it's a blacklist request method
+                if (in_array($methodName, self::BLACKLIST_REQUEST_METHODS, true)) {
+                    // Called on request() function
+                    if ($node->var instanceof Node\Expr\FuncCall) {
+                        if ($node->var->name instanceof Node\Name && $node->var->name->toString() === 'request') {
+                            // Only flag if except() has arguments (it should always have args)
+                            // except() with no args would be meaningless and return all data
+                            return true;
+                        }
+                    }
+
+                    // Called on $request variable
+                    if ($node->var instanceof Node\Expr\Variable && $node->var->name === 'request') {
+                        return true;
+                    }
+
+                    // Called on Request facade or type-hinted parameter
+                    if ($node->var instanceof Node\Expr\Variable) {
+                        // This could be a FormRequest or Request parameter
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Check for Request::except() static calls
+        if ($node instanceof Node\Expr\StaticCall) {
+            if ($node->name instanceof Node\Identifier) {
+                $methodName = $node->name->toString();
+
+                if (in_array($methodName, self::BLACKLIST_REQUEST_METHODS, true)) {
+                    if ($node->class instanceof Node\Name) {
+                        $className = $node->class->toString();
+                        if (str_contains($className, 'Request')) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -390,8 +937,9 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     if ($node->var instanceof Node\Expr\FuncCall) {
                         if ($node->var->name instanceof Node\Name && $node->var->name->toString() === 'request') {
                             // Check if no arguments (e.g., request()->input() with no args = all input)
-                            if (in_array($methodName, ['input', 'get', 'post', 'query'], true)) {
-                                // If has args, it's filtering - OK
+                            // These methods are only dangerous when called without arguments
+                            if (in_array($methodName, ['input', 'get', 'post', 'query', 'json'], true)) {
+                                // If has args, it's filtering to a specific key - OK
                                 if (! empty($node->args)) {
                                     return false;
                                 }
@@ -404,7 +952,22 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     // Called on $request variable
                     if ($node->var instanceof Node\Expr\Variable && $node->var->name === 'request') {
                         // Same logic for instance methods
-                        if (in_array($methodName, ['input', 'get', 'post', 'query'], true)) {
+                        if (in_array($methodName, ['input', 'get', 'post', 'query', 'json'], true)) {
+                            if (! empty($node->args)) {
+                                return false;
+                            }
+                        }
+
+                        return true;
+                    }
+
+                    // IMPORTANT: Catch ANY variable with Request-specific methods
+                    // This handles: function store(Request $r) { User::create($r->all()); }
+                    // Methods like all(), input(), post(), query(), json() are very Request-specific
+                    // so we can safely assume any variable using them is a Request instance
+                    if ($node->var instanceof Node\Expr\Variable) {
+                        // Same argument filtering logic
+                        if (in_array($methodName, ['input', 'get', 'post', 'query', 'json'], true)) {
                             if (! empty($node->args)) {
                                 return false;
                             }

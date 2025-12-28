@@ -868,8 +868,7 @@ PHP;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertStringContainsString('constructor dependency injection', $issues[0]->recommendation);
-        $this->assertStringContainsString('service locator anti-pattern', $issues[0]->recommendation);
+        $this->assertStringContainsString('manual service container resolution', $issues[0]->recommendation);
     }
 
     public function test_detects_non_service_provider_in_providers_directory(): void

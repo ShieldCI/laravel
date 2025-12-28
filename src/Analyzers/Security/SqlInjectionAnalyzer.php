@@ -6,7 +6,6 @@ namespace ShieldCI\Analyzers\Security;
 
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use PhpParser\Node;
-use PhpParser\PrettyPrinter\Standard as PrettyPrinter;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -26,67 +25,121 @@ use ShieldCI\AnalyzersCore\ValueObjects\Issue;
  */
 class SqlInjectionAnalyzer extends AbstractFileAnalyzer
 {
-    private array $dangerousMethods = [
-        'raw',
-        'whereRaw',
-        'havingRaw',
-        'orderByRaw',
-        'selectRaw',
-        'unprepared',
+    /**
+     * Database methods to check for SQL injection.
+     *
+     * Configuration:
+     * - alwaysFlag: If true, always flag (no vulnerability check needed)
+     * - checkStatic: Check static calls like DB::method()
+     * - checkInstance: Check instance calls like ->method()
+     * - severity: Severity level (Critical for full query control, High for fragments)
+     * - recommendation: Custom recommendation message (optional)
+     */
+    private array $dbMethods = [
+        'raw' => [
+            'alwaysFlag' => false,
+            'checkStatic' => true,
+            'checkInstance' => false,
+            'severity' => Severity::Critical,  // Full query construction
+            'recommendation' => 'Use parameter binding instead of string concatenation. Example: DB::raw("SELECT * FROM users WHERE id = ?", [$id])',
+        ],
+        'unprepared' => [
+            'alwaysFlag' => true,
+            'checkStatic' => true,
+            'checkInstance' => false,
+            'severity' => Severity::Critical,  // Inherently unsafe
+            'recommendation' => 'Avoid DB::unprepared() - use prepared statements with DB::select(), DB::insert(), etc. with parameter binding',
+        ],
+        'whereRaw' => [
+            'alwaysFlag' => false,
+            'checkStatic' => false,
+            'checkInstance' => true,
+            'severity' => Severity::High,  // Query fragment only
+            'recommendation' => 'Use parameter binding: ->whereRaw(\'column = ?\', [$value]) instead of concatenation',
+        ],
+        'havingRaw' => [
+            'alwaysFlag' => false,
+            'checkStatic' => false,
+            'checkInstance' => true,
+            'severity' => Severity::High,  // Query fragment only
+            'recommendation' => 'Use parameter binding: ->havingRaw(\'column = ?\', [$value]) instead of concatenation',
+        ],
+        'orderByRaw' => [
+            'alwaysFlag' => false,
+            'checkStatic' => false,
+            'checkInstance' => true,
+            'severity' => Severity::High,  // Query fragment only
+            'recommendation' => 'Use parameter binding: ->orderByRaw(\'column = ?\', [$value]) instead of concatenation',
+        ],
+        'selectRaw' => [
+            'alwaysFlag' => false,
+            'checkStatic' => false,
+            'checkInstance' => true,
+            'severity' => Severity::High,  // Query fragment only
+            'recommendation' => 'Use parameter binding: ->selectRaw(\'column = ?\', [$value]) instead of concatenation',
+        ],
+        'select' => [
+            'alwaysFlag' => false,
+            'checkStatic' => true,
+            'checkInstance' => false,
+            'severity' => Severity::Critical,  // Full query construction
+            'recommendation' => 'Use parameter binding with placeholders',
+        ],
+        'insert' => [
+            'alwaysFlag' => false,
+            'checkStatic' => true,
+            'checkInstance' => false,
+            'severity' => Severity::Critical,  // Full query construction
+            'recommendation' => 'Use parameter binding with placeholders',
+        ],
+        'update' => [
+            'alwaysFlag' => false,
+            'checkStatic' => true,
+            'checkInstance' => false,
+            'severity' => Severity::Critical,  // Full query construction
+            'recommendation' => 'Use parameter binding with placeholders',
+        ],
+        'delete' => [
+            'alwaysFlag' => false,
+            'checkStatic' => true,
+            'checkInstance' => false,
+            'severity' => Severity::Critical,  // Full query construction
+            'recommendation' => 'Use parameter binding with placeholders',
+        ],
     ];
 
-    private array $userInputSources = [
-        '$_GET',
-        '$_POST',
-        '$_REQUEST',
-        '$_COOKIE',
-        'request(',
-        'Request::input',
-        'Request::get',
-        'Request::all',
-        'Request::query',
-        'Request::post',
-        'Request::cookie',
-        'Request::header',
-        'Request::route',
-        'Input::get',
-        'Input::all',
-        '$request->input',
-        '$request->get',
-        '$request->all',
-        '$request->query',
-        '$request->post',
-        '$request->cookie',
-    ];
-
+    /**
+     * Native MySQLi functions that execute queries (not connection, prepare, or fetch).
+     * Only these can have SQL injection vulnerabilities through concatenation.
+     */
     private array $nativeMysqliFunctions = [
-        'mysqli_connect', 'mysqli_execute', 'mysqli_stmt_execute', 'mysqli_stmt_close',
-        'mysqli_stmt_fetch', 'mysqli_stmt_get_result', 'mysqli_stmt_more_results',
-        'mysqli_stmt_next_result', 'mysqli_stmt_prepare', 'mysqli_close', 'mysqli_commit',
-        'mysqli_begin_transaction', 'mysqli_init', 'mysqli_insert_id', 'mysqli_prepare',
-        'mysqli_query', 'mysqli_real_connect', 'mysqli_real_query', 'mysqli_store_result',
-        'mysqli_use_result', 'mysqli_multi_query',
+        'mysqli_query',       // Executes a query (most common)
+        'mysqli_real_query',  // Executes a query without buffering
+        'mysqli_multi_query', // Executes multiple queries
     ];
 
+    /**
+     * Native PostgreSQL functions that execute queries.
+     * Only these can have SQL injection vulnerabilities through concatenation.
+     */
     private array $nativePostgresFunctions = [
-        'pg_connect', 'pg_close', 'pg_affected_rows', 'pg_delete', 'pg_execute',
-        'pg_fetch_all', 'pg_fetch_result', 'pg_fetch_row', 'pg_fetch_all_columns',
-        'pg_fetch_array', 'pg_fetch_assoc', 'pg_fetch_object', 'pg_flush', 'pg_insert',
-        'pg_get_result', 'pg_pconnect', 'pg_prepare', 'pg_query', 'pg_query_params',
-        'pg_select', 'pg_send_execute', 'pg_send_prepare', 'pg_send_query',
-        'pg_send_query_params',
+        'pg_query',       // Executes a query
+        'pg_send_query',  // Sends async query
     ];
 
-    private array $nativePdoClasses = ['PDO', 'mysqli'];
-
-    private ?PrettyPrinter $printer = null;
+    /**
+     * Cache for node vulnerability checks to avoid redundant subtree traversals.
+     * Key: spl_object_id($node) . ':' . check_type
+     * Value: boolean result
+     *
+     * @var array<string, bool>
+     */
+    private array $nodeCheckCache = [];
 
     public function __construct(
         private ParserInterface $parser,
         private ?ConfigRepository $config = null
-    ) {
-        $this->printer = new PrettyPrinter;
-    }
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -119,85 +172,51 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
         $issues = [];
 
         foreach ($this->getPhpFiles() as $file) {
+            $this->nodeCheckCache = [];
+
             $ast = $this->parser->parseFile($file);
             if (empty($ast)) {
                 continue;
             }
 
-            // Check for DB::raw() with string concatenation or variable interpolation
-            $rawCalls = $this->parser->findStaticCalls($ast, 'DB', 'raw');
-            foreach ($rawCalls as $call) {
-                if ($this->isVulnerable($call)) {
-                    $issues[] = $this->createSqlInjectionIssue(
-                        $file,
-                        $call,
-                        'DB::raw()',
-                        'Use parameter binding instead of string concatenation. Example: DB::raw("SELECT * FROM users WHERE id = ?", [$id])'
-                    );
-                }
-            }
-
-            // Check for DB::unprepared() - explicitly unsafe method
-            $unpreparedCalls = $this->parser->findStaticCalls($ast, 'DB', 'unprepared');
-            foreach ($unpreparedCalls as $call) {
-                $issues[] = $this->createSqlInjectionIssue(
-                    $file,
-                    $call,
-                    'DB::unprepared()',
-                    'Avoid DB::unprepared() - use prepared statements with DB::select(), DB::insert(), etc. with parameter binding'
-                );
-            }
-
-            // Check for dangerous query methods
-            foreach ($this->dangerousMethods as $method) {
-                if ($method === 'unprepared') {
-                    continue; // Already handled above
-                }
-
+            // Check all configured database methods in a single unified loop
+            foreach ($this->dbMethods as $method => $config) {
                 // Check static calls (DB::method)
-                $staticCalls = $this->parser->findStaticCalls($ast, 'DB', $method);
-                foreach ($staticCalls as $call) {
-                    if ($this->isVulnerable($call)) {
-                        $issues[] = $this->createSqlInjectionIssue(
-                            $file,
-                            $call,
-                            "DB::{$method}()",
-                            "Use parameter binding: DB::{$method}('column = ?', [\$value]) instead of concatenation"
-                        );
+                if ($config['checkStatic']) {
+                    $staticCalls = $this->parser->findStaticCalls($ast, 'DB', $method);
+                    foreach ($staticCalls as $call) {
+                        // Always flag if configured, otherwise check for vulnerabilities
+                        if ($config['alwaysFlag'] || $this->isVulnerable($call)) {
+                            $issues[] = $this->createSqlInjectionIssue(
+                                $file,
+                                $call,
+                                "DB::{$method}()",
+                                $config['recommendation'],
+                                $config['severity']
+                            );
+                        }
                     }
                 }
 
-                // Check method calls (->method)
-                $methodCalls = $this->parser->findMethodCalls($ast, $method);
-                foreach ($methodCalls as $call) {
-                    if ($this->isVulnerable($call)) {
-                        $issues[] = $this->createSqlInjectionIssue(
-                            $file,
-                            $call,
-                            "{$method}()",
-                            "Use parameter binding: ->{$method}('column = ?', [\$value]) instead of concatenation"
-                        );
-                    }
-                }
-            }
-
-            // Check for DB::select/insert/update/delete with concatenation
-            $queryMethods = ['select', 'insert', 'update', 'delete'];
-            foreach ($queryMethods as $method) {
-                $calls = $this->parser->findStaticCalls($ast, 'DB', $method);
-                foreach ($calls as $call) {
-                    if ($this->isVulnerable($call)) {
-                        $issues[] = $this->createSqlInjectionIssue(
-                            $file,
-                            $call,
-                            "DB::{$method}()",
-                            'Use parameter binding with placeholders'
-                        );
+                // Check instance calls (->method)
+                if ($config['checkInstance']) {
+                    $methodCalls = $this->parser->findMethodCalls($ast, $method);
+                    foreach ($methodCalls as $call) {
+                        // Always flag if configured, otherwise check for vulnerabilities
+                        if ($config['alwaysFlag'] || $this->isVulnerable($call)) {
+                            $issues[] = $this->createSqlInjectionIssue(
+                                $file,
+                                $call,
+                                "{$method}()",
+                                $config['recommendation'],
+                                $config['severity']
+                            );
+                        }
                     }
                 }
             }
 
-            // Check for native PHP database functions
+            // Check for native PHP database query functions (only actual query execution)
             $nativeFunctions = array_merge(
                 $this->getNativeMysqliFunctions(),
                 $this->getNativePostgresFunctions()
@@ -208,28 +227,16 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
                 if ($call instanceof Node\Expr\FuncCall && $call->name instanceof Node\Name) {
                     $functionName = $call->name->toString();
                     if (in_array($functionName, $nativeFunctions, true)) {
-                        $issues[] = $this->createSqlInjectionIssue(
-                            $file,
-                            $call,
-                            "{$functionName}()",
-                            'Avoid native PHP database functions. Use Laravel\'s DB facade or Eloquent ORM for better security and parameter binding'
-                        );
-                    }
-                }
-            }
-
-            // Check for PDO/mysqli instantiation
-            $newExpressions = $this->parser->findNodes($ast, Node\Expr\New_::class);
-            foreach ($newExpressions as $node) {
-                if ($node instanceof Node\Expr\New_ && $node->class instanceof Node\Name) {
-                    $className = $node->class->toString();
-                    if (in_array($className, $this->nativePdoClasses, true)) {
-                        $issues[] = $this->createSqlInjectionIssue(
-                            $file,
-                            $node,
-                            "new {$className}()",
-                            'Avoid direct PDO/mysqli usage. Use Laravel\'s DB facade or Eloquent ORM for better security'
-                        );
+                        // Only flag if the query has concatenation/interpolation (like Laravel methods)
+                        if ($this->isVulnerable($call)) {
+                            $issues[] = $this->createSqlInjectionIssue(
+                                $file,
+                                $call,
+                                "{$functionName}()",
+                                'Use prepared statements with parameter binding instead of string concatenation. Better yet, use Laravel\'s DB facade or Eloquent ORM',
+                                Severity::High  // Native functions less common in Laravel, rated High
+                            );
+                        }
                     }
                 }
             }
@@ -252,25 +259,104 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
         string $file,
         Node $node,
         string $method,
-        string $recommendation
+        string $recommendation,
+        Severity $severity = Severity::Critical
     ): Issue {
         return $this->createIssueWithSnippet(
             message: "Potential SQL injection: {$method} with string concatenation or user input",
             filePath: $file,
             lineNumber: $node->getLine(),
-            severity: Severity::Critical,
+            severity: $severity,
             recommendation: $recommendation
         );
     }
 
     /**
      * Check if a node is vulnerable (has concatenation or user input or interpolation).
+     *
+     * IMPORTANT: For methods that support parameter binding (e.g., DB::select, whereRaw),
+     * we only check the SQL query argument (first arg), NOT the bindings array (second arg).
+     * User input in bindings is safe.
      */
     private function isVulnerable(Node $node): bool
     {
+        // For method calls and static calls, check if they support parameter binding
+        if ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\StaticCall) {
+            return $this->isVulnerableCall($node);
+        }
+
+        // For function calls (mysqli_query, pg_query, etc.), check only the SQL argument
+        if ($node instanceof Node\Expr\FuncCall) {
+            return $this->isVulnerableFuncCall($node);
+        }
+
+        // For other nodes, use the basic checks
         return $this->hasStringConcatenation($node)
             || $this->hasVariableInterpolation($node)
-            || $this->hasUserInput($node);
+            || $this->hasUserInputInNode($node);
+    }
+
+    /**
+     * Check if a method/static call is vulnerable.
+     *
+     * For methods that support parameter binding, only flag when SQL is constructed
+     * unsafely (concatenation/interpolation) or when bindings are missing.
+     *
+     * Strategy:
+     * - With bindings (2+ args): Only flag concatenation/interpolation in SQL string
+     * - Without bindings (1 arg): Flag concatenation/interpolation/user input
+     */
+    private function isVulnerableCall(Node\Expr\MethodCall|Node\Expr\StaticCall $call): bool
+    {
+        // Get the first argument (SQL query)
+        if (empty($call->args)) {
+            return false;
+        }
+
+        $firstArg = $call->args[0]->value;
+
+        // Always flag concatenation or interpolation in SQL - these are construction issues
+        if ($this->hasStringConcatenation($firstArg) || $this->hasVariableInterpolation($firstArg)) {
+            return true;
+        }
+
+        // If bindings are present (2+ arguments), trust the parameter binding
+        // Don't flag user input in bindings - that's the correct, safe pattern
+        if (count($call->args) >= 2) {
+            return false;
+        }
+
+        // Single argument without bindings: check for user input
+        // Example: DB::select($userControlledVar) with no bindings is dangerous
+        return $this->hasUserInputInNode($firstArg);
+    }
+
+    /**
+     * Check if a native function call is vulnerable.
+     *
+     * For native database functions (mysqli_query, pg_query, etc.), the SQL query
+     * is typically the second argument (after the connection). We only check that
+     * specific argument for interpolation/concatenation.
+     *
+     * Examples:
+     * - mysqli_query($conn, $query) - SQL is arg[1]
+     * - pg_query($conn, $query) - SQL is arg[1]
+     */
+    private function isVulnerableFuncCall(Node\Expr\FuncCall $call): bool
+    {
+        // For native mysqli/pg functions, SQL is typically the second argument (index 1)
+        // mysqli_query($conn, $query)
+        // pg_query($conn, $query)
+        if (count($call->args) < 2) {
+            return false;
+        }
+
+        $sqlArg = $call->args[1]->value;
+
+        // Check only the SQL argument for concatenation/interpolation
+        return $this->hasStringConcatenation($sqlArg)
+            || $this->hasVariableInterpolation($sqlArg)
+            || $this->hasUserInputInNode($sqlArg);
     }
 
     /**
@@ -308,9 +394,26 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if a node contains string concatenation.
+     * Check if a node contains string concatenation (cached wrapper).
      */
     private function hasStringConcatenation(Node $node): bool
+    {
+        $cacheKey = spl_object_id($node).':concat';
+
+        if (array_key_exists($cacheKey, $this->nodeCheckCache)) {
+            return $this->nodeCheckCache[$cacheKey];
+        }
+
+        $result = $this->checkStringConcatenation($node);
+        $this->nodeCheckCache[$cacheKey] = $result;
+
+        return $result;
+    }
+
+    /**
+     * Internal method to check if a node contains string concatenation.
+     */
+    private function checkStringConcatenation(Node $node): bool
     {
         // Check if the node or its children contain string concatenation
         if ($node instanceof Node\Expr\BinaryOp\Concat) {
@@ -336,9 +439,26 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if a node contains variable interpolation in strings.
+     * Check if a node contains variable interpolation in strings (cached wrapper).
      */
     private function hasVariableInterpolation(Node $node): bool
+    {
+        $cacheKey = spl_object_id($node).':interpolation';
+
+        if (array_key_exists($cacheKey, $this->nodeCheckCache)) {
+            return $this->nodeCheckCache[$cacheKey];
+        }
+
+        $result = $this->checkVariableInterpolation($node);
+        $this->nodeCheckCache[$cacheKey] = $result;
+
+        return $result;
+    }
+
+    /**
+     * Internal method to check if a node contains variable interpolation in strings.
+     */
+    private function checkVariableInterpolation(Node $node): bool
     {
         // Check for Encapsed strings (strings with variables like "value $var")
         if ($node instanceof Node\Scalar\Encapsed) {
@@ -365,40 +485,90 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if a node contains user input sources.
+     * Check if a node contains user input sources using AST structure (cached wrapper).
+     *
+     * This method recursively checks the AST for user input patterns without
+     * converting to string, avoiding false positives from bindings arrays.
      */
-    private function hasUserInput(Node $node): bool
+    private function hasUserInputInNode(Node $node): bool
     {
-        $code = $this->nodeToString($node);
+        $cacheKey = spl_object_id($node).':userinput';
 
-        foreach ($this->userInputSources as $source) {
-            if (str_contains($code, $source)) {
+        if (array_key_exists($cacheKey, $this->nodeCheckCache)) {
+            return $this->nodeCheckCache[$cacheKey];
+        }
+
+        $result = $this->checkUserInputInNode($node);
+        $this->nodeCheckCache[$cacheKey] = $result;
+
+        return $result;
+    }
+
+    /**
+     * Internal method to check if a node contains user input sources using AST structure.
+     */
+    private function checkUserInputInNode(Node $node): bool
+    {
+        // Check for superglobals ($_GET, $_POST, $_REQUEST, $_COOKIE)
+        if ($node instanceof Node\Expr\ArrayDimFetch) {
+            if ($node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
+                $varName = '$'.$node->var->name;
+                if (in_array($varName, ['$_GET', '$_POST', '$_REQUEST', '$_COOKIE'], true)) {
+                    return true;
+                }
+            }
+        }
+
+        // Check for request() helper function
+        if ($node instanceof Node\Expr\FuncCall && $node->name instanceof Node\Name) {
+            if ($node->name->toString() === 'request') {
                 return true;
             }
         }
 
-        return false;
-    }
-
-    /**
-     * Convert a node to string representation using PhpParser printer.
-     */
-    private function nodeToString(Node $node): string
-    {
-        if ($this->printer === null) {
-            $this->printer = new PrettyPrinter;
-        }
-
-        try {
-            if ($node instanceof Node\Expr) {
-                return $this->printer->prettyPrintExpr($node);
+        // Check for Request facade static calls (Request::input, Request::get, etc.)
+        if ($node instanceof Node\Expr\StaticCall && $node->class instanceof Node\Name) {
+            $className = $node->class->toString();
+            if ($className === 'Request' || $className === 'Input') {
+                if ($node->name instanceof Node\Identifier) {
+                    $methodName = $node->name->toString();
+                    $requestMethods = ['input', 'get', 'all', 'query', 'post', 'cookie', 'header', 'route'];
+                    if (in_array($methodName, $requestMethods, true)) {
+                        return true;
+                    }
+                }
             }
-
-            // For non-expression nodes, use prettyPrint
-            return $this->printer->prettyPrint([$node]);
-        } catch (\Exception $e) {
-            // Fallback to empty string if printing fails
-            return '';
         }
+
+        // Check for $request->input(), $request->get(), etc.
+        if ($node instanceof Node\Expr\MethodCall) {
+            if ($node->var instanceof Node\Expr\Variable && $node->var->name === 'request') {
+                if ($node->name instanceof Node\Identifier) {
+                    $methodName = $node->name->toString();
+                    $requestMethods = ['input', 'get', 'all', 'query', 'post', 'cookie', 'header', 'route'];
+                    if (in_array($methodName, $requestMethods, true)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Recursively check child nodes
+        foreach ($node->getSubNodeNames() as $name) {
+            $subNode = $node->$name;
+            if ($subNode instanceof Node) {
+                if ($this->hasUserInputInNode($subNode)) {
+                    return true;
+                }
+            } elseif (is_array($subNode)) {
+                foreach ($subNode as $item) {
+                    if ($item instanceof Node && $this->hasUserInputInNode($item)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 }

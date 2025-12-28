@@ -122,6 +122,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
                 $hasOpeningTag = preg_match('/<script[^>]*>/', $line);
                 $hasClosingTag = str_contains($line, '</script>');
 
+                $exitScriptAfterLine = false;
                 if ($hasOpeningTag && $hasClosingTag) {
                     // Single-line <script>...</script> - treat content as inside script
                     // (will be checked in the inScriptTag section)
@@ -143,6 +144,10 @@ class XssAnalyzer extends AbstractFileAnalyzer
                 $rawBladeMatched = false;
 
                 // Check for unescaped blade output {!! !!}
+                if (preg_match('/\{!!\s*(__|trans|csrf_field)\(/', $line)) {
+                    continue;
+                }
+
                 if (preg_match('/\{!!.*?!!\}/', $line) && $this->mightContainUserInput($line)) {
                     $rawBladeMatched = true;
 
@@ -177,20 +182,27 @@ class XssAnalyzer extends AbstractFileAnalyzer
                     );
                 }
 
-                // Check for Response::make with unescaped content
-                // Use regex to match e() as a function call, not just the pattern "e("
-                if (str_contains($line, 'Response::make') &&
-                    ! preg_match('/\be\s*\(/', $line) &&
-                    ! str_contains($line, 'htmlspecialchars')) {
-                    if ($this->mightContainUserInput($line)) {
-                        $issues[] = $this->createIssueWithSnippet(
-                            message: 'Potential XSS: Response::make() with possible unescaped user input',
-                            filePath: $file,
-                            lineNumber: $lineNumber + 1,
-                            severity: Severity::High,
-                            recommendation: 'Escape user input before rendering or use response()->json() for JSON responses'
-                        );
-                    }
+                // Detect unescaped response bodies containing user input
+                $isResponseConstructor =
+                    preg_match('/\bResponse::make\s*\(/', $line) ||
+                    preg_match('/\bresponse\s*\(\s*.*(request\(|\$_(GET|POST|REQUEST|COOKIE)|\$request)/', $line) ||
+                    preg_match('/\bresponse\s*\(\s*\)\s*->\s*make\s*\(/', $line) ||
+                    preg_match('/\bresponse\s*\(\s*\)\s*->\s*view\s*\(/', $line);
+
+                $isSafeResponse =
+                    preg_match('/\be\s*\(/', $line) ||
+                    str_contains($line, 'htmlspecialchars') ||
+                    preg_match('/response\s*\(\s*\)\s*->\s*json\s*\(/', $line) ||
+                    str_contains($line, 'JsonResponse');
+
+                if ($isResponseConstructor && ! $isSafeResponse && $this->mightContainUserInput($line)) {
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: 'Potential XSS: HTTP response body contains unescaped user input',
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
+                        severity: Severity::High,
+                        recommendation: 'Escape output using e() or htmlspecialchars(), or return JSON responses with response()->json()'
+                    );
                 }
 
                 // Check for dangerous JavaScript output when inside script tags
@@ -345,7 +357,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
                 message: 'HTTP XSS: Content-Security-Policy header is inadequate for XSS protection',
                 location: new Location('HTTP Headers'),
                 severity: Severity::High,
-                recommendation: 'Set a "script-src" or "default-src" policy directive without "unsafe-eval" or "unsafe-inline". Current policy may allow inline scripts which defeats XSS protection.',
+                recommendation: 'Set a "script-src" or "default-src" policy directive without "unsafe-eval" or "unsafe-inline". Current policy weakens script execution protections or lacks a strict script-src directive.',
                 metadata: ['current_csp' => $cspString]
             );
         }

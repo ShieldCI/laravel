@@ -219,10 +219,11 @@ class FilePermissionsAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertFailed($result); // Critical severity on critical file = failed status
-        $this->assertHasIssueContaining('overly permissive', $result);
+        $this->assertHasIssueContaining('world-readable', $result);
 
         $issues = $result->getIssues();
-        $this->assertEquals(Severity::Critical, $issues[0]->severity); // Critical because it's flagged as critical
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
+        $this->assertTrue($issues[0]->metadata['world_readable'] ?? false);
     }
 
     public function test_passes_env_file_with_600_permissions(): void
@@ -255,6 +256,10 @@ class FilePermissionsAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertFailed($result); // Critical severity on critical file = failed status
+        $this->assertHasIssueContaining('overly permissive', $result); // 0640 exceeds max 0600 (has group read bit)
+
+        $issues = $result->getIssues();
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_detects_group_writable_env_file(): void

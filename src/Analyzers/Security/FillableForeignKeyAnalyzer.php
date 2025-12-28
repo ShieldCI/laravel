@@ -12,6 +12,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Detects foreign keys in fillable arrays.
@@ -58,7 +59,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 
             $classes = $this->parser->findClasses($ast);
             foreach ($classes as $class) {
-                if ($this->isEloquentModel($file, $class)) {
+                if ($this->isEloquentModel($class)) {
                     return true;
                 }
             }
@@ -86,8 +87,22 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 
             $classes = $this->parser->findClasses($ast);
             foreach ($classes as $class) {
-                if ($this->isEloquentModel($file, $class)) {
+                if ($this->isEloquentModel($class)) {
+                    if (! $this->hasLocalFillable($class) && ! $this->hasLocalGuarded($class)) {
+                        $issues[] = $this->createIssue(
+                            message: sprintf('Model "%s" does not define a local $fillable property; inherited fillable fields cannot be analyzed', $class->name?->toString() ?? 'Unknown'),
+                            location: new Location($this->getRelativePath($file)),
+                            severity: Severity::Medium,
+                            recommendation: 'Review inherited $fillable definitions for foreign keys.',
+                            metadata: [
+                                'model_name' => $class->name?->toString(),
+                                'fillable_inherited' => true,
+                            ]
+                        );
+                    }
+
                     $this->checkFillableProperty($file, $class, $issues);
+                    $this->checkGuardedProperty($file, $class, $issues);
                 }
             }
         }
@@ -102,7 +117,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
     /**
      * Check if a class is an Eloquent model.
      */
-    private function isEloquentModel(string $file, Node\Stmt\Class_ $class): bool
+    private function isEloquentModel(Node\Stmt\Class_ $class): bool
     {
         if ($class->extends === null) {
             return false;
@@ -132,6 +147,46 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Check if fillable is declared in an Eloquent model.
+     */
+    private function hasLocalFillable(Node\Stmt\Class_ $class): bool
+    {
+        foreach ($class->stmts as $stmt) {
+            if (! $stmt instanceof Node\Stmt\Property) {
+                continue;
+            }
+
+            foreach ($stmt->props as $prop) {
+                if ($prop->name->toString() === 'fillable') {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if guarded is declared in an Eloquent model.
+     */
+    private function hasLocalGuarded(Node\Stmt\Class_ $class): bool
+    {
+        foreach ($class->stmts as $stmt) {
+            if (! $stmt instanceof Node\Stmt\Property) {
+                continue;
+            }
+
+            foreach ($stmt->props as $prop) {
+                if ($prop->name->toString() === 'guarded') {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Check fillable property for foreign keys.
      */
     private function checkFillableProperty(string $file, Node\Stmt\Class_ $class, array &$issues): void
@@ -149,24 +204,77 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                 }
 
                 if (! $prop->default instanceof Node\Expr\Array_) {
-                    continue;
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: sprintf(
+                            'Model "%s" defines $fillable dynamically; foreign key exposure cannot be statically analyzed',
+                            $modelName
+                        ),
+                        filePath: $file,
+                        lineNumber: $stmt->getLine(),
+                        severity: Severity::Medium,
+                        recommendation: 'Prefer a static $fillable array or manually review foreign key exposure.',
+                        metadata: [
+                            'model_name' => $modelName,
+                            'dynamic_fillable' => true,
+                        ]
+                    );
+
+                    return;
                 }
 
                 // Check each item in the fillable array
                 foreach ($prop->default->items as $item) {
-                    if ($item === null) {
-                        continue;
-                    }
-
-                    if (! $item instanceof Node\Expr\ArrayItem) {
-                        continue;
-                    }
-
                     if ($item->value instanceof Node\Scalar\String_) {
                         $fieldName = $item->value->value;
                         $this->checkField($file, $stmt, $modelName, $fieldName, $issues);
                     }
                 }
+            }
+        }
+    }
+
+    /**
+     * Check guarded property for full mass assignment.
+     */
+    private function checkGuardedProperty(string $file, Node\Stmt\Class_ $class, array &$issues): void
+    {
+        $modelName = $class->name ? $class->name->toString() : 'Unknown';
+
+        foreach ($class->stmts as $stmt) {
+            if (! $stmt instanceof Node\Stmt\Property) {
+                continue;
+            }
+
+            foreach ($stmt->props as $prop) {
+                if ($prop->name->toString() !== 'guarded') {
+                    continue;
+                }
+
+                if (! $prop->default instanceof Node\Expr\Array_) {
+                    continue;
+                }
+
+                if (count($prop->default->items) !== 0) {
+                    continue;
+                }
+
+                // guarded = []
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf(
+                        'Critical: Model "%s" uses $guarded = [] which allows unrestricted mass assignment',
+                        $modelName
+                    ),
+                    filePath: $file,
+                    lineNumber: $stmt->getLine(),
+                    severity: Severity::Critical,
+                    recommendation: 'Define an explicit $fillable array and avoid $guarded = [].',
+                    metadata: [
+                        'model_name' => $modelName,
+                        'model_file' => $this->getRelativePath($file),
+                        'guarded_empty' => true,
+                        'line' => $stmt->getLine(),
+                    ]
+                );
             }
         }
     }
@@ -191,8 +299,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                 lineNumber: $stmt->getLine(),
                 severity: Severity::Critical,
                 recommendation: sprintf(
-                    'IMMEDIATELY remove "%s" from $fillable. Set it manually: $model->%s = auth()->id();',
-                    $fieldName,
+                    'IMMEDIATELY remove "%s" from $fillable. Set this value server-side based on the authenticated context.',
                     $fieldName
                 ),
                 metadata: [

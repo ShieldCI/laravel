@@ -775,4 +775,191 @@ PHP;
         // Should pass because no commented code
         $this->assertPassed($result);
     }
+
+    #[Test]
+    public function test_detects_block_commented_code(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class LegacyService
+{
+    public function activeMethod()
+    {
+        return "Active code";
+    }
+
+    /*
+    public function oldMethod()
+    {
+        $user = User::find(1);
+        $user->name = 'John';
+        $user->save();
+
+        return $user;
+    }
+    */
+
+    public function anotherMethod()
+    {
+        return "More active code";
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/LegacyService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('commented-out code', $result);
+
+        $issues = $result->getIssues();
+        $this->assertGreaterThan(0, count($issues));
+
+        // Should detect the block comment
+        $issue = $issues[0];
+        $this->assertArrayHasKey('lineCount', $issue->metadata);
+        $this->assertGreaterThanOrEqual(3, $issue->metadata['lineCount']);
+    }
+
+    #[Test]
+    public function test_ignores_phpdoc_block_comments(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DocumentedService
+{
+    /**
+     * This is a PHPDoc comment
+     *
+     * @param string $name
+     * @param int $age
+     * @return User
+     */
+    public function createUser($name, $age)
+    {
+        return User::create(['name' => $name, 'age' => $age]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/DocumentedService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because PHPDoc comments are not commented code
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_detects_multiple_block_comments(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class MultipleBlocksService
+{
+    /*
+    public function oldFeature1()
+    {
+        $data = getData();
+        processData($data);
+        return $data;
+    }
+    */
+
+    public function activeMethod()
+    {
+        return "Active";
+    }
+
+    /*
+     * Another disabled feature
+     *
+     * function oldFeature2() {
+     *     $result = calculate();
+     *     return $result;
+     * }
+     */
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/MultipleBlocksService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        // Should detect both block comments
+        $this->assertGreaterThanOrEqual(2, count($issues));
+    }
+
+    #[Test]
+    public function test_detects_both_single_line_and_block_comments(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class MixedCommentsService
+{
+    // $oldVar1 = "test";
+    // $oldVar2 = 123;
+    // return $oldVar1;
+
+    /*
+    public function disabledMethod()
+    {
+        $user = getUser();
+        $user->update($data);
+        return $user;
+    }
+    */
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/MixedCommentsService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        // Should detect both single-line and block comments
+        $this->assertGreaterThanOrEqual(2, count($issues));
+    }
 }

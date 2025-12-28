@@ -90,6 +90,86 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
+    public function test_flags_missing_minimum_stability_when_enforce_explicit_enabled(): void
+    {
+        // Enable the enforcement config
+        config(['shieldci.analyzers.security.stable-dependencies.enforce_explicit_minimum_stability' => true]);
+
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            // Missing minimum-stability - using implicit default
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+                'laravel/framework' => '^10.0',
+            ],
+        ]);
+
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'laravel/framework',
+                    'version' => '10.0.0',
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be warning (Low severity), not failed
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('minimum-stability is not explicitly set', $result);
+        $this->assertHasIssueContaining('implicit default', $result);
+    }
+
+    public function test_does_not_flag_missing_minimum_stability_by_default(): void
+    {
+        // Default behavior: don't flag implicit minimum-stability
+        config(['shieldci.analyzers.security.stable-dependencies.enforce_explicit_minimum_stability' => false]);
+
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            // Missing minimum-stability - using implicit default
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+                'laravel/framework' => '^10.0',
+            ],
+        ]);
+
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'laravel/framework',
+                    'version' => '10.0.0',
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - implicit minimum-stability not flagged by default
+        $this->assertPassed($result);
+    }
+
     public function test_fails_when_minimum_stability_is_dev(): void
     {
         $composerJson = json_encode([
@@ -861,5 +941,560 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         }
 
         $this->assertTrue($found, 'Should find issue for vendor/unstable-package');
+    }
+
+    public function test_reports_accurate_line_numbers_for_composer_lock(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        // Create a composer.lock with unstable package on a specific line
+        $composerLock = <<<'JSON'
+        {
+            "packages": [
+                {
+                    "name": "vendor/stable-package",
+                    "version": "1.0.0"
+                },
+                {
+                    "name": "vendor/unstable-package",
+                    "version": "dev-master"
+                }
+            ]
+        }
+        JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+
+        // Should find the issue and report it on the line where the first unstable package is defined
+        $found = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'unstable package versions')) {
+                // The first unstable package "vendor/unstable-package" is on line 8
+                $this->assertEquals(8, $issue->location->line);
+                $found = true;
+                break;
+            }
+        }
+
+        $this->assertTrue($found, 'Should find unstable package issue with accurate line number');
+    }
+
+    /**
+     * @dataProvider unstableVersionFormatsProvider
+     */
+    public function test_detects_all_composer_unstable_version_formats(string $version, string $description): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+                'vendor/package' => $version,
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining($version, $result);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function unstableVersionFormatsProvider(): array
+    {
+        return [
+            'dash-alpha' => ['1.0.0-alpha', 'Standard alpha with dash'],
+            'no-dash-alpha' => ['1.0.0alpha', 'Alpha without dash'],
+            'v-prefix-alpha' => ['v1.0.0-alpha', 'Alpha with v prefix and dash'],
+            'v-prefix-no-dash-alpha' => ['v1.0.0alpha', 'Alpha with v prefix no dash'],
+            'alpha-dot-number' => ['1.0.0-alpha.1', 'Alpha with dot separator'],
+            'alpha-number' => ['1.0.0-alpha1', 'Alpha with number suffix'],
+            'alpha-no-dash-number' => ['1.0.0alpha1', 'Alpha no dash with number'],
+
+            'dash-beta' => ['1.0.0-beta', 'Standard beta with dash'],
+            'no-dash-beta' => ['1.0.0beta', 'Beta without dash'],
+            'v-prefix-beta' => ['v1.0.0-beta', 'Beta with v prefix and dash'],
+            'v-prefix-no-dash-beta' => ['v1.0.0beta', 'Beta with v prefix no dash'],
+            'beta-dot-number' => ['1.0.0-beta.2', 'Beta with dot separator'],
+            'beta-number' => ['1.0.0-beta2', 'Beta with number suffix'],
+            'beta-no-dash-number' => ['1.0.0beta2', 'Beta no dash with number'],
+
+            'dash-rc' => ['1.0.0-RC', 'Standard RC with dash'],
+            'no-dash-rc' => ['1.0.0RC', 'RC without dash'],
+            'v-prefix-rc' => ['v1.0.0-RC', 'RC with v prefix and dash'],
+            'v-prefix-no-dash-rc' => ['v1.0.0RC', 'RC with v prefix no dash'],
+            'rc-dot-number' => ['1.0.0-RC.1', 'RC with dot separator'],
+            'rc-number' => ['1.0.0-RC1', 'RC with number suffix'],
+            'rc-no-dash-number' => ['1.0.0RC1', 'RC no dash with number'],
+
+            'dev-master' => ['dev-master', 'Dev master branch'],
+            'dev-main' => ['dev-main', 'Dev main branch'],
+            'version-dev' => ['2.0.x-dev', 'Dev version suffix'],
+        ];
+    }
+
+    /**
+     * @dataProvider stableVersionFormatsProvider
+     */
+    public function test_does_not_flag_stable_version_formats(string $version, string $description): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+                'vendor/package' => $version,
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - no unstable versions detected
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function stableVersionFormatsProvider(): array
+    {
+        return [
+            'simple-version' => ['1.0.0', 'Simple semantic version'],
+            'v-prefix-stable' => ['v1.0.0', 'Stable with v prefix'],
+            'caret-constraint' => ['^1.0', 'Caret version constraint'],
+            'tilde-constraint' => ['~1.0.0', 'Tilde version constraint'],
+            'exact-constraint' => ['1.0.0', 'Exact version'],
+            'wildcard' => ['1.0.*', 'Wildcard version'],
+            'range' => ['>=1.0.0 <2.0.0', 'Version range'],
+            'patch-suffix' => ['1.0.0-patch1', 'Patch suffix (not unstable flag)'],
+            'build-metadata' => ['1.0.0+20240101', 'Build metadata'],
+        ];
+    }
+
+    public function test_detects_composer_changes_with_english_output(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        // Mock Composer output with English text (current format)
+        $composerOutput = <<<'OUTPUT'
+        Loading composer repositories with package information
+        Updating dependencies
+        Lock file operations: 0 installs, 1 update, 0 removals
+          - Upgrading vendor/package (1.0.0 => 2.0.0)
+        Writing lock file
+        OUTPUT;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock->method('updateDryRun')->willReturn($composerOutput);
+
+        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('would modify installed packages', $result);
+    }
+
+    public function test_detects_composer_changes_with_arrow_notation(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        // Mock output using -> instead of => (alternative format)
+        $composerOutput = <<<'OUTPUT'
+        Package operations:
+        vendor/package (1.0.0 -> 2.0.0)
+        vendor/another (dev-master -> 1.0.0)
+        OUTPUT;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock->method('updateDryRun')->willReturn($composerOutput);
+
+        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('would modify installed packages', $result);
+    }
+
+    public function test_detects_composer_changes_locale_independent(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        // Mock output in hypothetical non-English format
+        // The key is the structural pattern: "  - vendor/package (...)"
+        $composerOutput = <<<'OUTPUT'
+        Chargement des dépôts
+        Mise à jour des dépendances
+          - symfony/console (5.0.0 => 6.0.0)
+          - doctrine/orm (2.0.0 => 3.0.0)
+        OUTPUT;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock->method('updateDryRun')->willReturn($composerOutput);
+
+        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect changes despite French text
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('would modify installed packages', $result);
+    }
+
+    public function test_no_false_positive_when_no_changes(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        // Mock output when no changes would be made
+        $composerOutput = <<<'OUTPUT'
+        Loading composer repositories with package information
+        Updating dependencies
+        Nothing to modify in lock file
+        Writing lock file
+        OUTPUT;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock->method('updateDryRun')->willReturn($composerOutput);
+
+        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass when no changes detected
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_empty_composer_output(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock->method('updateDryRun')->willReturn('');
+
+        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass when output is empty
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_package_names_in_non_operation_lines(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+        ]);
+
+        // Output that mentions packages but has no actual operations
+        $composerOutput = <<<'OUTPUT'
+        Analyzing vendor/package-a
+        Analyzing vendor/package-b
+        All packages are up to date
+        OUTPUT;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock->method('updateDryRun')->willReturn($composerOutput);
+
+        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should not flag this as operations
+        $this->assertPassed($result);
+    }
+
+    public function test_require_dev_unstable_with_stable_minimum_is_low_severity(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+            'require-dev' => [
+                'vendor/dev-tool' => 'dev-master',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be warning (Low severity) not failed (Medium severity)
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('dev-master', $result);
+        $this->assertHasIssueContaining('require-dev', $result);
+
+        // Verify severity is Low
+        $issues = $result->getIssues();
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'dev-master')) {
+                $this->assertEquals('low', $issue->severity->value);
+                break;
+            }
+        }
+    }
+
+    public function test_require_dev_unstable_without_explicit_stability_is_low_severity(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            // No minimum-stability (defaults to 'stable')
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+            'require-dev' => [
+                'vendor/dev-tool' => '1.0.0-beta',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be warning (Low severity)
+        $this->assertWarning($result);
+
+        // Verify the beta package has Low severity
+        $issues = $result->getIssues();
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, '1.0.0-beta')) {
+                $this->assertEquals('low', $issue->severity->value);
+                break;
+            }
+        }
+    }
+
+    public function test_require_dev_unstable_with_dev_minimum_is_medium_severity(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'dev',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+            ],
+            'require-dev' => [
+                'vendor/dev-tool' => 'dev-master',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Verify the dev-master package has Medium severity (not Low)
+        // because minimum-stability is 'dev' (not 'stable')
+        $issues = $result->getIssues();
+        $foundMediumSeverity = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'dev-master') && str_contains($issue->message, 'require-dev')) {
+                $this->assertEquals('medium', $issue->severity->value);
+                $foundMediumSeverity = true;
+                break;
+            }
+        }
+        $this->assertTrue($foundMediumSeverity, 'Should find dev-master issue with Medium severity');
+    }
+
+    public function test_require_unstable_always_medium_severity(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+                'vendor/package' => 'dev-master',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should have at least one Medium severity issue
+        $issues = $result->getIssues();
+        $foundMediumSeverity = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'dev-master') && str_contains($issue->message, 'require')) {
+                $this->assertEquals('medium', $issue->severity->value);
+                $foundMediumSeverity = true;
+                break;
+            }
+        }
+        $this->assertTrue($foundMediumSeverity, 'Should find dev-master in require with Medium severity');
+    }
+
+    public function test_require_unstable_with_beta_minimum_is_medium_severity(): void
+    {
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'beta',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+                'vendor/package' => '1.0.0-alpha',
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Verify the alpha package in require has Medium severity
+        // Packages in 'require' always get Medium severity regardless of minimum-stability
+        $issues = $result->getIssues();
+        $foundMediumSeverity = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, '1.0.0-alpha') && str_contains($issue->message, 'require ')) {
+                $this->assertEquals('medium', $issue->severity->value);
+                $foundMediumSeverity = true;
+                break;
+            }
+        }
+        $this->assertTrue($foundMediumSeverity, 'Should find alpha package in require with Medium severity');
     }
 }

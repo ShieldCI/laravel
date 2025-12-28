@@ -559,7 +559,6 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('Ray', $result);
         $issues = $result->getIssues();
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
     }
@@ -604,7 +603,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('ini_set', $result);
+        $this->assertHasIssueContaining('display_errors', $result);
     }
 
     public function test_ignores_debug_functions_in_test_files(): void

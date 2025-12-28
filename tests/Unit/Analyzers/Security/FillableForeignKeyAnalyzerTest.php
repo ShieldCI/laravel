@@ -483,7 +483,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        $this->assertFailed($result);
     }
 
     public function test_only_checks_eloquent_models(): void

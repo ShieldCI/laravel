@@ -246,6 +246,420 @@ class PHPIniAnalyzerTest extends AnalyzerTestCase
         return $tempDir.'/php.ini';
     }
 
+    public function test_it_detects_setting_defined_in_main_php_ini(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'allow_url_fopen = On',
+            'expose_php = Off',
+            'display_errors = Off',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues(array_merge($this->secureIniValues(), [
+            'allow_url_fopen' => '1',
+        ]));
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        // Find the allow_url_fopen issue
+        $allowUrlFopenIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'allow_url_fopen')) {
+                $allowUrlFopenIssue = $issue;
+                break;
+            }
+        }
+
+        $this->assertNotNull($allowUrlFopenIssue, 'Should have an issue for allow_url_fopen');
+
+        // Check that it points to php.ini
+        $this->assertStringContainsString('php.ini', $allowUrlFopenIssue->location->file);
+
+        // Check that recommendation mentions the file
+        $this->assertStringContainsString('php.ini', $allowUrlFopenIssue->recommendation);
+
+        // Check metadata includes actual source
+        $this->assertArrayHasKey('actual_source', $allowUrlFopenIssue->metadata);
+        $this->assertNotNull($allowUrlFopenIssue->metadata['actual_source']);
+        $this->assertEquals('main_ini', $allowUrlFopenIssue->metadata['actual_source']['type']);
+    }
+
+    public function test_metadata_shows_when_setting_not_found_in_file(): void
+    {
+        // Create php.ini with only some settings, not all
+        $tempDir = $this->createTempDirectory([
+            '.env' => "APP_ENV=production\n",
+            'php.ini' => "expose_php = Off\ndisplay_errors = Off\n",
+        ]);
+
+        $iniPath = $tempDir.'/php.ini';
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath($tempDir);
+        // Runtime shows allow_url_fopen is enabled, but it's not defined in php.ini
+        $analyzer->setIniValues(array_merge($this->secureIniValues(), [
+            'allow_url_fopen' => '1',
+        ]));
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        // Find the allow_url_fopen issue
+        $allowUrlFopenIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'allow_url_fopen')) {
+                $allowUrlFopenIssue = $issue;
+                break;
+            }
+        }
+
+        $this->assertNotNull($allowUrlFopenIssue, 'Should have an issue for allow_url_fopen');
+
+        // Primary assertion: metadata should show actual_source is null
+        // (meaning the setting was not found in any .ini file)
+        $this->assertArrayHasKey('actual_source', $allowUrlFopenIssue->metadata);
+        $this->assertNull(
+            $allowUrlFopenIssue->metadata['actual_source'],
+            'actual_source should be null when setting is not defined in any .ini file'
+        );
+
+        // Check recommendation warns about unknown source
+        $this->assertStringContainsString('WARNING', $allowUrlFopenIssue->recommendation);
+
+        // Check metadata includes configuration sources
+        $this->assertArrayHasKey('configuration_sources', $allowUrlFopenIssue->metadata);
+    }
+
+    public function test_it_includes_configuration_sources_in_metadata(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'allow_url_fopen = On',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues(array_merge($this->secureIniValues(), [
+            'allow_url_fopen' => '1',
+        ]));
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        $this->assertGreaterThan(0, count($issues));
+
+        // Check that all issues include configuration_sources metadata
+        foreach ($issues as $issue) {
+            $this->assertArrayHasKey('configuration_sources', $issue->metadata);
+            $sources = $issue->metadata['configuration_sources'];
+
+            $this->assertIsArray($sources);
+            $this->assertArrayHasKey('main', $sources);
+            $this->assertArrayHasKey('additional', $sources);
+        }
+    }
+
+    public function test_it_points_to_correct_file_in_location(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'allow_url_fopen = On',
+            'expose_php = Off',
+            'display_errors = Off',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues(array_merge($this->secureIniValues(), [
+            'allow_url_fopen' => '1',
+        ]));
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        $allowUrlFopenIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'allow_url_fopen')) {
+                $allowUrlFopenIssue = $issue;
+                break;
+            }
+        }
+
+        $this->assertNotNull($allowUrlFopenIssue);
+
+        // Verify it points to the php.ini file
+        $this->assertStringContainsString('php.ini', $allowUrlFopenIssue->location->file);
+
+        // Verify line number is set (greater than 0)
+        $this->assertGreaterThan(0, $allowUrlFopenIssue->location->line);
+
+        // Verify actual source metadata is populated
+        $this->assertArrayHasKey('actual_source', $allowUrlFopenIssue->metadata);
+        $this->assertNotNull($allowUrlFopenIssue->metadata['actual_source']);
+    }
+
+    public function test_it_generates_clear_recommendations_for_main_ini(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'allow_url_fopen = On',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues(array_merge($this->secureIniValues(), [
+            'allow_url_fopen' => '1',
+        ]));
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        $allowUrlFopenIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'allow_url_fopen')) {
+                $allowUrlFopenIssue = $issue;
+                break;
+            }
+        }
+
+        $this->assertNotNull($allowUrlFopenIssue);
+
+        // Should tell user exactly what to do
+        $this->assertStringContainsString('Set allow_url_fopen = Off', $allowUrlFopenIssue->recommendation);
+        $this->assertStringContainsString('php.ini', $allowUrlFopenIssue->recommendation);
+        $this->assertStringContainsString('main php.ini', $allowUrlFopenIssue->recommendation);
+    }
+
+    public function test_it_handles_enabled_settings_correctly(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'log_errors = Off',  // Should be On
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues(array_merge($this->secureIniValues(), [
+            'log_errors' => '0',
+        ]));
+
+        $result = $analyzer->analyze();
+
+        // log_errors is Medium severity, so status is 'warning' not 'failed'
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+
+        $logErrorsIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'log_errors')) {
+                $logErrorsIssue = $issue;
+                break;
+            }
+        }
+
+        $this->assertNotNull($logErrorsIssue);
+        $this->assertStringContainsString('should be enabled', $logErrorsIssue->message);
+        $this->assertStringContainsString('Set log_errors = On', $logErrorsIssue->recommendation);
+    }
+
+    public function test_it_detects_non_existent_settings(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'expose_php = Off',
+            'display_errors = Off',
+            // NOTE: allow_url_fopen is intentionally NOT defined
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        // Simulate ini_get() returning false for non-existent setting
+        $analyzer->setIniValues([
+            'allow_url_fopen' => false,  // Non-existent
+            'expose_php' => '0',
+            'display_errors' => '0',
+            'log_errors' => '1',
+            'allow_url_include' => '0',
+            'display_startup_errors' => '0',
+            'ignore_repeated_errors' => '0',
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        // Find the allow_url_fopen issue
+        $allowUrlFopenIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'allow_url_fopen')) {
+                $allowUrlFopenIssue = $issue;
+                break;
+            }
+        }
+
+        $this->assertNotNull($allowUrlFopenIssue, 'Should detect non-existent setting');
+
+        // Should clearly indicate the setting doesn't exist
+        $this->assertStringContainsString('not configured', $allowUrlFopenIssue->message);
+        $this->assertStringContainsString('does not exist', $allowUrlFopenIssue->message);
+
+        // Metadata should indicate missing setting
+        $this->assertArrayHasKey('issue_type', $allowUrlFopenIssue->metadata);
+        $this->assertEquals('missing_setting', $allowUrlFopenIssue->metadata['issue_type']);
+        $this->assertEquals('not_configured', $allowUrlFopenIssue->metadata['current_value']);
+    }
+
+    public function test_it_detects_ambiguous_empty_string_values(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'allow_url_fopen = ',  // Empty value - ambiguous!
+            'expose_php = Off',
+            'display_errors = Off',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues(array_merge($this->secureIniValues(), [
+            'allow_url_fopen' => '',  // Empty string - ambiguous
+        ]));
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        // Find the allow_url_fopen issue
+        $allowUrlFopenIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'allow_url_fopen')) {
+                $allowUrlFopenIssue = $issue;
+                break;
+            }
+        }
+
+        $this->assertNotNull($allowUrlFopenIssue, 'Should detect ambiguous empty value');
+
+        // Should clearly indicate the value is ambiguous
+        $this->assertStringContainsString('empty string', $allowUrlFopenIssue->message);
+        $this->assertStringContainsString('ambiguous', $allowUrlFopenIssue->message);
+
+        // Metadata should indicate ambiguous value
+        $this->assertArrayHasKey('issue_type', $allowUrlFopenIssue->metadata);
+        $this->assertEquals('ambiguous_value', $allowUrlFopenIssue->metadata['issue_type']);
+        $this->assertEquals('', $allowUrlFopenIssue->metadata['current_value']);
+    }
+
+    public function test_it_distinguishes_between_zero_and_empty(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'allow_url_fopen = 0',  // Explicitly disabled
+            'allow_url_include = ',  // Empty - ambiguous
+            'expose_php = Off',
+            'display_errors = Off',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues([
+            'allow_url_fopen' => '0',  // Explicitly '0'
+            'allow_url_include' => '',  // Empty string
+            'expose_php' => '0',
+            'display_errors' => '0',
+            'display_startup_errors' => '0',
+            'log_errors' => '1',
+            'ignore_repeated_errors' => '0',
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+
+        // allow_url_fopen should NOT have an issue (correctly disabled with '0')
+        $hasAllowUrlFopenIssue = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'allow_url_fopen')) {
+                $hasAllowUrlFopenIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasAllowUrlFopenIssue, 'allow_url_fopen = 0 should be valid (not ambiguous)');
+
+        // allow_url_include SHOULD have an issue (ambiguous empty string)
+        $allowUrlIncludeIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'allow_url_include')) {
+                $allowUrlIncludeIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($allowUrlIncludeIssue, 'Empty string should be flagged as ambiguous');
+        $this->assertStringContainsString('ambiguous', $allowUrlIncludeIssue->message);
+    }
+
+    public function test_it_handles_false_vs_zero_correctly(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'expose_php = 0',
+            'display_errors = 0',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setIniValues([
+            'allow_url_fopen' => false,  // ini_get() returned false (doesn't exist)
+            'allow_url_include' => '0',  // Explicitly set to '0'
+            'expose_php' => '0',
+            'display_errors' => '0',
+            'display_startup_errors' => '0',
+            'log_errors' => '1',
+            'ignore_repeated_errors' => '0',
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+
+        // allow_url_fopen should have "not configured" issue
+        $allowUrlFopenIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'allow_url_fopen')) {
+                $allowUrlFopenIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($allowUrlFopenIssue);
+        $this->assertStringContainsString('not configured', $allowUrlFopenIssue->message);
+        $this->assertEquals('missing_setting', $allowUrlFopenIssue->metadata['issue_type']);
+
+        // allow_url_include should NOT have an issue (properly disabled with '0')
+        $hasAllowUrlIncludeIssue = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'allow_url_include')) {
+                $hasAllowUrlIncludeIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasAllowUrlIncludeIssue, 'allow_url_include = 0 should be valid');
+    }
+
     /**
      * @param  array<string, string>  $overrides
      * @return array<string, string>

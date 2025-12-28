@@ -15,7 +15,48 @@ class LoginThrottlingAnalyzerTest extends AnalyzerTestCase
         return new LoginThrottlingAnalyzer($this->parser);
     }
 
-    public function test_passes_with_throttle_middleware_in_kernel(): void
+    public function test_passes_with_throttle_in_web_middleware_group(): void
+    {
+        $kernelCode = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+use Illuminate\Routing\Middleware\ThrottleRequests;
+
+class Kernel extends HttpKernel
+{
+    protected $middlewareGroups = [
+        'web' => [
+            ThrottleRequests::class.':60,1',
+        ],
+    ];
+}
+PHP;
+
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/login', [LoginController::class, 'login']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Kernel.php' => $kernelCode,
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - throttle is in web middleware group
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_throttle_string_in_web_middleware_group(): void
     {
         $kernelCode = <<<'PHP'
 <?php
@@ -26,15 +67,23 @@ use Illuminate\Foundation\Http\Kernel as HttpKernel;
 
 class Kernel extends HttpKernel
 {
-    protected $middlewareAliases = [
-        'throttle' => \Illuminate\Routing\Middleware\ThrottleRequests::class,
+    protected $middlewareGroups = [
+        'web' => [
+            'throttle:60,1',
+        ],
     ];
 }
 PHP;
 
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/login', [LoginController::class, 'login']);
+PHP;
+
         $tempDir = $this->createTempDirectory([
             'app/Http/Kernel.php' => $kernelCode,
-            'routes/web.php' => '<?php // empty routes',
+            'routes/web.php' => $routeCode,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -43,6 +92,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
+        // Should pass - throttle string is in web middleware group
         $this->assertPassed($result);
     }
 
@@ -458,12 +508,12 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_skips_api_routes_file(): void
+    public function test_detects_api_login_routes(): void
     {
         $routeCode = <<<'PHP'
 <?php
 
-// API routes typically use token auth
+// API routes also need throttling to prevent brute force
 Route::post('/auth/login', [ApiAuthController::class, 'login']);
 PHP;
 
@@ -477,8 +527,9 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // api.php is skipped (line 147-148)
-        $this->assertPassed($result);
+        // Should fail - API login route without throttle
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('auth/login', $result);
     }
 
     public function test_detects_signin_route_variant(): void
@@ -525,5 +576,639 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    public function test_passes_with_route_group_throttle(): void
+    {
+        $routeCode = <<<'PHP'
+<?php
+
+Route::group(['middleware' => 'throttle:5,1'], function () {
+    Route::post('/login', [LoginController::class, 'login']);
+    Route::post('/authenticate', [AuthController::class, 'authenticate']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_route_group_without_throttle(): void
+    {
+        $routeCode = <<<'PHP'
+<?php
+
+Route::group(['prefix' => 'auth'], function () {
+    Route::post('/login', [LoginController::class, 'login']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('login', $result);
+    }
+
+    public function test_passes_with_middleware_before_route_method(): void
+    {
+        $routeCode = <<<'PHP'
+<?php
+
+Route::middleware('throttle:5,1')->post('/login', [LoginController::class, 'login']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_auth_routes_and_throttle(): void
+    {
+        $routeCode = <<<'PHP'
+<?php
+
+Auth::routes();
+
+Route::middleware('throttle:5,1')->group(function () {
+    Auth::routes();
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // First Auth::routes() should fail (no throttle)
+        // Second Auth::routes() should pass (in throttle group)
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Auth::routes()', $result);
+    }
+
+    public function test_detects_fortify_without_throttle(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [
+        {
+            "name": "laravel/fortify",
+            "version": "1.0.0"
+        }
+    ]
+}
+JSON;
+
+        $fortifyConfig = <<<'PHP'
+<?php
+
+return [
+    'features' => [
+        'registration' => true,
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+            'config/fortify.php' => $fortifyConfig,
+            'routes/web.php' => '<?php // empty',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes', 'config']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Fortify', $result);
+    }
+
+    public function test_passes_with_fortify_custom_rate_limiter(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [
+        {
+            "name": "laravel/fortify",
+            "version": "1.0.0"
+        }
+    ]
+}
+JSON;
+
+        $providerCode = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Cache\RateLimiting\Limit;
+
+class FortifyServiceProvider
+{
+    public function boot()
+    {
+        RateLimiter::for('login', function () {
+            return Limit::perMinute(5);
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+            'app/Providers/FortifyServiceProvider.php' => $providerCode,
+            'routes/web.php' => '<?php // empty',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes', 'app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ast_based_detection_finds_rate_limiter_in_nested_auth_method(): void
+    {
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\RateLimiter;
+
+class AuthController
+{
+    public function login()
+    {
+        // Complex nested structure that might confuse brace-depth tracking
+        $validator = function () {
+            if (true) {
+                return ['error' => 'Invalid {braces} in string'];
+            }
+        };
+
+        // RateLimiter usage nested deep in the method
+        if (RateLimiter::tooManyAttempts('login:'.$request->ip(), 5)) {
+            return response()->json(['error' => 'Too many attempts'], 429);
+        }
+
+        return $this->attemptLogin();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/AuthController.php' => $controllerCode,
+            'routes/web.php' => '<?php // empty',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because AST detects RateLimiter usage in login method
+        $this->assertPassed($result);
+    }
+
+    public function test_breeze_with_default_fortify_passes(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [
+        {
+            "name": "laravel/breeze",
+            "version": "1.0.0"
+        },
+        {
+            "name": "laravel/fortify",
+            "version": "1.0.0"
+        }
+    ]
+}
+JSON;
+
+        // Breeze with default Fortify routes (no custom routes/auth.php)
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+            'routes/web.php' => '<?php // empty - uses Fortify routes',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - Breeze uses Fortify which includes throttling by default
+        // No custom routes/auth.php means using defaults
+        $this->assertPassed($result);
+    }
+
+    public function test_breeze_with_custom_unthrottled_routes_fails(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [
+        {
+            "name": "laravel/breeze",
+            "version": "1.0.0"
+        }
+    ]
+}
+JSON;
+
+        $authRoutes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Auth\LoginController;
+
+Route::post('/login', [LoginController::class, 'store']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+            'routes/auth.php' => $authRoutes,
+            'routes/web.php' => '<?php // empty',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - custom routes without throttling
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('custom authentication routes', $result);
+    }
+
+    public function test_passes_with_laravel_11_throttle_in_bootstrap(): void
+    {
+        $bootstrapCode = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Exceptions;
+use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Routing\Middleware\ThrottleRequests;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        commands: __DIR__.'/../routes/console.php',
+        health: '/up',
+    )
+    ->withMiddleware(function (Middleware $middleware) {
+        $middleware->web(append: [
+            ThrottleRequests::class.':60,1',
+        ]);
+    })
+    ->create();
+PHP;
+
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/login', [LoginController::class, 'login']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapCode,
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - Laravel 11+ throttle in bootstrap/app.php
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_without_web_middleware_throttle(): void
+    {
+        $kernelCode = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+
+class Kernel extends HttpKernel
+{
+    protected $middlewareGroups = [
+        'web' => [
+            // No throttle middleware
+        ],
+    ];
+}
+PHP;
+
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/login', [LoginController::class, 'login']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Kernel.php' => $kernelCode,
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - no throttle in web middleware group
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('login', $result);
+    }
+
+    public function test_passes_with_throttle_in_api_middleware_group(): void
+    {
+        $kernelCode = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+use Illuminate\Routing\Middleware\ThrottleRequests;
+
+class Kernel extends HttpKernel
+{
+    protected $middlewareGroups = [
+        'api' => [
+            ThrottleRequests::class.':60,1',
+        ],
+    ];
+}
+PHP;
+
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/login', [ApiAuthController::class, 'login']);
+Route::post('/token', [OAuthController::class, 'issueToken']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Kernel.php' => $kernelCode,
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - throttle is in api middleware group
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_laravel_11_throttle_in_api_bootstrap(): void
+    {
+        $bootstrapCode = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Routing\Middleware\ThrottleRequests;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function (Middleware $middleware) {
+        $middleware->api(append: [
+            ThrottleRequests::class.':60,1',
+        ]);
+    })
+    ->create();
+PHP;
+
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/login', [ApiAuthController::class, 'login']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapCode,
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - Laravel 11+ throttle in api middleware
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_api_route_without_throttle(): void
+    {
+        $kernelCode = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+
+class Kernel extends HttpKernel
+{
+    protected $middlewareGroups = [
+        'api' => [
+            // No throttle middleware
+        ],
+    ];
+}
+PHP;
+
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/login', [ApiAuthController::class, 'login']);
+Route::post('/oauth/token', [AccessTokenController::class, 'issueToken']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Kernel.php' => $kernelCode,
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - API routes without throttle
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('API authentication', $result);
+    }
+
+    public function test_detects_sanctum_token_endpoints(): void
+    {
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/sanctum/token', [SanctumController::class, 'createToken']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - token endpoint without throttle
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('sanctum/token', $result);
+    }
+
+    public function test_passes_with_invoke_controller_using_rate_limiter(): void
+    {
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\RateLimiter;
+
+class LoginController
+{
+    public function __invoke()
+    {
+        if (RateLimiter::tooManyAttempts('login:'.$request->ip(), 5)) {
+            return response()->json(['error' => 'Too many attempts'], 429);
+        }
+
+        return $this->attemptLogin();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/LoginController.php' => $controllerCode,
+            'routes/web.php' => '<?php // empty',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - single-action controller with RateLimiter
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_with_invoke_controller_without_throttle(): void
+    {
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class LoginController
+{
+    public function __invoke()
+    {
+        // No rate limiting
+        return $this->attemptLogin();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/LoginController.php' => $controllerCode,
+            'routes/web.php' => '<?php // empty',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - single-action controller without RateLimiter
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('__invoke', $result);
+    }
+
+    public function test_detects_invoke_in_auth_controller(): void
+    {
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+class AuthenticateController
+{
+    public function __invoke()
+    {
+        // Authenticate user without throttling
+        auth()->attempt($credentials);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/Auth/AuthenticateController.php' => $controllerCode,
+            'routes/web.php' => '<?php Route::post("/authenticate", AuthenticateController::class);',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - __invoke in Auth directory without throttle
+        $this->assertFailed($result);
     }
 }

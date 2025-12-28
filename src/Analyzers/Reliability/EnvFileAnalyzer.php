@@ -48,7 +48,7 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                 [$this->createIssueWithSnippet(
                     message: 'The .env file is a broken symlink',
                     filePath: $envPath,
-                    lineNumber: 1,
+                    lineNumber: null,
                     severity: Severity::Critical,
                     recommendation: sprintf('Fix the broken symlink. Target: %s', $target ?: 'unknown'),
                     column: null,
@@ -76,7 +76,7 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                 [$this->createIssueWithSnippet(
                     message: 'The .env file exists but is not readable',
                     filePath: $envPath,
-                    lineNumber: 1,
+                    lineNumber: null,
                     severity: Severity::Critical,
                     recommendation: 'Fix file permissions to make .env readable. Run: chmod 644 .env',
                     column: null,
@@ -98,7 +98,7 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                 [$this->createIssueWithSnippet(
                     message: 'The .env file exists but contains no configuration',
                     filePath: $envPath,
-                    lineNumber: 1,
+                    lineNumber: null,
                     severity: Severity::High,
                     recommendation: 'Add environment variables to your .env file. At minimum, configure: APP_KEY, APP_ENV, APP_DEBUG, DB_CONNECTION',
                     code: 'empty-file',
@@ -126,7 +126,7 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
             [$this->createIssueWithSnippet(
                 message: 'The .env file does not exist',
                 filePath: $envPath,
-                lineNumber: 1,
+                lineNumber: null,
                 severity: Severity::Critical,
                 recommendation: $this->buildRecommendation($envExampleExists),
                 column: null,

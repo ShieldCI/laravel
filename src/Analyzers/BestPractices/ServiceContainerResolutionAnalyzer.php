@@ -29,8 +29,15 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - app()->bind() / singleton() outside service providers
  * - Recommends constructor injection
  *
+ * Whitelisted contexts (where manual resolution is legitimate):
+ * - Migrations: Don't support constructor DI, must use app() helper
+ * - Seeders: Often need dynamic service resolution
+ * - Factories: May need service resolution for test data
+ * - Commands: Sometimes need conditional service resolution
+ * - Service Providers: Legitimate container binding location
+ *
  * Configuration:
- * - whitelist_dirs: Directories to skip (e.g., tests, database/seeders)
+ * - whitelist_dirs: Directories to skip (e.g., tests, database/migrations, database/seeders)
  * - whitelist_classes: Class name patterns to skip (e.g., *Command, *Seeder)
  * - whitelist_methods: Methods to skip (e.g., environment, isLocal)
  */
@@ -74,6 +81,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
         // Load whitelist_dirs
         $configDirs = $this->config->get("{$baseKey}.whitelist_dirs", [
             'tests',
+            'database/migrations',  // Migrations don't support constructor DI
             'database/seeders',
             'database/factories',
         ]);
@@ -225,80 +233,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
      */
     private function getRecommendation(string $pattern, string $location): string
     {
-        $base = "Found manual service container resolution using '{$pattern}' in '{$location}'. Manual resolution is a service locator anti-pattern that hides dependencies and makes testing difficult. ";
-
-        $strategies = [
-            'Use constructor dependency injection instead of manual resolution',
-            'Declare dependencies explicitly in the constructor',
-            'Let Laravel\'s service container auto-wire dependencies',
-            'Avoid app(), resolve(), or App::make() in application code',
-            'Reserve manual resolution for service providers and bootstrap code',
-            'Use method injection for dependencies needed in single methods',
-            'Create interfaces for dependencies to enable easier mocking',
-        ];
-
-        $example = <<<'PHP'
-
-// Problem - Manual service resolution (Service Locator):
-class OrderProcessor
-{
-    public function process($orderId)
-    {
-        // Hidden dependencies - unclear what this class needs
-        $repository = app(OrderRepository::class);
-        $payment = resolve(PaymentGateway::class);
-        $mailer = App::make('mailer');
-
-        $order = $repository->find($orderId);
-        $result = $payment->charge($order);
-        $mailer->send(new OrderConfirmation($order));
-
-        return $result;
-    }
-}
-
-// Solution - Constructor dependency injection:
-class OrderProcessor
-{
-    public function __construct(
-        private OrderRepository $repository,
-        private PaymentGateway $payment,
-        private Mailer $mailer
-    ) {}
-
-    public function process($orderId)
-    {
-        // Dependencies are explicit and injected
-        $order = $this->repository->find($orderId);
-        $result = $this->payment->charge($order);
-        $this->mailer->send(new OrderConfirmation($order));
-
-        return $result;
-    }
-}
-
-// Laravel automatically resolves constructor dependencies
-// Usage in controller:
-public function store(OrderProcessor $processor)
-{
-    return $processor->process($orderId);
-}
-
-// For testing:
-$mock = Mockery::mock(PaymentGateway::class);
-$processor = new OrderProcessor($repository, $mock, $mailer);
-// Easy to test with injected mock!
-
-// Note: Manual resolution IS acceptable in:
-// - Service providers (bind, singleton, etc.)
-// - Bootstrap files
-// - Facades (they're designed for it)
-// - Routes and middleware registration
-// - Tests (for resolving services)
-// - Database seeders and factories
-PHP;
-
-        return $base.'Best practices: '.implode('; ', $strategies).". Example:{$example}";
+        return "Found manual service container resolution using '{$pattern}' in '{$location}'. Manual resolution is a service locator anti-pattern that hides dependencies and makes testing difficult. ";
     }
 }
 

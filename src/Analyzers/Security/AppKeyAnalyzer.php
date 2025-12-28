@@ -192,7 +192,7 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
             $issues[] = $this->createIssueWithSnippet(
                 message: 'APP_KEY is not defined in .env file',
                 filePath: $envFile,
-                lineNumber: 1,
+                lineNumber: null,
                 severity: Severity::Critical,
                 recommendation: 'Add APP_KEY to your .env file and run "php artisan key:generate"',
                 metadata: ['file' => basename($envFile)]
@@ -280,7 +280,12 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
      */
     private function stripInlineComment(string $value): string
     {
-        return preg_replace('/\s+#.*$/', '', trim($value)) ?? trim($value);
+        // Only strip comments outside quotes
+        if (preg_match('/^([\'"])(.*)\1$/', trim($value))) {
+            return trim($value);
+        }
+
+        return preg_replace('/\s*(#|\/\/|;).*$/', '', trim($value)) ?? trim($value);
     }
 
     /**

@@ -12,11 +12,15 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class UpToDateDependencyAnalyzerTest extends AnalyzerTestCase
 {
+    /**
+     * @param  array<string, array<string, string>>|null  $composerJsonData
+     */
     protected function createAnalyzer(
         ?string $composerLockPath = '/path/to/composer.lock',
         ?string $allDepsOutput = null,
-        ?string $prodDepsOutput = null,
+        ?string $prodDepsOutput = null,  // DEPRECATED: No longer used (optimization)
         ?string $composerJsonPath = '/path/to/composer.json',
+        ?array $composerJsonData = null,
         ?\Throwable $installDryRunException = null
     ): AnalyzerInterface {
         /** @var Composer&\Mockery\MockInterface $composer */
@@ -29,24 +33,22 @@ class UpToDateDependencyAnalyzerTest extends AnalyzerTestCase
         $composer->shouldReceive('getJsonFile')
             ->andReturn($composerJsonPath);
 
-        // Mock installDryRun - called twice per analysis
+        // Create temporary composer.json with require-dev if data provided
+        if ($composerJsonPath !== null && $composerJsonData !== null) {
+            file_put_contents($composerJsonPath, json_encode($composerJsonData));
+            // Register cleanup
+            register_shutdown_function(fn () => @unlink($composerJsonPath));
+        }
+
+        // Mock installDryRun - now called only ONCE per analysis (performance optimization!)
         if ($installDryRunException !== null) {
             /** @phpstan-ignore-next-line Mockery expectation chaining */
             $composer->shouldReceive('installDryRun')->andThrow($installDryRunException);
-        } elseif ($allDepsOutput !== null && $prodDepsOutput !== null) {
+        } elseif ($allDepsOutput !== null) {
             /** @phpstan-ignore-next-line Mockery's times() is not recognized by PHPStan */
             $composer->shouldReceive('installDryRun')
-                ->times(2)
-                ->andReturnUsing(function ($args = []) use ($allDepsOutput, $prodDepsOutput) {
-                    if (empty($args)) {
-                        return $allDepsOutput;
-                    }
-                    if (in_array('--no-dev', $args)) {
-                        return $prodDepsOutput;
-                    }
-
-                    return '';
-                });
+                ->once()
+                ->andReturn($allDepsOutput);
         }
 
         return new UpToDateDependencyAnalyzer($composer);
@@ -118,17 +120,16 @@ Package operations: 0 installs, 5 updates, 0 removals
   - Updating vendor/package2 (v2.0.0 => v2.1.0)
 OUTPUT;
 
-        $prodDepsOutput = <<<'OUTPUT'
-Loading composer repositories with package information
-Installing dependencies from lock file
-Package operations: 0 installs, 3 updates, 0 removals
-  - Updating vendor/package1 (v1.0.0 => v1.0.1)
-OUTPUT;
+        $composerJsonPath = sys_get_temp_dir().'/composer_both_'.uniqid().'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
             allDepsOutput: $allDepsOutput,
-            prodDepsOutput: $prodDepsOutput
+            composerJsonPath: $composerJsonPath,
+            composerJsonData: [
+                'require' => ['vendor/package1' => '^1.0'],
+                'require-dev' => ['vendor/package2' => '^2.0'],
+            ]
         );
 
         $result = $analyzer->analyze();
@@ -181,12 +182,16 @@ Package operations: 0 installs, 2 updates, 0 removals
   - Updating phpunit/phpunit (v9.0.0 => v9.1.0)
 OUTPUT;
 
-        $prodDepsOutput = "Nothing to install or update\n";
+        $composerJsonPath = sys_get_temp_dir().'/composer_dev_'.uniqid().'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
             allDepsOutput: $allDepsOutput,
-            prodDepsOutput: $prodDepsOutput
+            composerJsonPath: $composerJsonPath,
+            composerJsonData: [
+                'require' => ['vendor/prod-pkg' => '^1.0'],
+                'require-dev' => ['phpunit/phpunit' => '^9.0'],
+            ]
         );
 
         $result = $analyzer->analyze();
@@ -209,7 +214,7 @@ OUTPUT;
         $this->assertEquals('up-to-date-dependencies', $metadata->id);
         $this->assertEquals('Up-to-Date Dependencies Analyzer', $metadata->name);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Security, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $metadata->severity);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $metadata->severity);
         $this->assertContains('dependencies', $metadata->tags);
         $this->assertContains('security-patches', $metadata->tags);
     }
@@ -234,12 +239,16 @@ OUTPUT;
 Package operations: 0 installs, 5 updates, 0 removals
 OUTPUT;
 
-        $prodDepsOutput = "Nothing to install or update\n";
+        $composerJsonPath = sys_get_temp_dir().'/composer_dev_'.uniqid().'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
             allDepsOutput: $allDepsOutput,
-            prodDepsOutput: $prodDepsOutput
+            composerJsonPath: $composerJsonPath,
+            composerJsonData: [
+                'require' => ['vendor/prod-pkg' => '^1.0'],
+                'require-dev' => ['phpunit/phpunit' => '^9.0'],
+            ]
         );
 
         $result = $analyzer->analyze();
@@ -294,10 +303,16 @@ Lock file operations: 0 installs, 1 update, 0 removals
   - Upgrading vendor/package1 (1.0.0 => 1.0.1)
 OUTPUT;
 
+        $composerJsonPath = sys_get_temp_dir().'/composer_format_'.uniqid().'.json';
+
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
             allDepsOutput: $allDepsOutput,
-            prodDepsOutput: $prodDepsOutput
+            composerJsonPath: $composerJsonPath,
+            composerJsonData: [
+                'require' => ['vendor/package1' => '^1.0'],
+                'require-dev' => ['vendor/dev-package' => '^2.0'],
+            ]
         );
 
         $result = $analyzer->analyze();
@@ -339,17 +354,20 @@ OUTPUT;
         $allDepsOutput = <<<'OUTPUT'
 Loading composer repositories with package information
 Installing dependencies from lock file
-Package operations: 0 installs, 1 update, 1 removal
-  - Updating vendor/package1 (v1.0.0 => v1.0.1)
+Package operations: 0 installs, 0 updates, 1 removal
   - Removing vendor/old-package (v1.0.0)
 OUTPUT;
 
-        $prodDepsOutput = "Nothing to install or update\n";
+        $composerJsonPath = sys_get_temp_dir().'/composer_removals_'.uniqid().'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
             allDepsOutput: $allDepsOutput,
-            prodDepsOutput: $prodDepsOutput
+            composerJsonPath: $composerJsonPath,
+            composerJsonData: [
+                'require' => ['vendor/prod-pkg' => '^1.0'],
+                'require-dev' => ['vendor/old-package' => '^1.0'],
+            ]
         );
 
         $result = $analyzer->analyze();
@@ -358,7 +376,7 @@ OUTPUT;
         $this->assertHasIssueContaining('Development dependencies are not up-to-date', $result);
     }
 
-    public function test_composer_install_dry_run_called_twice(): void
+    public function test_composer_install_dry_run_called_once_for_performance(): void
     {
         /** @var Composer&\Mockery\MockInterface $composer */
         $composer = Mockery::mock(Composer::class);
@@ -369,17 +387,12 @@ OUTPUT;
         $composer->shouldReceive('getJsonFile')
             ->andReturn('/path/to/composer.json');
 
-        // Verify installDryRun is called twice with correct arguments
+        // OPTIMIZATION: Verify installDryRun is called only ONCE (not twice)
+        // This cuts CI execution time in half for large projects
         /** @phpstan-ignore-next-line Mockery expectation chaining */
         $composer->shouldReceive('installDryRun')
             ->once()
-            ->with(['--no-dev'])
-            ->andReturn("Nothing to install or update\n");
-
-        /** @phpstan-ignore-next-line Mockery expectation chaining */
-        $composer->shouldReceive('installDryRun')
-            ->once()
-            ->with()
+            ->with()  // Called without --no-dev (all dependencies)
             ->andReturn("Nothing to install or update\n");
 
         $analyzer = new UpToDateDependencyAnalyzer($composer);
@@ -393,16 +406,19 @@ OUTPUT;
     {
         $allDepsOutput = <<<'OUTPUT'
 Package operations: 0 installs, 1 update, 0 removals
+  - Updating vendor/prod-package (v1.0.0 => v1.0.1)
 OUTPUT;
 
-        $prodDepsOutput = <<<'OUTPUT'
-Package operations: 0 installs, 1 update, 0 removals
-OUTPUT;
+        $composerJsonPath = sys_get_temp_dir().'/composer_prod_cmd_'.uniqid().'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
             allDepsOutput: $allDepsOutput,
-            prodDepsOutput: $prodDepsOutput
+            composerJsonPath: $composerJsonPath,
+            composerJsonData: [
+                'require' => ['vendor/prod-package' => '^1.0'],
+                'require-dev' => ['phpunit/phpunit' => '^9.0'],
+            ]
         );
 
         $result = $analyzer->analyze();
@@ -424,12 +440,16 @@ OUTPUT;
 Package operations: 0 installs, 1 update, 0 removals
 OUTPUT;
 
-        $prodDepsOutput = "Nothing to install or update\n";
+        $composerJsonPath = sys_get_temp_dir().'/composer_dev_'.uniqid().'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
             allDepsOutput: $allDepsOutput,
-            prodDepsOutput: $prodDepsOutput
+            composerJsonPath: $composerJsonPath,
+            composerJsonData: [
+                'require' => ['vendor/prod-pkg' => '^1.0'],
+                'require-dev' => ['phpunit/phpunit' => '^9.0'],
+            ]
         );
 
         $result = $analyzer->analyze();
@@ -522,10 +542,16 @@ Package operations: 0 installs, 1 update, 0 removals
   - Updating vendor/prod-pkg (v1.0.0 => v1.0.1)
 OUTPUT;
 
+        $composerJsonPath = sys_get_temp_dir().'/composer_both_rec_'.uniqid().'.json';
+
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
             allDepsOutput: $allDepsOutput,
-            prodDepsOutput: $prodDepsOutput
+            composerJsonPath: $composerJsonPath,
+            composerJsonData: [
+                'require' => ['vendor/prod-pkg' => '^1.0'],
+                'require-dev' => ['vendor/dev-pkg' => '^2.0'],
+            ]
         );
 
         $result = $analyzer->analyze();
@@ -539,6 +565,132 @@ OUTPUT;
         $message = $issues[0]->message;
         $this->assertStringContainsString('production', strtolower($message));
         $this->assertStringContainsString('development', strtolower($message));
+    }
+
+    public function test_handles_operation_counts_in_different_order(): void
+    {
+        // Test that order-independent regex works: updates before installs
+        $allDepsOutput = <<<'OUTPUT'
+Package operations: 2 updates, 1 install
+  - Updating vendor/package1 (v1.0.0 => v1.0.1)
+  - Installing vendor/package2 (v1.0.0)
+OUTPUT;
+
+        $composerJsonPath = sys_get_temp_dir().'/composer_order_'.uniqid().'.json';
+
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $allDepsOutput,
+            composerJsonPath: $composerJsonPath,
+            composerJsonData: [
+                'require' => ['vendor/package1' => '^1.0'],
+                'require-dev' => ['vendor/package2' => '^1.0'],
+            ]
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('dependencies are not up-to-date', $result);
+    }
+
+    public function test_handles_operation_counts_with_missing_fields(): void
+    {
+        // Test that missing "removals" field doesn't break parsing
+        $allDepsOutput = <<<'OUTPUT'
+Package operations: 0 installs, 3 updates
+  - Updating vendor/prod-pkg (v1.0.0 => v1.0.1)
+OUTPUT;
+
+        $composerJsonPath = sys_get_temp_dir().'/composer_missing_'.uniqid().'.json';
+
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $allDepsOutput,
+            composerJsonPath: $composerJsonPath,
+            composerJsonData: [
+                'require' => ['vendor/prod-pkg' => '^1.0'],
+                'require-dev' => [],
+            ]
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('Production dependencies are not up-to-date', $result);
+    }
+
+    public function test_handles_singular_operation_counts(): void
+    {
+        // Test singular forms: "1 update" instead of "1 updates"
+        $allDepsOutput = <<<'OUTPUT'
+Package operations: 0 installs, 1 update, 0 removals
+  - Updating vendor/package (v1.0.0 => v1.0.1)
+OUTPUT;
+
+        $composerJsonPath = sys_get_temp_dir().'/composer_singular_'.uniqid().'.json';
+
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $allDepsOutput,
+            composerJsonPath: $composerJsonPath,
+            composerJsonData: [
+                'require' => ['vendor/package' => '^1.0'],
+                'require-dev' => [],
+            ]
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+    }
+
+    public function test_handles_lock_file_operations_format(): void
+    {
+        // Test "Lock file operations:" instead of "Package operations:"
+        $allDepsOutput = <<<'OUTPUT'
+Loading composer repositories with package information
+Updating dependencies
+Lock file operations: 2 updates, 0 removals
+  - Upgrading vendor/package1 (1.0.0 => 1.0.1)
+  - Upgrading vendor/package2 (2.0.0 => 2.1.0)
+OUTPUT;
+
+        $composerJsonPath = sys_get_temp_dir().'/composer_lockfile_'.uniqid().'.json';
+
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $allDepsOutput,
+            composerJsonPath: $composerJsonPath,
+            composerJsonData: [
+                'require' => ['vendor/package1' => '^1.0'],
+                'require-dev' => ['vendor/package2' => '^2.0'],
+            ]
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('dependencies are not up-to-date', $result);
+    }
+
+    public function test_handles_all_zero_counts_with_different_formats(): void
+    {
+        // Test that all-zero counts in various formats result in "up-to-date"
+        $allDepsOutput = <<<'OUTPUT'
+Package operations: 0 updates, 0 installs, 0 removals
+Nothing to install or update
+OUTPUT;
+
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $allDepsOutput
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString('up-to-date', $result->getMessage());
     }
 
     protected function tearDown(): void

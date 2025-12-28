@@ -34,6 +34,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
         'var_export',
         'debug_backtrace',
         'debug_print_backtrace',
+        'ray',
     ];
 
     protected function metadata(): AnalyzerMetadata
@@ -69,8 +70,6 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $basePath = $this->getBasePath();
-
         $issues = [];
 
         // Check .env files for APP_DEBUG=true
@@ -113,13 +112,16 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
+        // Get APP_DEBUG
+        $debugValue = $this->getEnvValue($lines, 'APP_DEBUG');
+
         // Check for APP_DEBUG=true
         foreach ($lines as $lineNumber => $line) {
             if (! is_string($line)) {
                 continue;
             }
 
-            if (preg_match('/^APP_DEBUG\s*=\s*true/i', trim($line))) {
+            if ($debugValue !== null && in_array(strtolower($debugValue), ['true', '1', 'yes', 'on'], true)) {
                 $issues[] = $this->createIssueWithSnippet(
                     message: 'Debug mode is enabled (APP_DEBUG=true) in '.($appEnv ?: 'unknown').' environment',
                     filePath: $envFile,
@@ -210,7 +212,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check for debug functions in code.
+     * Check for debug functions in code using PHP tokens.
      */
     private function checkDebugFunctions(array &$issues): void
     {
@@ -220,86 +222,170 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $lines = FileParser::getLines($file);
+            $code = FileParser::readFile($file);
+            if ($code === null) {
+                continue;
+            }
 
-            foreach ($lines as $lineNumber => $line) {
-                if (! is_string($line)) {
+            $tokens = token_get_all($code);
+            $tokenCount = count($tokens);
+
+            for ($i = 0; $i < $tokenCount; $i++) {
+                $token = $tokens[$i];
+
+                // Only interested in identifiers (function names)
+                if (! is_array($token) || $token[0] !== T_STRING) {
                     continue;
                 }
 
-                // Skip comments
-                if (preg_match('/^\s*\/\/|^\s*\/\*|^\s*\*/', $line)) {
+                $functionName = strtolower($token[1]);
+
+                if (! in_array($functionName, $this->debugFunctions, true)) {
                     continue;
                 }
 
-                foreach ($this->debugFunctions as $func) {
-                    // Match function calls
-                    if (preg_match('/\b'.preg_quote($func, '/').'\s*\(/i', $line)) {
-                        $severity = in_array($func, self::HIGH_SEVERITY_FUNCTIONS, true)
-                            ? Severity::High
-                            : Severity::Medium;
-
-                        $issues[] = $this->createIssueWithSnippet(
-                            message: sprintf('Debug function %s() found in production code', $func),
-                            filePath: $file,
-                            lineNumber: $lineNumber + 1,
-                            severity: $severity,
-                            recommendation: sprintf('Remove %s() calls before deploying to production or use proper logging instead', $func),
-                            metadata: [
-                                'function' => $func,
-                                'file' => basename($file),
-                            ]
-                        );
-
-                        break; // One issue per line
-                    }
+                // Ignore function definitions: function dump() {}
+                $prev = $this->previousMeaningfulToken($tokens, $i);
+                if ($prev !== null && is_array($prev) && $prev[0] === T_FUNCTION) {
+                    continue;
                 }
 
-                // Check for Ray debugging tool
-                if (preg_match('/(?<!->)\bray\s*\(/i', $line)) {
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: 'Ray debugging function found in code',
-                        filePath: $file,
-                        lineNumber: $lineNumber + 1,
-                        severity: Severity::High,
-                        recommendation: 'Remove ray() calls before deploying to production',
-                        metadata: [
-                            'function' => 'ray',
-                            'file' => basename($file),
-                        ]
-                    );
+                // Ignore method calls: $obj->dump()
+                if ($prev === '->' || $prev === '::') {
+                    continue;
                 }
 
-                // Check for error_reporting(E_ALL)
-                if (preg_match('/error_reporting\s*\(\s*E_ALL/i', $line)) {
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: 'Verbose error reporting enabled',
-                        filePath: $file,
-                        lineNumber: $lineNumber + 1,
-                        severity: Severity::Medium,
-                        recommendation: 'Let Laravel handle error reporting through APP_DEBUG configuration',
-                        metadata: [
-                            'function' => 'error_reporting',
-                            'file' => basename($file),
-                        ]
-                    );
+                // Ensure this is actually a function call (next token is "(")
+                $next = $this->nextMeaningfulToken($tokens, $i);
+                if ($next !== '(') {
+                    continue;
                 }
 
-                // Check for ini_set('display_errors')
-                if (preg_match('/ini_set\s*\(\s*["\']display_errors["\']\s*,\s*["\']?1["\']?\s*\)/i', $line)) {
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: 'Display errors enabled with ini_set()',
-                        filePath: $file,
-                        lineNumber: $lineNumber + 1,
-                        severity: Severity::High,
-                        recommendation: 'Remove ini_set("display_errors") and use Laravel\'s error handling',
-                        metadata: [
-                            'function' => 'ini_set',
-                            'parameter' => 'display_errors',
-                            'file' => basename($file),
-                        ]
-                    );
+                $severity = match ($functionName) {
+                    'ray' => Severity::High,
+                    default => in_array($functionName, self::HIGH_SEVERITY_FUNCTIONS, true)
+                        ? Severity::High
+                        : Severity::Medium,
+                };
+
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf(
+                        'Debug function %s() found in production code',
+                        $functionName
+                    ),
+                    filePath: $file,
+                    lineNumber: $token[2],
+                    severity: $severity,
+                    recommendation: sprintf(
+                        'Remove %s() calls before deploying to production or replace with structured logging',
+                        $functionName
+                    ),
+                    metadata: [
+                        'function' => $functionName,
+                        'file' => basename($file),
+                    ]
+                );
+            }
+
+            // Extra checks that are easier at the string level
+            $this->checkDebugIniSettings($file, $issues);
+        }
+    }
+
+    /**
+     * Get the previous non-whitespace/comment token.
+     *
+     * @param  array<int, array<int, int|string>|string>  $tokens
+     */
+    private function previousMeaningfulToken(array $tokens, int $index): mixed
+    {
+        for ($i = $index - 1; $i >= 0; $i--) {
+            $token = $tokens[$i];
+
+            if (is_array($token)) {
+                if (in_array($token[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                    continue;
                 }
+
+                return $token;
+            }
+
+            return $token;
+        }
+
+        return null;
+    }
+
+    /**
+     * Get the next non-whitespace/comment token.
+     *
+     * @param  array<int, array<int, int|string>|string>  $tokens
+     */
+    private function nextMeaningfulToken(array $tokens, int $index): mixed
+    {
+        $count = count($tokens);
+
+        for ($i = $index + 1; $i < $count; $i++) {
+            $token = $tokens[$i];
+
+            if (is_array($token)) {
+                if (in_array($token[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+                    continue;
+                }
+
+                return $token;
+            }
+
+            return $token;
+        }
+
+        return null;
+    }
+
+    private function checkDebugIniSettings(string $file, array &$issues): void
+    {
+        $lines = FileParser::getLines($file);
+
+        foreach ($lines as $lineNumber => $line) {
+            if (! is_string($line)) {
+                continue;
+            }
+
+            // Skip full-line comments
+            if (preg_match('/^\s*(\/\/|#)/', $line)) {
+                continue;
+            }
+
+            if (preg_match('/error_reporting\s*\(\s*(E_ALL|-1)/i', $line)) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: 'Verbose error reporting enabled',
+                    filePath: $file,
+                    lineNumber: $lineNumber + 1,
+                    severity: Severity::Medium,
+                    recommendation: 'Control error reporting via APP_DEBUG and framework configuration',
+                    metadata: [
+                        'function' => 'error_reporting',
+                        'file' => basename($file),
+                    ]
+                );
+            }
+
+            if (preg_match(
+                '/ini_set\s*\(\s*[\'"]display_(startup_)?errors[\'"]\s*,\s*(1|true|on|yes)/i',
+                $line
+            )) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: 'PHP display_errors enabled',
+                    filePath: $file,
+                    lineNumber: $lineNumber + 1,
+                    severity: Severity::High,
+                    recommendation: 'Disable display_errors in production environments',
+                    metadata: [
+                        'function' => 'ini_set',
+                        'parameter' => 'display_errors',
+                        'file' => basename($file),
+                    ]
+                );
             }
         }
     }

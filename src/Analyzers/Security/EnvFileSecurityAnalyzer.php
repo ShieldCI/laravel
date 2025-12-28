@@ -42,6 +42,11 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
         'JWT_SECRET',
         'STRIPE_SECRET',
         'PUSHER_APP_SECRET',
+        'DATABASE_URL',
+        'API_KEY',
+        'SECRET_KEY',
+        'PRIVATE_KEY',
+        'OAUTH_CLIENT_SECRET',
     ];
 
     private array $placeholderKeywords = ['null', '""', "''", 'your-', 'change-', 'example'];
@@ -193,6 +198,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                     }
 
                     $value = trim($matches[1]);
+                    $value = trim($value, "\"'");
 
                     // Skip if empty or it's a common placeholder
                     if ($value === '') {
@@ -246,7 +252,8 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
         }
 
         // Check if .env is ignored
-        if (! str_contains($content, '.env') && ! str_contains($content, '*.env')) {
+        $ignored = preg_match('/^\s*(?:\.env|\*\.env)\s*$/m', $content) === 1;
+        if (! $ignored) {
             $issues[] = $this->createIssueWithSnippet(
                 message: '.env file is not excluded in .gitignore',
                 filePath: $gitignorePath,
@@ -337,7 +344,6 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
         }
 
         $octal = substr(sprintf('%o', $perms), -3);
-        $numericPerms = octdec($octal);
 
         // Check if file is world-readable or world-writable (Critical)
         if (($perms & self::WORLD_READABLE) || ($perms & self::WORLD_WRITABLE)) {

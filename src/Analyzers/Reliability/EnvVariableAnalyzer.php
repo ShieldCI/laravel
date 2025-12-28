@@ -53,7 +53,7 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
                 [$this->createIssueWithSnippet(
                     message: '.env file is missing',
                     filePath: $envPath,
-                    lineNumber: 1,
+                    lineNumber: null,
                     severity: Severity::Critical,
                     recommendation: $this->buildMissingEnvFileRecommendation(),
                     column: null,
@@ -80,7 +80,7 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
             [$this->createIssueWithSnippet(
                 message: 'Missing environment variables',
                 filePath: $envPath,
-                lineNumber: 1,
+                lineNumber: null,
                 severity: Severity::High,
                 recommendation: $this->buildMissingVariablesRecommendation($missingVars),
                 column: null,

@@ -42,17 +42,19 @@ class VulnerableDependencyAnalyzerTest extends AnalyzerTestCase
         return new VulnerableDependencyAnalyzer($fetcher, $analyzer, $dependencyReader);
     }
 
-    public function test_fails_when_no_composer_lock(): void
+    public function test_skips_when_no_composer_lock(): void
     {
         $tempDir = $this->createTempDirectory([]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
 
-        $result = $analyzer->analyze();
+        // Should not run when composer.lock is missing - can't check vulnerabilities without it
+        $this->assertFalse($analyzer->shouldRun());
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('composer.lock', $result);
+        if (method_exists($analyzer, 'getSkipReason')) {
+            $this->assertStringContainsString('composer.lock', $analyzer->getSkipReason());
+        }
     }
 
     public function test_reports_vulnerabilities_from_scanner(): void
@@ -115,7 +117,11 @@ JSON;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('vendor/package', $result);
         $issues = $result->getIssues();
-        $this->assertEquals('CVE-2024-1234', $issues[0]->metadata['cve'] ?? null);
+        // With aggregation, CVEs are now stored in an array
+        $cves = $issues[0]->metadata['cves'] ?? [];
+        $this->assertIsArray($cves);
+        $this->assertContains('CVE-2024-1234', $cves);
+        $this->assertEquals(1, $issues[0]->metadata['vulnerability_count'] ?? 0);
     }
 
     public function test_passes_when_no_vulnerabilities_detected(): void
@@ -368,9 +374,19 @@ JSON;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertCount(2, $issues);
-        $this->assertEquals('CVE-2024-1111', $issues[0]->metadata['cve'] ?? null);
-        $this->assertEquals('CVE-2024-2222', $issues[1]->metadata['cve'] ?? null);
+
+        // With aggregation: 1 issue for the package (not 2 separate issues)
+        $this->assertCount(1, $issues);
+        $this->assertEquals(2, $issues[0]->metadata['vulnerability_count'] ?? 0);
+
+        // Both CVEs should be in the cves array
+        $cves = $issues[0]->metadata['cves'] ?? [];
+        $this->assertIsArray($cves);
+        $this->assertContains('CVE-2024-1111', $cves);
+        $this->assertContains('CVE-2024-2222', $cves);
+
+        // Message should mention multiple vulnerabilities
+        $this->assertStringContainsString('2 known vulnerabilities', $issues[0]->message);
     }
 
     public function test_handles_vulnerability_without_cve(): void
@@ -426,8 +442,12 @@ JSON;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertNull($issues[0]->metadata['cve'] ?? null);
-        $this->assertStringContainsString('Security Issue', $issues[0]->message);
+
+        // With aggregation: CVEs are in an array, should be empty when no CVE
+        $this->assertEmpty($issues[0]->metadata['cves'] ?? []);
+
+        // Title is now in the recommendation (with aggregation), not in message
+        $this->assertStringContainsString('Security Issue', $issues[0]->recommendation);
     }
 
     public function test_handles_vulnerability_without_link(): void
@@ -529,8 +549,11 @@ JSON;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertStringContainsString('Affected versions:', $issues[0]->recommendation);
-        $this->assertStringContainsString('<1.1.0', $issues[0]->recommendation);
+
+        // With aggregation: affected_versions are in metadata (not recommendation to keep it concise)
+        $this->assertNotEmpty($issues[0]->metadata['advisories'] ?? []);
+        $advisory = $issues[0]->metadata['advisories'][0] ?? [];
+        $this->assertEquals(['<1.1.0', '>=2.0.0,<2.1.0'], $advisory['affected_versions'] ?? []);
     }
 
     public function test_handles_advisory_with_string_affected_versions(): void
@@ -580,7 +603,11 @@ JSON;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertStringContainsString('Affected versions: <1.1.0', $issues[0]->recommendation);
+
+        // With aggregation: affected_versions are in metadata (not recommendation)
+        $this->assertNotEmpty($issues[0]->metadata['advisories'] ?? []);
+        $advisory = $issues[0]->metadata['advisories'][0] ?? [];
+        $this->assertEquals('<1.1.0', $advisory['affected_versions'] ?? null);
     }
 
     public function test_handles_invalid_json_in_composer_lock(): void
@@ -838,9 +865,14 @@ JSON;
         $issues = $result->getIssues();
         $recommendation = $issues[0]->recommendation;
 
-        $this->assertStringContainsString('Update "vendor/package"', $recommendation);
+        // Verify aggregated recommendation format
+        $this->assertStringContainsString('Update "vendor/package" (currently 1.0.0)', $recommendation);
         $this->assertStringContainsString('https://example.com/advisory', $recommendation);
-        $this->assertStringContainsString('Affected versions: <1.1.0', $recommendation);
+        $this->assertStringContainsString('Security Issue', $recommendation);
+
+        // Affected versions are in metadata, not recommendation (to keep it concise)
+        $advisory = $issues[0]->metadata['advisories'][0] ?? [];
+        $this->assertEquals('<1.1.0', $advisory['affected_versions'] ?? null);
     }
 
     public function test_abandoned_package_with_empty_string_replacement(): void

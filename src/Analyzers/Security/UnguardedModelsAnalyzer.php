@@ -87,7 +87,10 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $this->evaluateStaticCalls($ast, $file, $relativePath, $issues);
+        // Build use statement mapping for alias resolution
+        $useStatements = $this->extractUseStatements($ast);
+
+        $this->evaluateStaticCalls($ast, $file, $relativePath, $issues, $useStatements);
     }
 
     /**
@@ -113,6 +116,11 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             return Severity::Medium;
         }
 
+        // Service providers: Common but discouraged pattern for global unguard
+        if ($this->containsAny($normalized, ['app/providers', 'providers/'])) {
+            return Severity::Medium;
+        }
+
         if ($this->containsAny($normalized, ['tests/', '/tests', 'test.php'])) {
             return Severity::Low;
         }
@@ -121,6 +129,25 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Get context-aware recommendation based on file location.
+     */
+    private function getRecommendationForContext(string $relativePath): string
+    {
+        $normalized = $this->normalizePath($relativePath);
+
+        // Service providers: Acknowledge the pattern but warn about production use
+        if ($this->containsAny($normalized, ['app/providers', 'providers/'])) {
+            return 'While Model::unguard() in service providers is a documented pattern, it globally disables mass assignment protection for your entire application. Consider: (1) Use $fillable/$guarded properties on individual models instead, (2) Use the safe scoped pattern: Model::unguarded(fn() => User::create($data)), (3) If absolutely needed, wrap in environment check: if (!app()->environment("production")) { Model::unguard(); }';
+        }
+
+        // Default recommendation for all other contexts
+        return 'Use the safe scoped pattern: Model::unguarded(function() { /* operations */ }) which automatically re-guards. Alternatively: (1) Call Model::reguard() immediately after importing in the same method/function scope, (2) Use $fillable/$guarded properties on models, or (3) Use forceFill() for trusted data.';
+    }
+
+    /**
+     * Check if haystack contains any of the needles as complete path segments.
+     * Prevents false positives like "services_backup" matching "services".
+     *
      * @param  array<string>  $needles
      */
     private function containsAny(string $haystack, array $needles): bool
@@ -130,12 +157,30 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            if (str_contains($haystack, rtrim($needle, '/'))) {
+            if ($this->containsPathSegment($haystack, $needle)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * Check if a path segment exists in the haystack.
+     * Ensures segment boundaries (directory separators or start/end of string).
+     */
+    private function containsPathSegment(string $haystack, string $needle): bool
+    {
+        $needle = rtrim($needle, '/');
+
+        // Check if needle appears as a complete path segment:
+        // - At the start of path: "services/foo" or "app/services/foo"
+        // - In the middle: "foo/services/bar"
+        // - At the end: "foo/services"
+        return str_starts_with($haystack, $needle.'/')
+            || str_contains($haystack, '/'.$needle.'/')
+            || str_ends_with($haystack, '/'.$needle)
+            || $haystack === $needle; // Exact match (rare but possible)
     }
 
     private function shouldSkipFile(string $relativePath): bool
@@ -145,7 +190,10 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
         return str_starts_with($normalized, 'vendor/') || str_contains($normalized, '/vendor/');
     }
 
-    private function evaluateStaticCalls(array $ast, string $file, string $relativePath, array &$issues): void
+    /**
+     * @param  array<string, string>  $useStatements
+     */
+    private function evaluateStaticCalls(array $ast, string $file, string $relativePath, array &$issues, array $useStatements): void
     {
         /** @var array<Node\Expr\StaticCall> $staticCalls */
         $staticCalls = $this->parser->findNodes($ast, Node\Expr\StaticCall::class);
@@ -154,8 +202,11 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
+        // Build a map of method/function nodes to track scope boundaries
+        $methodMap = $this->buildMethodScopeMap($ast);
+
         $unguardCalls = [];
-        $reguardLines = [];
+        $reguardCalls = [];
 
         foreach ($staticCalls as $call) {
             // Only process static calls with Identifier method names
@@ -166,8 +217,16 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             $method = $call->name->toString();
             $className = $call->class instanceof Node\Name ? $call->class->toString() : null;
 
-            if (! $this->isEloquentClass($className)) {
+            // Resolve aliases to fully qualified names
+            $resolvedClassName = $this->resolveClassName($className, $useStatements);
+
+            if (! $this->isEloquentClass($resolvedClassName)) {
                 continue;
+            }
+
+            // Skip Model::unguarded(closure) - this is the SAFE scoped pattern
+            if ($method === 'unguarded' && $this->hasClosureArgument($call)) {
+                continue; // Safe pattern - automatically handles reguard
             }
 
             if ($method === 'unguard') {
@@ -175,7 +234,7 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             }
 
             if ($method === 'reguard') {
-                $reguardLines[] = $call->getLine();
+                $reguardCalls[] = $call;
             }
         }
 
@@ -183,17 +242,36 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        sort($reguardLines);
-        usort($unguardCalls, fn (Node\Expr\StaticCall $a, Node\Expr\StaticCall $b) => $a->getLine() <=> $b->getLine());
+        // Track which reguard calls have been consumed
+        $consumedReguards = [];
 
-        foreach ($unguardCalls as $call) {
-            $lineNumber = $call->getLine();
+        // Check each unguard call for a matching reguard in the same scope
+        foreach ($unguardCalls as $unguardCall) {
+            $unguardScope = $this->findEnclosingScope($unguardCall, $methodMap);
+            $hasMatchingReguard = false;
 
-            if ($this->consumeReguardAfterLine($reguardLines, $lineNumber)) {
+            // Find the first available (unconsumed) reguard in the same scope after this unguard
+            foreach ($reguardCalls as $index => $reguardCall) {
+                // Skip already consumed reguards
+                if (in_array($index, $consumedReguards, true)) {
+                    continue;
+                }
+
+                $reguardScope = $this->findEnclosingScope($reguardCall, $methodMap);
+
+                // Only pair if they're in the same scope AND reguard comes after unguard
+                if ($unguardScope === $reguardScope && $reguardCall->getLine() > $unguardCall->getLine()) {
+                    $hasMatchingReguard = true;
+                    $consumedReguards[] = $index; // Mark this reguard as consumed
+                    break;
+                }
+            }
+
+            if ($hasMatchingReguard) {
                 continue;
             }
 
-            $classLabel = $call->class instanceof Node\Name ? $call->class->toString() : 'Model';
+            $classLabel = $unguardCall->class instanceof Node\Name ? $unguardCall->class->toString() : 'Model';
 
             $issues[] = $this->createIssueWithSnippet(
                 message: sprintf(
@@ -201,53 +279,183 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
                     $classLabel
                 ),
                 filePath: $file,
-                lineNumber: $lineNumber,
+                lineNumber: $unguardCall->getLine(),
                 severity: $this->getSeverityForContext($relativePath),
-                recommendation: 'Call Model::reguard() immediately after importing or use $fillable/forceFill() instead of globally unguarding models.'
+                recommendation: $this->getRecommendationForContext($relativePath)
             );
         }
     }
 
-    private function isEloquentClass(?string $className): bool
+    /**
+     * Extract use statements from AST to build alias mapping.
+     *
+     * @return array<string, string> Map of alias => fully qualified name
+     */
+    private function extractUseStatements(array $ast): array
+    {
+        $useStatements = [];
+
+        /** @var array<Node\Stmt\Use_> $uses */
+        $uses = $this->parser->findNodes($ast, Node\Stmt\Use_::class);
+
+        foreach ($uses as $use) {
+            foreach ($use->uses as $useUse) {
+                $fullyQualifiedName = $useUse->name->toString();
+                $alias = $useUse->alias !== null
+                    ? $useUse->alias->toString()
+                    : $useUse->name->getLast();
+
+                $useStatements[$alias] = $fullyQualifiedName;
+            }
+        }
+
+        /** @var array<Node\Stmt\GroupUse> $groupUses */
+        $groupUses = $this->parser->findNodes($ast, Node\Stmt\GroupUse::class);
+
+        foreach ($groupUses as $groupUse) {
+            $prefix = $groupUse->prefix->toString();
+
+            foreach ($groupUse->uses as $useUse) {
+                $fullyQualifiedName = $prefix.'\\'.$useUse->name->toString();
+                $alias = $useUse->alias !== null
+                    ? $useUse->alias->toString()
+                    : $useUse->name->getLast();
+
+                $useStatements[$alias] = $fullyQualifiedName;
+            }
+        }
+
+        return $useStatements;
+    }
+
+    /**
+     * Resolve a class name through use statements.
+     *
+     * @param  array<string, string>  $useStatements
+     */
+    private function resolveClassName(?string $className, array $useStatements): ?string
     {
         if ($className === null) {
-            return true;
+            return null;
+        }
+
+        // If it's already fully qualified (starts with \), return as-is
+        if (str_starts_with($className, '\\')) {
+            return ltrim($className, '\\');
+        }
+
+        // Check if it's an alias in use statements
+        if (isset($useStatements[$className])) {
+            return $useStatements[$className];
+        }
+
+        // Return as-is (might be short name like 'Model')
+        return $className;
+    }
+
+    /**
+     * Check if a class name represents an Eloquent Model class.
+     *
+     * Only returns true for known Eloquent base classes to avoid false positives
+     * on unrelated classes that happen to have an unguard() method.
+     *
+     * Note: 'Eloquent' class does not exist in modern Laravel (5.x+).
+     * Only Model class (short name or fully qualified) is checked.
+     */
+    private function isEloquentClass(?string $className): bool
+    {
+        // If we can't determine the class name, don't assume it's Eloquent
+        // This prevents false positives on unrelated classes
+        if ($className === null) {
+            return false;
         }
 
         $normalized = ltrim(strtolower($className), '\\');
 
         return in_array($normalized, [
             'model',
-            'eloquent',
             'illuminate\\database\\eloquent\\model',
-            'illuminate\\database\\eloquent\\eloquent',
         ], true);
     }
 
     /**
-     * Check if there's a reguard() call after this unguard() and consume it.
-     * Also removes any reguard() calls that appear before this unguard() (they belong to previous unguards).
-     *
-     * @param  array<int>  $reguardLines
+     * Check if a static call has a closure/callable argument.
+     * Used to detect the safe Model::unguarded(function() {...}) pattern.
      */
-    private function consumeReguardAfterLine(array &$reguardLines, int $lineNumber): bool
+    private function hasClosureArgument(Node\Expr\StaticCall $call): bool
     {
-        // Remove all reguards at or before this unguard (they belong to previous unguards)
-        foreach ($reguardLines as $index => $reguardLine) {
-            if ($reguardLine <= $lineNumber) {
-                unset($reguardLines[$index]);
-            }
+        if (empty($call->args)) {
+            return false;
         }
-        $reguardLines = array_values($reguardLines);
 
-        // Now check if there's a reguard after this unguard
-        if (! empty($reguardLines)) {
-            // Consume the first reguard after this unguard
-            array_shift($reguardLines);
-
-            return true;
+        // Check if any argument is a Closure or Arrow function
+        foreach ($call->args as $arg) {
+            if ($arg->value instanceof Node\Expr\Closure || $arg->value instanceof Node\Expr\ArrowFunction) {
+                return true;
+            }
         }
 
         return false;
+    }
+
+    /**
+     * Build a map of all method/function scopes in the AST.
+     *
+     * @return array<Node\Stmt\ClassMethod|Node\Stmt\Function_|Node\Expr\Closure>
+     */
+    private function buildMethodScopeMap(array $ast): array
+    {
+        /** @var array<Node\Stmt\ClassMethod|Node\Stmt\Function_|Node\Expr\Closure> $scopes */
+        $scopes = [];
+
+        // Find all class methods
+        /** @var array<Node\Stmt\ClassMethod> $methods */
+        $methods = $this->parser->findNodes($ast, Node\Stmt\ClassMethod::class);
+        foreach ($methods as $method) {
+            $scopes[] = $method;
+        }
+
+        // Find all standalone functions
+        /** @var array<Node\Stmt\Function_> $functions */
+        $functions = $this->parser->findNodes($ast, Node\Stmt\Function_::class);
+        foreach ($functions as $function) {
+            $scopes[] = $function;
+        }
+
+        // Find all closures/anonymous functions
+        /** @var array<Node\Expr\Closure> $closures */
+        $closures = $this->parser->findNodes($ast, Node\Expr\Closure::class);
+        foreach ($closures as $closure) {
+            $scopes[] = $closure;
+        }
+
+        return $scopes;
+    }
+
+    /**
+     * Find the enclosing method/function scope for a given node.
+     *
+     * Returns a unique identifier for the scope (line range).
+     * If not in any method/function, returns null (global scope).
+     *
+     * @param  array<Node\Stmt\ClassMethod|Node\Stmt\Function_|Node\Expr\Closure>  $scopeMap
+     */
+    private function findEnclosingScope(Node $node, array $scopeMap): ?string
+    {
+        $nodeLine = $node->getLine();
+
+        foreach ($scopeMap as $scope) {
+            $startLine = $scope->getStartLine();
+            $endLine = $scope->getEndLine();
+
+            // Check if node is within this scope's line range
+            if ($nodeLine >= $startLine && $nodeLine <= $endLine) {
+                // Return a unique identifier for this scope (start-end line range)
+                return "{$startLine}:{$endLine}";
+            }
+        }
+
+        // Not in any method/function - global scope
+        return null;
     }
 }

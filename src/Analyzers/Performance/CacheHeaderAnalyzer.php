@@ -185,7 +185,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
         $issues = [$this->createIssueWithSnippet(
             message: 'Compiled assets are missing Cache-Control headers or use non-cacheable directives',
             filePath: $this->buildPath($issueLocation),
-            lineNumber: 1,
+            lineNumber: null,
             severity: Severity::High,
             recommendation: sprintf(
                 'Your application does not set appropriate cache headers on compiled assets. '.

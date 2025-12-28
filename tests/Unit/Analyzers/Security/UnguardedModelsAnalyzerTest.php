@@ -1351,4 +1351,177 @@ PHP;
         // Should pass - multiple Model::unguarded(closure) calls are all safe
         $this->assertPassed($result);
     }
+
+    public function test_detects_unguard_with_aliased_model_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\Model as BaseModel;
+
+class ImportService
+{
+    public function import(array $data)
+    {
+        // Using aliased Model class - should still be detected
+        BaseModel::unguard();
+
+        foreach ($data as $item) {
+            User::create($item);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/ImportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be flagged - alias resolution should detect this
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('unguard()', $result);
+    }
+
+    public function test_detects_unguard_with_fully_qualified_model_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ImportService
+{
+    public function import(array $data)
+    {
+        // Using fully qualified class name - should be detected
+        \Illuminate\Database\Eloquent\Model::unguard();
+
+        foreach ($data as $item) {
+            User::create($item);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/ImportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be flagged
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('unguard()', $result);
+    }
+
+    public function test_scoped_unguarding_with_aliased_model_is_safe(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\Model as EloquentModel;
+use App\Models\User;
+
+class ImportService
+{
+    public function import(array $data)
+    {
+        // Safe scoped pattern with aliased Model - should not be flagged
+        EloquentModel::unguarded(function () use ($data) {
+            foreach ($data as $item) {
+                User::create($item);
+            }
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/ImportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - safe scoped pattern even with alias
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_group_use_statements(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\{Model, Builder};
+
+class ImportService
+{
+    public function import(array $data)
+    {
+        // Group use - Model should still be detected
+        Model::unguard();
+
+        foreach ($data as $item) {
+            User::create($item);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/ImportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be flagged - group use resolution should work
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('unguard()', $result);
+    }
+
+    public function test_ignores_non_eloquent_class_with_same_alias(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Custom\MyModel as BaseModel;
+
+class ImportService
+{
+    public function import(array $data)
+    {
+        // Not Eloquent Model - should NOT be flagged
+        BaseModel::unguard();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/ImportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - this is not Illuminate\Database\Eloquent\Model
+        $this->assertPassed($result);
+    }
 }

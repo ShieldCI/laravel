@@ -23,6 +23,9 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 {
+    /** Mask to isolate permission bits (strip file type and special bits) */
+    private const PERMISSION_MASK = 0777;
+
     private const WORLD_WRITABLE = 0x0002;
 
     private const WORLD_READABLE = 0x0004;
@@ -312,12 +315,15 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
             return null;
         }
 
-        $octal = substr(sprintf('%o', $perms), -3);
+        // Isolate permission bits only (strip file type and special bits)
+        $permissionBits = $perms & self::PERMISSION_MASK;
+
+        $octal = sprintf('%03o', $permissionBits);
 
         return [
-            'raw' => $perms,
+            'raw' => $permissionBits,
             'octal' => $octal,
-            'numeric' => (int) octdec($octal),
+            'numeric' => $permissionBits,
         ];
     }
 
@@ -326,7 +332,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
      */
     private function isWorldWritable(int $perms): bool
     {
-        return (bool) ($perms & self::WORLD_WRITABLE);
+        return (bool) (($perms & self::PERMISSION_MASK) & self::WORLD_WRITABLE);
     }
 
     /**
@@ -334,7 +340,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
      */
     private function isWorldReadable(int $perms): bool
     {
-        return (bool) ($perms & self::WORLD_READABLE);
+        return (bool) (($perms & self::PERMISSION_MASK) & self::WORLD_READABLE);
     }
 
     /**
@@ -342,7 +348,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
      */
     private function isGroupWritable(int $perms): bool
     {
-        return (bool) ($perms & self::GROUP_WRITABLE);
+        return (bool) (($perms & self::PERMISSION_MASK) & self::GROUP_WRITABLE);
     }
 
     /**
@@ -350,7 +356,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
      */
     private function isGroupReadable(int $perms): bool
     {
-        return (bool) ($perms & self::GROUP_READABLE);
+        return (bool) (($perms & self::PERMISSION_MASK) & self::GROUP_READABLE);
     }
 
     /**
@@ -358,6 +364,8 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
      */
     private function hasExecutePermissions(int $perms): bool
     {
-        return (bool) ($perms & (self::USER_EXECUTE | self::GROUP_EXECUTE | self::WORLD_EXECUTE));
+        $permBits = $perms & self::PERMISSION_MASK;
+
+        return (bool) ($permBits & (self::USER_EXECUTE | self::GROUP_EXECUTE | self::WORLD_EXECUTE));
     }
 }

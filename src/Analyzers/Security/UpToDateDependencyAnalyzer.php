@@ -102,15 +102,19 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
             $prodDepsUpToDate = $this->isUpToDate($prodDepsOutput);
             $allDepsUpToDate = $this->isUpToDate($allDepsOutput);
 
-            // Determine what needs updates by comparing outputs
+            // Derive update status from boolean logic
             $hasProdUpdates = ! $prodDepsUpToDate;
-            $hasDevUpdates = ! $allDepsUpToDate && $prodDepsUpToDate;
+            $hasAnyUpdates = ! $allDepsUpToDate;
 
-            // Check if BOTH prod and dev have updates by comparing the outputs
-            // If prod has updates AND the outputs differ, then dev also has updates
-            $hasBothUpdates = $hasProdUpdates && ($allDepsOutput !== $prodDepsOutput);
+            // Derive scenarios from the two base booleans
+            $hasDevUpdatesOnly = $hasAnyUpdates && ! $hasProdUpdates;
 
-            if ($hasProdUpdates && $hasBothUpdates) {
+            // When both have updates, distinguish "prod only" from "both":
+            // If outputs are semantically identical → only prod needs updates
+            // If outputs differ → both prod AND dev need updates
+            $hasBothUpdates = $hasAnyUpdates && $hasProdUpdates && ! $this->outputsAreSimilar($prodDepsOutput, $allDepsOutput);
+
+            if ($hasBothUpdates) {
                 // Scenario 1: Both production AND dev need updates
                 $issues[] = $this->createIssue(
                     message: 'Production and development dependencies are not up-to-date',
@@ -136,7 +140,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                         'composer_version_check' => 'install --dry-run --no-dev',
                     ]
                 );
-            } elseif ($hasDevUpdates) {
+            } elseif ($hasDevUpdatesOnly) {
                 // Scenario 3: Only dev needs updates (production is up-to-date)
                 $issues[] = $this->createIssue(
                     message: 'Development dependencies are not up-to-date',
@@ -180,6 +184,44 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
         }
 
         return false;
+    }
+
+    /**
+     * Check if two Composer outputs are semantically similar.
+     * Uses normalized comparison to avoid fragility from:
+     * - Whitespace differences
+     * - Plugin messages
+     * - Timestamp variations
+     * - Minor formatting changes
+     */
+    private function outputsAreSimilar(string $output1, string $output2): bool
+    {
+        // Normalize both outputs
+        $normalized1 = $this->normalizeComposerOutput($output1);
+        $normalized2 = $this->normalizeComposerOutput($output2);
+
+        return $normalized1 === $normalized2;
+    }
+
+    /**
+     * Normalize Composer output for comparison by:
+     * - Trimming whitespace
+     * - Removing empty lines
+     * - Normalizing line endings
+     * - Sorting lines (to handle order variations)
+     */
+    private function normalizeComposerOutput(string $output): string
+    {
+        // Split into lines, trim each, remove empty lines
+        $lines = array_filter(
+            array_map('trim', explode("\n", $output)),
+            fn ($line) => $line !== ''
+        );
+
+        // Sort lines to handle order variations
+        sort($lines);
+
+        return implode("\n", $lines);
     }
 
     /**

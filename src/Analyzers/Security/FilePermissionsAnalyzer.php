@@ -29,11 +29,11 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 
     private const WORLD_EXECUTE = 0x0001;
 
-    private const GROUP_WRITABLE = 0x0020;
+    private const GROUP_WRITABLE = 0x0010;
 
-    private const GROUP_READABLE = 0x0040;
+    private const GROUP_READABLE = 0x0020;
 
-    private const GROUP_EXECUTE = 0x0010;
+    private const GROUP_EXECUTE = 0x0008;
 
     private const USER_EXECUTE = 0x0040;
 

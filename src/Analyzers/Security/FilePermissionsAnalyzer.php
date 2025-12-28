@@ -24,7 +24,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
 class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 {
     /** Mask to isolate permission bits (strip file type and special bits) */
-    private const PERMISSION_MASK = 0777;
+    private const PERMISSION_MASK = 0x01FF; // 0777
 
     private const WORLD_WRITABLE = 0x0002;
 
@@ -214,7 +214,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
         // Check 3: Exceeds maximum permissions (using bit mask comparison, not numeric magnitude)
         // Check if actual permissions have bits set that max permissions don't allow
         // Example: actual=0777, max=0755 → (0777 & ~0755) = 0022 (group/other write bits) → exceeds
-        $exceededBits = $permissions['numeric'] & ~$max;
+        $exceededBits = $permissions['numeric'] & (~$max & self::PERMISSION_MASK);
         if ($exceededBits !== 0) {
             $severity = $isCritical ? Severity::Critical : Severity::High;
 
@@ -332,7 +332,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
      */
     private function isWorldWritable(int $perms): bool
     {
-        return (bool) (($perms & self::PERMISSION_MASK) & self::WORLD_WRITABLE);
+        return (bool) ($perms & self::WORLD_WRITABLE);
     }
 
     /**
@@ -340,7 +340,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
      */
     private function isWorldReadable(int $perms): bool
     {
-        return (bool) (($perms & self::PERMISSION_MASK) & self::WORLD_READABLE);
+        return (bool) ($perms & self::WORLD_READABLE);
     }
 
     /**
@@ -348,7 +348,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
      */
     private function isGroupWritable(int $perms): bool
     {
-        return (bool) (($perms & self::PERMISSION_MASK) & self::GROUP_WRITABLE);
+        return (bool) ($perms & self::GROUP_WRITABLE);
     }
 
     /**
@@ -356,7 +356,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
      */
     private function isGroupReadable(int $perms): bool
     {
-        return (bool) (($perms & self::PERMISSION_MASK) & self::GROUP_READABLE);
+        return (bool) ($perms & self::GROUP_READABLE);
     }
 
     /**

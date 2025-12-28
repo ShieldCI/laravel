@@ -134,11 +134,11 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
 
         // Service providers: Acknowledge the pattern but warn about production use
         if ($this->containsAny($normalized, ['app/providers', 'providers/'])) {
-            return 'While Model::unguard() in service providers is a documented pattern, it globally disables mass assignment protection for your entire application. Consider: (1) Use $fillable/$guarded properties on individual models instead, (2) If absolutely needed, wrap in environment check: if (!app()->environment("production")) { Model::unguard(); }, (3) Call Model::reguard() after operations if used for seeding/importing.';
+            return 'While Model::unguard() in service providers is a documented pattern, it globally disables mass assignment protection for your entire application. Consider: (1) Use $fillable/$guarded properties on individual models instead, (2) Use the safe scoped pattern: Model::unguarded(fn() => User::create($data)), (3) If absolutely needed, wrap in environment check: if (!app()->environment("production")) { Model::unguard(); }';
         }
 
         // Default recommendation for all other contexts
-        return 'Call Model::reguard() immediately after importing in the same method/function scope, or use $fillable/forceFill() instead of globally unguarding models.';
+        return 'Use the safe scoped pattern: Model::unguarded(function() { /* operations */ }) which automatically re-guards. Alternatively: (1) Call Model::reguard() immediately after importing in the same method/function scope, (2) Use $fillable/$guarded properties on models, or (3) Use forceFill() for trusted data.';
     }
 
     /**
@@ -213,6 +213,11 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
 
             if (! $this->isEloquentClass($className)) {
                 continue;
+            }
+
+            // Skip Model::unguarded(closure) - this is the SAFE scoped pattern
+            if ($method === 'unguarded' && $this->hasClosureArgument($call)) {
+                continue; // Safe pattern - automatically handles reguard
             }
 
             if ($method === 'unguard') {
@@ -295,6 +300,26 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             'model',
             'illuminate\\database\\eloquent\\model',
         ], true);
+    }
+
+    /**
+     * Check if a static call has a closure/callable argument.
+     * Used to detect the safe Model::unguarded(function() {...}) pattern.
+     */
+    private function hasClosureArgument(Node\Expr\StaticCall $call): bool
+    {
+        if (empty($call->args)) {
+            return false;
+        }
+
+        // Check if any argument is a Closure or Arrow function
+        foreach ($call->args as $arg) {
+            if ($arg->value instanceof Node\Expr\Closure || $arg->value instanceof Node\Expr\ArrowFunction) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -1164,4 +1164,191 @@ PHP;
         $this->assertStringContainsString('Call Model::reguard()', $issues[0]->recommendation);
         $this->assertStringNotContainsString('service providers', $issues[0]->recommendation);
     }
+
+    public function test_scoped_unguarding_with_closure_is_safe(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\Model;
+use App\Models\User;
+
+class ImportService
+{
+    public function import(array $data)
+    {
+        // This is the SAFE pattern - Model::unguarded() with closure
+        Model::unguarded(function () use ($data) {
+            foreach ($data as $item) {
+                User::create($item);
+            }
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/ImportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - Model::unguarded(closure) is the safe pattern
+        $this->assertPassed($result);
+    }
+
+    public function test_scoped_unguarding_with_arrow_function_is_safe(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\Model;
+use App\Models\User;
+
+class ImportService
+{
+    public function import(array $data)
+    {
+        // Arrow function variant of the safe pattern
+        $result = Model::unguarded(fn() => User::create($data));
+
+        return $result;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/ImportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - Model::unguarded(arrow function) is also safe
+        $this->assertPassed($result);
+    }
+
+    public function test_unsafe_unguard_still_detected_when_scoped_pattern_exists(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\Model;
+use App\Models\User;
+
+class ImportService
+{
+    public function safeImport(array $data)
+    {
+        // Safe pattern
+        Model::unguarded(function () use ($data) {
+            User::create($data);
+        });
+    }
+
+    public function unsafeImport(array $data)
+    {
+        // Unsafe pattern - should be flagged
+        Model::unguard();
+        User::create($data);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/ImportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should only flag the unsafe Model::unguard(), not the safe Model::unguarded(closure)
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(21, $issues[0]->location->line); // Line with Model::unguard()
+    }
+
+    public function test_unguarded_without_closure_argument_is_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\Model;
+
+class ImportService
+{
+    public function import()
+    {
+        // Misuse: unguarded() without closure argument
+        Model::unguarded();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/ImportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be flagged - unguarded() without closure is not the safe pattern
+        $this->assertPassed($result); // No closure, so it's not detected as unguard() call
+    }
+
+    public function test_multiple_scoped_unguarding_blocks_are_all_safe(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\Model;
+use App\Models\User;
+use App\Models\Product;
+
+class ImportService
+{
+    public function importAll(array $users, array $products)
+    {
+        Model::unguarded(function () use ($users) {
+            foreach ($users as $user) {
+                User::create($user);
+            }
+        });
+
+        Model::unguarded(function () use ($products) {
+            foreach ($products as $product) {
+                Product::create($product);
+            }
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/ImportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - multiple Model::unguarded(closure) calls are all safe
+        $this->assertPassed($result);
+    }
 }

@@ -1060,4 +1060,108 @@ PHP;
         $this->assertCount(1, $issues);
         $this->assertSame(Severity::Low, $issues[0]->severity);
     }
+
+    public function test_service_provider_unguard_has_medium_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\ServiceProvider;
+use Illuminate\Database\Eloquent\Model;
+
+class AppServiceProvider extends ServiceProvider
+{
+    public function boot()
+    {
+        Model::unguard();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Providers/AppServiceProvider.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be Medium severity for service providers (common pattern but discouraged)
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::Medium, $issues[0]->severity);
+    }
+
+    public function test_service_provider_unguard_has_contextual_recommendation(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\ServiceProvider;
+use Illuminate\Database\Eloquent\Model;
+
+class AppServiceProvider extends ServiceProvider
+{
+    public function boot()
+    {
+        Model::unguard();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Providers/AppServiceProvider.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        // Should have service provider specific recommendation
+        $this->assertStringContainsString('service providers is a documented pattern', $issues[0]->recommendation);
+        $this->assertStringContainsString('environment check', $issues[0]->recommendation);
+        $this->assertStringContainsString('app()->environment("production")', $issues[0]->recommendation);
+    }
+
+    public function test_non_provider_unguard_has_standard_recommendation(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\Model;
+
+class ImportService
+{
+    public function import()
+    {
+        Model::unguard();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/ImportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        // Should have standard recommendation (not service provider specific)
+        $this->assertStringContainsString('Call Model::reguard()', $issues[0]->recommendation);
+        $this->assertStringNotContainsString('service providers', $issues[0]->recommendation);
+    }
 }

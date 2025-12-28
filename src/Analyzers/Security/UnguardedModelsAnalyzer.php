@@ -113,11 +113,32 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             return Severity::Medium;
         }
 
+        // Service providers: Common but discouraged pattern for global unguard
+        if ($this->containsAny($normalized, ['app/providers', 'providers/'])) {
+            return Severity::Medium;
+        }
+
         if ($this->containsAny($normalized, ['tests/', '/tests', 'test.php'])) {
             return Severity::Low;
         }
 
         return Severity::High;
+    }
+
+    /**
+     * Get context-aware recommendation based on file location.
+     */
+    private function getRecommendationForContext(string $relativePath): string
+    {
+        $normalized = $this->normalizePath($relativePath);
+
+        // Service providers: Acknowledge the pattern but warn about production use
+        if ($this->containsAny($normalized, ['app/providers', 'providers/'])) {
+            return 'While Model::unguard() in service providers is a documented pattern, it globally disables mass assignment protection for your entire application. Consider: (1) Use $fillable/$guarded properties on individual models instead, (2) If absolutely needed, wrap in environment check: if (!app()->environment("production")) { Model::unguard(); }, (3) Call Model::reguard() after operations if used for seeding/importing.';
+        }
+
+        // Default recommendation for all other contexts
+        return 'Call Model::reguard() immediately after importing in the same method/function scope, or use $fillable/forceFill() instead of globally unguarding models.';
     }
 
     /**
@@ -246,7 +267,7 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
                 filePath: $file,
                 lineNumber: $unguardCall->getLine(),
                 severity: $this->getSeverityForContext($relativePath),
-                recommendation: 'Call Model::reguard() immediately after importing in the same method/function scope, or use $fillable/forceFill() instead of globally unguarding models.'
+                recommendation: $this->getRecommendationForContext($relativePath)
             );
         }
     }

@@ -83,6 +83,8 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
         $vulnerabilities = $this->advisoryAnalyzer->analyze($dependencies, $advisories);
 
+        // Aggregate advisories per package to avoid flooding output with multiple issues
+        // for the same package (e.g., a package with 5 CVEs creates 5 issues → now 1 issue)
         foreach ($vulnerabilities as $package => $details) {
             if (! is_string($package) || $package === '') {
                 continue;
@@ -96,39 +98,66 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                 ? $details['advisories']
                 : [];
 
-            foreach ($packageAdvisories as $advisory) {
-                if (! is_array($advisory) || empty($advisory)) {
-                    continue;
-                }
+            // Filter out invalid advisories
+            $validAdvisories = array_filter($packageAdvisories, function ($advisory) {
+                return is_array($advisory)
+                    && ! empty($advisory)
+                    && isset($advisory['title'])
+                    && is_string($advisory['title']);
+            });
 
-                // Validate advisory has at least a title
-                if (! isset($advisory['title']) || ! is_string($advisory['title'])) {
-                    continue;
-                }
-
-                $lineNumber = Composer::findPackageLineNumber($composerLock, $package);
-
-                $issues[] = $this->createIssue(
-                    message: sprintf(
-                        'Package "%s" (%s) has a known vulnerability: %s',
-                        $package,
-                        $version,
-                        $advisory['title']
-                    ),
-                    location: new Location($this->getRelativePath($composerLock), $lineNumber
-                    ),
-                    severity: Severity::Critical,
-                    recommendation: $this->formatRecommendation($package, $advisory),
-                    code: FileParser::getCodeSnippet($composerLock, $lineNumber),
-                    metadata: [
-                        'package' => $package,
-                        'version' => $version,
-                        'cve' => isset($advisory['cve']) && is_string($advisory['cve']) ? $advisory['cve'] : null,
-                        'link' => isset($advisory['link']) && is_string($advisory['link']) ? $advisory['link'] : null,
-                        'affected_versions' => isset($advisory['affected_versions']) ? $advisory['affected_versions'] : null,
-                    ]
-                );
+            if (empty($validAdvisories)) {
+                continue;
             }
+
+            $lineNumber = Composer::findPackageLineNumber($composerLock, $package);
+            $advisoryCount = count($validAdvisories);
+
+            // Build aggregated message
+            $message = $advisoryCount === 1
+                ? sprintf('Package "%s" (%s) has a known vulnerability', $package, $version)
+                : sprintf('Package "%s" (%s) has %d known vulnerabilities', $package, $version, $advisoryCount);
+
+            // Build comprehensive recommendation mentioning all CVEs
+            $recommendation = $this->formatAggregatedRecommendation($package, $validAdvisories, $version);
+
+            // Extract all CVEs and links for metadata
+            $cves = [];
+            $links = [];
+            $advisoriesMetadata = [];
+
+            foreach ($validAdvisories as $advisory) {
+                if (isset($advisory['cve']) && is_string($advisory['cve']) && $advisory['cve'] !== '') {
+                    $cves[] = $advisory['cve'];
+                }
+                if (isset($advisory['link']) && is_string($advisory['link']) && $advisory['link'] !== '') {
+                    $links[] = $advisory['link'];
+                }
+
+                // Store full advisory details
+                $advisoriesMetadata[] = [
+                    'title' => $advisory['title'] ?? '',
+                    'cve' => $advisory['cve'] ?? null,
+                    'link' => $advisory['link'] ?? null,
+                    'affected_versions' => $advisory['affected_versions'] ?? null,
+                ];
+            }
+
+            $issues[] = $this->createIssue(
+                message: $message,
+                location: new Location($this->getRelativePath($composerLock), $lineNumber),
+                severity: Severity::Critical,
+                recommendation: $recommendation,
+                code: FileParser::getCodeSnippet($composerLock, $lineNumber),
+                metadata: [
+                    'package' => $package,
+                    'version' => $version,
+                    'vulnerability_count' => $advisoryCount,
+                    'cves' => array_unique($cves),
+                    'links' => array_unique($links),
+                    'advisories' => $advisoriesMetadata,
+                ]
+            );
         }
 
         $this->checkAbandonedPackages($issues, $composerLock);
@@ -190,23 +219,48 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * @param  array<string, mixed>  $advisory
+     * Format aggregated recommendation for multiple advisories affecting the same package.
+     *
+     * @param  array<int, array<string, mixed>>  $advisories
      */
-    private function formatRecommendation(string $package, array $advisory): string
+    private function formatAggregatedRecommendation(string $package, array $advisories, string $version): string
     {
-        $recommendation = sprintf('Update "%s" to a patched version.', $package);
+        $recommendation = sprintf('Update "%s" (currently %s) to a patched version.', $package, $version);
 
-        if (isset($advisory['link']) && is_string($advisory['link'])) {
-            $recommendation .= sprintf(' See %s for details.', $advisory['link']);
+        // Extract and list all CVEs
+        $cves = [];
+        foreach ($advisories as $advisory) {
+            if (isset($advisory['cve']) && is_string($advisory['cve']) && $advisory['cve'] !== '') {
+                $cves[] = $advisory['cve'];
+            }
         }
 
-        if (isset($advisory['affected_versions'])) {
-            $affected = is_array($advisory['affected_versions'])
-                ? implode(', ', array_map('strval', array_filter($advisory['affected_versions'], 'is_scalar')))
-                : (is_string($advisory['affected_versions']) ? $advisory['affected_versions'] : null);
+        if (! empty($cves)) {
+            $cveList = implode(', ', array_unique($cves));
+            $recommendation .= sprintf(' Known CVEs: %s.', $cveList);
+        }
 
-            if ($affected !== null && $affected !== '') {
-                $recommendation .= sprintf(' Affected versions: %s.', $affected);
+        // List vulnerability titles for context
+        $titles = [];
+        foreach ($advisories as $advisory) {
+            if (isset($advisory['title']) && is_string($advisory['title'])) {
+                $titles[] = $advisory['title'];
+            }
+        }
+
+        if (! empty($titles)) {
+            $recommendation .= ' Vulnerabilities: '.implode('; ', array_slice($titles, 0, 3));
+            if (count($titles) > 3) {
+                $recommendation .= sprintf(' (and %d more)', count($titles) - 3);
+            }
+            $recommendation .= '.';
+        }
+
+        // Add primary advisory link if available
+        foreach ($advisories as $advisory) {
+            if (isset($advisory['link']) && is_string($advisory['link'])) {
+                $recommendation .= sprintf(' See %s for details.', $advisory['link']);
+                break; // Only show first link to keep recommendation concise
             }
         }
 

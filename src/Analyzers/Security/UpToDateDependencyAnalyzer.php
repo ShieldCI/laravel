@@ -58,8 +58,9 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
 
     public function shouldRun(): bool
     {
-        return $this->composer->getLockFile() !== null
-            || $this->composer->getJsonFile() !== null;
+        // Run if composer.json exists (even if composer.lock is missing)
+        // We want to warn about missing composer.lock
+        return $this->composer->getJsonFile() !== null;
     }
 
     public function getSkipReason(): string

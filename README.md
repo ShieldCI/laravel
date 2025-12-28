@@ -73,6 +73,11 @@ Save report to file:
 php artisan shield:analyze --output=report.json
 ```
 
+Don't send results to ShieldCI API:
+```bash
+php artisan shield:analyze --no-send
+```
+
 ### Advanced Features
 
 #### Baseline Support (Gradual Adoption)

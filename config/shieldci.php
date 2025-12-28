@@ -230,6 +230,8 @@ return [
         'snippet_syntax_highlighting' => env('SHIELDCI_SNIPPET_SYNTAX_HIGHLIGHTING', true), // Enable PHP syntax highlighting
 
         'max_issues_per_check' => env('SHIELDCI_MAX_ISSUES', 5), // Limit displayed issues per check
+
+        'send_to_api' => env('SHIELDCI_SEND_TO_API', true),
     ],
 
     /*

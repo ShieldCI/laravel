@@ -182,8 +182,11 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
             return; // Don't check further - world-writable is the main issue
         }
 
-        // Check 2: Exceeds maximum permissions
-        if ($permissions['numeric'] > $max) {
+        // Check 2: Exceeds maximum permissions (using bit mask comparison, not numeric magnitude)
+        // Check if actual permissions have bits set that max permissions don't allow
+        // Example: actual=0777, max=0755 → (0777 & ~0755) = 0022 (group/other write bits) → exceeds
+        $exceededBits = $permissions['numeric'] & ~$max;
+        if ($exceededBits !== 0) {
             $severity = $isCritical ? Severity::Critical : Severity::High;
 
             $issues[] = $this->createIssue(
@@ -205,6 +208,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
                     'type' => $type,
                     'max_allowed' => $max,
                     'recommended' => $recommended,
+                    'exceeded_bits' => sprintf('%03o', $exceededBits),
                     'world_writable' => false,
                     'world_readable' => $this->isWorldReadable($permissions['raw']),
                     'group_writable' => $this->isGroupWritable($permissions['raw']),

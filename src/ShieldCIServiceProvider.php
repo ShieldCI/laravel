@@ -13,7 +13,9 @@ use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\Commands\AnalyzeCommand;
 use ShieldCI\Commands\BaselineCommand;
+use ShieldCI\Contracts\ClientInterface as ShieldCIClientInterface;
 use ShieldCI\Contracts\ReporterInterface;
+use ShieldCI\Http\Client\ShieldCIClient;
 use ShieldCI\Support\Reporter;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryAnalyzer;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryAnalyzerInterface;
@@ -37,6 +39,7 @@ class ShieldCIServiceProvider extends ServiceProvider
         // Register bindings
         $this->app->singleton(ParserInterface::class, AstParser::class);
         $this->app->singleton(ReporterInterface::class, Reporter::class);
+        $this->app->singleton(ShieldCIClientInterface::class, ShieldCIClient::class);
 
         // Register Composer with correct working path
         $this->app->singleton(\ShieldCI\Support\Composer::class, function ($app) {

@@ -31,6 +31,11 @@ interface ReporterInterface
     public function toJson(AnalysisReport $report): string;
 
     /**
+     * Format the report for sending to ShieldCI API.
+     */
+    public function toApi(AnalysisReport $report): array;
+
+    /**
      * Stream a single result to console as it completes.
      *
      * @param  int  $current  Current analyzer number

@@ -19,6 +19,7 @@ class Reporter implements ReporterInterface
     public function generate(Collection $results): AnalysisReport
     {
         return new AnalysisReport(
+            projectId: config('shieldci.project_id', 'unknown'),
             laravelVersion: app()->version(),
             packageVersion: $this->getPackageVersion(),
             results: $results,

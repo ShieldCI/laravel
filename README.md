@@ -35,10 +35,12 @@ Publish the configuration file:
 php artisan vendor:publish --tag=shieldci-config
 ```
 
-Enable ShieldCI in your `.env`:
+Add your ShieldCI credentials to `.env`:
 
 ```env
 SHIELDCI_ENABLED=true
+SHIELDCI_TOKEN=your-api-token
+SHIELDCI_PROJECT_ID=your-project-id
 ```
 
 ## Usage

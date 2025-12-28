@@ -121,6 +121,9 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Check if haystack contains any of the needles as complete path segments.
+     * Prevents false positives like "services_backup" matching "services".
+     *
      * @param  array<string>  $needles
      */
     private function containsAny(string $haystack, array $needles): bool
@@ -130,12 +133,30 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            if (str_contains($haystack, rtrim($needle, '/'))) {
+            if ($this->containsPathSegment($haystack, $needle)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * Check if a path segment exists in the haystack.
+     * Ensures segment boundaries (directory separators or start/end of string).
+     */
+    private function containsPathSegment(string $haystack, string $needle): bool
+    {
+        $needle = rtrim($needle, '/');
+
+        // Check if needle appears as a complete path segment:
+        // - At the start of path: "services/foo" or "app/services/foo"
+        // - In the middle: "foo/services/bar"
+        // - At the end: "foo/services"
+        return str_starts_with($haystack, $needle.'/')
+            || str_contains($haystack, '/'.$needle.'/')
+            || str_ends_with($haystack, '/'.$needle)
+            || $haystack === $needle; // Exact match (rare but possible)
     }
 
     private function shouldSkipFile(string $relativePath): bool

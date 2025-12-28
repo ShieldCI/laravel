@@ -924,4 +924,140 @@ PHP;
         // So this test documents current behavior - both are in same method
         $this->assertPassed($result);
     }
+
+    public function test_path_matching_does_not_match_substring_in_directory_name(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Importer
+{
+    public function import()
+    {
+        Model::unguard();
+        // Import data...
+    }
+}
+PHP;
+
+        // Test false positive prevention: "services_backup" should NOT match "services"
+        $tempDir = $this->createTempDirectory(['app/services_backup/Importer.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be High severity (default), NOT Critical (which is for services/)
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::High, $issues[0]->severity);
+    }
+
+    public function test_path_matching_correctly_identifies_services_directory(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Importer
+{
+    public function import()
+    {
+        Model::unguard();
+        // Import data...
+    }
+}
+PHP;
+
+        // Should match actual "services/" directory
+        $tempDir = $this->createTempDirectory(['app/services/Importer.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be Critical severity (for services/)
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::Critical, $issues[0]->severity);
+    }
+
+    public function test_path_matching_handles_tests_correctly(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace Tests\Feature;
+
+use Illuminate\Database\Eloquent\Model;
+
+class ImportTest
+{
+    public function test_import()
+    {
+        Model::unguard();
+        // Test code...
+    }
+}
+PHP;
+
+        // Test false positive: "my_tests/" should NOT match "tests/"
+        $tempDir = $this->createTempDirectory(['my_tests/ImportTest.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be High severity (default), NOT Low (which is for tests/)
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::High, $issues[0]->severity);
+    }
+
+    public function test_path_matching_correctly_identifies_tests_directory(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace Tests\Feature;
+
+use Illuminate\Database\Eloquent\Model;
+
+class ImportTest
+{
+    public function test_import()
+    {
+        Model::unguard();
+        // Test code...
+    }
+}
+PHP;
+
+        // Should match actual "tests/" directory
+        $tempDir = $this->createTempDirectory(['tests/Feature/ImportTest.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be Low severity (for tests/)
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::Low, $issues[0]->severity);
+    }
 }

@@ -42,17 +42,19 @@ class VulnerableDependencyAnalyzerTest extends AnalyzerTestCase
         return new VulnerableDependencyAnalyzer($fetcher, $analyzer, $dependencyReader);
     }
 
-    public function test_fails_when_no_composer_lock(): void
+    public function test_skips_when_no_composer_lock(): void
     {
         $tempDir = $this->createTempDirectory([]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
 
-        $result = $analyzer->analyze();
+        // Should not run when composer.lock is missing - can't check vulnerabilities without it
+        $this->assertFalse($analyzer->shouldRun());
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('composer.lock', $result);
+        if (method_exists($analyzer, 'getSkipReason')) {
+            $this->assertStringContainsString('composer.lock', $analyzer->getSkipReason());
+        }
     }
 
     public function test_reports_vulnerabilities_from_scanner(): void

@@ -47,23 +47,23 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         );
     }
 
+    public function shouldRun(): bool
+    {
+        $composerLock = $this->buildPath('composer.lock');
+
+        return file_exists($composerLock);
+    }
+
+    public function getSkipReason(): string
+    {
+        return 'No composer.lock file found';
+    }
+
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
 
         $composerLock = $this->buildPath('composer.lock');
-
-        if (! file_exists($composerLock)) {
-            $issues[] = $this->createIssue(
-                message: 'composer.lock file not found',
-                location: new Location('composer.lock'),
-                severity: Severity::Medium,
-                recommendation: 'Run "composer install" to generate composer.lock for dependency tracking.',
-                metadata: []
-            );
-
-            return $this->failed('composer.lock file not found', $issues);
-        }
 
         try {
             $dependencies = $this->dependencyReader->read($composerLock);

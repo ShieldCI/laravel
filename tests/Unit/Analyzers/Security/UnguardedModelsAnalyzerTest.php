@@ -697,4 +697,125 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('Model::unguard()', $result);
     }
+
+    public function test_ignores_static_calls_on_non_eloquent_classes(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class SecurityGuard
+{
+    public static function unguard()
+    {
+        // Custom static unguard method on non-Eloquent class
+        return true;
+    }
+}
+
+class DataProcessor
+{
+    public function process()
+    {
+        // This should NOT be flagged - SecurityGuard is not an Eloquent class
+        SecurityGuard::unguard();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DataProcessor.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - SecurityGuard is not an Eloquent class
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_static_calls_with_variable_class_names(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DynamicImporter
+{
+    public function import()
+    {
+        $modelClass = 'App\Models\User';
+
+        // Static call with variable class - parser cannot determine the class
+        // This should NOT be flagged due to conservative checking
+        $modelClass::unguard();
+
+        // Import data...
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DynamicImporter.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - class cannot be determined statically, conservative approach
+        $this->assertPassed($result);
+    }
+
+    public function test_still_detects_known_eloquent_classes(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Eloquent;
+
+class MultipleEloquentCalls
+{
+    public function importWithModel()
+    {
+        Model::unguard();
+    }
+
+    public function importWithEloquent()
+    {
+        Eloquent::unguard();
+    }
+
+    public function importWithFullyQualified()
+    {
+        \Illuminate\Database\Eloquent\Model::unguard();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/MultipleEloquentCalls.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        // Should detect all three Eloquent unguard calls
+        $this->assertCount(3, $issues);
+
+        // Verify all issues mention unguard
+        foreach ($issues as $issue) {
+            $this->assertStringContainsString('unguard', strtolower($issue->message));
+        }
+    }
 }

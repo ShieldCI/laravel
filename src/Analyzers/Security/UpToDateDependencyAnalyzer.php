@@ -28,14 +28,32 @@ use ShieldCI\Support\Composer;
 class UpToDateDependencyAnalyzer extends AbstractAnalyzer
 {
     /**
-     * Composer output patterns indicating no updates needed.
-     * First string is for Composer 1, second is for Composer 2.
+     * Patterns indicating Composer is performing operations (updates available).
+     * These are more reliable than looking for "nothing to" messages because:
+     * - They appear consistently across Composer versions
+     * - They're less affected by locale/translation
+     * - They indicate actual work being done
+     *
+     * @var array<string>
+     */
+    private const UPDATE_OPERATION_PATTERNS = [
+        'Updating',      // "- Updating vendor/package (v1.0 => v2.0)"
+        'Installing',    // "- Installing vendor/package (v1.0)"
+        'Downgrading',   // "- Downgrading vendor/package (v2.0 => v1.0)"
+        'Removing',      // "- Removing vendor/package (v1.0)"
+        'Upgrading',     // "- Upgrading vendor/package (v1.0 => v2.0)" (Composer 2.x)
+    ];
+
+    /**
+     * Fallback patterns indicating no updates needed.
+     * Used as secondary check if no operation patterns found.
      *
      * @var array<string>
      */
     private const NOTHING_TO_UPDATE_PATTERNS = [
         'Nothing to install or update',
         'Nothing to install, update or remove',
+        'Nothing to modify in lock file',
     ];
 
     public function __construct(
@@ -174,15 +192,70 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
 
     /**
      * Check if Composer output indicates dependencies are up-to-date.
+     *
+     * Uses a multi-stage approach for robustness:
+     * 1. Check for explicit "nothing to update" messages (definitive)
+     * 2. Check for update operation patterns (Updating, Installing, etc.)
+     * 3. Parse "Package operations:" and "Lock file operations:" for non-zero counts
+     * 4. Handle edge cases (empty output, very short output)
+     *
+     * This approach is more resilient to:
+     * - Locale/translation differences
+     * - Composer version variations
+     * - Extra whitespace or formatting
+     * - Plugin output interference
      */
     private function isUpToDate(string $output): bool
     {
+        // Normalize output for case-insensitive, whitespace-tolerant matching
+        $normalizedOutput = strtolower(trim($output));
+
+        // STEP 1: Check for explicit "nothing to update" messages
+        // If we find these, we're definitely up-to-date
         foreach (self::NOTHING_TO_UPDATE_PATTERNS as $pattern) {
-            if (str_contains($output, $pattern)) {
-                return true;
+            if (stripos($normalizedOutput, strtolower($pattern)) !== false) {
+                return true; // Explicitly stated nothing to update
             }
         }
 
+        // STEP 2: Check for update operation patterns (action words)
+        // If we find any, dependencies are NOT up-to-date
+        foreach (self::UPDATE_OPERATION_PATTERNS as $pattern) {
+            if (stripos($normalizedOutput, strtolower($pattern)) !== false) {
+                return false; // Found update operations
+            }
+        }
+
+        // STEP 3: Parse "Package operations:" or "Lock file operations:" for non-zero counts
+        // Example: "Package operations: 0 installs, 5 updates, 0 removals"
+        if (preg_match('/(package|lock file) operations:\s*(\d+)\s*installs?,\s*(\d+)\s*updates?,\s*(\d+)\s*removals?/i', $normalizedOutput, $matches)) {
+            $installs = (int) $matches[2];
+            $updates = (int) $matches[3];
+            $removals = (int) $matches[4];
+
+            // If any operation count is non-zero, updates are needed
+            if ($installs > 0 || $updates > 0 || $removals > 0) {
+                return false;
+            }
+
+            // All counts are zero - dependencies are up-to-date
+            return true;
+        }
+
+        // STEP 4: Handle edge cases
+        // Empty output is ambiguous but should be treated as potentially needing updates
+        if (strlen($normalizedOutput) === 0) {
+            return false; // Conservative: assume updates might be needed
+        }
+
+        // Very short output without clear indicators - likely up-to-date
+        // (e.g., just "Loading..." messages)
+        if (strlen($normalizedOutput) < 50) {
+            return true;
+        }
+
+        // CONSERVATIVE FALLBACK: If we can't determine, assume updates might be needed
+        // Better to warn unnecessarily than miss actual updates
         return false;
     }
 

@@ -224,7 +224,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('Response::make()', $result);
+        $this->assertHasIssueContaining('unescaped user input', $result);
     }
 
     public function test_detects_user_data_in_javascript(): void

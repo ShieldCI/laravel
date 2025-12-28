@@ -82,6 +82,13 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         $vulnerabilities = $this->advisoryAnalyzer->analyze($dependencies, $advisories);
+        if (! is_array($vulnerabilities)) {
+            return $this->error('Invalid advisory analysis result');
+        }
+
+        // Cache for package line numbers to avoid repeated lookups
+        // Key: package name, Value: line number
+        $lineNumberCache = [];
 
         // Aggregate advisories per package to avoid flooding output with multiple issues
         // for the same package (e.g., a package with 5 CVEs creates 5 issues → now 1 issue)
@@ -110,7 +117,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $lineNumber = Composer::findPackageLineNumber($composerLock, $package);
+            $lineNumber = $this->getPackageLineNumber($composerLock, $package, $lineNumberCache);
             $advisoryCount = count($validAdvisories);
 
             // Build aggregated message
@@ -160,7 +167,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        $this->checkAbandonedPackages($issues, $composerLock);
+        $this->checkAbandonedPackages($issues, $composerLock, $lineNumberCache);
 
         if (empty($issues)) {
             return $this->passed('No vulnerable dependencies detected');
@@ -174,8 +181,10 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check for abandoned packages in composer.lock.
+     *
+     * @param  array<string, int>  $lineNumberCache  Cache of package line numbers
      */
-    private function checkAbandonedPackages(array &$issues, string $composerLock): void
+    private function checkAbandonedPackages(array &$issues, string $composerLock, array &$lineNumberCache): void
     {
         $lockData = $this->parseComposerLock($composerLock);
 
@@ -202,7 +211,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                 ? sprintf('Replace with "%s": composer require %s', $replacement, $replacement)
                 : sprintf('Find an alternative package and remove "%s"', $packageName);
 
-            $lineNumber = Composer::findPackageLineNumber($composerLock, $packageName);
+            $lineNumber = $this->getPackageLineNumber($composerLock, $packageName, $lineNumberCache);
 
             $issues[] = $this->createIssue(
                 message: sprintf('Package "%s" is abandoned and no longer maintained', $packageName),
@@ -216,6 +225,28 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                 ]
             );
         }
+    }
+
+    /**
+     * Get package line number with caching to avoid repeated lookups.
+     *
+     * Line number lookups involve parsing composer.lock, which is expensive.
+     * Cache results to avoid repeated lookups for the same package.
+     *
+     * @param  array<string, int>  $cache  Cache reference (modified by this method)
+     */
+    private function getPackageLineNumber(string $composerLock, string $packageName, array &$cache): int
+    {
+        // Check cache first
+        if (isset($cache[$packageName])) {
+            return $cache[$packageName];
+        }
+
+        // Cache miss - perform lookup and store result
+        $lineNumber = Composer::findPackageLineNumber($composerLock, $packageName);
+        $cache[$packageName] = $lineNumber;
+
+        return $lineNumber;
     }
 
     /**

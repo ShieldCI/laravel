@@ -67,7 +67,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
             name: 'Up-to-Date Dependencies Analyzer',
             description: 'Checks if dependencies are up-to-date with available bug fixes and security patches',
             category: Category::Security,
-            severity: Severity::Low,
+            severity: Severity::Medium,
             tags: ['dependencies', 'composer', 'updates', 'maintenance', 'security-patches'],
             docsUrl: 'https://docs.shieldci.com/analyzers/security/up-to-date-dependencies',
             timeToFix: 60

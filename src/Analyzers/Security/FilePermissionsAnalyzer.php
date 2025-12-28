@@ -36,6 +36,8 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 
     private const GROUP_EXECUTE = 0x0010;
 
+    private const USER_EXECUTE = 0x0040;
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
@@ -326,6 +328,6 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
      */
     private function hasExecutePermissions(int $perms): bool
     {
-        return (bool) ($perms & (0x0040 | self::GROUP_EXECUTE | self::WORLD_EXECUTE));
+        return (bool) ($perms & (self::USER_EXECUTE | self::GROUP_EXECUTE | self::WORLD_EXECUTE));
     }
 }

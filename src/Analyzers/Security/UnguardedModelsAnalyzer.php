@@ -213,6 +213,9 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
      *
      * Only returns true for known Eloquent base classes to avoid false positives
      * on unrelated classes that happen to have an unguard() method.
+     *
+     * Note: 'Eloquent' class does not exist in modern Laravel (5.x+).
+     * Only Model class (short name or fully qualified) is checked.
      */
     private function isEloquentClass(?string $className): bool
     {
@@ -226,9 +229,7 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
 
         return in_array($normalized, [
             'model',
-            'eloquent',
             'illuminate\\database\\eloquent\\model',
-            'illuminate\\database\\eloquent\\eloquent',
         ], true);
     }
 

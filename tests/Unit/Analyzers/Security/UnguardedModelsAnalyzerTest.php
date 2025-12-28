@@ -79,36 +79,6 @@ PHP;
         $this->assertHasIssueContaining('Model::unguard()', $result);
     }
 
-    public function test_detects_eloquent_unguard(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-use Illuminate\Database\Eloquent\Eloquent;
-
-class DataSeeder
-{
-    public function run()
-    {
-        Eloquent::unguard();
-
-        // Seed data...
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['DataSeeder.php' => $code]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('unguard()', $result);
-    }
-
     public function test_critical_severity_in_controllers(): void
     {
         $code = <<<'PHP'
@@ -770,7 +740,7 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_still_detects_known_eloquent_classes(): void
+    public function test_still_detects_known_eloquent_model_classes(): void
     {
         $code = <<<'PHP'
 <?php
@@ -778,18 +748,12 @@ PHP;
 namespace App\Services;
 
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Eloquent;
 
-class MultipleEloquentCalls
+class MultipleModelCalls
 {
     public function importWithModel()
     {
         Model::unguard();
-    }
-
-    public function importWithEloquent()
-    {
-        Eloquent::unguard();
     }
 
     public function importWithFullyQualified()
@@ -799,7 +763,7 @@ class MultipleEloquentCalls
 }
 PHP;
 
-        $tempDir = $this->createTempDirectory(['Services/MultipleEloquentCalls.php' => $code]);
+        $tempDir = $this->createTempDirectory(['Services/MultipleModelCalls.php' => $code]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -810,12 +774,44 @@ PHP;
         $this->assertFailed($result);
         $issues = $result->getIssues();
 
-        // Should detect all three Eloquent unguard calls
-        $this->assertCount(3, $issues);
+        // Should detect both Model::unguard calls
+        $this->assertCount(2, $issues);
 
         // Verify all issues mention unguard
         foreach ($issues as $issue) {
             $this->assertStringContainsString('unguard', strtolower($issue->message));
         }
+    }
+
+    public function test_ignores_nonexistent_eloquent_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\Eloquent;
+
+class LegacyCodeExample
+{
+    public function seed()
+    {
+        // Eloquent class doesn't exist in modern Laravel
+        // This should NOT be flagged (conservative approach)
+        Eloquent::unguard();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/LegacyCodeExample.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - Eloquent class doesn't exist in modern Laravel, so we don't flag it
+        $this->assertPassed($result);
     }
 }

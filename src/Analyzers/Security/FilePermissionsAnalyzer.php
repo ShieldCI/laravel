@@ -8,7 +8,6 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -200,7 +199,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
                     decoct($recommended),
                     $relativePath
                 ),
-                code: FileParser::getCodeSnippet($path, 1),
+                code: null,
                 metadata: [
                     'path' => $relativePath,
                     'permissions' => $permissions['octal'],
@@ -230,7 +229,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
                     decoct($recommended),
                     $relativePath
                 ),
-                code: FileParser::getCodeSnippet($path, 1),
+                code: null,
                 metadata: [
                     'path' => $relativePath,
                     'permissions' => $permissions['octal'],
@@ -257,7 +256,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
                     decoct($recommended),
                     $relativePath
                 ),
-                code: FileParser::getCodeSnippet($path, 1),
+                code: null,
                 metadata: [
                     'path' => $relativePath,
                     'permissions' => $permissions['octal'],

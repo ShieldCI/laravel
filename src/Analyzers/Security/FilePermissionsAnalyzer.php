@@ -130,7 +130,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 
         // Allow configuration override
         /** @var array<string, array{type: string, max: int, recommended: int, critical?: bool, executable?: bool}> $config */
-        $config = config('shieldci.file_permissions', []);
+        $config = function_exists('config') ? config('shieldci.file_permissions', []) : [];
 
         return array_merge($defaults, $config);
     }
@@ -181,7 +181,34 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
             return; // Don't check further - world-writable is the main issue
         }
 
-        // Check 2: Exceeds maximum permissions (using bit mask comparison, not numeric magnitude)
+        // Check 2: World-readable on critical files (CRITICAL - for sensitive files)
+        if ($isCritical && $this->isWorldReadable($permissions['raw'])) {
+            $issues[] = $this->createIssue(
+                message: sprintf('Critical file "%s" is world-readable (permissions: %s)', $relativePath, $permissions['octal']),
+                location: new Location($relativePath),
+                severity: Severity::Critical,
+                recommendation: sprintf(
+                    'Remove world read permissions: chmod %s %s',
+                    decoct($recommended),
+                    $relativePath
+                ),
+                code: null,
+                metadata: [
+                    'path' => $relativePath,
+                    'permissions' => $permissions['octal'],
+                    'numeric_permissions' => $permissions['numeric'],
+                    'type' => $type,
+                    'world_writable' => false,
+                    'world_readable' => true,
+                    'group_writable' => $this->isGroupWritable($permissions['raw']),
+                    'group_readable' => $this->isGroupReadable($permissions['raw']),
+                ]
+            );
+
+            return; // Don't check further
+        }
+
+        // Check 3: Exceeds maximum permissions (using bit mask comparison, not numeric magnitude)
         // Check if actual permissions have bits set that max permissions don't allow
         // Example: actual=0777, max=0755 → (0777 & ~0755) = 0022 (group/other write bits) → exceeds
         $exceededBits = $permissions['numeric'] & ~$max;
@@ -218,7 +245,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
             return; // Don't check further
         }
 
-        // Check 3: Group-writable on critical files (Medium severity)
+        // Check 4: Group-writable on critical files (Medium severity)
         if ($isCritical && $this->isGroupWritable($permissions['raw'])) {
             $issues[] = $this->createIssue(
                 message: sprintf('Critical file "%s" is group-writable (permissions: %s)', $relativePath, $permissions['octal']),
@@ -245,7 +272,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
             return; // Don't check executable if already flagged
         }
 
-        // Check 4: Executable permissions on non-executable files (Medium severity)
+        // Check 5: Executable permissions on non-executable files (Medium severity)
         if ($type === 'file' && ! $isExecutable && $this->hasExecutePermissions($permissions['raw'])) {
             $issues[] = $this->createIssue(
                 message: sprintf('Non-executable file "%s" has execute permissions (%s)', $relativePath, $permissions['octal']),

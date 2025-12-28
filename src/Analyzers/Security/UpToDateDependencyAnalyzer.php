@@ -106,73 +106,92 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
         $issues = [];
 
         try {
-            // Check production dependencies only
-            $prodDepsOutput = $this->composer->installDryRun(['--no-dev']);
-
-            // Check all dependencies (including dev)
+            // OPTIMIZATION: Run composer install --dry-run only ONCE (all dependencies)
+            // This is significantly faster than running it twice (once with --no-dev, once without)
             $allDepsOutput = $this->composer->installDryRun();
 
-            // Validate outputs are strings
-            if (! is_string($allDepsOutput) || ! is_string($prodDepsOutput)) {
+            // Validate output is string
+            if (! is_string($allDepsOutput)) {
                 return $this->error('Unable to check dependency status - Composer command failed');
             }
 
-            $prodDepsUpToDate = $this->isUpToDate($prodDepsOutput);
-            $allDepsUpToDate = $this->isUpToDate($allDepsOutput);
+            // EARLY EXIT: If everything is up-to-date, no need for further parsing
+            if ($this->isUpToDate($allDepsOutput)) {
+                return $this->passed('All dependencies are up-to-date');
+            }
 
-            // Derive update status from boolean logic
-            $hasProdUpdates = ! $prodDepsUpToDate;
-            $hasAnyUpdates = ! $allDepsUpToDate;
+            // Dependencies need updating - determine if prod, dev, or both
+            // Extract which packages are being updated from Composer output
+            $updatedPackages = $this->extractUpdatedPackages($allDepsOutput);
 
-            // Derive scenarios from the two base booleans
-            $hasDevUpdatesOnly = $hasAnyUpdates && ! $hasProdUpdates;
-
-            // When both have updates, distinguish "prod only" from "both":
-            // If outputs are semantically identical → only prod needs updates
-            // If outputs differ → both prod AND dev need updates
-            $hasBothUpdates = $hasAnyUpdates && $hasProdUpdates && ! $this->outputsAreSimilar($prodDepsOutput, $allDepsOutput);
-
-            if ($hasBothUpdates) {
-                // Scenario 1: Both production AND dev need updates
+            // If we can't extract packages (unexpected output format), report general update needed
+            if (empty($updatedPackages)) {
                 $issues[] = $this->createIssue(
-                    message: 'Production and development dependencies are not up-to-date',
+                    message: 'Dependencies are not up-to-date',
                     location: new Location($this->getRelativePath($composerLockPath)),
                     severity: Severity::Medium,
                     recommendation: $this->getBothDepsRecommendation(),
                     code: FileParser::getCodeSnippet($composerLockPath, 1),
                     metadata: [
-                        'scope' => 'production and dev',
+                        'scope' => 'unknown',
                         'composer_version_check' => 'install --dry-run',
                     ]
                 );
-            } elseif ($hasProdUpdates) {
-                // Scenario 2: Only production needs updates (dev is up-to-date)
-                $issues[] = $this->createIssue(
-                    message: 'Production dependencies are not up-to-date',
-                    location: new Location($this->getRelativePath($composerLockPath)),
-                    severity: Severity::Medium,
-                    recommendation: $this->getProductionDepsRecommendation(),
-                    code: FileParser::getCodeSnippet($composerLockPath, 1),
-                    metadata: [
-                        'scope' => 'production',
-                        'composer_version_check' => 'install --dry-run --no-dev',
-                    ]
-                );
-            } elseif ($hasDevUpdatesOnly) {
-                // Scenario 3: Only dev needs updates (production is up-to-date)
-                $issues[] = $this->createIssue(
-                    message: 'Development dependencies are not up-to-date',
-                    location: new Location($this->getRelativePath($composerLockPath)),
-                    severity: Severity::Low,
-                    recommendation: $this->getDevDepsRecommendation(),
-                    code: FileParser::getCodeSnippet($composerLockPath, 1),
-                    metadata: [
-                        'scope' => 'dev',
-                        'composer_version_check' => 'install --dry-run',
-                    ]
-                );
+            } else {
+                // Get dev packages from composer.json
+                $devPackages = $this->getDevPackages();
+
+                // Categorize updated packages as prod or dev
+                $categorized = $this->categorizePackages($updatedPackages, $devPackages);
+
+                $hasProdUpdates = ! empty($categorized['prod']);
+                $hasDevUpdates = ! empty($categorized['dev']);
+
+                if ($hasProdUpdates && $hasDevUpdates) {
+                    // Scenario 1: Both production AND dev need updates
+                    $issues[] = $this->createIssue(
+                        message: 'Production and development dependencies are not up-to-date',
+                        location: new Location($this->getRelativePath($composerLockPath)),
+                        severity: Severity::Medium,
+                        recommendation: $this->getBothDepsRecommendation(),
+                        code: FileParser::getCodeSnippet($composerLockPath, 1),
+                        metadata: [
+                            'scope' => 'production and dev',
+                            'composer_version_check' => 'install --dry-run',
+                            'prod_packages' => $categorized['prod'],
+                            'dev_packages' => $categorized['dev'],
+                        ]
+                    );
+                } elseif ($hasProdUpdates) {
+                    // Scenario 2: Only production needs updates
+                    $issues[] = $this->createIssue(
+                        message: 'Production dependencies are not up-to-date',
+                        location: new Location($this->getRelativePath($composerLockPath)),
+                        severity: Severity::Medium,
+                        recommendation: $this->getProductionDepsRecommendation(),
+                        code: FileParser::getCodeSnippet($composerLockPath, 1),
+                        metadata: [
+                            'scope' => 'production',
+                            'composer_version_check' => 'install --dry-run',
+                            'packages' => $categorized['prod'],
+                        ]
+                    );
+                } elseif ($hasDevUpdates) {
+                    // Scenario 3: Only dev needs updates
+                    $issues[] = $this->createIssue(
+                        message: 'Development dependencies are not up-to-date',
+                        location: new Location($this->getRelativePath($composerLockPath)),
+                        severity: Severity::Low,
+                        recommendation: $this->getDevDepsRecommendation(),
+                        code: FileParser::getCodeSnippet($composerLockPath, 1),
+                        metadata: [
+                            'scope' => 'dev',
+                            'composer_version_check' => 'install --dry-run',
+                            'packages' => $categorized['dev'],
+                        ]
+                    );
+                }
             }
-            // Scenario 4: Everything up-to-date - no issues created
         } catch (\Throwable $e) {
             return $this->error(
                 sprintf('Unable to check dependency status: %s', $e->getMessage()),
@@ -260,44 +279,6 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
     }
 
     /**
-     * Check if two Composer outputs are semantically similar.
-     * Uses normalized comparison to avoid fragility from:
-     * - Whitespace differences
-     * - Plugin messages
-     * - Timestamp variations
-     * - Minor formatting changes
-     */
-    private function outputsAreSimilar(string $output1, string $output2): bool
-    {
-        // Normalize both outputs
-        $normalized1 = $this->normalizeComposerOutput($output1);
-        $normalized2 = $this->normalizeComposerOutput($output2);
-
-        return $normalized1 === $normalized2;
-    }
-
-    /**
-     * Normalize Composer output for comparison by:
-     * - Trimming whitespace
-     * - Removing empty lines
-     * - Normalizing line endings
-     * - Sorting lines (to handle order variations)
-     */
-    private function normalizeComposerOutput(string $output): string
-    {
-        // Split into lines, trim each, remove empty lines
-        $lines = array_filter(
-            array_map('trim', explode("\n", $output)),
-            fn ($line) => $line !== ''
-        );
-
-        // Sort lines to handle order variations
-        sort($lines);
-
-        return implode("\n", $lines);
-    }
-
-    /**
      * Get recommendation message for both production and dev dependencies.
      */
     private function getBothDepsRecommendation(): string
@@ -328,5 +309,82 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
         return 'Your application\'s development dependencies are not up-to-date. '.
             'While these don\'t affect production, keeping them updated helps maintain a healthy development environment. '.
             'Run "composer update" to update all dependencies.';
+    }
+
+    /**
+     * Get the list of dev package names from composer.json.
+     *
+     * @return array<string> Array of package names (e.g., ['phpunit/phpunit', 'mockery/mockery'])
+     */
+    private function getDevPackages(): array
+    {
+        $composerJsonPath = $this->composer->getJsonFile();
+
+        if ($composerJsonPath === null || ! file_exists($composerJsonPath)) {
+            return [];
+        }
+
+        $content = file_get_contents($composerJsonPath);
+        if ($content === false) {
+            return [];
+        }
+
+        $data = json_decode($content, true);
+        if (! is_array($data) || ! isset($data['require-dev']) || ! is_array($data['require-dev'])) {
+            return [];
+        }
+
+        return array_keys($data['require-dev']);
+    }
+
+    /**
+     * Extract package names being updated from Composer output.
+     *
+     * Parses output lines like:
+     * - "  - Updating vendor/package (v1.0 => v2.0)"
+     * - "  - Installing vendor/package (v1.0)"
+     * - "  - Upgrading vendor/package (v1.0 => v2.0)"
+     * - "  - Downgrading vendor/package (v2.0 => v1.0)"
+     * - "  - Removing vendor/package (v1.0)"
+     *
+     * @return array<string> Array of package names (e.g., ['vendor/package1', 'vendor/package2'])
+     */
+    private function extractUpdatedPackages(string $output): array
+    {
+        $packages = [];
+        $lines = explode("\n", $output);
+
+        foreach ($lines as $line) {
+            // Match lines like: "  - Updating vendor/package (v1.0 => v2.0)"
+            // Pattern captures: action word, then vendor/package name
+            if (preg_match('/^\s*-\s*(?:Updating|Installing|Upgrading|Downgrading|Removing)\s+([a-z0-9_.-]+\/[a-z0-9_.-]+)/i', $line, $matches)) {
+                $packages[] = $matches[1];
+            }
+        }
+
+        return array_unique($packages);
+    }
+
+    /**
+     * Categorize updated packages into production and dev.
+     *
+     * @param  array<string>  $updatedPackages  List of packages being updated
+     * @param  array<string>  $devPackages  List of dev packages from composer.json
+     * @return array{prod: array<string>, dev: array<string>}
+     */
+    private function categorizePackages(array $updatedPackages, array $devPackages): array
+    {
+        $prod = [];
+        $dev = [];
+
+        foreach ($updatedPackages as $package) {
+            if (in_array($package, $devPackages, true)) {
+                $dev[] = $package;
+            } else {
+                $prod[] = $package;
+            }
+        }
+
+        return ['prod' => $prod, 'dev' => $dev];
     }
 }

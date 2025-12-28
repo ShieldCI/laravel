@@ -208,10 +208,18 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
         }
     }
 
+    /**
+     * Check if a class name represents an Eloquent Model class.
+     *
+     * Only returns true for known Eloquent base classes to avoid false positives
+     * on unrelated classes that happen to have an unguard() method.
+     */
     private function isEloquentClass(?string $className): bool
     {
+        // If we can't determine the class name, don't assume it's Eloquent
+        // This prevents false positives on unrelated classes
         if ($className === null) {
-            return true;
+            return false;
         }
 
         $normalized = ltrim(strtolower($className), '\\');

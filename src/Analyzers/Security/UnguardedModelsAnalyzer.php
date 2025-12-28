@@ -154,8 +154,11 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
+        // Build a map of method/function nodes to track scope boundaries
+        $methodMap = $this->buildMethodScopeMap($ast);
+
         $unguardCalls = [];
-        $reguardLines = [];
+        $reguardCalls = [];
 
         foreach ($staticCalls as $call) {
             // Only process static calls with Identifier method names
@@ -175,7 +178,7 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             }
 
             if ($method === 'reguard') {
-                $reguardLines[] = $call->getLine();
+                $reguardCalls[] = $call;
             }
         }
 
@@ -183,17 +186,36 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        sort($reguardLines);
-        usort($unguardCalls, fn (Node\Expr\StaticCall $a, Node\Expr\StaticCall $b) => $a->getLine() <=> $b->getLine());
+        // Track which reguard calls have been consumed
+        $consumedReguards = [];
 
-        foreach ($unguardCalls as $call) {
-            $lineNumber = $call->getLine();
+        // Check each unguard call for a matching reguard in the same scope
+        foreach ($unguardCalls as $unguardCall) {
+            $unguardScope = $this->findEnclosingScope($unguardCall, $methodMap);
+            $hasMatchingReguard = false;
 
-            if ($this->consumeReguardAfterLine($reguardLines, $lineNumber)) {
+            // Find the first available (unconsumed) reguard in the same scope after this unguard
+            foreach ($reguardCalls as $index => $reguardCall) {
+                // Skip already consumed reguards
+                if (in_array($index, $consumedReguards, true)) {
+                    continue;
+                }
+
+                $reguardScope = $this->findEnclosingScope($reguardCall, $methodMap);
+
+                // Only pair if they're in the same scope AND reguard comes after unguard
+                if ($unguardScope === $reguardScope && $reguardCall->getLine() > $unguardCall->getLine()) {
+                    $hasMatchingReguard = true;
+                    $consumedReguards[] = $index; // Mark this reguard as consumed
+                    break;
+                }
+            }
+
+            if ($hasMatchingReguard) {
                 continue;
             }
 
-            $classLabel = $call->class instanceof Node\Name ? $call->class->toString() : 'Model';
+            $classLabel = $unguardCall->class instanceof Node\Name ? $unguardCall->class->toString() : 'Model';
 
             $issues[] = $this->createIssueWithSnippet(
                 message: sprintf(
@@ -201,9 +223,9 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
                     $classLabel
                 ),
                 filePath: $file,
-                lineNumber: $lineNumber,
+                lineNumber: $unguardCall->getLine(),
                 severity: $this->getSeverityForContext($relativePath),
-                recommendation: 'Call Model::reguard() immediately after importing or use $fillable/forceFill() instead of globally unguarding models.'
+                recommendation: 'Call Model::reguard() immediately after importing in the same method/function scope, or use $fillable/forceFill() instead of globally unguarding models.'
             );
         }
     }
@@ -234,29 +256,63 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if there's a reguard() call after this unguard() and consume it.
-     * Also removes any reguard() calls that appear before this unguard() (they belong to previous unguards).
+     * Build a map of all method/function scopes in the AST.
      *
-     * @param  array<int>  $reguardLines
+     * @return array<Node\Stmt\ClassMethod|Node\Stmt\Function_|Node\Expr\Closure>
      */
-    private function consumeReguardAfterLine(array &$reguardLines, int $lineNumber): bool
+    private function buildMethodScopeMap(array $ast): array
     {
-        // Remove all reguards at or before this unguard (they belong to previous unguards)
-        foreach ($reguardLines as $index => $reguardLine) {
-            if ($reguardLine <= $lineNumber) {
-                unset($reguardLines[$index]);
+        /** @var array<Node\Stmt\ClassMethod|Node\Stmt\Function_|Node\Expr\Closure> $scopes */
+        $scopes = [];
+
+        // Find all class methods
+        /** @var array<Node\Stmt\ClassMethod> $methods */
+        $methods = $this->parser->findNodes($ast, Node\Stmt\ClassMethod::class);
+        foreach ($methods as $method) {
+            $scopes[] = $method;
+        }
+
+        // Find all standalone functions
+        /** @var array<Node\Stmt\Function_> $functions */
+        $functions = $this->parser->findNodes($ast, Node\Stmt\Function_::class);
+        foreach ($functions as $function) {
+            $scopes[] = $function;
+        }
+
+        // Find all closures/anonymous functions
+        /** @var array<Node\Expr\Closure> $closures */
+        $closures = $this->parser->findNodes($ast, Node\Expr\Closure::class);
+        foreach ($closures as $closure) {
+            $scopes[] = $closure;
+        }
+
+        return $scopes;
+    }
+
+    /**
+     * Find the enclosing method/function scope for a given node.
+     *
+     * Returns a unique identifier for the scope (line range).
+     * If not in any method/function, returns null (global scope).
+     *
+     * @param  array<Node\Stmt\ClassMethod|Node\Stmt\Function_|Node\Expr\Closure>  $scopeMap
+     */
+    private function findEnclosingScope(Node $node, array $scopeMap): ?string
+    {
+        $nodeLine = $node->getLine();
+
+        foreach ($scopeMap as $scope) {
+            $startLine = $scope->getStartLine();
+            $endLine = $scope->getEndLine();
+
+            // Check if node is within this scope's line range
+            if ($nodeLine >= $startLine && $nodeLine <= $endLine) {
+                // Return a unique identifier for this scope (start-end line range)
+                return "{$startLine}:{$endLine}";
             }
         }
-        $reguardLines = array_values($reguardLines);
 
-        // Now check if there's a reguard after this unguard
-        if (! empty($reguardLines)) {
-            // Consume the first reguard after this unguard
-            array_shift($reguardLines);
-
-            return true;
-        }
-
-        return false;
+        // Not in any method/function - global scope
+        return null;
     }
 }

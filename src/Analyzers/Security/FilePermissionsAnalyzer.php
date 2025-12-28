@@ -310,6 +310,33 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
                 ]
             );
         }
+
+        // Check 6: Directory without owner execute (usability issue - directory becomes unusable)
+        if ($type === 'directory' && ! $this->hasOwnerExecute($permissions['raw'])) {
+            $issues[] = $this->createIssue(
+                message: sprintf('Directory "%s" lacks owner execute permission (%s) - unusable', $relativePath, $permissions['octal']),
+                location: new Location($relativePath),
+                severity: Severity::Medium,
+                recommendation: sprintf(
+                    'Add owner execute permission: chmod u+x %s (or chmod %s %s)',
+                    $relativePath,
+                    decoct($recommended),
+                    $relativePath
+                ),
+                code: null,
+                metadata: [
+                    'path' => $relativePath,
+                    'permissions' => $permissions['octal'],
+                    'numeric_permissions' => $permissions['numeric'],
+                    'type' => $type,
+                    'owner_execute' => false,
+                    'world_writable' => false,
+                    'world_readable' => $this->isWorldReadable($permissions['raw']),
+                    'group_writable' => $this->isGroupWritable($permissions['raw']),
+                    'group_readable' => $this->isGroupReadable($permissions['raw']),
+                ]
+            );
+        }
     }
 
     /**
@@ -376,5 +403,13 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
         $permBits = $perms & self::PERMISSION_MASK;
 
         return (bool) ($permBits & (self::USER_EXECUTE | self::GROUP_EXECUTE | self::WORLD_EXECUTE));
+    }
+
+    /**
+     * Check if path has owner (user) execute permission.
+     */
+    private function hasOwnerExecute(int $perms): bool
+    {
+        return (bool) ($perms & self::USER_EXECUTE);
     }
 }

@@ -19,6 +19,18 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | API Configuration
+    |--------------------------------------------------------------------------
+    */
+
+    'token' => env('SHIELDCI_TOKEN'),
+
+    'project_id' => env('SHIELDCI_PROJECT_ID'),
+
+    'api_url' => env('SHIELDCI_API_URL', 'https://api.shieldci.com'),
+
+    /*
+    |--------------------------------------------------------------------------
     | CI Mode Configuration
     |--------------------------------------------------------------------------
     |
@@ -218,6 +230,8 @@ return [
         'snippet_syntax_highlighting' => env('SHIELDCI_SNIPPET_SYNTAX_HIGHLIGHTING', true), // Enable PHP syntax highlighting
 
         'max_issues_per_check' => env('SHIELDCI_MAX_ISSUES', 5), // Limit displayed issues per check
+
+        'send_to_api' => env('SHIELDCI_SEND_TO_API', true),
     ],
 
     /*

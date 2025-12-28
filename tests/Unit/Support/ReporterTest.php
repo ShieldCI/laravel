@@ -72,9 +72,26 @@ class ReporterTest extends TestCase
         $this->assertJson($json);
 
         $decoded = json_decode($json, true);
+        $this->assertArrayHasKey('project_id', $decoded);
         $this->assertArrayHasKey('summary', $decoded);
         $this->assertArrayHasKey('score', $decoded['summary']);
         $this->assertArrayHasKey('results', $decoded);
+    }
+
+    #[Test]
+    public function it_can_format_to_api(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('test-analyzer', 'All checks passed'),
+        ]);
+
+        $report = $this->reporter->generate($results);
+        $payload = $this->reporter->toApi($report);
+
+        $this->assertIsArray($payload);
+        $this->assertArrayHasKey('project_id', $payload);
+        $this->assertArrayHasKey('results', $payload);
+        $this->assertArrayHasKey('metadata', $payload);
     }
 
     #[Test]

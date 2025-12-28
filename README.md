@@ -35,10 +35,12 @@ Publish the configuration file:
 php artisan vendor:publish --tag=shieldci-config
 ```
 
-Enable ShieldCI in your `.env`:
+Add your ShieldCI credentials to `.env`:
 
 ```env
 SHIELDCI_ENABLED=true
+SHIELDCI_TOKEN=your-api-token
+SHIELDCI_PROJECT_ID=your-project-id
 ```
 
 ## Usage
@@ -69,6 +71,11 @@ php artisan shield:analyze --format=json
 Save report to file:
 ```bash
 php artisan shield:analyze --output=report.json
+```
+
+Don't send results to ShieldCI API:
+```bash
+php artisan shield:analyze --no-send
 ```
 
 ### Advanced Features

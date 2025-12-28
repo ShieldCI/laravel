@@ -19,6 +19,7 @@ class Reporter implements ReporterInterface
     public function generate(Collection $results): AnalysisReport
     {
         return new AnalysisReport(
+            projectId: config('shieldci.project_id', 'unknown'),
             laravelVersion: app()->version(),
             packageVersion: $this->getPackageVersion(),
             results: $results,
@@ -493,6 +494,11 @@ class Reporter implements ReporterInterface
     public function toJson(AnalysisReport $report): string
     {
         return json_encode($report->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    }
+
+    public function toApi(AnalysisReport $report): array
+    {
+        return $report->toArray();
     }
 
     protected function getPackageVersion(): string

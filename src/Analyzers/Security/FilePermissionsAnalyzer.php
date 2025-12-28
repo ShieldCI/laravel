@@ -96,7 +96,16 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
     /**
      * Get paths to check with their configuration.
      *
-     * Format: ['path' => ['type' => 'file|directory', 'max' => 644, 'recommended' => 600, 'critical' => true, 'executable' => true]]
+     * Format:
+     * [
+     *   'path' => [
+     *     'type' => 'file|directory',
+     *     'max' => 0755,         // Permission bitmask (allowed bits), not a numeric comparison
+     *     'recommended' => 0644,
+     *     'critical' => true,
+     *     'executable' => true
+     *   ]
+     * ]
      *
      * @return array<string, array{type: string, max: int, recommended: int, critical?: bool, executable?: bool}>
      */

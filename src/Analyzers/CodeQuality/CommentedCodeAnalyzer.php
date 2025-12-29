@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\CodeQuality;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -19,13 +20,40 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  * - Multiple consecutive commented lines
  * - Common code indicators (function calls, assignments, etc.)
  * - Excludes genuine documentation comments
+ *
+ * Configuration:
+ * Teams can customize detection sensitivity in config/shieldci.php:
+ * 'analyzers' => [
+ *     'code-quality' => [
+ *         'commented-code' => [
+ *             'min_consecutive_lines' => 3,    // Minimum lines to flag a block
+ *             'max_neutral_lines' => 2,        // Spacing tolerance within blocks
+ *             'code_score_threshold' => 2,     // Minimum score to classify as code
+ *         ]
+ *     ]
+ * ]
  */
 class CommentedCodeAnalyzer extends AbstractFileAnalyzer
 {
     /**
+     * Default: Minimum consecutive commented lines to flag.
+     */
+    public const MIN_CONSECUTIVE_LINES = 3;
+
+    /**
+     * Default: Maximum number of neutral lines (blank comments) allowed within a block.
+     */
+    public const MAX_NEUTRAL_LINES = 2;
+
+    /**
+     * Default: Minimum score threshold to classify content as code.
+     */
+    public const CODE_SCORE_THRESHOLD = 2;
+
+    /**
      * Minimum consecutive commented lines to flag.
      */
-    private int $minConsecutiveLines = 3;
+    private int $minConsecutiveLines;
 
     /**
      * Maximum number of neutral lines (blank comments) allowed within a block.
@@ -34,7 +62,12 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
      * //
      * // $bar = 2;
      */
-    private int $maxNeutralLines = 2;
+    private int $maxNeutralLines;
+
+    /**
+     * Minimum score threshold to classify content as code.
+     */
+    private int $codeScoreThreshold;
 
     /**
      * Code pattern indicators with weights.
@@ -71,21 +104,9 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
         '/;/' => 1,                         // Semicolons (code terminator)
     ];
 
-    /**
-     * Minimum score threshold to classify content as code.
-     * Prevents single weak indicators from triggering false positives.
-     *
-     * Threshold of 2 allows:
-     * - Medium indicators: return, if, foreach, User::find() (score 2)
-     * - Combined weak: $var = value; (score 1+1+1=3), $obj->method() (score 1+1=2)
-     * - Strong indicators: function, class, visibility (score 4+)
-     *
-     * But rejects false positives:
-     * - Single weak: just "$variable" mentioned in docs (score 1)
-     * - Prose: "Set the $variable" (score 1)
-     * - Examples: "Use User::class" (score 1, no method call)
-     */
-    private int $codeScoreThreshold = 2;
+    public function __construct(
+        private Config $config
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -103,6 +124,14 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
+        // Load configuration from config file (code-quality.commented-code)
+        $analyzerConfig = $this->config->get('shieldci.analyzers.code-quality.commented-code', []);
+        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
+
+        $this->minConsecutiveLines = $analyzerConfig['min_consecutive_lines'] ?? self::MIN_CONSECUTIVE_LINES;
+        $this->maxNeutralLines = $analyzerConfig['max_neutral_lines'] ?? self::MAX_NEUTRAL_LINES;
+        $this->codeScoreThreshold = $analyzerConfig['code_score_threshold'] ?? self::CODE_SCORE_THRESHOLD;
+
         $issues = [];
         $minLines = $this->minConsecutiveLines;
 
@@ -318,7 +347,6 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
                     'startLine' => $tokenLine,
                     'endLine' => $endLine,
                     'lineCount' => $codeLineCount,
-                    'codeLineCount' => $codeLineCount,
                     'preview' => $this->getPreview($codeLines),
                 ];
             }

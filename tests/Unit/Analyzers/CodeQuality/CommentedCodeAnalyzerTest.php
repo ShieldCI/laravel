@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\CodeQuality;
 
+use Illuminate\Config\Repository;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Analyzers\CodeQuality\CommentedCodeAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
@@ -12,9 +13,20 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class CommentedCodeAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    protected function createAnalyzer(array $config = []): AnalyzerInterface
     {
-        return new CommentedCodeAnalyzer;
+        $configRepo = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'code-quality' => $config,
+                ],
+            ],
+        ]);
+
+        return new CommentedCodeAnalyzer($configRepo);
     }
 
     #[Test]
@@ -1338,5 +1350,126 @@ PHP;
         // Block has: 1 prose, 1 blank, 4 code lines, 1 blank, 1 prose = 8 total
         // But we should only report the 4 code lines
         $this->assertHasIssueContaining('4 consecutive lines', $result);
+    }
+
+    #[Test]
+    public function test_respects_custom_min_consecutive_lines_configuration(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class UserService
+{
+    // $user = User::find($id);
+    // $user->save();
+    public function process()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/UserService.php' => $code,
+        ]);
+
+        // Default: min_consecutive_lines = 3, so 2 lines should PASS
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertPassed($result);
+
+        // Custom: min_consecutive_lines = 2, so 2 lines should FAIL
+        $analyzer = $this->createAnalyzer([
+            'commented-code' => ['min_consecutive_lines' => 2],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertFailed($result);
+    }
+
+    #[Test]
+    public function test_respects_custom_code_score_threshold_configuration(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class ArticleService
+{
+    // $userId variable
+    // $userName field
+    // $email address
+    public function saveUser()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/ArticleService.php' => $code,
+        ]);
+
+        // Default: code_score_threshold = 2, weak signals (score 1) should PASS
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertPassed($result);
+
+        // Custom: code_score_threshold = 1, weak signals should FAIL
+        $analyzer = $this->createAnalyzer([
+            'commented-code' => ['code_score_threshold' => 1],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertFailed($result);
+    }
+
+    #[Test]
+    public function test_respects_custom_max_neutral_lines_configuration(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class PaymentService
+{
+    // $amount = 100;
+    //
+    //
+    //
+    // $tax = $amount * 0.2;
+    // return $amount + $tax;
+    public function calculate()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/PaymentService.php' => $code,
+        ]);
+
+        // Default: max_neutral_lines = 2, so 3 blank lines break the block
+        // Results in 1 line block (fails min 3) and 2 line block (fails min 3)
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertPassed($result);
+
+        // Custom: max_neutral_lines = 5, so block continues across 3 blank lines
+        // Results in 1 block with 3 code lines (passes min 3)
+        $analyzer = $this->createAnalyzer([
+            'commented-code' => ['max_neutral_lines' => 5],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertFailed($result);
     }
 }

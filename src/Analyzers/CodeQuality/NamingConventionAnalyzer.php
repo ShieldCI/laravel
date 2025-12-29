@@ -103,6 +103,7 @@ class NamingConventionAnalyzer extends AbstractFileAnalyzer
             'property' => 'Properties should use camelCase (e.g., firstName, isActive)',
             'constant' => 'Public constants should use SCREAMING_SNAKE_CASE (e.g., MAX_RETRIES, API_KEY). Private/protected constants may use camelCase',
             'variable' => 'Variables should use camelCase (e.g., userId, totalAmount)',
+            'table' => 'Laravel table names should be plural snake_case (e.g., users, order_items, user_profiles)',
             default => 'Follow PSR-12 naming conventions',
         };
 
@@ -168,7 +169,10 @@ class NamingConventionVisitor extends NodeVisitorAbstract
             foreach ($node->props as $prop) {
                 $propertyName = $prop->name->toString();
 
-                if (! $this->isCamelCase($propertyName)) {
+                // Laravel convention: protected $table should be plural snake_case
+                if ($propertyName === 'table' && $node->isProtected()) {
+                    $this->checkLaravelTableNaming($node, $prop);
+                } elseif (! $this->isCamelCase($propertyName)) {
                     $suggestion = $this->toCamelCase($propertyName);
                     $this->issues[] = [
                         'message' => "Property '{$propertyName}' does not follow camelCase convention",
@@ -286,6 +290,142 @@ class NamingConventionVisitor extends NodeVisitorAbstract
         $name = str_replace(['-', ' '], '_', $name);
 
         return strtoupper($name);
+    }
+
+    /**
+     * Check Laravel table naming convention: plural snake_case.
+     */
+    private function checkLaravelTableNaming(Stmt\Property $node, Node\PropertyItem $prop): void
+    {
+        // Extract the table name value
+        if ($prop->default === null) {
+            return; // No default value, skip check
+        }
+
+        // Only check string literals
+        if (! $prop->default instanceof Node\Scalar\String_) {
+            return;
+        }
+
+        $tableName = $prop->default->value;
+
+        // Check if it's snake_case
+        if (! $this->isSnakeCase($tableName)) {
+            $suggestion = $this->toSnakeCase($tableName);
+            $this->issues[] = [
+                'message' => "Laravel table name '{$tableName}' should use snake_case convention",
+                'line' => $node->getStartLine(),
+                'type' => 'table',
+                'name' => $tableName,
+                'suggestion' => $suggestion,
+            ];
+
+            return;
+        }
+
+        // Check if it's plural
+        if (! $this->isPlural($tableName)) {
+            $suggestion = $this->toPlural($tableName);
+            $this->issues[] = [
+                'message' => "Laravel table name '{$tableName}' should be plural",
+                'line' => $node->getStartLine(),
+                'type' => 'table',
+                'name' => $tableName,
+                'suggestion' => $suggestion,
+            ];
+        }
+    }
+
+    /**
+     * Check if string is snake_case.
+     */
+    private function isSnakeCase(string $name): bool
+    {
+        // snake_case: all lowercase with underscores, no consecutive underscores
+        return preg_match('/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/', $name) === 1;
+    }
+
+    /**
+     * Convert to snake_case.
+     */
+    private function toSnakeCase(string $name): string
+    {
+        // Insert underscore before uppercase letters (except first)
+        $name = preg_replace('/(?<!^)[A-Z]/', '_$0', $name) ?? $name;
+
+        // Replace existing separators with underscores
+        $name = str_replace(['-', ' '], '_', $name);
+
+        return strtolower($name);
+    }
+
+    /**
+     * Check if a table name is plural (basic check).
+     */
+    private function isPlural(string $name): bool
+    {
+        // Handle common irregular plurals
+        $irregularPlurals = [
+            'people', 'children', 'men', 'women', 'teeth', 'feet',
+            'geese', 'mice', 'oxen', 'sheep', 'deer', 'fish',
+        ];
+
+        // Extract the last word (after last underscore)
+        $parts = explode('_', $name);
+        $lastWord = end($parts);
+
+        // Check irregular plurals
+        if (in_array($lastWord, $irregularPlurals, true)) {
+            return true;
+        }
+
+        // Basic plural check: ends with 's' or 'es'
+        // This is a simple heuristic - won't catch all cases but covers most
+        return str_ends_with($lastWord, 's') || str_ends_with($lastWord, 'es');
+    }
+
+    /**
+     * Convert to plural form (basic implementation).
+     */
+    private function toPlural(string $name): string
+    {
+        // Handle common irregular plurals
+        $irregularMap = [
+            'person' => 'people',
+            'child' => 'children',
+            'man' => 'men',
+            'woman' => 'women',
+            'tooth' => 'teeth',
+            'foot' => 'feet',
+            'goose' => 'geese',
+            'mouse' => 'mice',
+            'ox' => 'oxen',
+        ];
+
+        // Extract the last word (after last underscore)
+        $parts = explode('_', $name);
+        $lastWord = end($parts);
+
+        // Check irregular plurals
+        if (isset($irregularMap[$lastWord])) {
+            $parts[count($parts) - 1] = $irregularMap[$lastWord];
+
+            return implode('_', $parts);
+        }
+
+        // Basic pluralization rules
+        if (str_ends_with($lastWord, 'y') && ! in_array($lastWord[strlen($lastWord) - 2], ['a', 'e', 'i', 'o', 'u'], true)) {
+            // category -> categories
+            $parts[count($parts) - 1] = substr($lastWord, 0, -1).'ies';
+        } elseif (str_ends_with($lastWord, 's') || str_ends_with($lastWord, 'x') || str_ends_with($lastWord, 'ch') || str_ends_with($lastWord, 'sh')) {
+            // class -> classes, box -> boxes
+            $parts[count($parts) - 1] = $lastWord.'es';
+        } else {
+            // user -> users
+            $parts[count($parts) - 1] = $lastWord.'s';
+        }
+
+        return implode('_', $parts);
     }
 
     /**

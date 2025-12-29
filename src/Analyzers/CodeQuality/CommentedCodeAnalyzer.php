@@ -28,6 +28,15 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
     private int $minConsecutiveLines = 3;
 
     /**
+     * Maximum number of neutral lines (blank comments) allowed within a block.
+     * Allows blocks to continue even with spacing like:
+     * // $foo = 1;
+     * //
+     * // $bar = 2;
+     */
+    private int $maxNeutralLines = 2;
+
+    /**
      * Code pattern indicators.
      *
      * @var array<string>
@@ -137,6 +146,7 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
         $lines = explode("\n", $content);
         $blocks = [];
         $currentBlock = null;
+        $neutralLineCount = 0;
 
         foreach ($lines as $lineNumber => $line) {
             $trimmed = trim($line);
@@ -155,19 +165,34 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
                             'lineCount' => 1,
                             'lines' => [$commentContent],
                         ];
+                        $neutralLineCount = 0;
                     } else {
-                        // Continue current block
+                        // Continue current block (reset neutral line counter)
                         $currentBlock['endLine'] = $lineNumber + 1;
                         $currentBlock['lineCount']++;
                         $currentBlock['lines'][] = $commentContent;
+                        $neutralLineCount = 0;
                     }
                 } else {
-                    // Non-code comment, end current block if any
-                    if ($currentBlock !== null && $currentBlock['lineCount'] >= $minLines) {
-                        $currentBlock['preview'] = $this->getPreview($currentBlock['lines']);
-                        $blocks[] = $currentBlock;
+                    // Neutral comment line (e.g., blank comment //)
+                    if ($currentBlock !== null) {
+                        $neutralLineCount++;
+
+                        // Allow a few neutral lines within a block
+                        if ($neutralLineCount <= $this->maxNeutralLines) {
+                            // Continue block, but don't add neutral line to preview
+                            $currentBlock['endLine'] = $lineNumber + 1;
+                            // Don't increment lineCount for neutral lines
+                        } else {
+                            // Too many neutral lines, end the block
+                            if ($currentBlock['lineCount'] >= $minLines) {
+                                $currentBlock['preview'] = $this->getPreview($currentBlock['lines']);
+                                $blocks[] = $currentBlock;
+                            }
+                            $currentBlock = null;
+                            $neutralLineCount = 0;
+                        }
                     }
-                    $currentBlock = null;
                 }
             } else {
                 // Not a comment, end current block if any
@@ -176,6 +201,7 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
                     $blocks[] = $currentBlock;
                 }
                 $currentBlock = null;
+                $neutralLineCount = 0;
             }
         }
 

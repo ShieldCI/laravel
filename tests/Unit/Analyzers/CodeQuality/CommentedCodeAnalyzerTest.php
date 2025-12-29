@@ -962,4 +962,86 @@ PHP;
         // Should detect both single-line and block comments
         $this->assertGreaterThanOrEqual(2, count($issues));
     }
+
+    #[Test]
+    public function test_allows_neutral_lines_within_threshold(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class NeutralLinesService
+{
+    // Old implementation with blank comment lines:
+    // $foo = 1;
+    // $bar = 2;
+    //
+    // $baz = 3;
+    // $qux = 4;
+    //
+    //
+    // $final = 5;
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/NeutralLinesService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        // Should detect as ONE block despite blank comment lines (within tolerance)
+        $this->assertCount(1, $issues);
+
+        $issue = $issues[0];
+        // Should have 5 code lines (excluding the blank comment lines)
+        $this->assertEquals(5, $issue->metadata['lineCount']);
+        // But should span lines 8-15 (including neutral lines)
+        $this->assertEquals(8, $issue->metadata['startLine']);
+        $this->assertEquals(15, $issue->metadata['endLine']);
+    }
+
+    #[Test]
+    public function test_breaks_block_when_exceeding_neutral_line_threshold(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ExceedNeutralService
+{
+    // First block:
+    // $foo = 1;
+    // $bar = 2;
+    //
+    //
+    //
+    // After 3 blank lines, this starts a new block (exceeds max of 2)
+    // $baz = 3;
+    // $qux = 4;
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/ExceedNeutralService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Both blocks are only 2 lines each (below min of 3), so should pass
+        $this->assertPassed($result);
+    }
 }

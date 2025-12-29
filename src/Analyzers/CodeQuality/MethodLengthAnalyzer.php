@@ -148,7 +148,7 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
             $base .= 'This is excessively long and should be refactored. ';
         }
 
-        return $base.'Recommended actions: '.implode('; ', $recommendations).'. Maximum recommended length: 30-50 lines.';
+        return $base.'Recommended actions: '.implode('; ', $recommendations).". Maximum recommended length: {$threshold} lines.";
     }
 }
 

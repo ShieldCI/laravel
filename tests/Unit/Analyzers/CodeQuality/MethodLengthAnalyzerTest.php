@@ -533,6 +533,84 @@ PHP;
     }
 
     #[Test]
+    public function test_recommendation_uses_configured_threshold(): void
+    {
+        $statements = str_repeat('        $var = "value";'."\n", 80);
+
+        $code = <<<PHP
+<?php
+
+namespace App\Services;
+
+class Service
+{
+    public function process()
+    {
+{$statements}
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'method-length' => [
+                'threshold' => 75,
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        // Verify recommendation includes the configured threshold (75), not hardcoded "30-50 lines"
+        $this->assertStringContainsString('Maximum recommended length: 75 lines', $issues[0]->recommendation);
+    }
+
+    #[Test]
+    public function test_recommendation_uses_default_threshold(): void
+    {
+        $statements = str_repeat('        $var = "value";'."\n", 60);
+
+        $code = <<<PHP
+<?php
+
+namespace App\Services;
+
+class Service
+{
+    public function process()
+    {
+{$statements}
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        // Verify recommendation includes the default threshold (50 lines)
+        $this->assertStringContainsString('Maximum recommended length: 50 lines', $issues[0]->recommendation);
+    }
+
+    #[Test]
     public function test_has_correct_analyzer_metadata(): void
     {
         $analyzer = $this->createAnalyzer();

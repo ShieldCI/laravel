@@ -1044,4 +1044,138 @@ PHP;
         // Both blocks are only 2 lines each (below min of 3), so should pass
         $this->assertPassed($result);
     }
+
+    #[Test]
+    public function test_ignores_variable_mentions_in_documentation(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class UserService
+{
+    // This method accepts a $userId parameter and returns the user
+    // Set the $userName variable to the appropriate value
+    // The $email should be validated before storing
+    public function updateUser()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - these are just documentation mentioning variables (score 1 each)
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_ignores_inline_examples_in_documentation(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class DatabaseService
+{
+    // You can call $user->save() to persist changes
+    // Use DB::table('users') to query the table
+    // Try $query->where('active', true) for filtering
+    public function queryUsers()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/DatabaseService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - these are inline examples in docs (score 1-2 each)
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_ignores_pseudocode_explanations(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class PaymentProcessor
+{
+    // First check if $balance > $amount
+    // Then update $user->balance accordingly
+    // Finally send $notification->email
+    public function processPayment()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/PaymentProcessor.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - these are pseudocode explanations (weak indicators only)
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_detects_actual_code_vs_documentation(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class OrderService
+{
+    // These are just explanations:
+    // Set the $orderId and $status variables
+    // Call $order->save() to persist
+
+    // This is actual commented code:
+    // $order = Order::find($id);
+    // $order->status = 'completed';
+    // $order->save();
+    public function completeOrder()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/OrderService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - the second block has actual code with assignments and method calls
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('3 consecutive lines', $result);
+    }
 }

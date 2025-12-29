@@ -37,26 +37,50 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
     private int $maxNeutralLines = 2;
 
     /**
-     * Code pattern indicators.
+     * Code pattern indicators with weights.
+     * Higher weights = stronger indicators of code vs documentation.
      *
-     * @var array<string>
+     * @var array<string, int>
      */
     private array $codePatterns = [
-        '/\$[a-zA-Z_]/',                    // Variables
-        '/function\s+[a-zA-Z_]/',           // Functions
-        '/public|private|protected/',       // Visibility
-        '/class\s+[A-Z]/',                  // Classes
-        '/if\s*\(/',                        // If statements
-        '/foreach\s*\(/',                   // Foreach loops
-        '/while\s*\(/',                     // While loops
-        '/return\s+/',                      // Return statements
-        '/new\s+[A-Z]/',                    // Object instantiation
-        '/\-\>/',                           // Method calls
-        '/\:\:/',                           // Static calls
-        '/\=\>/',                           // Array arrows
-        '/use\s+[A-Z]/',                    // Use statements
-        '/namespace\s+/',                   // Namespace
+        // Strong indicators (weight: 4) - Structural declarations
+        '/function\s+[a-zA-Z_]/' => 4,      // Function definitions
+        '/public|private|protected/' => 4,  // Visibility modifiers
+        '/class\s+[A-Z]/' => 4,             // Class declarations
+        '/namespace\s+/' => 4,              // Namespace declarations
+        '/use\s+[A-Z]/' => 4,               // Use statements
+
+        // Medium indicators (weight: 2) - Control flow and operations
+        '/if\s*\(/' => 2,                   // If statements
+        '/foreach\s*\(/' => 2,              // Foreach loops
+        '/while\s*\(/' => 2,                // While loops
+        '/return\s+/' => 2,                 // Return statements
+        '/new\s+[A-Z]/' => 2,               // Object instantiation
+        '/[A-Z][a-zA-Z]*\:\:[a-zA-Z_]/' => 2, // Static method calls (User::find)
+
+        // Weak indicators (weight: 1) - Common in documentation examples
+        '/\$[a-zA-Z_]/' => 1,               // Variables (often mentioned in docs)
+        '/\-\>/' => 1,                      // Method calls (common in inline examples)
+        '/\=\>/' => 1,                      // Array arrows
+        '/\s=\s/' => 1,                     // Assignment operator (distinguishes code from prose)
+        '/;/' => 1,                         // Semicolons (code terminator)
     ];
+
+    /**
+     * Minimum score threshold to classify content as code.
+     * Prevents single weak indicators from triggering false positives.
+     *
+     * Threshold of 2 allows:
+     * - Medium indicators: return, if, foreach, User::find() (score 2)
+     * - Combined weak: $var = value; (score 1+1+1=3), $obj->method() (score 1+1=2)
+     * - Strong indicators: function, class, visibility (score 4+)
+     *
+     * But rejects false positives:
+     * - Single weak: just "$variable" mentioned in docs (score 1)
+     * - Prose: "Set the $variable" (score 1)
+     * - Examples: "Use User::class" (score 1, no method call)
+     */
+    private int $codeScoreThreshold = 2;
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -345,16 +369,17 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        // Check for code patterns
-        $matches = 0;
-        foreach ($this->codePatterns as $pattern) {
+        // Calculate weighted score for code patterns
+        $score = 0;
+        foreach ($this->codePatterns as $pattern => $weight) {
             if (preg_match($pattern, $content)) {
-                $matches++;
+                $score += $weight;
             }
         }
 
-        // If code patterns match, likely code
-        return $matches >= 1;
+        // Require minimum threshold score to classify as code
+        // This prevents single weak indicators (like $variable mentions) from triggering
+        return $score >= $this->codeScoreThreshold;
     }
 
     /**

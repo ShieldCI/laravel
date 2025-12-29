@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\CodeQuality;
 
+use Illuminate\Support\Str;
 use PhpParser\Node;
 use PhpParser\Node\Stmt;
 use PhpParser\NodeTraverser;
@@ -19,10 +20,13 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  * Validates PSR naming standards.
  *
  * Checks for:
- * - Classes: PascalCase
- * - Methods/variables: camelCase
- * - Constants: SCREAMING_SNAKE_CASE
- * - Laravel conventions (table names plural)
+ * - Classes/Interfaces/Traits/Enums: PascalCase
+ * - Methods/Properties: camelCase
+ * - Public Constants: SCREAMING_SNAKE_CASE
+ * - Private/Protected Constants: camelCase allowed
+ * - Laravel table names: plural snake_case
+ *
+ * Note: Local variables and parameters are NOT checked to avoid excessive noise.
  */
 class NamingConventionAnalyzer extends AbstractFileAnalyzer
 {
@@ -65,7 +69,7 @@ class NamingConventionAnalyzer extends AbstractFileAnalyzer
                     message: $issue['message'],
                     filePath: $file,
                     lineNumber: $issue['line'],
-                    severity: Severity::Low,
+                    severity: $this->metadata()->severity,
                     recommendation: $this->getRecommendation($issue['type'], $issue['name'], $issue['suggestion']),
                     column: null,
                     contextLines: null,
@@ -98,11 +102,10 @@ class NamingConventionAnalyzer extends AbstractFileAnalyzer
     private function getRecommendation(string $type, string $name, string $suggestion): string
     {
         $conventions = match ($type) {
-            'class' => 'Classes should use PascalCase (e.g., UserController, OrderService)',
+            'class', 'interface', 'trait', 'enum' => 'Classes/Interfaces/Traits/Enums should use PascalCase (e.g., UserController, OrderService)',
             'method' => 'Methods should use camelCase (e.g., getUserById, processPayment)',
             'property' => 'Properties should use camelCase (e.g., firstName, isActive)',
             'constant' => 'Public constants should use SCREAMING_SNAKE_CASE (e.g., MAX_RETRIES, API_KEY). Private/protected constants may use camelCase',
-            'variable' => 'Variables should use camelCase (e.g., userId, totalAmount)',
             'table' => 'Laravel table names should be plural snake_case (e.g., users, order_items, user_profiles)',
             default => 'Follow PSR-12 naming conventions',
         };
@@ -370,70 +373,51 @@ class NamingConventionVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Check if a table name is plural (basic check).
+     * Check if a table name is plural using Laravel's Str::singular().
+     *
+     * Uses Laravel's robust singularization engine to determine if a word is already plural.
+     * A word is plural if its singular form is different from the original.
+     * Handles irregular plurals (children->child), regular plurals (users->user),
+     * and uncountable words (sheep->sheep) automatically.
      */
     private function isPlural(string $name): bool
     {
-        // Handle common irregular plurals
-        $irregularPlurals = [
-            'people', 'children', 'men', 'women', 'teeth', 'feet',
-            'geese', 'mice', 'oxen', 'sheep', 'deer', 'fish',
-        ];
-
         // Extract the last word (after last underscore)
         $parts = explode('_', $name);
         $lastWord = end($parts);
 
-        // Check irregular plurals
-        if (in_array($lastWord, $irregularPlurals, true)) {
+        // Check if singular form differs from the word
+        // e.g., singular('users') = 'user' (different, so 'users' is plural)
+        //       singular('user') = 'user' (same, so 'user' is singular)
+        //       singular('children') = 'child' (different, so 'children' is plural)
+        //       singular('sheep') = 'sheep' (same, but acceptable for uncountables)
+        $singular = Str::singular($lastWord);
+
+        // If singular differs, it's plural
+        if ($singular !== $lastWord) {
             return true;
         }
 
-        // Basic plural check: ends with 's' or 'es'
-        // This is a simple heuristic - won't catch all cases but covers most
-        return str_ends_with($lastWord, 's') || str_ends_with($lastWord, 'es');
+        // For uncountables (sheep, fish), accept them as valid plural forms
+        // They're technically both singular and plural in English
+        return Str::plural($lastWord) === $lastWord;
     }
 
     /**
-     * Convert to plural form (basic implementation).
+     * Convert to plural form using Laravel's Str::plural().
+     *
+     * Uses Laravel's robust pluralization engine to convert words to plural.
+     * Handles irregular plurals (person->people), -y endings (category->categories),
+     * uncountable words (sheep, fish), and all edge cases automatically.
      */
     private function toPlural(string $name): string
     {
-        // Handle common irregular plurals
-        $irregularMap = [
-            'person' => 'people',
-            'child' => 'children',
-            'man' => 'men',
-            'woman' => 'women',
-            'tooth' => 'teeth',
-            'foot' => 'feet',
-            'goose' => 'geese',
-            'mouse' => 'mice',
-            'ox' => 'oxen',
-        ];
-
         // Extract the last word (after last underscore)
         $parts = explode('_', $name);
         $lastWord = end($parts);
 
-        // Check irregular plurals
-        if (isset($irregularMap[$lastWord])) {
-            $parts[count($parts) - 1] = $irregularMap[$lastWord];
-
-            return implode('_', $parts);
-        }
-
-        // Basic pluralization rules
-        if (str_ends_with($lastWord, 'y') && ! in_array($lastWord[strlen($lastWord) - 2], ['a', 'e', 'i', 'o', 'u'], true)) {
-            // category -> categories
-            $parts[count($parts) - 1] = substr($lastWord, 0, -1).'ies';
-        } elseif (str_ends_with($lastWord, 's') || str_ends_with($lastWord, 'x') || str_ends_with($lastWord, 'ch') || str_ends_with($lastWord, 'sh')) {
-            // class -> classes, box -> boxes
-            $parts[count($parts) - 1] = $lastWord.'es';
-        } else {
-            // user -> users
-            $parts[count($parts) - 1] = $lastWord.'s';
-        }
+        // Use Laravel's pluralization
+        $parts[count($parts) - 1] = Str::plural($lastWord);
 
         return implode('_', $parts);
     }

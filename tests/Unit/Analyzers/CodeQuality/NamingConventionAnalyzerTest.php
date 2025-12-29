@@ -402,7 +402,7 @@ PHP;
         // Check class recommendation
         $classIssue = collect($issues)->first(fn ($i) => $i->metadata['type'] === 'class');
         $this->assertNotNull($classIssue);
-        $this->assertStringContainsString('Classes should use PascalCase', $classIssue->recommendation);
+        $this->assertStringContainsString('Classes/Interfaces/Traits/Enums should use PascalCase', $classIssue->recommendation);
         $this->assertStringContainsString('BadClass', $classIssue->recommendation);
 
         // Check property recommendation

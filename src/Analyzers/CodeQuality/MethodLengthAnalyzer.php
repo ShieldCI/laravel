@@ -128,6 +128,7 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
      */
     private function getSeverityForLength(int $lines, int $threshold): Severity
     {
+        $threshold = max(1, $threshold);
         $ratio = $lines / $threshold;
 
         if ($ratio >= 3.0) {

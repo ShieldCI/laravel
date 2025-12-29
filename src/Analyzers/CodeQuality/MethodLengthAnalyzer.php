@@ -128,27 +128,20 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Get recommendation based on method length.
+     * Get recommendation based on function/method length.
      */
-    private function getRecommendation(int $lines, int $threshold): string
+    private function getRecommendation(int $lines, int $threshold, string $type): string
     {
         $excess = $lines - $threshold;
+        $typeLabel = $type === 'function' ? 'function' : 'method';
 
-        $base = "This method has {$excess} lines above the recommended threshold. ";
-
-        $recommendations = [
-            'Extract logical steps into separate, well-named methods',
-            'Apply the Single Responsibility Principle',
-            'Look for repeated code blocks that can be extracted',
-            'Consider if this method is doing more than one thing',
-            'Refactor to make the code more maintainable and testable',
-        ];
+        $base = "This {$typeLabel} has {$excess} lines above the recommended threshold. ";
 
         if ($lines >= $threshold * 2) {
             $base .= 'This is excessively long and should be refactored. ';
         }
 
-        return $base.'Recommended actions: '.implode('; ', $recommendations).". Maximum recommended length: {$threshold} lines.";
+        return $base."Maximum recommended length: {$threshold} lines.";
     }
 }
 

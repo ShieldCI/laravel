@@ -99,7 +99,41 @@ PHP;
     }
 
     #[Test]
-    public function test_excludes_getter_methods(): void
+    public function test_excludes_simple_getter_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DataService
+{
+    private $user;
+
+    // Simple getter should be excluded (< 10 lines)
+    public function getUser()
+    {
+        return $this->user;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/DataService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because simple getters are excluded
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_flags_large_getter_methods(): void
     {
         $statements = str_repeat('        $var = "value";'."\n", 60);
 
@@ -110,8 +144,8 @@ namespace App\Services;
 
 class DataService
 {
-    // Getter should be excluded even if long
-    public function getData()
+    // Large "getter" should NOT be excluded (> 10 lines)
+    public function getUsersWithComplexFiltering()
     {
 {$statements}
         return \$var;
@@ -129,27 +163,27 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass because getters are excluded
-        $this->assertPassed($result);
+        // Should fail because large methods are not excluded, even if they start with "get"
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('getUsersWithComplexFiltering', $result);
     }
 
     #[Test]
-    public function test_excludes_setter_methods(): void
+    public function test_excludes_simple_setter_methods(): void
     {
-        $statements = str_repeat('        $var = "value";'."\n", 60);
-
-        $code = <<<PHP
+        $code = <<<'PHP'
 <?php
 
 namespace App\Services;
 
 class DataService
 {
-    // Setter should be excluded even if long
-    public function setConfiguration(\$config)
+    private $config;
+
+    // Simple setter should be excluded (< 10 lines)
+    public function setConfig($config)
     {
-{$statements}
-        return \$var;
+        $this->config = $config;
     }
 }
 PHP;
@@ -164,27 +198,26 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass because setters are excluded
+        // Should pass because simple setters are excluded
         $this->assertPassed($result);
     }
 
     #[Test]
-    public function test_excludes_is_methods(): void
+    public function test_excludes_simple_is_methods(): void
     {
-        $statements = str_repeat('        $var = "value";'."\n", 60);
-
-        $code = <<<PHP
+        $code = <<<'PHP'
 <?php
 
 namespace App\Services;
 
 class ValidationService
 {
-    // is* methods should be excluded even if long
-    public function isValid(\$data)
+    private $valid;
+
+    // Simple is* method should be excluded (< 10 lines)
+    public function isValid()
     {
-{$statements}
-        return true;
+        return $this->valid === true;
     }
 }
 PHP;
@@ -199,12 +232,46 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass because is* methods are excluded
+        // Should pass because simple is* methods are excluded
         $this->assertPassed($result);
     }
 
     #[Test]
-    public function test_excludes_has_methods(): void
+    public function test_excludes_simple_has_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    private $permissions = [];
+
+    // Simple has* method should be excluded (< 10 lines)
+    public function hasPermission($permission)
+    {
+        return in_array($permission, $this->permissions);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because simple has* methods are excluded
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_flags_large_methods_matching_exclude_patterns(): void
     {
         $statements = str_repeat('        $var = "value";'."\n", 60);
 
@@ -215,8 +282,20 @@ namespace App\Services;
 
 class FeatureService
 {
-    // has* methods should be excluded even if long
-    public function hasPermission(\$user)
+    // Large methods should NOT be excluded, even if they match patterns
+    public function setConfigurationFromMultipleSources(\$sources)
+    {
+{$statements}
+        return true;
+    }
+
+    public function isOrderValidForProcessing(\$order)
+    {
+{$statements}
+        return true;
+    }
+
+    public function hasAdvancedPermissions(\$user)
     {
 {$statements}
         return true;
@@ -234,8 +313,11 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass because has* methods are excluded
-        $this->assertPassed($result);
+        // Should fail because these methods are too large to be simple accessors
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('setConfigurationFromMultipleSources', $result);
+        $this->assertHasIssueContaining('isOrderValidForProcessing', $result);
+        $this->assertHasIssueContaining('hasAdvancedPermissions', $result);
     }
 
     #[Test]

@@ -22,7 +22,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  * Checks for:
  * - Methods and functions with > threshold lines (default: 50)
  * - Counts physical lines (from declaration to closing brace)
- * - Excludes simple getter/setter patterns (get*, set*, is*, has*)
+ * - Excludes simple getter/setter patterns (get*, set*, is*, has*) only if ≤ 10 lines
+ * - Large methods matching exclude patterns are still flagged (prevents hiding real problems)
  * - Differentiates between global functions and class methods in messaging
  */
 class MethodLengthAnalyzer extends AbstractFileAnalyzer
@@ -31,6 +32,12 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
 
     /** @var array<string> */
     public const DEFAULT_EXCLUDED_PATTERNS = ['get*', 'set*', 'is*', 'has*'];
+
+    /**
+     * Maximum lines for a method/function to be considered a "simple" getter/setter.
+     * Methods matching exclude patterns but exceeding this will still be flagged.
+     */
+    public const SIMPLE_ACCESSOR_MAX_LINES = 10;
 
     private int $threshold;
 
@@ -62,7 +69,7 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
         $analyzerConfig = $this->config->get('shieldci.analyzers.code-quality.method-length', []);
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
-        $this->threshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;
+        $this->threshold = (int) ($analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD);
         $excludePatterns = $analyzerConfig['exclude_patterns'] ?? null;
         $this->excludedPatterns = is_array($excludePatterns) ? $excludePatterns : self::DEFAULT_EXCLUDED_PATTERNS;
 
@@ -171,16 +178,15 @@ class MethodLengthVisitor extends NodeVisitorAbstract
         if ($node instanceof Stmt\Function_ || $node instanceof Stmt\ClassMethod) {
             $name = $node->name->toString();
             $type = $node instanceof Stmt\Function_ ? 'function' : 'method';
-
-            // Check if name matches exclude patterns
-            if ($this->shouldExclude($name)) {
-                return null;
-            }
-
             $startLine = $node->getStartLine();
 
             // Count physical lines (from start to end)
             $physicalLines = $this->countPhysicalLines($node);
+
+            // Only exclude if it matches pattern AND is small (simple accessor)
+            if ($this->shouldExclude($name, $physicalLines)) {
+                return null;
+            }
 
             if ($physicalLines > $this->threshold) {
                 $this->issues[] = [
@@ -196,10 +202,21 @@ class MethodLengthVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Check if function/method name matches exclude patterns.
+     * Check if function/method should be excluded.
+     *
+     * Only excludes if:
+     * 1. Name matches exclude patterns (get*, set*, is*, has*)
+     * 2. AND is small enough to be a simple accessor (<= 10 lines)
+     *
+     * This prevents large methods like getUsersWithComplexFiltering() from being excluded.
      */
-    private function shouldExclude(string $name): bool
+    private function shouldExclude(string $name, int $lines): bool
     {
+        // If it's large, never exclude it (even if it matches a pattern)
+        if ($lines > MethodLengthAnalyzer::SIMPLE_ACCESSOR_MAX_LINES) {
+            return false;
+        }
+
         foreach ($this->excludePatterns as $pattern) {
             // Convert glob pattern to regex (escape special chars, then replace * with .*)
             $escaped = preg_quote($pattern, '/');

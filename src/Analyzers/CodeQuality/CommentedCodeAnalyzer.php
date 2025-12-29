@@ -317,7 +317,8 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
                 $blocks[] = [
                     'startLine' => $tokenLine,
                     'endLine' => $endLine,
-                    'lineCount' => $lineCount,
+                    'lineCount' => $codeLineCount,
+                    'codeLineCount' => $codeLineCount,
                     'preview' => $this->getPreview($codeLines),
                 ];
             }

@@ -1295,4 +1295,48 @@ PHP;
         // These are all prose, not code
         $this->assertPassed($result);
     }
+
+    #[Test]
+    public function test_block_comment_reports_code_line_count_not_total_lines(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class LegacyService
+{
+    /*
+    This was the old implementation
+
+    $user = User::find($id);
+    $user->name = 'Updated';
+    $user->save();
+    return $user;
+
+    It was removed due to performance issues
+    */
+    public function newMethod()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/LegacyService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should FAIL - block has code
+        $this->assertFailed($result);
+
+        // The fix ensures lineCount represents code lines only (4), not total lines (8)
+        // Block has: 1 prose, 1 blank, 4 code lines, 1 blank, 1 prose = 8 total
+        // But we should only report the 4 code lines
+        $this->assertHasIssueContaining('4 consecutive lines', $result);
+    }
 }

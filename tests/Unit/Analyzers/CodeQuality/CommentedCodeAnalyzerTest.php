@@ -1178,4 +1178,82 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('3 consecutive lines', $result);
     }
+
+    #[Test]
+    public function test_detects_code_with_todo_markers_inverted_logic(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class PaymentService
+{
+    // TODO: Remove this old implementation after migration
+    // public function oldPaymentMethod()
+    // {
+    //     $payment = Payment::create($data);
+    //     return $payment;
+    // }
+
+    // FIXME: This legacy code needs refactoring
+    // private function legacyCalculation()
+    // {
+    //     return $total * $rate;
+    // }
+
+    public function newPaymentMethod()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/PaymentService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should FAIL - strong code indicators (public function, private function)
+        // should be detected even with TODO/FIXME markers
+        // This demonstrates inverted logic: code signals win over documentation markers
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('commented-out code', $result);
+    }
+
+    #[Test]
+    public function test_ignores_todo_with_weak_code_signals(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class UserService
+{
+    // TODO: Update the $userId in the next version
+    // FIXME: The $userName validation needs improvement
+    // NOTE: Consider using $email for login
+    public function processUser()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should PASS - weak signals ($variable) + documentation markers = not code
+        // Borderline scores (2-3) use documentation check as tiebreaker
+        $this->assertPassed($result);
+    }
 }

@@ -350,6 +350,12 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if comment content looks like code.
+     *
+     * Uses inverted logic:
+     * 1. Calculate code score FIRST (prioritize positive signals)
+     * 2. Strong code indicators (>= 4) always win, regardless of prose
+     * 3. Documentation check only used as tiebreaker for borderline scores
+     * 4. This prevents false negatives like "// TODO: $user->save();"
      */
     private function looksLikeCode(string $content): bool
     {
@@ -364,12 +370,7 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
             return preg_match('/^[{};\[\]\(\)]$/', trim($content)) === 1;
         }
 
-        // Exclude common documentation patterns
-        if ($this->isDocumentation($content)) {
-            return false;
-        }
-
-        // Calculate weighted score for code patterns
+        // Calculate weighted score for code patterns FIRST
         $score = 0;
         foreach ($this->codePatterns as $pattern => $weight) {
             if (preg_match($pattern, $content)) {
@@ -377,9 +378,27 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        // Require minimum threshold score to classify as code
-        // This prevents single weak indicators (like $variable mentions) from triggering
-        return $score >= $this->codeScoreThreshold;
+        // Strong code indicators (>= 4): Always classify as code
+        // Examples: function, class, public/private/protected, namespace
+        // These are structural declarations that should be detected even with TODO/FIXME
+        if ($score >= 4) {
+            return true;
+        }
+
+        // Weak signals (< 2): Not code
+        if ($score < $this->codeScoreThreshold) {
+            return false;
+        }
+
+        // Borderline scores (2-3): Use documentation check as tiebreaker
+        // Examples: return $var (score 3), $obj->method() (score 2)
+        // Only here do we check if it looks like documentation
+        if ($this->isDocumentation($content)) {
+            return false;
+        }
+
+        // Passed all checks: it's code
+        return true;
     }
 
     /**

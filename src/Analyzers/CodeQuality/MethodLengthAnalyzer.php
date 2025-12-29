@@ -130,6 +130,9 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
     {
         $ratio = $lines / $threshold;
 
+        if ($ratio >= 3.0) {
+            return Severity::High;
+        }
         if ($ratio >= 2.0) {
             return Severity::Medium;
         }

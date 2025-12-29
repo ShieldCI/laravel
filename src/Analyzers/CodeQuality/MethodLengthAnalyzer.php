@@ -21,7 +21,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  *
  * Checks for:
  * - Methods with > threshold lines (default: 50)
- * - Counts logical lines (excluding comments/whitespace)
+ * - Counts physical lines (from opening brace to closing brace)
  * - Excludes simple getter/setter methods
  */
 class MethodLengthAnalyzer extends AbstractFileAnalyzer
@@ -182,13 +182,13 @@ class MethodLengthVisitor extends NodeVisitorAbstract
 
             $startLine = $node->getStartLine();
 
-            // Count logical lines (statements)
-            $logicalLines = $this->countLogicalLines($node);
+            // Count physical lines (from start to end of method)
+            $physicalLines = $this->countPhysicalLines($node);
 
-            if ($logicalLines > $this->threshold) {
+            if ($physicalLines > $this->threshold) {
                 $this->issues[] = [
                     'method' => $methodName,
-                    'lines' => $logicalLines,
+                    'lines' => $physicalLines,
                     'line' => $startLine,
                 ];
             }
@@ -215,67 +215,22 @@ class MethodLengthVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Count logical lines (statements) in method.
+     * Count physical lines in method.
+     *
+     * Counts the actual number of lines from the method declaration
+     * to the closing brace, matching what developers see in their editor.
      */
-    private function countLogicalLines(Node $node): int
+    private function countPhysicalLines(Node $node): int
     {
         if (! $node instanceof Stmt\Function_ && ! $node instanceof Stmt\ClassMethod) {
             return 0;
         }
 
-        $stmts = $node->stmts;
-        if ($stmts === null) {
-            return 0;
-        }
+        $startLine = $node->getStartLine();
+        $endLine = $node->getEndLine();
 
-        return $this->countStatements($stmts);
-    }
-
-    /**
-     * Recursively count statements.
-     *
-     * @param  array<Node\Stmt>  $stmts
-     */
-    private function countStatements(array $stmts): int
-    {
-        $count = 0;
-
-        foreach ($stmts as $stmt) {
-            $count++; // Count this statement
-
-            // Count nested statements
-            if ($stmt instanceof Stmt\If_) {
-                $count += $this->countStatements($stmt->stmts);
-                foreach ($stmt->elseifs as $elseif) {
-                    $count += $this->countStatements($elseif->stmts);
-                }
-                if ($stmt->else !== null) {
-                    $count += $this->countStatements($stmt->else->stmts);
-                }
-            } elseif ($stmt instanceof Stmt\While_) {
-                $count += $this->countStatements($stmt->stmts);
-            } elseif ($stmt instanceof Stmt\Do_) {
-                $count += $this->countStatements($stmt->stmts);
-            } elseif ($stmt instanceof Stmt\For_) {
-                $count += $this->countStatements($stmt->stmts);
-            } elseif ($stmt instanceof Stmt\Foreach_) {
-                $count += $this->countStatements($stmt->stmts);
-            } elseif ($stmt instanceof Stmt\Switch_) {
-                foreach ($stmt->cases as $case) {
-                    $count += $this->countStatements($case->stmts);
-                }
-            } elseif ($stmt instanceof Stmt\TryCatch) {
-                $count += $this->countStatements($stmt->stmts);
-                foreach ($stmt->catches as $catch) {
-                    $count += $this->countStatements($catch->stmts);
-                }
-                if ($stmt->finally !== null) {
-                    $count += $this->countStatements($stmt->finally->stmts);
-                }
-            }
-        }
-
-        return $count;
+        // Return the number of lines (inclusive)
+        return $endLine - $startLine + 1;
     }
 
     /**

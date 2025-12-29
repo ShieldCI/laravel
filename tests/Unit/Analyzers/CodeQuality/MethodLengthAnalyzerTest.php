@@ -241,8 +241,9 @@ PHP;
     #[Test]
     public function test_method_at_exact_threshold_passes(): void
     {
-        // Exactly 50 statements (at threshold, not over)
-        $statements = str_repeat('        $var = "value";'."\n", 50);
+        // Exactly 50 physical lines (at threshold, not over)
+        // Method declaration + 47 statements + closing brace = 50 lines
+        $statements = str_repeat('        $var = "value";'."\n", 47);
 
         $code = <<<PHP
 <?php
@@ -253,8 +254,7 @@ class Service
 {
     public function process()
     {
-{$statements}
-    }
+{$statements}    }
 }
 PHP;
 
@@ -275,8 +275,9 @@ PHP;
     #[Test]
     public function test_method_at_threshold_plus_one_fails(): void
     {
-        // 51 statements (threshold + 1)
-        $statements = str_repeat('        $var = "value";'."\n", 51);
+        // 51 physical lines (threshold + 1)
+        // Method declaration + 48 statements + closing brace = 51 lines
+        $statements = str_repeat('        $var = "value";'."\n", 48);
 
         $code = <<<PHP
 <?php
@@ -287,8 +288,7 @@ class Service
 {
     public function process()
     {
-{$statements}
-    }
+{$statements}    }
 }
 PHP;
 
@@ -407,253 +407,6 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('processHelper', $result);
-    }
-
-    #[Test]
-    public function test_counts_nested_if_statements(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Services;
-
-class Service
-{
-    public function process($data)
-    {
-        if ($data > 0) {
-            $a = 1;
-            $b = 2;
-            $c = 3;
-            if ($data > 10) {
-                $d = 4;
-                $e = 5;
-                $f = 6;
-            } else {
-                $g = 7;
-                $h = 8;
-            }
-        }
-        // Add statements to exceed threshold
-        $s1 = 1; $s2 = 2; $s3 = 3; $s4 = 4; $s5 = 5;
-        $s6 = 6; $s7 = 7; $s8 = 8; $s9 = 9; $s10 = 10;
-        $s11 = 11; $s12 = 12; $s13 = 13; $s14 = 14; $s15 = 15;
-        $s16 = 16; $s17 = 17; $s18 = 18; $s19 = 19; $s20 = 20;
-        $s21 = 21; $s22 = 22; $s23 = 23; $s24 = 24; $s25 = 25;
-        $s26 = 26; $s27 = 27; $s28 = 28; $s29 = 29; $s30 = 30;
-        $s31 = 31; $s32 = 32; $s33 = 33; $s34 = 34; $s35 = 35;
-        $s36 = 36; $s37 = 37; $s38 = 38; $s39 = 39; $s40 = 40;
-        $s41 = 41; $s42 = 42; $s43 = 43; $s44 = 44; $s45 = 45;
-        $s46 = 46; $s47 = 47; $s48 = 48; $s49 = 49; $s50 = 50;
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Services/Service.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-    }
-
-    #[Test]
-    public function test_counts_foreach_loops(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Services;
-
-class Service
-{
-    public function process($items)
-    {
-        foreach ($items as $item) {
-            $a = 1;
-            $b = 2;
-            $c = 3;
-        }
-        // Total: 1 (foreach) + 3 (a,b,c) = 4 statements
-        // Need 47+ more to exceed threshold
-        $s1 = 1; $s2 = 2; $s3 = 3; $s4 = 4; $s5 = 5;
-        $s6 = 6; $s7 = 7; $s8 = 8; $s9 = 9; $s10 = 10;
-        $s11 = 11; $s12 = 12; $s13 = 13; $s14 = 14; $s15 = 15;
-        $s16 = 16; $s17 = 17; $s18 = 18; $s19 = 19; $s20 = 20;
-        $s21 = 21; $s22 = 22; $s23 = 23; $s24 = 24; $s25 = 25;
-        $s26 = 26; $s27 = 27; $s28 = 28; $s29 = 29; $s30 = 30;
-        $s31 = 31; $s32 = 32; $s33 = 33; $s34 = 34; $s35 = 35;
-        $s36 = 36; $s37 = 37; $s38 = 38; $s39 = 39; $s40 = 40;
-        $s41 = 41; $s42 = 42; $s43 = 43; $s44 = 44; $s45 = 45;
-        $s46 = 46; $s47 = 47;
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Services/Service.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-    }
-
-    #[Test]
-    public function test_counts_while_loops(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Services;
-
-class Service
-{
-    public function process($condition)
-    {
-        while ($condition) {
-            $a = 1;
-            $b = 2;
-            $c = 3;
-        }
-        // Total: 1 (while) + 3 (a,b,c) = 4 statements
-        // Need 47+ more to exceed threshold
-        $s1 = 1; $s2 = 2; $s3 = 3; $s4 = 4; $s5 = 5;
-        $s6 = 6; $s7 = 7; $s8 = 8; $s9 = 9; $s10 = 10;
-        $s11 = 11; $s12 = 12; $s13 = 13; $s14 = 14; $s15 = 15;
-        $s16 = 16; $s17 = 17; $s18 = 18; $s19 = 19; $s20 = 20;
-        $s21 = 21; $s22 = 22; $s23 = 23; $s24 = 24; $s25 = 25;
-        $s26 = 26; $s27 = 27; $s28 = 28; $s29 = 29; $s30 = 30;
-        $s31 = 31; $s32 = 32; $s33 = 33; $s34 = 34; $s35 = 35;
-        $s36 = 36; $s37 = 37; $s38 = 38; $s39 = 39; $s40 = 40;
-        $s41 = 41; $s42 = 42; $s43 = 43; $s44 = 44; $s45 = 45;
-        $s46 = 46; $s47 = 47;
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Services/Service.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-    }
-
-    #[Test]
-    public function test_counts_switch_statements(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Services;
-
-class Service
-{
-    public function process($value)
-    {
-        switch ($value) {
-            case 1:
-                $a = 1;
-                $b = 2;
-                break;
-            case 2:
-                $c = 3;
-                $d = 4;
-                break;
-            default:
-                $e = 5;
-        }
-        // Total: 1 (switch) + 3 (a,b,break) + 3 (c,d,break) + 1 (e) = 8 statements
-        // Need 43+ more to exceed threshold
-        $s1 = 1; $s2 = 2; $s3 = 3; $s4 = 4; $s5 = 5;
-        $s6 = 6; $s7 = 7; $s8 = 8; $s9 = 9; $s10 = 10;
-        $s11 = 11; $s12 = 12; $s13 = 13; $s14 = 14; $s15 = 15;
-        $s16 = 16; $s17 = 17; $s18 = 18; $s19 = 19; $s20 = 20;
-        $s21 = 21; $s22 = 22; $s23 = 23; $s24 = 24; $s25 = 25;
-        $s26 = 26; $s27 = 27; $s28 = 28; $s29 = 29; $s30 = 30;
-        $s31 = 31; $s32 = 32; $s33 = 33; $s34 = 34; $s35 = 35;
-        $s36 = 36; $s37 = 37; $s38 = 38; $s39 = 39; $s40 = 40;
-        $s41 = 41; $s42 = 42; $s43 = 43;
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Services/Service.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-    }
-
-    #[Test]
-    public function test_counts_try_catch_statements(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Services;
-
-class Service
-{
-    public function process()
-    {
-        try {
-            $a = 1;
-            $b = 2;
-            $c = 3;
-        } catch (\Exception $e) {
-            $d = 4;
-            $e = 5;
-        } finally {
-            $f = 6;
-        }
-        // Add statements to exceed threshold
-        $s1 = 1; $s2 = 2; $s3 = 3; $s4 = 4; $s5 = 5;
-        $s6 = 6; $s7 = 7; $s8 = 8; $s9 = 9; $s10 = 10;
-        $s11 = 11; $s12 = 12; $s13 = 13; $s14 = 14; $s15 = 15;
-        $s16 = 16; $s17 = 17; $s18 = 18; $s19 = 19; $s20 = 20;
-        $s21 = 21; $s22 = 22; $s23 = 23; $s24 = 24; $s25 = 25;
-        $s26 = 26; $s27 = 27; $s28 = 28; $s29 = 29; $s30 = 30;
-        $s31 = 31; $s32 = 32; $s33 = 33; $s34 = 34; $s35 = 35;
-        $s36 = 36; $s37 = 37; $s38 = 38; $s39 = 39; $s40 = 40;
-        $s41 = 41; $s42 = 42; $s43 = 43; $s44 = 44; $s45 = 45;
-        $s46 = 46; $s47 = 47; $s48 = 48; $s49 = 49; $s50 = 50;
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Services/Service.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
     }
 
     #[Test]

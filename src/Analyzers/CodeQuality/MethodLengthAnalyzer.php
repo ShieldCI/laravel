@@ -155,11 +155,19 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
 
         $base = "This {$typeLabel} has {$excess} lines above the recommended threshold. ";
 
+        $recommendations = [
+            'Extract logical steps into separate, well-named methods',
+            'Apply the Single Responsibility Principle',
+            'Look for repeated code blocks that can be extracted',
+            'Consider if this method is doing more than one thing',
+            'Refactor to make the code more maintainable and testable',
+        ];
+
         if ($lines >= $threshold * 2) {
             $base .= 'This is excessively long and should be refactored. ';
         }
 
-        return $base."Maximum recommended length: {$threshold} lines.";
+        return $base.'Recommended actions: '.implode('; ', $recommendations).". Maximum recommended length: {$threshold} lines.";
     }
 }
 

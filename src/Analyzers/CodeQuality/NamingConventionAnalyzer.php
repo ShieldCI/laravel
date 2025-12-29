@@ -101,7 +101,7 @@ class NamingConventionAnalyzer extends AbstractFileAnalyzer
             'class' => 'Classes should use PascalCase (e.g., UserController, OrderService)',
             'method' => 'Methods should use camelCase (e.g., getUserById, processPayment)',
             'property' => 'Properties should use camelCase (e.g., firstName, isActive)',
-            'constant' => 'Constants should use SCREAMING_SNAKE_CASE (e.g., MAX_RETRIES, API_KEY)',
+            'constant' => 'Public constants should use SCREAMING_SNAKE_CASE (e.g., MAX_RETRIES, API_KEY). Private/protected constants may use camelCase',
             'variable' => 'Variables should use camelCase (e.g., userId, totalAmount)',
             default => 'Follow PSR-12 naming conventions',
         };
@@ -181,20 +181,24 @@ class NamingConventionVisitor extends NodeVisitorAbstract
             }
         }
 
-        // Check constant names
+        // Check constant names (PSR-12: only public constants require SCREAMING_SNAKE_CASE)
         if ($node instanceof Stmt\ClassConst) {
-            foreach ($node->consts as $const) {
-                $constName = $const->name->toString();
+            // Only enforce SCREAMING_SNAKE_CASE for public constants
+            // Modern PHP allows: private const maxRetries = 3;
+            if ($node->isPublic()) {
+                foreach ($node->consts as $const) {
+                    $constName = $const->name->toString();
 
-                if (! $this->isScreamingSnakeCase($constName)) {
-                    $suggestion = $this->toScreamingSnakeCase($constName);
-                    $this->issues[] = [
-                        'message' => "Constant '{$constName}' does not follow SCREAMING_SNAKE_CASE convention",
-                        'line' => $node->getStartLine(),
-                        'type' => 'constant',
-                        'name' => $constName,
-                        'suggestion' => $suggestion,
-                    ];
+                    if (! $this->isScreamingSnakeCase($constName)) {
+                        $suggestion = $this->toScreamingSnakeCase($constName);
+                        $this->issues[] = [
+                            'message' => "Public constant '{$constName}' does not follow SCREAMING_SNAKE_CASE convention",
+                            'line' => $node->getStartLine(),
+                            'type' => 'constant',
+                            'name' => $constName,
+                            'suggestion' => $suggestion,
+                        ];
+                    }
                 }
             }
         }

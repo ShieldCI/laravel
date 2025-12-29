@@ -309,7 +309,7 @@ PHP;
     }
 
     #[Test]
-    public function test_flags_constant_names_not_in_screaming_snake_case(): void
+    public function test_flags_public_constant_names_not_in_screaming_snake_case(): void
     {
         $code = <<<'PHP'
 <?php
@@ -337,7 +337,7 @@ PHP;
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertCount(3, $issues);
-        $this->assertStringContainsString("Constant 'maxRetries' does not follow SCREAMING_SNAKE_CASE convention", $issues[0]->message);
+        $this->assertStringContainsString("Public constant 'maxRetries' does not follow SCREAMING_SNAKE_CASE convention", $issues[0]->message);
         $this->assertSame('MAX_RETRIES', $issues[0]->metadata['suggestion']);
     }
 
@@ -414,7 +414,7 @@ PHP;
         // Check constant recommendation
         $constantIssue = collect($issues)->first(fn ($i) => $i->metadata['type'] === 'constant');
         $this->assertNotNull($constantIssue);
-        $this->assertStringContainsString('Constants should use SCREAMING_SNAKE_CASE', $constantIssue->recommendation);
+        $this->assertStringContainsString('Public constants should use SCREAMING_SNAKE_CASE', $constantIssue->recommendation);
         $this->assertStringContainsString('BAD_CONSTANT', $constantIssue->recommendation);
 
         // Check method recommendation
@@ -517,5 +517,81 @@ PHP;
         $issues = $result->getIssues();
         $this->assertSame('MAX_RETRY_ATTEMPTS', $issues[0]->metadata['suggestion']);
         $this->assertSame('API_BASE_URL', $issues[1]->metadata['suggestion']);
+    }
+
+    #[Test]
+    public function test_allows_camel_case_for_private_and_protected_constants(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Config;
+
+class Config
+{
+    // PSR-12: Only public constants require SCREAMING_SNAKE_CASE
+    private const maxRetries = 3;
+    protected const defaultTimeout = 30;
+    private const apiBaseUrl = 'https://api.example.com';
+    protected const cachePrefix = 'app_';
+
+    // Public constants still require SCREAMING_SNAKE_CASE
+    public const MAX_CONNECTIONS = 100;
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Config/Config.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - private/protected constants can use camelCase
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_flags_only_public_constants_with_incorrect_naming(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Config;
+
+class Config
+{
+    // These should NOT be flagged (private/protected)
+    private const maxRetries = 3;
+    protected const defaultTimeout = 30;
+
+    // These SHOULD be flagged (public with wrong naming)
+    public const maxConnections = 100;
+    public const apiKey = 'secret';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Config/Config.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        // Only 2 issues for the public constants
+        $this->assertCount(2, $issues);
+        $this->assertStringContainsString("Public constant 'maxConnections'", $issues[0]->message);
+        $this->assertSame('MAX_CONNECTIONS', $issues[0]->metadata['suggestion']);
+        $this->assertStringContainsString("Public constant 'apiKey'", $issues[1]->message);
+        $this->assertSame('API_KEY', $issues[1]->metadata['suggestion']);
     }
 }

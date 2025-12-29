@@ -270,10 +270,12 @@ class DocBlockVisitor extends NodeVisitorAbstract
             }
         }
 
-        // Check for @return tag only if method has generic return type
-        if ($node->returnType !== null && ! str_contains($docText, '@return')) {
-            // Only require @return if return type is generic
-            if ($this->isGenericType($node->returnType)) {
+        // Check for @return tag
+        if (! str_contains($docText, '@return')) {
+            // Require @return if:
+            // - No return type declared (needs documentation)
+            // - Return type is generic/ambiguous (array, mixed, union, etc.)
+            if ($node->returnType === null || $this->requiresReturnDocumentation($node->returnType)) {
                 $this->issues[] = [
                     'message' => "Public method '{$methodName}' is missing @return documentation",
                     'line' => $node->getStartLine(),
@@ -302,7 +304,6 @@ class DocBlockVisitor extends NodeVisitorAbstract
      * Returns false only for scalar native types (void, string, int, bool, float, etc.)
      * which are self-documenting. Returns true for:
      * - Generic types (array, iterable, object, mixed, callable) - need to specify structure
-     * - Class names - may need additional context/documentation
      * - No type hint - definitely needs documentation
      */
     private function isGenericType(Node $typeNode): bool
@@ -343,6 +344,68 @@ class DocBlockVisitor extends NodeVisitorAbstract
             return true;
         }
 
+        return true;
+    }
+
+    /**
+     * Check if return type requires @return documentation.
+     *
+     * Require @return when:
+     * - Return type is mixed
+     * - Return type is array, iterable, callable, object (generic types)
+     * - Return type is a union or intersection
+     *
+     * Do NOT require @return when:
+     * - Return type is a scalar (string, int, float, bool, etc.)
+     * - Return type is a concrete class (User, Response, BelongsToMany, etc.)
+     * - Return type is void or never
+     */
+    private function requiresReturnDocumentation(Node $typeNode): bool
+    {
+        // Scalars and void/never don't need docs
+        if ($typeNode instanceof Node\Identifier) {
+            $selfDocumentingTypes = [
+                'void', 'never', 'string', 'int', 'float', 'bool',
+                'true', 'false', 'null',
+            ];
+
+            $typeName = strtolower($typeNode->toString());
+
+            // Self-documenting types don't need @return
+            if (in_array($typeName, $selfDocumentingTypes, true)) {
+                return false;
+            }
+
+            // Generic types that DO need documentation
+            $genericTypes = ['mixed', 'array', 'iterable', 'callable', 'object'];
+            if (in_array($typeName, $genericTypes, true)) {
+                return true;
+            }
+
+            return false;
+        }
+
+        // Concrete class names (User, Response, BelongsToMany) don't need docs
+        if ($typeNode instanceof Node\Name) {
+            return false;
+        }
+
+        // Nullable types: defer to inner type
+        if ($typeNode instanceof Node\NullableType) {
+            return $this->requiresReturnDocumentation($typeNode->type);
+        }
+
+        // Union types ALWAYS require documentation (even string|int)
+        if ($typeNode instanceof Node\UnionType) {
+            return true;
+        }
+
+        // Intersection types ALWAYS require documentation
+        if ($typeNode instanceof Node\IntersectionType) {
+            return true;
+        }
+
+        // Unknown type nodes require documentation
         return true;
     }
 

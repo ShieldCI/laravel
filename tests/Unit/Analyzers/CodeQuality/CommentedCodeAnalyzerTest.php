@@ -1256,4 +1256,43 @@ PHP;
         // Borderline scores (2-3) use documentation check as tiebreaker
         $this->assertPassed($result);
     }
+
+    #[Test]
+    public function test_word_boundaries_prevent_false_positives_in_prose(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class ArticleService
+{
+    // This publication will be released publicly next month
+    // The system returns an error if validation fails
+    // We use a new User model because the old one was deprecated
+    // The namespace for this class has been updated
+    // Consider renewing the subscription while the user is active
+    public function publishArticle()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/ArticleService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should PASS - word boundaries prevent false matches:
+        // - "publication" doesn't match "\bpublic\b"
+        // - "returns" doesn't match "\breturn\b"
+        // - "because" doesn't match "\buse\b"
+        // - "renewing" doesn't match "\bnew\b"
+        // These are all prose, not code
+        $this->assertPassed($result);
+    }
 }

@@ -40,23 +40,28 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
      * Code pattern indicators with weights.
      * Higher weights = stronger indicators of code vs documentation.
      *
+     * Uses word boundaries (\b) to prevent false matches in prose:
+     * - "publication" won't match "public"
+     * - "returns" won't match "return"
+     * - "because User" won't match "use User"
+     *
      * @var array<string, int>
      */
     private array $codePatterns = [
         // Strong indicators (weight: 4) - Structural declarations
-        '/function\s+[a-zA-Z_]/' => 4,      // Function definitions
-        '/public|private|protected/' => 4,  // Visibility modifiers
-        '/class\s+[A-Z]/' => 4,             // Class declarations
-        '/namespace\s+/' => 4,              // Namespace declarations
-        '/use\s+[A-Z]/' => 4,               // Use statements
+        '/\bfunction\b\s+[a-zA-Z_]/' => 4,      // Function definitions
+        '/\b(public|private|protected)\b/' => 4, // Visibility modifiers
+        '/\bclass\b\s+[A-Z]/' => 4,             // Class declarations
+        '/\bnamespace\b\s+/' => 4,              // Namespace declarations
+        '/\buse\b\s+[A-Z]/' => 4,               // Use statements
 
         // Medium indicators (weight: 2) - Control flow and operations
-        '/if\s*\(/' => 2,                   // If statements
-        '/foreach\s*\(/' => 2,              // Foreach loops
-        '/while\s*\(/' => 2,                // While loops
-        '/return\s+/' => 2,                 // Return statements
-        '/new\s+[A-Z]/' => 2,               // Object instantiation
-        '/[A-Z][a-zA-Z]*\:\:[a-zA-Z_]/' => 2, // Static method calls (User::find)
+        '/\bif\b\s*\(/' => 2,                   // If statements
+        '/\bforeach\b\s*\(/' => 2,              // Foreach loops
+        '/\bwhile\b\s*\(/' => 2,                // While loops
+        '/\breturn\b\s*/' => 2,                 // Return statements (handles "return;")
+        '/\bnew\b\s+[A-Z]/' => 2,               // Object instantiation
+        '/[A-Z][a-zA-Z]*\:\:[a-zA-Z_]/' => 2,   // Static method calls (User::find)
 
         // Weak indicators (weight: 1) - Common in documentation examples
         '/\$[a-zA-Z_]/' => 1,               // Variables (often mentioned in docs)
@@ -248,7 +253,11 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
         $blocks = [];
 
         // Tokenize the content
-        $tokens = @token_get_all($content);
+        try {
+            $tokens = token_get_all($content);
+        } catch (\Throwable $e) {
+            return [];
+        }
 
         foreach ($tokens as $token) {
             if (! is_array($token)) {

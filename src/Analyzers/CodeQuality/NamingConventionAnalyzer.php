@@ -223,9 +223,9 @@ class NamingConventionVisitor extends NodeVisitorAbstract
      */
     private function isPascalCase(string $name): bool
     {
-        // PascalCase: starts with uppercase, at least 2 characters, no underscores
+        // PascalCase: starts with uppercase, at least 1 character, no underscores
         // Allows acronyms like XMLParser, HTTPClient, APIController
-        return preg_match('/^[A-Z][a-zA-Z0-9]+$/', $name) === 1;
+        return preg_match('/^[A-Z][a-zA-Z0-9]*$/', $name) === 1;
     }
 
     /**
@@ -233,8 +233,10 @@ class NamingConventionVisitor extends NodeVisitorAbstract
      */
     private function isCamelCase(string $name): bool
     {
-        // camelCase: starts with lowercase, at least 2 characters, no underscores
-        return preg_match('/^[a-z][a-zA-Z0-9]+$/', $name) === 1;
+        // camelCase: starts with lowercase, allows single characters (PSR-12 compliant)
+        // Valid: i, j, x, y, userName, isActive
+        // Invalid: user_name, UserName, _private
+        return preg_match('/^[a-z][a-zA-Z0-9]*$/', $name) === 1;
     }
 
     /**

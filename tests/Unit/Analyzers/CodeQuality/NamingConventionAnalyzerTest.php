@@ -7,166 +7,46 @@ namespace ShieldCI\Tests\Unit\Analyzers\CodeQuality;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Analyzers\CodeQuality\NamingConventionAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
-use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class NamingConventionAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    protected function createAnalyzer(array $config = []): AnalyzerInterface
     {
         return new NamingConventionAnalyzer($this->parser);
     }
 
     #[Test]
-    public function test_detects_snake_case_class_names(): void
+    public function test_passes_when_all_names_follow_conventions(): void
     {
         $code = <<<'PHP'
 <?php
 
-namespace App\Services;
+namespace App\Controllers;
 
-class user_service
+class UserController
 {
-    public function getUser()
+    private string $firstName;
+    private int $totalAmount;
+    public const MAX_RETRIES = 3;
+
+    public function getUserById(int $id): void
     {
-        return [];
+        // Valid code
+    }
+
+    public function processPayment(): void
+    {
+        // Valid code
     }
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Services/user_service.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('PascalCase', $result);
-    }
-
-    #[Test]
-    public function test_detects_snake_case_method_names(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Services;
-
-class UserService
-{
-    public function Get_User($userId)
-    {
-        return [];
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Services/UserService.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('camelCase', $result);
-    }
-
-    #[Test]
-    public function test_detects_snake_case_property_names(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Services;
-
-class UserService
-{
-    private $User_Name;
-    private $user_id;
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Services/UserService.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('camelCase', $result);
-    }
-
-    #[Test]
-    public function test_detects_camel_case_constant_names(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Services;
-
-class UserService
-{
-    private const maxRetries = 3;
-    private const apiKey = 'secret';
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Services/UserService.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('SCREAMING_SNAKE_CASE', $result);
-    }
-
-    #[Test]
-    public function test_passes_with_psr_naming(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Services;
-
-class UserService
-{
-    private const MAX_RETRIES = 3;
-    private const API_KEY = 'secret';
-
-    private $userName;
-    private $userId;
-
-    public function getUser($userId)
-    {
-        return User::find($userId);
-    }
-
-    public function processPayment()
-    {
-        return true;
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Services/UserService.php' => $code,
+            'app/Controllers/UserController.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -179,143 +59,28 @@ PHP;
     }
 
     #[Test]
-    public function test_detects_single_letter_class_names(): void
+    public function test_allows_single_character_properties_psr12_compliant(): void
     {
         $code = <<<'PHP'
 <?php
 
-namespace App;
+namespace App\Models;
 
-class A
+class Point
 {
-    public function test()
+    private int $x;
+    private int $y;
+    private int $z;
+
+    public function getX(): int
     {
-        return true;
+        return $this->x;
     }
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/A.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('PascalCase', $result);
-    }
-
-    #[Test]
-    public function test_detects_single_letter_method_names(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App;
-
-class UserService
-{
-    public function a()
-    {
-        return true;
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/UserService.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('camelCase', $result);
-    }
-
-    #[Test]
-    public function test_detects_single_letter_property_names(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App;
-
-class UserService
-{
-    private $a;
-    private $x;
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/UserService.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('camelCase', $result);
-    }
-
-    #[Test]
-    public function test_detects_single_letter_constant_names(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App;
-
-class UserService
-{
-    private const A = 'test';
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/UserService.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('SCREAMING_SNAKE_CASE', $result);
-    }
-
-    #[Test]
-    public function test_allows_acronyms_in_class_names(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Services;
-
-class XMLParser
-{
-    public function parse()
-    {
-        return true;
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Services/XMLParser.php' => $code,
+            'app/Models/Point.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -328,24 +93,21 @@ PHP;
     }
 
     #[Test]
-    public function test_allows_multiple_acronyms_in_class_names(): void
+    public function test_flags_class_names_not_in_pascal_case(): void
     {
         $code = <<<'PHP'
 <?php
 
-namespace App\Http;
+namespace App\Controllers;
 
-class HTTPAPIClient
+class user_controller
 {
-    public function request()
-    {
-        return true;
-    }
+    public function getUser(): void {}
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/HTTPAPIClient.php' => $code,
+            'app/Controllers/user_controller.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -354,11 +116,15 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString("Class 'user_controller' does not follow PascalCase convention", $issues[0]->message);
+        $this->assertSame('UserController', $issues[0]->metadata['suggestion']);
     }
 
     #[Test]
-    public function test_detects_interface_naming_violations(): void
+    public function test_flags_interface_names_not_in_pascal_case(): void
     {
         $code = <<<'PHP'
 <?php
@@ -367,7 +133,7 @@ namespace App\Contracts;
 
 interface user_repository
 {
-    public function find($id);
+    public function find(int $id);
 }
 PHP;
 
@@ -382,38 +148,11 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('PascalCase', $result);
+        $this->assertHasIssueContaining("Interface 'user_repository' does not follow PascalCase convention", $result);
     }
 
     #[Test]
-    public function test_passes_with_correct_interface_naming(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Contracts;
-
-interface UserRepositoryInterface
-{
-    public function find($id);
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Contracts/UserRepositoryInterface.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertPassed($result);
-    }
-
-    #[Test]
-    public function test_detects_trait_naming_violations(): void
+    public function test_flags_trait_names_not_in_pascal_case(): void
     {
         $code = <<<'PHP'
 <?php
@@ -422,10 +161,7 @@ namespace App\Traits;
 
 trait has_timestamps
 {
-    public function touch()
-    {
-        return true;
-    }
+    public function getCreatedAt() {}
 }
 PHP;
 
@@ -440,41 +176,13 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('PascalCase', $result);
+        $this->assertHasIssueContaining("Trait 'has_timestamps' does not follow PascalCase convention", $result);
+        $issues = $result->getIssues();
+        $this->assertSame('HasTimestamps', $issues[0]->metadata['suggestion']);
     }
 
     #[Test]
-    public function test_passes_with_correct_trait_naming(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Traits;
-
-trait HasTimestamps
-{
-    public function touch()
-    {
-        return true;
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Traits/HasTimestamps.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertPassed($result);
-    }
-
-    #[Test]
-    public function test_detects_enum_naming_violations(): void
+    public function test_flags_enum_names_not_in_pascal_case(): void
     {
         $code = <<<'PHP'
 <?php
@@ -499,26 +207,27 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('PascalCase', $result);
+        $this->assertHasIssueContaining("Enum 'user_status' does not follow PascalCase convention", $result);
     }
 
     #[Test]
-    public function test_passes_with_correct_enum_naming(): void
+    public function test_flags_method_names_not_in_camel_case(): void
     {
         $code = <<<'PHP'
 <?php
 
-namespace App\Enums;
+namespace App\Services;
 
-enum UserStatus
+class UserService
 {
-    case ACTIVE;
-    case INACTIVE;
+    public function get_user_by_id(int $id): void {}
+
+    public function ProcessPayment(): void {}
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Enums/UserStatus.php' => $code,
+            'app/Services/UserService.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -527,7 +236,13 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+        $this->assertStringContainsString("Method 'get_user_by_id' does not follow camelCase convention", $issues[0]->message);
+        $this->assertSame('getUserById', $issues[0]->metadata['suggestion']);
+        $this->assertStringContainsString("Method 'ProcessPayment' does not follow camelCase convention", $issues[1]->message);
+        $this->assertSame('processPayment', $issues[1]->metadata['suggestion']);
     }
 
     #[Test]
@@ -536,28 +251,18 @@ PHP;
         $code = <<<'PHP'
 <?php
 
-namespace App;
+namespace App\Models;
 
-class UserService
+class User
 {
-    public function __construct()
-    {
-    }
-
-    public function __toString()
-    {
-        return '';
-    }
-
-    public function __get($name)
-    {
-        return null;
-    }
+    public function __construct() {}
+    public function __toString() {}
+    public function __get($name) {}
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/UserService.php' => $code,
+            'app/Models/User.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -570,27 +275,22 @@ PHP;
     }
 
     #[Test]
-    public function test_detects_multiple_violations_in_one_file(): void
+    public function test_flags_property_names_not_in_camel_case(): void
     {
         $code = <<<'PHP'
 <?php
 
-namespace App\Services;
+namespace App\Models;
 
-class user_service
+class User
 {
-    private const maxRetries = 3;
-    private $User_Name;
-
-    public function Get_User($user_id)
-    {
-        return User::find($user_id);
-    }
+    private string $first_name;
+    private int $TotalAmount;
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Services/user_service.php' => $code,
+            'app/Models/User.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -600,28 +300,32 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-
-        // Should detect class, constant, property, and method violations
         $issues = $result->getIssues();
-        $this->assertGreaterThanOrEqual(4, count($issues));
+        $this->assertCount(2, $issues);
+        $this->assertStringContainsString("Property 'first_name' does not follow camelCase convention", $issues[0]->message);
+        $this->assertSame('firstName', $issues[0]->metadata['suggestion']);
+        $this->assertStringContainsString("Property 'TotalAmount' does not follow camelCase convention", $issues[1]->message);
+        $this->assertSame('totalAmount', $issues[1]->metadata['suggestion']);
     }
 
     #[Test]
-    public function test_handles_multiple_properties_on_one_line(): void
+    public function test_flags_constant_names_not_in_screaming_snake_case(): void
     {
         $code = <<<'PHP'
 <?php
 
-namespace App;
+namespace App\Config;
 
-class UserService
+class Config
 {
-    private $User_Name, $User_Email, $User_Age;
+    public const maxRetries = 3;
+    public const API_Key = 'secret';
+    public const TimeoutSeconds = 30;
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/UserService.php' => $code,
+            'app/Config/Config.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -631,123 +335,28 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-
-        // Should detect all 3 property violations
         $issues = $result->getIssues();
-        $this->assertGreaterThanOrEqual(3, count($issues));
+        $this->assertCount(3, $issues);
+        $this->assertStringContainsString("Constant 'maxRetries' does not follow SCREAMING_SNAKE_CASE convention", $issues[0]->message);
+        $this->assertSame('MAX_RETRIES', $issues[0]->metadata['suggestion']);
     }
 
     #[Test]
-    public function test_handles_multiple_constants_on_one_line(): void
+    public function test_allows_acronyms_in_pascal_case(): void
     {
         $code = <<<'PHP'
 <?php
 
-namespace App;
+namespace App\Parsers;
 
-class UserService
-{
-    private const maxRetries = 3, apiKey = 'secret', timeOut = 30;
-}
+class XMLParser {}
+class HTTPClient {}
+class APIController {}
+interface JSONSerializable {}
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/UserService.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-
-        // Should detect all 3 constant violations
-        $issues = $result->getIssues();
-        $this->assertGreaterThanOrEqual(3, count($issues));
-    }
-
-    #[Test]
-    public function test_includes_correct_metadata(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App;
-
-class user_service
-{
-    public function test()
-    {
-        return true;
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/user_service.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-
-        $issues = $result->getIssues();
-        $this->assertNotEmpty($issues);
-
-        $issue = $issues[0];
-        $metadata = $issue->metadata;
-
-        $this->assertArrayHasKey('type', $metadata);
-        $this->assertArrayHasKey('name', $metadata);
-        $this->assertArrayHasKey('suggestion', $metadata);
-        $this->assertEquals('user_service', $metadata['name']);
-        $this->assertEquals('UserService', $metadata['suggestion']);
-    }
-
-    #[Test]
-    public function test_has_correct_analyzer_metadata(): void
-    {
-        $analyzer = $this->createAnalyzer();
-
-        $reflection = new \ReflectionClass($analyzer);
-        $method = $reflection->getMethod('metadata');
-        $method->setAccessible(true);
-        $metadata = $method->invoke($analyzer);
-
-        $this->assertInstanceOf(AnalyzerMetadata::class, $metadata);
-        $this->assertEquals('naming-convention', $metadata->id);
-        $this->assertEquals('Naming Convention Analyzer', $metadata->name);
-        $this->assertStringContainsString('PSR', $metadata->description);
-    }
-
-    #[Test]
-    public function test_allows_numbers_in_names(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App;
-
-class User2Service
-{
-    private const MAX_RETRIES_V2 = 3;
-    private $userId2;
-
-    public function getUser2($userId)
-    {
-        return true;
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/User2Service.php' => $code,
+            'app/Parsers/Acronyms.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -757,5 +366,156 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_provides_correct_recommendations_for_each_type(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App;
+
+class bad_class
+{
+    private string $Bad_Property;
+    public const badConstant = 1;
+
+    public function Bad_Method(): void {}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/bad_class.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(4, $issues);
+
+        // Check class recommendation
+        $classIssue = collect($issues)->first(fn ($i) => $i->metadata['type'] === 'class');
+        $this->assertNotNull($classIssue);
+        $this->assertStringContainsString('Classes should use PascalCase', $classIssue->recommendation);
+        $this->assertStringContainsString('BadClass', $classIssue->recommendation);
+
+        // Check property recommendation
+        $propertyIssue = collect($issues)->first(fn ($i) => $i->metadata['type'] === 'property');
+        $this->assertNotNull($propertyIssue);
+        $this->assertStringContainsString('Properties should use camelCase', $propertyIssue->recommendation);
+        $this->assertStringContainsString('badProperty', $propertyIssue->recommendation);
+
+        // Check constant recommendation
+        $constantIssue = collect($issues)->first(fn ($i) => $i->metadata['type'] === 'constant');
+        $this->assertNotNull($constantIssue);
+        $this->assertStringContainsString('Constants should use SCREAMING_SNAKE_CASE', $constantIssue->recommendation);
+        $this->assertStringContainsString('BAD_CONSTANT', $constantIssue->recommendation);
+
+        // Check method recommendation
+        $methodIssue = collect($issues)->first(fn ($i) => $i->metadata['type'] === 'method');
+        $this->assertNotNull($methodIssue);
+        $this->assertStringContainsString('Methods should use camelCase', $methodIssue->recommendation);
+        $this->assertStringContainsString('badMethod', $methodIssue->recommendation);
+    }
+
+    #[Test]
+    public function test_handles_multiple_properties_in_one_statement(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class User
+{
+    private string $first_name, $last_name, $email_address;
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(3, $issues);
+        $this->assertStringContainsString("Property 'first_name' does not follow camelCase convention", $issues[0]->message);
+        $this->assertStringContainsString("Property 'last_name' does not follow camelCase convention", $issues[1]->message);
+        $this->assertStringContainsString("Property 'email_address' does not follow camelCase convention", $issues[2]->message);
+    }
+
+    #[Test]
+    public function test_correctly_converts_snake_case_to_camel_case(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App;
+
+class Test
+{
+    private string $user_first_name;
+
+    public function get_user_by_id(): void {}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Test.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertSame('userFirstName', $issues[0]->metadata['suggestion']);
+        $this->assertSame('getUserById', $issues[1]->metadata['suggestion']);
+    }
+
+    #[Test]
+    public function test_correctly_converts_to_screaming_snake_case(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Config;
+
+class Config
+{
+    public const maxRetryAttempts = 3;
+    public const apiBaseUrl = 'https://api.example.com';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Config/Config.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertSame('MAX_RETRY_ATTEMPTS', $issues[0]->metadata['suggestion']);
+        $this->assertSame('API_BASE_URL', $issues[1]->metadata['suggestion']);
     }
 }

@@ -311,6 +311,45 @@ PHP;
     }
 
     #[Test]
+    public function test_detects_partial_param_tags(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Process a user action.
+     *
+     * @param mixed $userId The user ID
+     * @return User|null
+     */
+    public function processUser($userId, $action, $timestamp, $metadata, $options)
+    {
+        return User::find($userId);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        // Should flag that 4 out of 5 parameters are missing @param tags
+        $this->assertHasIssueContaining('4 parameter(s) missing @param', $result);
+        $this->assertHasIssueContaining('found 1, need 5', $result);
+    }
+
+    #[Test]
     public function test_detects_missing_return_tags(): void
     {
         $code = <<<'PHP'
@@ -343,8 +382,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('@return', $result);
+        $this->assertPassed($result);
     }
 
     #[Test]
@@ -509,6 +547,92 @@ PHP;
 
         $result = $analyzer->analyze();
 
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('@throws', $result);
+    }
+
+    #[Test]
+    public function test_ignores_caught_exceptions_in_try_block(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Process a user action.
+     *
+     * @param int $userId
+     * @return User|null
+     */
+    public function processUser($userId)
+    {
+        try {
+            // These exceptions are caught and handled - no @throws needed
+            throw new \InvalidArgumentException('Invalid user');
+        } catch (\InvalidArgumentException $e) {
+            // Handle exception without re-throwing
+            logger()->error($e->getMessage());
+            return null;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - exception is caught and handled, not propagated
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_detects_throws_in_catch_block_without_rethrow(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Process a user action.
+     *
+     * @param int $userId
+     */
+    public function processUser($userId)
+    {
+        try {
+            $user = User::find($userId);
+        } catch (\Exception $e) {
+            // New throw in catch - this DOES need @throws
+            throw new \RuntimeException('Failed to process user', 0, $e);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - new exception in catch block propagates
         $this->assertFailed($result);
         $this->assertHasIssueContaining('@throws', $result);
     }
@@ -733,6 +857,46 @@ PHP;
         $this->assertCount(2, $issues);
         $this->assertHasIssueContaining('firstMethod', $result);
         $this->assertHasIssueContaining('secondMethod', $result);
+    }
+
+    #[Test]
+    public function test_message_counts_issues_and_methods_separately(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Process a user action.
+     */
+    public function processUser($userId, $action)
+    {
+        throw new \Exception('Error');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        // This method has 2 issues: missing @param (2 params) and missing @throws
+        $this->assertCount(2, $issues);
+
+        // Message should say "2 issues across 1 method" (not "2 methods")
+        $this->assertStringContainsString('2 documentation issues across 1 public method', $result->getMessage());
     }
 
     #[Test]

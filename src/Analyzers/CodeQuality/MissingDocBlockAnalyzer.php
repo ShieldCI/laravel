@@ -94,8 +94,19 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
 
         $totalIssues = count($issues);
 
+        // Count unique methods affected (one method can have multiple issues)
+        $uniqueMethods = [];
+        foreach ($issues as $issue) {
+            $methodKey = $issue->metadata['class'].'@'.$issue->metadata['method'];
+            $uniqueMethods[$methodKey] = true;
+        }
+        $affectedMethodCount = count($uniqueMethods);
+
+        $issueWord = $totalIssues === 1 ? 'issue' : 'issues';
+        $methodWord = $affectedMethodCount === 1 ? 'method' : 'methods';
+
         return $this->failed(
-            "Found {$totalIssues} public method(s) with missing or incomplete documentation",
+            "Found {$totalIssues} documentation {$issueWord} across {$affectedMethodCount} public {$methodWord}",
             $issues
         );
     }
@@ -152,7 +163,7 @@ class DocBlockVisitor extends NodeVisitorAbstract
     public function enterNode(Node $node)
     {
         // Track current class
-        if ($node instanceof Stmt\Class_) {
+        if ($node instanceof Stmt\Class_ || $node instanceof Stmt\Trait_ || $node instanceof Stmt\Interface_) {
             $this->currentClass = $node->name ? $node->name->toString() : 'Anonymous';
 
             return null;
@@ -199,7 +210,7 @@ class DocBlockVisitor extends NodeVisitorAbstract
     public function leaveNode(Node $node)
     {
         // Clear class context on exit
-        if ($node instanceof Stmt\Class_) {
+        if ($node instanceof Stmt\Class_ || $node instanceof Stmt\Trait_ || $node instanceof Stmt\Interface_) {
             $this->currentClass = null;
         }
 
@@ -231,28 +242,35 @@ class DocBlockVisitor extends NodeVisitorAbstract
         $docText = $docComment->getText();
 
         // Check for @param tags if method has parameters with generic types
-        if (! empty($node->params) && ! str_contains($docText, '@param')) {
-            // Only require @param if any parameter has a generic type or no type
-            $requiresParamDoc = false;
+        if (! empty($node->params)) {
+            // Count parameters that require documentation (generic types or no type)
+            $paramsRequiringDocs = [];
             foreach ($node->params as $param) {
                 if ($param->type === null || $this->isGenericType($param->type)) {
-                    $requiresParamDoc = true;
-                    break;
+                    $paramName = $param->var->name ?? 'unknown';
+                    $paramsRequiringDocs[] = $paramName;
                 }
             }
 
-            if ($requiresParamDoc) {
-                $this->issues[] = [
-                    'message' => "Public method '{$methodName}' is missing @param documentation",
-                    'line' => $node->getStartLine(),
-                    'type' => 'missing_param',
-                    'method' => $methodName,
-                    'class' => $this->currentClass ?? 'Unknown',
-                ];
+            if (! empty($paramsRequiringDocs)) {
+                // Count actual @param tags in docblock
+                $paramTagCount = preg_match_all('/@param\b/i', $docText, $matches);
+
+                // If we have fewer @param tags than parameters requiring documentation
+                if ($paramTagCount < count($paramsRequiringDocs)) {
+                    $missing = count($paramsRequiringDocs) - $paramTagCount;
+                    $this->issues[] = [
+                        'message' => "Public method '{$methodName}' has {$missing} parameter(s) missing @param documentation (found {$paramTagCount}, need ".count($paramsRequiringDocs).')',
+                        'line' => $node->getStartLine(),
+                        'type' => 'missing_param',
+                        'method' => $methodName,
+                        'class' => $this->currentClass ?? 'Unknown',
+                    ];
+                }
             }
         }
 
-        // Check for @return tag only if method has generic return type or no return type
+        // Check for @return tag only if method has generic return type
         if ($node->returnType !== null && ! str_contains($docText, '@return')) {
             // Only require @return if return type is generic
             if ($this->isGenericType($node->returnType)) {
@@ -289,37 +307,28 @@ class DocBlockVisitor extends NodeVisitorAbstract
      */
     private function isGenericType(Node $typeNode): bool
     {
-        // Handle identifier types (e.g., array, string, int, void, class names)
+        // Scalars are self-documenting
         if ($typeNode instanceof Node\Identifier) {
-            $typeName = strtolower($typeNode->toString());
+            $scalarTypes = [
+                'void', 'string', 'int', 'float', 'bool',
+                'true', 'false', 'null', 'never',
+            ];
 
-            // Only scalar native types don't need documentation (they're self-documenting)
-            $scalarTypes = ['void', 'string', 'int', 'float', 'bool', 'true', 'false', 'null', 'never'];
-            if (in_array($typeName, $scalarTypes)) {
-                return false;
-            }
-
-            // Everything else needs documentation:
-            // - Generic types (array, iterable, object, mixed, callable) need structure specified
-            // - self, parent, static need context
-            return true;
+            return ! in_array(strtolower($typeNode->toString()), $scalarTypes, true);
         }
 
-        // Handle name types (e.g., fully qualified class names)
+        // Concrete class names are self-documenting
         if ($typeNode instanceof Node\Name) {
-            // Class names should have documentation for additional context
-            return true;
+            return false;
         }
 
-        // Handle nullable types (e.g., ?string, ?array)
+        // Nullable types: defer to inner type
         if ($typeNode instanceof Node\NullableType) {
             return $this->isGenericType($typeNode->type);
         }
 
-        // Handle union types (e.g., string|int, array|null)
+        // Union types: require docs if any part is non-scalar or ambiguous
         if ($typeNode instanceof Node\UnionType) {
-            // If all types are scalar, no documentation needed
-            // If any type needs documentation, require it
             foreach ($typeNode->types as $type) {
                 if ($this->isGenericType($type)) {
                     return true;
@@ -329,13 +338,11 @@ class DocBlockVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // Handle intersection types (e.g., Countable&Traversable)
+        // Intersection types should be documented
         if ($typeNode instanceof Node\IntersectionType) {
-            // Intersection types should have documentation
             return true;
         }
 
-        // Default to requiring documentation for unknown types
         return true;
     }
 
@@ -405,10 +412,9 @@ class DocBlockVisitor extends NodeVisitorAbstract
                     }
                 }
             } elseif ($stmt instanceof Stmt\TryCatch) {
-                // Check try block for throws
-                if ($this->hasThrowStatement($stmt->stmts)) {
-                    return true;
-                }
+                // Don't check try block - exceptions there are caught and handled internally
+                // Only check catch blocks (for re-throws or new throws) and finally block
+
                 // Check catch blocks for re-throws or new throws
                 foreach ($stmt->catches as $catch) {
                     if ($this->hasThrowStatement($catch->stmts)) {

@@ -280,11 +280,21 @@ class NamingConventionVisitor extends NodeVisitorAbstract
 
     /**
      * Convert to SCREAMING_SNAKE_CASE.
+     *
+     * Handles acronyms correctly:
+     * - APIKey -> API_KEY
+     * - XMLParser -> XML_PARSER
+     * - getUserID -> GET_USER_ID
      */
     private function toScreamingSnakeCase(string $name): string
     {
-        // Insert underscore before uppercase letters (except first)
-        $name = preg_replace('/(?<!^)[A-Z]/', '_$0', $name) ?? $name;
+        // Insert underscore between lowercase/digit and uppercase
+        // e.g., "maxRetry" -> "max_Retry", "get9Items" -> "get9_Items"
+        $name = preg_replace('/([a-z0-9])([A-Z])/', '$1_$2', $name) ?? $name;
+
+        // Insert underscore before the last uppercase letter in an acronym run
+        // e.g., "APIKey" -> "API_Key", "XMLParser" -> "XML_Parser"
+        $name = preg_replace('/([A-Z]+)([A-Z][a-z])/', '$1_$2', $name) ?? $name;
 
         // Replace existing separators with underscores
         $name = str_replace(['-', ' '], '_', $name);

@@ -520,6 +520,48 @@ PHP;
     }
 
     #[Test]
+    public function test_handles_acronyms_in_constant_names_correctly(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Config;
+
+class Config
+{
+    public const APIKey = 'secret';           // Should be API_KEY
+    public const XMLParser = 'parser';        // Should be XML_PARSER
+    public const getUserID = 1;               // Should be GET_USER_ID
+    public const HTTPSConnection = true;      // Should be HTTPS_CONNECTION
+    public const PDFGenerator = 'gen';        // Should be PDF_GENERATOR
+    public const html2PDF = 'converter';      // Should be HTML2_PDF
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Config/Config.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(6, $issues);
+
+        // Check each acronym is handled correctly
+        $this->assertSame('API_KEY', $issues[0]->metadata['suggestion']);
+        $this->assertSame('XML_PARSER', $issues[1]->metadata['suggestion']);
+        $this->assertSame('GET_USER_ID', $issues[2]->metadata['suggestion']);
+        $this->assertSame('HTTPS_CONNECTION', $issues[3]->metadata['suggestion']);
+        $this->assertSame('PDF_GENERATOR', $issues[4]->metadata['suggestion']);
+        $this->assertSame('HTML2_PDF', $issues[5]->metadata['suggestion']);
+    }
+
+    #[Test]
     public function test_allows_camel_case_for_private_and_protected_constants(): void
     {
         $code = <<<'PHP'

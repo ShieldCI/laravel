@@ -44,6 +44,8 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
     /** @var array<string> */
     private array $excludedPatterns;
 
+    private int $simpleAccessorMaxLines;
+
     public function __construct(
         private ParserInterface $parser,
         private Config $config
@@ -72,10 +74,12 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
         $this->threshold = (int) ($analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD);
         $excludePatterns = $analyzerConfig['exclude_patterns'] ?? null;
         $this->excludedPatterns = is_array($excludePatterns) ? $excludePatterns : self::DEFAULT_EXCLUDED_PATTERNS;
+        $this->simpleAccessorMaxLines = (int) ($analyzerConfig['simple_accessor_max_lines'] ?? self::SIMPLE_ACCESSOR_MAX_LINES);
 
         $issues = [];
         $threshold = $this->threshold;
         $excludePatterns = $this->excludedPatterns;
+        $simpleAccessorMaxLines = $this->simpleAccessorMaxLines;
 
         foreach ($this->getPhpFiles() as $file) {
             $ast = $this->parser->parseFile($file);
@@ -84,7 +88,7 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $visitor = new MethodLengthVisitor($threshold, $excludePatterns);
+            $visitor = new MethodLengthVisitor($threshold, $excludePatterns, $simpleAccessorMaxLines);
             $traverser = new NodeTraverser;
             $traverser->addVisitor($visitor);
             $traverser->traverse($ast);
@@ -171,10 +175,12 @@ class MethodLengthVisitor extends NodeVisitorAbstract
 
     /**
      * @param  array<string>  $excludePatterns
+     * @param  int  $simpleAccessorMaxLines  Maximum lines for a method to be considered a simple accessor
      */
     public function __construct(
         private int $threshold,
-        private array $excludePatterns = []
+        private array $excludePatterns = [],
+        private int $simpleAccessorMaxLines = MethodLengthAnalyzer::SIMPLE_ACCESSOR_MAX_LINES
     ) {}
 
     public function enterNode(Node $node)
@@ -210,14 +216,14 @@ class MethodLengthVisitor extends NodeVisitorAbstract
      *
      * Only excludes if:
      * 1. Name matches exclude patterns (get*, set*, is*, has*)
-     * 2. AND is small enough to be a simple accessor (<= 10 lines)
+     * 2. AND is small enough to be a simple accessor (configurable threshold)
      *
      * This prevents large methods like getUsersWithComplexFiltering() from being excluded.
      */
     private function shouldExclude(string $name, int $lines): bool
     {
         // If it's large, never exclude it (even if it matches a pattern)
-        if ($lines > MethodLengthAnalyzer::SIMPLE_ACCESSOR_MAX_LINES) {
+        if ($lines > $this->simpleAccessorMaxLines) {
             return false;
         }
 

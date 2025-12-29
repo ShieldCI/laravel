@@ -745,6 +745,66 @@ PHP;
     }
 
     #[Test]
+    public function test_respects_custom_simple_accessor_max_lines_configuration(): void
+    {
+        // Create a getter with 8 physical lines (method declaration to closing brace)
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    private $user;
+
+    public function getUser()
+    {
+        // Some comment
+        $value = $this->user;
+        // Another comment
+
+        return $value;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        // Test with low main threshold (5) and strict accessor threshold (3)
+        // The 8-line getter should be flagged (exceeds main threshold and accessor threshold)
+        $analyzer = $this->createAnalyzer([
+            'method-length' => [
+                'threshold' => 5,
+                'simple_accessor_max_lines' => 3,
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('getUser', $result);
+
+        // Test with low main threshold (5) but lenient accessor threshold (10)
+        // The 8-line getter should be excluded (matches pattern and <= 10 lines)
+        $analyzer = $this->createAnalyzer([
+            'method-length' => [
+                'threshold' => 5,
+                'simple_accessor_max_lines' => 10,
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    #[Test]
     public function test_has_correct_analyzer_metadata(): void
     {
         $analyzer = $this->createAnalyzer();

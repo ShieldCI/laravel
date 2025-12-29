@@ -208,13 +208,12 @@ class NamingConventionVisitor extends NodeVisitorAbstract
     private function checkPascalCaseNaming(Node $node, string $type, string $name): void
     {
         if (! $this->isPascalCase($name)) {
-            $suggestion = $this->toPascalCase($name);
             $this->issues[] = [
                 'message' => "{$type} '{$name}' does not follow PascalCase convention",
                 'line' => $node->getStartLine(),
-                'type' => 'class',
+                'type' => strtolower($type), // class | interface | trait | enum
                 'name' => $name,
-                'suggestion' => $suggestion,
+                'suggestion' => $this->toPascalCase($name),
             ];
         }
     }

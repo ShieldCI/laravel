@@ -823,26 +823,26 @@ PHP;
 
         // These should NOT be flagged (have @return or don't need it)
         $issues = $result->getIssues();
-        $issueMessages = array_map(fn($i) => $i->message, $issues);
+        $issueMessages = array_map(fn ($i) => $i->message, $issues);
 
         $this->assertFalse(
-            in_array(true, array_map(fn($m) => str_contains($m, 'scalarString'), $issueMessages)),
+            in_array(true, array_map(fn ($m) => str_contains($m, 'scalarString'), $issueMessages)),
             'scalarString should not be flagged'
         );
         $this->assertFalse(
-            in_array(true, array_map(fn($m) => str_contains($m, 'scalarInt'), $issueMessages)),
+            in_array(true, array_map(fn ($m) => str_contains($m, 'scalarInt'), $issueMessages)),
             'scalarInt should not be flagged'
         );
         $this->assertFalse(
-            in_array(true, array_map(fn($m) => str_contains($m, 'scalarVoid'), $issueMessages)),
+            in_array(true, array_map(fn ($m) => str_contains($m, 'scalarVoid'), $issueMessages)),
             'scalarVoid should not be flagged'
         );
         $this->assertFalse(
-            in_array(true, array_map(fn($m) => str_contains($m, 'scalarNever'), $issueMessages)),
+            in_array(true, array_map(fn ($m) => str_contains($m, 'scalarNever'), $issueMessages)),
             'scalarNever should not be flagged'
         );
         $this->assertFalse(
-            in_array(true, array_map(fn($m) => str_contains($m, 'concreteClass'), $issueMessages)),
+            in_array(true, array_map(fn ($m) => str_contains($m, 'concreteClass'), $issueMessages)),
             'concreteClass should not be flagged'
         );
     }

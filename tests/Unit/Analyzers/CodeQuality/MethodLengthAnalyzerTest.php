@@ -525,10 +525,12 @@ PHP;
         $this->assertCount(1, $issues);
 
         $metadata = $issues[0]->metadata;
-        $this->assertArrayHasKey('method', $metadata);
+        $this->assertArrayHasKey('name', $metadata);
+        $this->assertArrayHasKey('type', $metadata);
         $this->assertArrayHasKey('lines', $metadata);
         $this->assertArrayHasKey('threshold', $metadata);
-        $this->assertSame('process', $metadata['method']);
+        $this->assertSame('process', $metadata['name']);
+        $this->assertSame('method', $metadata['type']);
         $this->assertSame(50, $metadata['threshold']);
     }
 
@@ -608,6 +610,56 @@ PHP;
 
         // Verify recommendation includes the default threshold (50 lines)
         $this->assertStringContainsString('Maximum recommended length: 50 lines', $issues[0]->recommendation);
+    }
+
+    #[Test]
+    public function test_differentiates_functions_from_methods(): void
+    {
+        $statements = str_repeat('    $var = "value";'."\n", 60);
+
+        // Test with a global function
+        $code = <<<PHP
+<?php
+
+function processData(\$data)
+{
+{$statements}
+}
+
+class Service
+{
+    public function processOrder(\$order)
+    {
+{$statements}
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/helpers.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+
+        // Check global function uses "Function" wording
+        $functionIssue = collect($issues)->first(fn ($issue) => $issue->metadata['type'] === 'function');
+        $this->assertNotNull($functionIssue);
+        $this->assertStringContainsString("Function 'processData'", $functionIssue->message);
+        $this->assertStringContainsString('This function has', $functionIssue->recommendation);
+
+        // Check class method uses "Method" wording
+        $methodIssue = collect($issues)->first(fn ($issue) => $issue->metadata['type'] === 'method');
+        $this->assertNotNull($methodIssue);
+        $this->assertStringContainsString("Method 'processOrder'", $methodIssue->message);
+        $this->assertStringContainsString('This method has', $methodIssue->recommendation);
     }
 
     #[Test]

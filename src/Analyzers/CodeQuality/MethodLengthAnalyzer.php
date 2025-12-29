@@ -17,12 +17,13 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 
 /**
- * Flags methods exceeding recommended line count.
+ * Flags methods and functions exceeding recommended line count.
  *
  * Checks for:
- * - Methods with > threshold lines (default: 50)
- * - Counts physical lines (from opening brace to closing brace)
- * - Excludes simple getter/setter methods
+ * - Methods and functions with > threshold lines (default: 50)
+ * - Counts physical lines (from declaration to closing brace)
+ * - Excludes simple getter/setter patterns (get*, set*, is*, has*)
+ * - Differentiates between global functions and class methods in messaging
  */
 class MethodLengthAnalyzer extends AbstractFileAnalyzer
 {
@@ -82,17 +83,19 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
             $traverser->traverse($ast);
 
             foreach ($visitor->getIssues() as $issue) {
+                $type = ucfirst($issue['type']); // 'function' -> 'Function', 'method' -> 'Method'
                 $issues[] = $this->createIssueWithSnippet(
-                    message: "Method '{$issue['method']}' has {$issue['lines']} lines (threshold: {$threshold})",
+                    message: "{$type} '{$issue['name']}' has {$issue['lines']} lines (threshold: {$threshold})",
                     filePath: $file,
                     lineNumber: $issue['line'],
                     severity: $this->getSeverityForLength($issue['lines'], $threshold),
-                    recommendation: $this->getRecommendation($issue['lines'], $threshold),
+                    recommendation: $this->getRecommendation($issue['lines'], $threshold, $issue['type']),
                     column: null,
                     contextLines: null,
-                    code: $issue['method'],
+                    code: $issue['name'],
                     metadata: [
-                        'method' => $issue['method'],
+                        'name' => $issue['name'],
+                        'type' => $issue['type'],
                         'lines' => $issue['lines'],
                         'threshold' => $threshold,
                         'file' => $file,
@@ -102,13 +105,13 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
         }
 
         if (empty($issues)) {
-            return $this->passed('No methods exceeding length threshold detected');
+            return $this->passed('No methods or functions exceeding length threshold detected');
         }
 
         $totalIssues = count($issues);
 
         return $this->failed(
-            "Found {$totalIssues} method(s) exceeding recommended length",
+            "Found {$totalIssues} method(s) or function(s) exceeding recommended length",
             $issues
         );
     }
@@ -146,12 +149,12 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
 }
 
 /**
- * Visitor to count method lines.
+ * Visitor to count method and function lines.
  */
 class MethodLengthVisitor extends NodeVisitorAbstract
 {
     /**
-     * @var array<int, array{method: string, lines: int, line: int}>
+     * @var array<int, array{name: string, lines: int, line: int, type: string}>
      */
     private array $issues = [];
 
@@ -166,23 +169,25 @@ class MethodLengthVisitor extends NodeVisitorAbstract
     public function enterNode(Node $node)
     {
         if ($node instanceof Stmt\Function_ || $node instanceof Stmt\ClassMethod) {
-            $methodName = $node->name->toString();
+            $name = $node->name->toString();
+            $type = $node instanceof Stmt\Function_ ? 'function' : 'method';
 
-            // Check if method matches exclude patterns
-            if ($this->shouldExclude($methodName)) {
+            // Check if name matches exclude patterns
+            if ($this->shouldExclude($name)) {
                 return null;
             }
 
             $startLine = $node->getStartLine();
 
-            // Count physical lines (from start to end of method)
+            // Count physical lines (from start to end)
             $physicalLines = $this->countPhysicalLines($node);
 
             if ($physicalLines > $this->threshold) {
                 $this->issues[] = [
-                    'method' => $methodName,
+                    'name' => $name,
                     'lines' => $physicalLines,
                     'line' => $startLine,
+                    'type' => $type,
                 ];
             }
         }
@@ -191,15 +196,15 @@ class MethodLengthVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Check if method name matches exclude patterns.
+     * Check if function/method name matches exclude patterns.
      */
-    private function shouldExclude(string $methodName): bool
+    private function shouldExclude(string $name): bool
     {
         foreach ($this->excludePatterns as $pattern) {
             // Convert glob pattern to regex (escape special chars, then replace * with .*)
             $escaped = preg_quote($pattern, '/');
             $regex = '/^'.str_replace('\\*', '.*', $escaped).'$/i';
-            if (preg_match($regex, $methodName)) {
+            if (preg_match($regex, $name)) {
                 return true;
             }
         }
@@ -208,9 +213,9 @@ class MethodLengthVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Count physical lines in method.
+     * Count physical lines in function or method.
      *
-     * Counts the actual number of lines from the method declaration
+     * Counts the actual number of lines from the declaration
      * to the closing brace, matching what developers see in their editor.
      */
     private function countPhysicalLines(Node $node): int
@@ -229,7 +234,7 @@ class MethodLengthVisitor extends NodeVisitorAbstract
     /**
      * Get collected issues.
      *
-     * @return array<int, array{method: string, lines: int, line: int}>
+     * @return array<int, array{name: string, lines: int, line: int, type: string}>
      */
     public function getIssues(): array
     {

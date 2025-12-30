@@ -10,7 +10,6 @@ use ShieldCI\AnalyzerManager;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Support\FileParser;
-use ShieldCI\Contracts\ClientInterface;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\ValueObjects\AnalysisReport;
 
@@ -21,7 +20,6 @@ class AnalyzeCommand extends Command
                             {--category= : Run analyzers in category}
                             {--format=console : Output format (console|json)}
                             {--output= : Save report to file}
-                            {--no-send : Do not send results to ShieldCI API}
                             {--baseline : Compare against baseline and only report new issues}';
 
     protected $description = 'Run ShieldCI security and code quality analysis';
@@ -29,7 +27,6 @@ class AnalyzeCommand extends Command
     public function handle(
         AnalyzerManager $manager,
         ReporterInterface $reporter,
-        ClientInterface $client,
     ): int {
         // Validate options
         if (! $this->validateOptions($manager)) {
@@ -128,11 +125,6 @@ class AnalyzeCommand extends Command
 
         if ($output && is_string($output)) {
             $this->saveReport($report, $reporter, $output);
-        }
-
-        // Send to API if enabled
-        if ($this->shouldSendToApi()) {
-            $this->sendToApi($report, $client);
         }
 
         // Determine exit code
@@ -1035,7 +1027,6 @@ class AnalyzeCommand extends Command
 
         // Return new report with filtered results
         return new AnalysisReport(
-            projectId: $report->projectId,
             laravelVersion: $report->laravelVersion,
             packageVersion: $report->packageVersion,
             results: $filteredResults,
@@ -1158,7 +1149,6 @@ class AnalyzeCommand extends Command
 
         // Return new report with filtered results
         return new AnalysisReport(
-            projectId: $report->projectId,
             laravelVersion: $report->laravelVersion,
             packageVersion: $report->packageVersion,
             results: $filteredResults,
@@ -1600,41 +1590,5 @@ class AnalyzeCommand extends Command
         }
 
         return true;
-    }
-
-    protected function shouldSendToApi(): bool
-    {
-        if ($this->option('no-send')) {
-            return false;
-        }
-
-        if (! config('shieldci.report.send_to_api')) {
-            return false;
-        }
-
-        if (! config('shieldci.token')) {
-            $this->warn('ShieldCI token not configured. Skipping API upload.');
-
-            return false;
-        }
-
-        return true;
-    }
-
-    protected function sendToApi(AnalysisReport $report, ClientInterface $client): void
-    {
-        $this->info('Sending results to ShieldCI API...');
-
-        try {
-            $success = $client->sendReport($report);
-
-            if ($success) {
-                $this->info('✓ Results sent successfully!');
-            } else {
-                $this->error('✗ Failed to send results.');
-            }
-        } catch (\Exception $e) {
-            $this->error("✗ Error sending results: {$e->getMessage()}");
-        }
     }
 }

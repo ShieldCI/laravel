@@ -934,6 +934,6 @@ PHP;
         $this->assertFailed($result);
 
         $issues = $result->getIssues();
-        $this->assertEquals('global scope', $issues[0]->metadata['context']);
+        $this->assertEquals('global scope (file-level code)', $issues[0]->metadata['context']);
     }
 }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\CodeQuality;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -19,35 +20,93 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  * - Multiple consecutive commented lines
  * - Common code indicators (function calls, assignments, etc.)
  * - Excludes genuine documentation comments
+ *
+ * Configuration:
+ * Teams can customize detection sensitivity in config/shieldci.php:
+ * 'analyzers' => [
+ *     'code-quality' => [
+ *         'commented-code' => [
+ *             'min_consecutive_lines' => 3,    // Minimum lines to flag a block
+ *             'max_neutral_lines' => 2,        // Spacing tolerance within blocks
+ *             'code_score_threshold' => 2,     // Minimum score to classify as code
+ *         ]
+ *     ]
+ * ]
  */
 class CommentedCodeAnalyzer extends AbstractFileAnalyzer
 {
     /**
-     * Minimum consecutive commented lines to flag.
+     * Default: Minimum consecutive commented lines to flag.
      */
-    private int $minConsecutiveLines = 3;
+    public const MIN_CONSECUTIVE_LINES = 3;
 
     /**
-     * Code pattern indicators.
+     * Default: Maximum number of neutral lines (blank comments) allowed within a block.
+     */
+    public const MAX_NEUTRAL_LINES = 2;
+
+    /**
+     * Default: Minimum score threshold to classify content as code.
+     */
+    public const CODE_SCORE_THRESHOLD = 2;
+
+    /**
+     * Minimum consecutive commented lines to flag.
+     */
+    private int $minConsecutiveLines;
+
+    /**
+     * Maximum number of neutral lines (blank comments) allowed within a block.
+     * Allows blocks to continue even with spacing like:
+     * // $foo = 1;
+     * //
+     * // $bar = 2;
+     */
+    private int $maxNeutralLines;
+
+    /**
+     * Minimum score threshold to classify content as code.
+     */
+    private int $codeScoreThreshold;
+
+    /**
+     * Code pattern indicators with weights.
+     * Higher weights = stronger indicators of code vs documentation.
      *
-     * @var array<string>
+     * Uses word boundaries (\b) to prevent false matches in prose:
+     * - "publication" won't match "public"
+     * - "returns" won't match "return"
+     * - "because User" won't match "use User"
+     *
+     * @var array<string, int>
      */
     private array $codePatterns = [
-        '/\$[a-zA-Z_]/',                    // Variables
-        '/function\s+[a-zA-Z_]/',           // Functions
-        '/public|private|protected/',       // Visibility
-        '/class\s+[A-Z]/',                  // Classes
-        '/if\s*\(/',                        // If statements
-        '/foreach\s*\(/',                   // Foreach loops
-        '/while\s*\(/',                     // While loops
-        '/return\s+/',                      // Return statements
-        '/new\s+[A-Z]/',                    // Object instantiation
-        '/\-\>/',                           // Method calls
-        '/\:\:/',                           // Static calls
-        '/\=\>/',                           // Array arrows
-        '/use\s+[A-Z]/',                    // Use statements
-        '/namespace\s+/',                   // Namespace
+        // Strong indicators (weight: 4) - Structural declarations
+        '/\bfunction\b\s+[a-zA-Z_]/' => 4,      // Function definitions
+        '/\b(public|private|protected)\b/' => 4, // Visibility modifiers
+        '/\bclass\b\s+[A-Z]/' => 4,             // Class declarations
+        '/\bnamespace\b\s+/' => 4,              // Namespace declarations
+        '/\buse\b\s+[A-Z]/' => 4,               // Use statements
+
+        // Medium indicators (weight: 2) - Control flow and operations
+        '/\bif\b\s*\(/' => 2,                   // If statements
+        '/\bforeach\b\s*\(/' => 2,              // Foreach loops
+        '/\bwhile\b\s*\(/' => 2,                // While loops
+        '/\breturn\b\s*/' => 2,                 // Return statements (handles "return;")
+        '/\bnew\b\s+[A-Z]/' => 2,               // Object instantiation
+        '/[A-Z][a-zA-Z]*\:\:[a-zA-Z_]/' => 2,   // Static method calls (User::find)
+
+        // Weak indicators (weight: 1) - Common in documentation examples
+        '/\$[a-zA-Z_]/' => 1,               // Variables (often mentioned in docs)
+        '/\-\>/' => 1,                      // Method calls (common in inline examples)
+        '/\=\>/' => 1,                      // Array arrows
+        '/\s=\s/' => 1,                     // Assignment operator (distinguishes code from prose)
+        '/;/' => 1,                         // Semicolons (code terminator)
     ];
+
+    public function __construct(
+        private Config $config
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -65,6 +124,14 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
+        // Load configuration from config file (code-quality.commented-code)
+        $analyzerConfig = $this->config->get('shieldci.analyzers.code-quality.commented-code', []);
+        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
+
+        $this->minConsecutiveLines = $analyzerConfig['min_consecutive_lines'] ?? self::MIN_CONSECUTIVE_LINES;
+        $this->maxNeutralLines = $analyzerConfig['max_neutral_lines'] ?? self::MAX_NEUTRAL_LINES;
+        $this->codeScoreThreshold = $analyzerConfig['code_score_threshold'] ?? self::CODE_SCORE_THRESHOLD;
+
         $issues = [];
         $minLines = $this->minConsecutiveLines;
 
@@ -137,6 +204,7 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
         $lines = explode("\n", $content);
         $blocks = [];
         $currentBlock = null;
+        $neutralLineCount = 0;
 
         foreach ($lines as $lineNumber => $line) {
             $trimmed = trim($line);
@@ -155,19 +223,34 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
                             'lineCount' => 1,
                             'lines' => [$commentContent],
                         ];
+                        $neutralLineCount = 0;
                     } else {
-                        // Continue current block
+                        // Continue current block (reset neutral line counter)
                         $currentBlock['endLine'] = $lineNumber + 1;
                         $currentBlock['lineCount']++;
                         $currentBlock['lines'][] = $commentContent;
+                        $neutralLineCount = 0;
                     }
                 } else {
-                    // Non-code comment, end current block if any
-                    if ($currentBlock !== null && $currentBlock['lineCount'] >= $minLines) {
-                        $currentBlock['preview'] = $this->getPreview($currentBlock['lines']);
-                        $blocks[] = $currentBlock;
+                    // Neutral comment line (e.g., blank comment //)
+                    if ($currentBlock !== null) {
+                        $neutralLineCount++;
+
+                        // Allow a few neutral lines within a block
+                        if ($neutralLineCount <= $this->maxNeutralLines) {
+                            // Continue block, but don't add neutral line to preview
+                            $currentBlock['endLine'] = $lineNumber + 1;
+                            // Don't increment lineCount for neutral lines
+                        } else {
+                            // Too many neutral lines, end the block
+                            if ($currentBlock['lineCount'] >= $minLines) {
+                                $currentBlock['preview'] = $this->getPreview($currentBlock['lines']);
+                                $blocks[] = $currentBlock;
+                            }
+                            $currentBlock = null;
+                            $neutralLineCount = 0;
+                        }
                     }
-                    $currentBlock = null;
                 }
             } else {
                 // Not a comment, end current block if any
@@ -176,6 +259,7 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
                     $blocks[] = $currentBlock;
                 }
                 $currentBlock = null;
+                $neutralLineCount = 0;
             }
         }
 
@@ -198,7 +282,11 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
         $blocks = [];
 
         // Tokenize the content
-        $tokens = @token_get_all($content);
+        try {
+            $tokens = token_get_all($content);
+        } catch (\Throwable $e) {
+            return [];
+        }
 
         foreach ($tokens as $token) {
             if (! is_array($token)) {
@@ -258,7 +346,7 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
                 $blocks[] = [
                     'startLine' => $tokenLine,
                     'endLine' => $endLine,
-                    'lineCount' => $lineCount,
+                    'lineCount' => $codeLineCount,
                     'preview' => $this->getPreview($codeLines),
                 ];
             }
@@ -300,6 +388,12 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if comment content looks like code.
+     *
+     * Uses inverted logic:
+     * 1. Calculate code score FIRST (prioritize positive signals)
+     * 2. Strong code indicators (>= 4) always win, regardless of prose
+     * 3. Documentation check only used as tiebreaker for borderline scores
+     * 4. This prevents false negatives like "// TODO: $user->save();"
      */
     private function looksLikeCode(string $content): bool
     {
@@ -314,21 +408,35 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
             return preg_match('/^[{};\[\]\(\)]$/', trim($content)) === 1;
         }
 
-        // Exclude common documentation patterns
+        // Calculate weighted score for code patterns FIRST
+        $score = 0;
+        foreach ($this->codePatterns as $pattern => $weight) {
+            if (preg_match($pattern, $content)) {
+                $score += $weight;
+            }
+        }
+
+        // Strong code indicators (>= 4): Always classify as code
+        // Examples: function, class, public/private/protected, namespace
+        // These are structural declarations that should be detected even with TODO/FIXME
+        if ($score >= 4) {
+            return true;
+        }
+
+        // Weak signals (< 2): Not code
+        if ($score < $this->codeScoreThreshold) {
+            return false;
+        }
+
+        // Borderline scores (2-3): Use documentation check as tiebreaker
+        // Examples: return $var (score 3), $obj->method() (score 2)
+        // Only here do we check if it looks like documentation
         if ($this->isDocumentation($content)) {
             return false;
         }
 
-        // Check for code patterns
-        $matches = 0;
-        foreach ($this->codePatterns as $pattern) {
-            if (preg_match($pattern, $content)) {
-                $matches++;
-            }
-        }
-
-        // If code patterns match, likely code
-        return $matches >= 1;
+        // Passed all checks: it's code
+        return true;
     }
 
     /**

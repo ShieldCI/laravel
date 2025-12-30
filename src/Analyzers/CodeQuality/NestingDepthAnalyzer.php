@@ -74,7 +74,7 @@ class NestingDepthAnalyzer extends AbstractFileAnalyzer
 
             foreach ($visitor->getIssues() as $issue) {
                 $issues[] = $this->createIssueWithSnippet(
-                    message: "Code block has nesting depth of {$issue['depth']} (threshold: {$threshold}) in '{$issue['context']}'",
+                    message: "'{$issue['context']}' has maximum nesting depth of {$issue['depth']} (threshold: {$threshold})",
                     filePath: $file,
                     lineNumber: $issue['line'],
                     severity: $this->getSeverityForDepth($issue['depth'], $threshold),
@@ -150,9 +150,11 @@ class NestingDepthAnalyzer extends AbstractFileAnalyzer
 class NestingDepthVisitor extends NodeVisitorAbstract
 {
     /**
-     * @var array<int, array{depth: int, line: int, context: string}>
+     * Track maximum depth per context.
+     *
+     * @var array<string, array{depth: int, line: int}>
      */
-    private array $issues = [];
+    private array $maxDepthPerContext = [];
 
     /**
      * Current nesting depth.
@@ -209,12 +211,13 @@ class NestingDepthVisitor extends NodeVisitorAbstract
         if ($this->isNestingStructure($node)) {
             $this->currentDepth++;
 
-            // Check if depth exceeds threshold
-            if ($this->currentDepth > $this->threshold) {
-                $this->issues[] = [
+            // Track maximum depth per context
+            $context = $this->currentContext ?? 'global scope (file-level code)';
+
+            if (! isset($this->maxDepthPerContext[$context]) || $this->currentDepth > $this->maxDepthPerContext[$context]['depth']) {
+                $this->maxDepthPerContext[$context] = [
                     'depth' => $this->currentDepth,
                     'line' => $node->getStartLine(),
-                    'context' => $this->currentContext ?? 'global scope',
                 ];
             }
         }
@@ -226,7 +229,7 @@ class NestingDepthVisitor extends NodeVisitorAbstract
     {
         // Decrease depth when leaving nesting structures
         if ($this->isNestingStructure($node)) {
-            $this->currentDepth--;
+            $this->currentDepth = max(0, $this->currentDepth - 1);
         }
 
         // Restore context when leaving method/function/closure
@@ -249,7 +252,6 @@ class NestingDepthVisitor extends NodeVisitorAbstract
      *
      * Note: ElseIf and Else are NOT counted as separate nesting levels
      * because they are continuations of the if statement, not new nesting.
-     * Similarly, Catch blocks are part of TryCatch and don't add nesting.
      */
     private function isNestingStructure(Node $node): bool
     {
@@ -259,29 +261,32 @@ class NestingDepthVisitor extends NodeVisitorAbstract
             || $node instanceof Stmt\For_
             || $node instanceof Stmt\Foreach_
             || $node instanceof Stmt\Switch_
-            || $node instanceof Stmt\Case_
             || $node instanceof Stmt\TryCatch;
     }
 
     /**
-     * Get collected issues.
+     * Get collected issues - one per context that exceeds threshold.
+     *
+     * Returns only contexts where the maximum depth exceeds the threshold.
+     * This prevents noisy reporting of multiple issues for the same method.
      *
      * @return array<int, array{depth: int, line: int, context: string}>
      */
     public function getIssues(): array
     {
-        // Deduplicate - only report max depth per location
-        $unique = [];
-        $seen = [];
+        $issues = [];
 
-        foreach ($this->issues as $issue) {
-            $key = $issue['line'];
-            if (! isset($seen[$key]) || $issue['depth'] > $seen[$key]) {
-                $unique[$key] = $issue;
-                $seen[$key] = $issue['depth'];
+        foreach ($this->maxDepthPerContext as $context => $data) {
+            // Only report if max depth exceeds threshold
+            if ($data['depth'] > $this->threshold) {
+                $issues[] = [
+                    'depth' => $data['depth'],
+                    'line' => $data['line'],
+                    'context' => $context,
+                ];
             }
         }
 
-        return array_values($unique);
+        return $issues;
     }
 }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\CodeQuality;
 
+use Illuminate\Config\Repository;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Analyzers\CodeQuality\CommentedCodeAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
@@ -12,9 +13,20 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class CommentedCodeAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    protected function createAnalyzer(array $config = []): AnalyzerInterface
     {
-        return new CommentedCodeAnalyzer;
+        $configRepo = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'code-quality' => $config,
+                ],
+            ],
+        ]);
+
+        return new CommentedCodeAnalyzer($configRepo);
     }
 
     #[Test]
@@ -961,5 +973,503 @@ PHP;
         $issues = $result->getIssues();
         // Should detect both single-line and block comments
         $this->assertGreaterThanOrEqual(2, count($issues));
+    }
+
+    #[Test]
+    public function test_allows_neutral_lines_within_threshold(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class NeutralLinesService
+{
+    // Old implementation with blank comment lines:
+    // $foo = 1;
+    // $bar = 2;
+    //
+    // $baz = 3;
+    // $qux = 4;
+    //
+    //
+    // $final = 5;
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/NeutralLinesService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        // Should detect as ONE block despite blank comment lines (within tolerance)
+        $this->assertCount(1, $issues);
+
+        $issue = $issues[0];
+        // Should have 5 code lines (excluding the blank comment lines)
+        $this->assertEquals(5, $issue->metadata['lineCount']);
+        // But should span lines 8-15 (including neutral lines)
+        $this->assertEquals(8, $issue->metadata['startLine']);
+        $this->assertEquals(15, $issue->metadata['endLine']);
+    }
+
+    #[Test]
+    public function test_breaks_block_when_exceeding_neutral_line_threshold(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ExceedNeutralService
+{
+    // First block:
+    // $foo = 1;
+    // $bar = 2;
+    //
+    //
+    //
+    // After 3 blank lines, this starts a new block (exceeds max of 2)
+    // $baz = 3;
+    // $qux = 4;
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/ExceedNeutralService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Both blocks are only 2 lines each (below min of 3), so should pass
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_ignores_variable_mentions_in_documentation(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class UserService
+{
+    // This method accepts a $userId parameter and returns the user
+    // Set the $userName variable to the appropriate value
+    // The $email should be validated before storing
+    public function updateUser()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - these are just documentation mentioning variables (score 1 each)
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_ignores_inline_examples_in_documentation(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class DatabaseService
+{
+    // You can call $user->save() to persist changes
+    // Use DB::table('users') to query the table
+    // Try $query->where('active', true) for filtering
+    public function queryUsers()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/DatabaseService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - these are inline examples in docs (score 1-2 each)
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_ignores_pseudocode_explanations(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class PaymentProcessor
+{
+    // First check if $balance > $amount
+    // Then update $user->balance accordingly
+    // Finally send $notification->email
+    public function processPayment()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/PaymentProcessor.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - these are pseudocode explanations (weak indicators only)
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_detects_actual_code_vs_documentation(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class OrderService
+{
+    // These are just explanations:
+    // Set the $orderId and $status variables
+    // Call $order->save() to persist
+
+    // This is actual commented code:
+    // $order = Order::find($id);
+    // $order->status = 'completed';
+    // $order->save();
+    public function completeOrder()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/OrderService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - the second block has actual code with assignments and method calls
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('3 consecutive lines', $result);
+    }
+
+    #[Test]
+    public function test_detects_code_with_todo_markers_inverted_logic(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class PaymentService
+{
+    // TODO: Remove this old implementation after migration
+    // public function oldPaymentMethod()
+    // {
+    //     $payment = Payment::create($data);
+    //     return $payment;
+    // }
+
+    // FIXME: This legacy code needs refactoring
+    // private function legacyCalculation()
+    // {
+    //     return $total * $rate;
+    // }
+
+    public function newPaymentMethod()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/PaymentService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should FAIL - strong code indicators (public function, private function)
+        // should be detected even with TODO/FIXME markers
+        // This demonstrates inverted logic: code signals win over documentation markers
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('commented-out code', $result);
+    }
+
+    #[Test]
+    public function test_ignores_todo_with_weak_code_signals(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class UserService
+{
+    // TODO: Update the $userId in the next version
+    // FIXME: The $userName validation needs improvement
+    // NOTE: Consider using $email for login
+    public function processUser()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should PASS - weak signals ($variable) + documentation markers = not code
+        // Borderline scores (2-3) use documentation check as tiebreaker
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_word_boundaries_prevent_false_positives_in_prose(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class ArticleService
+{
+    // This publication will be released publicly next month
+    // The system returns an error if validation fails
+    // We use a new User model because the old one was deprecated
+    // The namespace for this class has been updated
+    // Consider renewing the subscription while the user is active
+    public function publishArticle()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/ArticleService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should PASS - word boundaries prevent false matches:
+        // - "publication" doesn't match "\bpublic\b"
+        // - "returns" doesn't match "\breturn\b"
+        // - "because" doesn't match "\buse\b"
+        // - "renewing" doesn't match "\bnew\b"
+        // These are all prose, not code
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_block_comment_reports_code_line_count_not_total_lines(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class LegacyService
+{
+    /*
+    This was the old implementation
+
+    $user = User::find($id);
+    $user->name = 'Updated';
+    $user->save();
+    return $user;
+
+    It was removed due to performance issues
+    */
+    public function newMethod()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/LegacyService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should FAIL - block has code
+        $this->assertFailed($result);
+
+        // The fix ensures lineCount represents code lines only (4), not total lines (8)
+        // Block has: 1 prose, 1 blank, 4 code lines, 1 blank, 1 prose = 8 total
+        // But we should only report the 4 code lines
+        $this->assertHasIssueContaining('4 consecutive lines', $result);
+    }
+
+    #[Test]
+    public function test_respects_custom_min_consecutive_lines_configuration(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class UserService
+{
+    // $user = User::find($id);
+    // $user->save();
+    public function process()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/UserService.php' => $code,
+        ]);
+
+        // Default: min_consecutive_lines = 3, so 2 lines should PASS
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertPassed($result);
+
+        // Custom: min_consecutive_lines = 2, so 2 lines should FAIL
+        $analyzer = $this->createAnalyzer([
+            'commented-code' => ['min_consecutive_lines' => 2],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertFailed($result);
+    }
+
+    #[Test]
+    public function test_respects_custom_code_score_threshold_configuration(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class ArticleService
+{
+    // $userId variable
+    // $userName field
+    // $email address
+    public function saveUser()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/ArticleService.php' => $code,
+        ]);
+
+        // Default: code_score_threshold = 2, weak signals (score 1) should PASS
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertPassed($result);
+
+        // Custom: code_score_threshold = 1, weak signals should FAIL
+        $analyzer = $this->createAnalyzer([
+            'commented-code' => ['code_score_threshold' => 1],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertFailed($result);
+    }
+
+    #[Test]
+    public function test_respects_custom_max_neutral_lines_configuration(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class PaymentService
+{
+    // $amount = 100;
+    //
+    //
+    //
+    // $tax = $amount * 0.2;
+    // return $amount + $tax;
+    public function calculate()
+    {
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/PaymentService.php' => $code,
+        ]);
+
+        // Default: max_neutral_lines = 2, so 3 blank lines break the block
+        // Results in 1 line block (fails min 3) and 2 line block (fails min 3)
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertPassed($result);
+
+        // Custom: max_neutral_lines = 5, so block continues across 3 blank lines
+        // Results in 1 block with 3 code lines (passes min 3)
+        $analyzer = $this->createAnalyzer([
+            'commented-code' => ['max_neutral_lines' => 5],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertFailed($result);
     }
 }

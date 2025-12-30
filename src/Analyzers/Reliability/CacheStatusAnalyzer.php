@@ -66,7 +66,7 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
             // Test cache read
             $retrievedValue = Cache::get($testKey);
 
-            // Verify retrieved value matches (strict comparison)
+            // Verify retrieved value matches (Strict comparison ensures cache serialization/deserialization integrity)
             if ($retrievedValue !== $testValue) {
                 // Clean up test key before returning
                 $this->cleanupTestKey($testKey);
@@ -226,7 +226,7 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
     {
         $environment = $this->getEnvironment();
 
-        // Consider production, prod, live, and staging as production-like
+        // Consider production and staging
         return in_array(strtolower($environment), ['production', 'staging'], true);
     }
 

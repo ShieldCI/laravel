@@ -149,7 +149,8 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
         $store = $this->getDefaultStore();
 
         if ($this->hasStoreSpecificPrefix($store)) {
-            $line = ConfigFileHelper::findNestedKeyLine($configFile, 'stores', 'prefix', $store);
+            // Find stores.{store}.prefix (e.g., stores.redis.prefix)
+            $line = ConfigFileHelper::findNestedKeyLine($configFile, 'stores', $store, 'prefix');
 
             return $line > 0 ? $line : 1;
         }

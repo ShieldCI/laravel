@@ -36,7 +36,7 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
      *
      * @var array<string>
      */
-    private array $genericPrefixes = [
+    private const GENERIC_PREFIXES = [
         'laravel_cache',
         'laravel_database_cache',
         'laravel',
@@ -170,8 +170,8 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
         $trimmed = trim($prefix);
 
         // Check if prefix is in generic list
-        if (in_array($normalized, $this->genericPrefixes, true)
-            || in_array($slug, $this->genericPrefixes, true)) {
+        if (in_array($normalized, self::GENERIC_PREFIXES, true)
+            || in_array($slug, self::GENERIC_PREFIXES, true)) {
             return true;
         }
 

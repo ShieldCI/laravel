@@ -23,9 +23,9 @@ return [
     |--------------------------------------------------------------------------
     */
 
-    'token' => env('SHIELDCI_TOKEN', ''),
+    'token' => env('SHIELDCI_TOKEN'),
 
-    'project_id' => env('SHIELDCI_PROJECT_ID', ''),
+    'project_id' => env('SHIELDCI_PROJECT_ID'),
 
     'api_url' => env('SHIELDCI_API_URL', 'https://api.shieldci.com'),
 

@@ -15,6 +15,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Support\DatabaseConnectionChecker;
 use ShieldCI\Support\DatabaseConnectionResult;
+use ShieldCI\Support\MessageHelper;
 
 /**
  * Checks that database connections are accessible.
@@ -133,7 +134,7 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
     {
         $driver = $this->getConnectionDriver($connection);
         $errorMsg = $result->message ?? '';
-        $sanitizedError = $this->sanitizeErrorMessage($errorMsg);
+        $sanitizedError = MessageHelper::sanitizeErrorMessage($errorMsg);
 
         $recommendation = "Database connection '{$connection}' failed: {$sanitizedError}. ";
 
@@ -228,19 +229,5 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
     private function getConnectionDatabase(string $connectionName): ?string
     {
         return $this->getConnectionConfig($connectionName, 'database');
-    }
-
-    /**
-     * Sanitize error message for display in recommendations.
-     */
-    private function sanitizeErrorMessage(string $error): string
-    {
-        // Limit error message length to prevent overly long recommendations
-        $maxLength = 200;
-        if (strlen($error) > $maxLength) {
-            return substr($error, 0, $maxLength).'...';
-        }
-
-        return $error;
     }
 }

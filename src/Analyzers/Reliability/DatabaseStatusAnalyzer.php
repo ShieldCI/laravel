@@ -160,6 +160,8 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
     /**
      * Determine if an error is likely transient (temporary/recoverable).
      *
+     * Uses exception class as the primary signal, falling back to message patterns.
+     *
      * Transient errors include:
      * - Connection timeouts
      * - Connection refused (server restarting)
@@ -173,7 +175,44 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
      */
     private function isTransientError(DatabaseConnectionResult $result): bool
     {
+        // Check exception class first (more reliable than string parsing)
+        if ($result->exceptionClass !== null) {
+            $exceptionClass = $result->exceptionClass;
+
+            // Persistent exceptions (configuration/authentication issues)
+            $persistentExceptions = [
+                'Doctrine\DBAL\Exception\DriverException',
+                'Doctrine\DBAL\Exception\InvalidArgumentException',
+                'Doctrine\DBAL\Exception\SyntaxErrorException',
+            ];
+
+            // If it's a known persistent exception, it's definitely not transient
+            foreach ($persistentExceptions as $persistentClass) {
+                if ($exceptionClass === $persistentClass || is_subclass_of($exceptionClass, $persistentClass)) {
+                    return false;
+                }
+            }
+
+            // For PDOException and other generic exceptions, we need to check the message
+            // (PDOException covers both transient and persistent errors)
+        }
+
+        // Check message patterns (fallback or refinement for PDOException)
         $message = $result->message ?? '';
+
+        // Persistent error patterns (explicit non-transient signals - check first)
+        $persistentPatterns = [
+            'Access denied',
+            'Unknown database',
+            'could not find driver',
+            'No such file or directory', // SQLite file not found
+        ];
+
+        foreach ($persistentPatterns as $pattern) {
+            if (stripos($message, $pattern) !== false) {
+                return false;
+            }
+        }
 
         // Transient network/connectivity issues
         $transientPatterns = [

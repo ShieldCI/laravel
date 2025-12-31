@@ -228,29 +228,13 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
      */
     private function buildRecommendation(string $failedDirsList, array $formattedDirs): string
     {
-        $dirsForCommand = implode(' ', $formattedDirs);
-
         return sprintf(
             <<<'RECOMMENDATION'
 The following directories must be writable: %s.
-
-To fix this, run one of the following commands:
-
-Unix/Linux:
-  %s %s
-  or
-  %s %s (adjust user/group as needed)
-
-Windows:
-  Use File Explorer to grant write permissions to the directories.
-
+Adjust user/group as appropriate for your environment.
 These directories are required for logs, sessions, cache, compiled views, and configuration caching.
 RECOMMENDATION,
             $failedDirsList,
-            'chmod -R 775',
-            $dirsForCommand,
-            'chown -R www-data:www-data',
-            $dirsForCommand
         );
     }
 

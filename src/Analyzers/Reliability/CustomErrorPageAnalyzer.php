@@ -18,14 +18,17 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\AnalyzesMiddleware;
 
 /**
- * Checks for custom error pages using runtime exception rendering.
+ * Checks for the existence of custom error page templates.
  *
  * This analyzer:
  * - Checks all configured view paths (not just default)
  * - Detects custom error view namespaces
- * - Actually renders a 404 exception to test if custom pages are used
+ * - Verifies that custom error templates exist on the filesystem
  * - Skips stateless/API-only apps automatically
- * - Detects framework fingerprinting vulnerability
+ * - Helps prevent framework fingerprinting vulnerability
+ *
+ * Note: This analyzer performs a filesystem check only. It does not render
+ * exceptions or verify that error pages actually work at runtime.
  */
 class CustomErrorPageAnalyzer extends AbstractAnalyzer
 {

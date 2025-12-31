@@ -178,18 +178,12 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
         $configFile = $this->getDatabaseConfigPath();
 
         if (file_exists($configFile)) {
-            // Try to find the connection line number
-            $lineNumber = ConfigFileHelper::findNestedKeyLine(
+            // Find the connection name as a key within the 'connections' array
+            $lineNumber = ConfigFileHelper::findKeyLine(
                 $configFile,
-                'connections',
-                'driver',
-                $connectionName
+                $connectionName,
+                'connections'
             );
-
-            if ($lineNumber < 1) {
-                // Fallback to finding the connection name
-                $lineNumber = ConfigFileHelper::findKeyLine($configFile, $connectionName, 'connections');
-            }
 
             return new Location($this->getRelativePath($configFile), $lineNumber < 1 ? null : $lineNumber);
         }

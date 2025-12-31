@@ -78,7 +78,10 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
         );
 
         if (is_array($directoriesToCheck) && ! empty($directoriesToCheck)) {
-            $filtered = array_filter($directoriesToCheck, fn ($dir) => is_string($dir) && $dir !== '');
+            $filtered = array_filter(
+                array_map(fn ($dir) => is_string($dir) ? trim($dir) : null, $directoriesToCheck),
+                fn ($dir) => is_string($dir) && $dir !== ''
+            );
 
             // Convert relative paths to absolute paths
             return array_map(function ($dir) use ($basePath) {
@@ -268,7 +271,7 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
         if (! empty($formattedMissing)) {
             $missingList = implode(', ', $formattedMissing);
             $recommendations[] = sprintf(
-                "Missing directories: %s\nCreate them with: mkdir -p %s",
+                "Missing directories: %s\nCreate them manually or via your OS tooling (e.g., mkdir -p %s)",
                 $missingList,
                 implode(' ', $formattedMissing)
             );
@@ -277,7 +280,7 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
         if (! empty($formattedNonWritable)) {
             $nonWritableList = implode(', ', $formattedNonWritable);
             $recommendations[] = sprintf(
-                "Non-writable directories: %s\nFix permissions with: chmod -R 775 %s",
+                "Non-writable directories: %s\nApply appropriate write permissions (e.g., chmod -R 775 %s) according to your environment.",
                 $nonWritableList,
                 implode(' ', $formattedNonWritable)
             );

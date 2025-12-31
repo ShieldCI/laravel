@@ -87,8 +87,8 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
         }
 
         // Check if .env is empty
-        $fileSize = @filesize($envPath);
-        if ($fileSize !== false && $fileSize === 0) {
+        $stat = @stat($envPath);
+        if ($stat !== false && $stat['size'] === 0) {
             return $this->failed(
                 'Application .env file is empty',
                 [$this->createIssueWithSnippet(

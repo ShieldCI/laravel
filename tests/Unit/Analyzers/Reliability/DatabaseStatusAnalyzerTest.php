@@ -311,6 +311,7 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertStringContainsString('database server is running', $issues[0]->recommendation);
+        $this->assertStringContainsString('pdo_mysql', $issues[0]->recommendation);
     }
 
     public function test_unknown_database_error_recommendation(): void
@@ -492,6 +493,157 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    // =========================================================================
+    // PHP Extension Mapping Tests
+    // =========================================================================
+
+    public function test_maps_mysql_driver_to_pdo_mysql_extension(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'could not find driver'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('pdo_mysql PHP extension', $issues[0]->recommendation);
+    }
+
+    public function test_maps_pgsql_driver_to_pdo_pgsql_extension(): void
+    {
+        $connections = [
+            'pgsql' => [
+                'driver' => 'pgsql',
+                'host' => '127.0.0.1',
+                'database' => 'test',
+            ],
+        ];
+
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig($connections),
+        ]);
+
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('database.default', 'pgsql');
+        $config->set('database.connections', $connections);
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'could not find driver'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('pdo_pgsql PHP extension', $issues[0]->recommendation);
+    }
+
+    public function test_maps_sqlsrv_driver_to_pdo_sqlsrv_extension(): void
+    {
+        $connections = [
+            'sqlsrv' => [
+                'driver' => 'sqlsrv',
+                'host' => '127.0.0.1',
+                'database' => 'test',
+            ],
+        ];
+
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig($connections),
+        ]);
+
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('database.default', 'sqlsrv');
+        $config->set('database.connections', $connections);
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'could not find driver'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('pdo_sqlsrv PHP extension', $issues[0]->recommendation);
+    }
+
+    public function test_maps_sqlite_driver_to_pdo_sqlite_extension(): void
+    {
+        $connections = [
+            'sqlite' => [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+            ],
+        ];
+
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig($connections),
+        ]);
+
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('database.default', 'sqlite');
+        $config->set('database.connections', $connections);
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'could not find driver'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('pdo_sqlite PHP extension', $issues[0]->recommendation);
+    }
+
+    public function test_defaults_to_pdo_for_unknown_driver(): void
+    {
+        $connections = [
+            'custom' => [
+                'driver' => 'custom',
+                'host' => '127.0.0.1',
+            ],
+        ];
+
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig($connections),
+        ]);
+
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('database.default', 'custom');
+        $config->set('database.connections', $connections);
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'could not find driver'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('PDO PHP extension', $issues[0]->recommendation);
     }
 
     // =========================================================================

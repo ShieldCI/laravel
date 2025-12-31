@@ -193,6 +193,7 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
             }
         }
 
+        // Default to persistent for safety (don't downgrade severity incorrectly)
         return false;
     }
 
@@ -211,9 +212,9 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
         // Provide specific recommendations based on error and driver
         if (str_contains($error, 'access denied')) {
             $recommendation .= 'Check database username and password in your .env file. ';
-        } elseif (str_contains($error, 'connection refused') || str_contains($errorMsg, 'could not find driver')) {
-            $driverText = is_string($driver) ? $driver : 'database';
-            $recommendation .= "Ensure the database server is running and the PHP {$driverText} extension is installed. ";
+        } elseif (str_contains($error, 'connection refused') || str_contains($error, 'could not find driver')) {
+            $extension = $this->getPhpExtensionName($driver);
+            $recommendation .= "Ensure the database server is running and the {$extension} PHP extension is installed. ";
         } elseif (str_contains($error, 'unknown database')) {
             $recommendation .= 'The specified database does not exist. Create it or check the DB_DATABASE value in .env. ';
         } else {
@@ -223,6 +224,25 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
         $recommendation .= "Verify settings in .env and config/database.php for the '{$connection}' connection.";
 
         return $recommendation;
+    }
+
+    /**
+     * Map Laravel database driver names to actual PHP extension names.
+     */
+    private function getPhpExtensionName(?string $driver): string
+    {
+        if ($driver === null) {
+            return 'PDO';
+        }
+
+        $extensionMap = [
+            'mysql' => 'pdo_mysql',
+            'pgsql' => 'pdo_pgsql',
+            'sqlsrv' => 'pdo_sqlsrv',
+            'sqlite' => 'pdo_sqlite',
+        ];
+
+        return $extensionMap[$driver] ?? 'PDO';
     }
 
     /**

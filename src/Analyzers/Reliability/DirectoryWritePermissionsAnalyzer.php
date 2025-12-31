@@ -47,20 +47,20 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
         // Get directories to check from config or use defaults
         $directoriesToCheck = $this->getDirectoriesToCheck($basePath);
 
-        // Find directories that are not writable
-        $failedDirs = $this->findNonWritableDirectories($directoriesToCheck);
+        // Find directories that are missing or not writable
+        ['missing' => $missingDirs, 'non_writable' => $nonWritableDirs] = $this->findDirectoryIssues($directoriesToCheck);
 
-        if (empty($failedDirs)) {
-            return $this->passed('All critical directories have proper write permissions');
         if (empty($missingDirs) && empty($nonWritableDirs)) {
             return $this->passed('All critical directories exist and have proper write permissions');
         }
 
         // Create issues for failed directories
-        $issues = $this->createIssuesForFailedDirectories($failedDirs, $basePath);
+        $issues = $this->createIssuesForFailedDirectories($missingDirs, $nonWritableDirs, $basePath);
+
+        $totalIssues = count($missingDirs) + count($nonWritableDirs);
 
         return $this->failed(
-            sprintf('Found %d directory permission issue(s)', count($failedDirs)),
+            sprintf('Found %d directory permission issue(s)', $totalIssues),
             $issues
         );
     }
@@ -153,38 +153,39 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Find directories that are not writable.
+     * Find directories that are missing or not writable.
      *
      * @param  array<string>  $directories
-     * @return array<string>
+     * @return array{missing: array<string>, non_writable: array<string>}
      */
-    private function findNonWritableDirectories(array $directories): array
+    private function findDirectoryIssues(array $directories): array
     {
-        $failedDirs = [];
+        $missingDirs = [];
+        $nonWritableDirs = [];
 
         foreach ($directories as $directory) {
             if (! is_string($directory) || $directory === '') {
                 continue;
             }
 
-            if (! $this->isDirectoryWritable($directory)) {
-                $failedDirs[] = $directory;
+            if (! $this->files->isDirectory($directory)) {
+                $missingDirs[] = $directory;
+            } elseif (! $this->isWritable($directory)) {
+                $nonWritableDirs[] = $directory;
             }
         }
 
-        return $failedDirs;
+        return [
+            'missing' => $missingDirs,
+            'non_writable' => $nonWritableDirs,
+        ];
     }
 
     /**
-     * Check if a directory exists and is writable.
+     * Check if a directory is writable (assumes directory exists).
      */
-    private function isDirectoryWritable(string $directory): bool
+    private function isWritable(string $directory): bool
     {
-        // Check if directory exists first
-        if (! $this->files->isDirectory($directory)) {
-            return false;
-        }
-
         return $this->safeExecute(
             fn () => $this->files->isWritable($directory),
             false
@@ -194,28 +195,34 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
     /**
      * Create issues for failed directories.
      *
-     * @param  array<string>  $failedDirs
+     * @param  array<string>  $missingDirs
+     * @param  array<string>  $nonWritableDirs
      * @return array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>
      */
-    private function createIssuesForFailedDirectories(array $failedDirs, string $basePath): array
+    private function createIssuesForFailedDirectories(array $missingDirs, array $nonWritableDirs, string $basePath): array
     {
         $issues = [];
-        $formattedDirs = array_map(fn ($path) => $this->formatPath($path, $basePath), $failedDirs);
-        $failedDirsList = implode(', ', $formattedDirs);
 
-        // Use the first failed directory for location, or base path as fallback
-        $locationPath = ! empty($failedDirs) ? $failedDirs[0] : $basePath;
-        $locationPath = $this->formatPath($locationPath, $basePath);
+        $formattedMissing = array_map(fn ($path) => $this->formatPath($path, $basePath), $missingDirs);
+        $formattedNonWritable = array_map(fn ($path) => $this->formatPath($path, $basePath), $nonWritableDirs);
+
+        // Determine message based on what failed
+        $message = $this->buildMessage($missingDirs, $nonWritableDirs);
+
+        // Use the first problematic directory for location, or base path as fallback
+        $locationPath = ! empty($missingDirs) ? $missingDirs[0] : (! empty($nonWritableDirs) ? $nonWritableDirs[0] : $basePath);
 
         $issues[] = $this->createIssue(
-            message: 'Storage and cache directories are not writable',
+            message: $message,
             location: new Location($this->getRelativePath($locationPath)),
             severity: Severity::Critical,
-            recommendation: $this->buildRecommendation($failedDirsList, $formattedDirs),
-            code: FileParser::getCodeSnippet($locationPath, 1),
+            recommendation: $this->buildRecommendation($formattedMissing, $formattedNonWritable),
+            code: null,
             metadata: [
-                'failed_directories' => $formattedDirs,
-                'count' => count($failedDirs),
+                'missing_directories' => $formattedMissing,
+                'non_writable_directories' => $formattedNonWritable,
+                'missing_count' => count($missingDirs),
+                'non_writable_count' => count($nonWritableDirs),
             ]
         );
 
@@ -223,20 +230,63 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Build issue message based on failure types.
+     *
+     * @param  array<string>  $missingDirs
+     * @param  array<string>  $nonWritableDirs
+     */
+    private function buildMessage(array $missingDirs, array $nonWritableDirs): string
+    {
+        $hasMissing = ! empty($missingDirs);
+        $hasNonWritable = ! empty($nonWritableDirs);
+
+        if ($hasMissing && $hasNonWritable) {
+            return sprintf(
+                'Found %d missing and %d non-writable directories',
+                count($missingDirs),
+                count($nonWritableDirs)
+            );
+        }
+
+        if ($hasMissing) {
+            return sprintf('%d required %s not found', count($missingDirs), count($missingDirs) === 1 ? 'directory' : 'directories');
+        }
+
+        return sprintf('%d %s not writable', count($nonWritableDirs), count($nonWritableDirs) === 1 ? 'directory is' : 'directories are');
+    }
+
+    /**
      * Build recommendation message.
      *
-     * @param  array<string>  $formattedDirs
+     * @param  array<string>  $formattedMissing
+     * @param  array<string>  $formattedNonWritable
      */
-    private function buildRecommendation(string $failedDirsList, array $formattedDirs): string
+    private function buildRecommendation(array $formattedMissing, array $formattedNonWritable): string
     {
-        return sprintf(
-            <<<'RECOMMENDATION'
-The following directories must be writable: %s.
-Adjust user/group as appropriate for your environment.
-These directories are required for logs, sessions, cache, compiled views, and configuration caching.
-RECOMMENDATION,
-            $failedDirsList,
-        );
+        $recommendations = [];
+
+        if (! empty($formattedMissing)) {
+            $missingList = implode(', ', $formattedMissing);
+            $recommendations[] = sprintf(
+                "Missing directories: %s\nCreate them with: mkdir -p %s",
+                $missingList,
+                implode(' ', $formattedMissing)
+            );
+        }
+
+        if (! empty($formattedNonWritable)) {
+            $nonWritableList = implode(', ', $formattedNonWritable);
+            $recommendations[] = sprintf(
+                "Non-writable directories: %s\nFix permissions with: chmod -R 775 %s",
+                $nonWritableList,
+                implode(' ', $formattedNonWritable)
+            );
+        }
+
+        $rec = implode("\n\n", $recommendations);
+        $rec .= "\n\nThese directories are required for logs, sessions, cache, compiled views, and configuration caching.";
+
+        return $rec;
     }
 
     /**

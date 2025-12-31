@@ -69,10 +69,12 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
             $configLocation = $this->getDatabaseConfigLocation($connectionName);
 
             if (! $result->successful) {
+                $severity = $this->determineSeverity($connectionName, $defaultConnection, $result);
+
                 $issues[] = $this->createIssue(
                     message: $result->message ?? "Cannot connect to database '{$connectionName}'",
                     location: $configLocation,
-                    severity: Severity::Critical,
+                    severity: $severity,
                     recommendation: $this->buildRecommendation($connectionName, $result),
                     code: $configLocation->line ? FileParser::getCodeSnippet($configLocation->file, $configLocation->line) : null,
                     metadata: [
@@ -81,6 +83,7 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
                         'host' => $this->getConnectionHost($connectionName),
                         'database' => $this->getConnectionDatabase($connectionName),
                         'exception' => $result->exceptionClass,
+                        'is_default' => $connectionName === $defaultConnection,
                     ]
                 );
             }
@@ -128,23 +131,91 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Determine the severity of a database connection failure.
+     *
+     * Factors considered:
+     * - Default vs non-default connection
+     * - Transient vs persistent error type
+     */
+    private function determineSeverity(
+        string $connectionName,
+        string $defaultConnection,
+        DatabaseConnectionResult $result
+    ): Severity {
+        $isDefault = $connectionName === $defaultConnection;
+        $isTransient = $this->isTransientError($result);
+
+        // Default connection failures are more severe
+        if ($isDefault) {
+            // Default connection with persistent error = Critical
+            // Default connection with transient error = High
+            return $isTransient ? Severity::High : Severity::Critical;
+        }
+
+        // Non-default connection failures are less severe
+        // Non-default with persistent error = High
+        // Non-default with transient error = Medium
+        return $isTransient ? Severity::Medium : Severity::High;
+    }
+
+    /**
+     * Determine if an error is likely transient (temporary/recoverable).
+     *
+     * Transient errors include:
+     * - Connection timeouts
+     * - Connection refused (server restarting)
+     * - DNS resolution failures
+     * - Network unreachable
+     *
+     * Persistent errors include:
+     * - Access denied (wrong credentials)
+     * - Unknown database (doesn't exist)
+     * - Missing driver
+     */
+    private function isTransientError(DatabaseConnectionResult $result): bool
+    {
+        $message = $result->message ?? '';
+
+        // Transient network/connectivity issues
+        $transientPatterns = [
+            'Connection refused',
+            'Connection timed out',
+            'Timeout',
+            'timed out',
+            'Network is unreachable',
+            'No route to host',
+            'Temporary failure in name resolution',
+            'Name or service not known',
+        ];
+
+        foreach ($transientPatterns as $pattern) {
+            if (stripos($message, $pattern) !== false) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Get recommendation message for database connection failure.
      */
     private function buildRecommendation(string $connection, DatabaseConnectionResult $result): string
     {
         $driver = $this->getConnectionDriver($connection);
         $errorMsg = $result->message ?? '';
+        $error = strtolower($errorMsg);
         $sanitizedError = MessageHelper::sanitizeErrorMessage($errorMsg);
 
         $recommendation = "Database connection '{$connection}' failed: {$sanitizedError}. ";
 
         // Provide specific recommendations based on error and driver
-        if (str_contains($errorMsg, 'Access denied')) {
+        if (str_contains($error, 'access denied')) {
             $recommendation .= 'Check database username and password in your .env file. ';
-        } elseif (str_contains($errorMsg, 'Connection refused') || str_contains($errorMsg, 'could not find driver')) {
+        } elseif (str_contains($error, 'connection refused') || str_contains($errorMsg, 'could not find driver')) {
             $driverText = is_string($driver) ? $driver : 'database';
             $recommendation .= "Ensure the database server is running and the PHP {$driverText} extension is installed. ";
-        } elseif (str_contains($errorMsg, 'Unknown database')) {
+        } elseif (str_contains($error, 'unknown database')) {
             $recommendation .= 'The specified database does not exist. Create it or check the DB_DATABASE value in .env. ';
         } else {
             $recommendation .= 'Common issues: 1) Database server not running, 2) Incorrect credentials, 3) Firewall blocking connection, 4) Wrong host/port. ';

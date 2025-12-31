@@ -494,6 +494,167 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
+    // =========================================================================
+    // Dynamic Severity Tests
+    // =========================================================================
+
+    public function test_default_connection_persistent_error_is_critical(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        // Persistent error: Access denied
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'Access denied for user'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertSame('critical', $issues[0]->severity->value);
+        $this->assertTrue($issues[0]->metadata['is_default']);
+    }
+
+    public function test_default_connection_transient_error_is_high(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        // Transient error: Connection refused
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'Connection refused'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertSame('high', $issues[0]->severity->value);
+        $this->assertTrue($issues[0]->metadata['is_default']);
+    }
+
+    public function test_non_default_connection_persistent_error_is_high(): void
+    {
+        $connections = [
+            'sqlite' => [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+                'prefix' => '',
+                'foreign_key_constraints' => true,
+            ],
+        ];
+
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig($connections),
+        ]);
+
+        $this->applyDatabaseConfig($connections);
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('shieldci.database.connections', ['sqlite']);
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        /** @phpstan-ignore-next-line */
+        $checker->shouldReceive('check')->with('mysql')->andReturn(new DatabaseConnectionResult(true));
+        // Persistent error on non-default connection
+        /** @phpstan-ignore-next-line */
+        $checker->shouldReceive('check')->with('sqlite')->andReturn(new DatabaseConnectionResult(false, 'Unknown database'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('high', $issues[0]->severity->value);
+        $this->assertFalse($issues[0]->metadata['is_default']);
+    }
+
+    public function test_non_default_connection_transient_error_is_medium(): void
+    {
+        $connections = [
+            'sqlite' => [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+                'prefix' => '',
+                'foreign_key_constraints' => true,
+            ],
+        ];
+
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig($connections),
+        ]);
+
+        $this->applyDatabaseConfig($connections);
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('shieldci.database.connections', ['sqlite']);
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        /** @phpstan-ignore-next-line */
+        $checker->shouldReceive('check')->with('mysql')->andReturn(new DatabaseConnectionResult(true));
+        // Transient error on non-default connection
+        /** @phpstan-ignore-next-line */
+        $checker->shouldReceive('check')->with('sqlite')->andReturn(new DatabaseConnectionResult(false, 'Connection timed out'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('medium', $issues[0]->severity->value);
+        $this->assertFalse($issues[0]->metadata['is_default']);
+    }
+
+    public function test_recognizes_various_transient_error_patterns(): void
+    {
+        $transientErrors = [
+            'Connection refused',
+            'Connection timed out',
+            'Timeout occurred',
+            'Network is unreachable',
+            'No route to host',
+            'Temporary failure in name resolution',
+            'Name or service not known',
+        ];
+
+        foreach ($transientErrors as $errorMessage) {
+            $tempDir = $this->createTempDirectory([
+                'config/database.php' => $this->databaseConfig(),
+            ]);
+
+            $this->applyDatabaseConfig();
+
+            $checker = Mockery::mock(DatabaseConnectionChecker::class);
+            $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, $errorMessage));
+
+            $analyzer = $this->createAnalyzer($checker);
+            $analyzer->setBasePath($tempDir);
+
+            $result = $analyzer->analyze();
+
+            $this->assertFailed($result);
+            $issues = $result->getIssues();
+            $this->assertSame('high', $issues[0]->severity->value, "Failed for error: {$errorMessage}");
+        }
+    }
+
     /**
      * @param  array<string, array<string, mixed>>  $additionalConnections
      */

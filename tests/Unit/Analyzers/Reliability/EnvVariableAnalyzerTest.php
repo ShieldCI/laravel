@@ -394,7 +394,6 @@ DB_CONNECTION=mysql';
         $recommendation = $issues[0]->recommendation;
         $this->assertStringContainsString('APP_ENV', $recommendation);
         $this->assertStringContainsString('DB_CONNECTION', $recommendation);
-        $this->assertStringContainsString('Open .env.example', $recommendation);
     }
 
     // =========================================================================

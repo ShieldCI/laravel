@@ -156,16 +156,8 @@ Add the following environment variables to your .env file: %s
 
 These variables are defined in .env.example and may be required for the application to function correctly.
 
-To fix:
-1. Open .env.example and locate these variables
-2. Copy the variable definitions to your .env file
-3. Set appropriate values for your environment (do not use placeholder values in production)
-
-Example:
-  %s=your_value_here
 RECOMMENDATION,
             $variablesList,
-            $missingKeys[0] ?? 'VARIABLE_NAME'
         );
     }
 

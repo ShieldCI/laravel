@@ -343,10 +343,21 @@ return [
     |
     | Define when the analysis should fail (exit code 1).
     |
+    | fail_on: Severity threshold for build failure
+    |   - 'never': Never fail (reporting only)
+    |   - 'critical': Fail on Critical issues only (use for legacy codebases)
+    |   - 'high': Fail on High or Critical issues (default, recommended)
+    |   - 'medium': Fail on Medium, High, or Critical issues
+    |   - 'low': Fail on any issues (strict quality enforcement)
+    |
+    | fail_threshold: Minimum score to pass (0-100, optional)
+    |   - Set a percentage threshold for passing (e.g., 80 = require 80% pass rate)
+    |   - Both fail_on AND fail_threshold must pass for exit code 0
+    |
     */
 
-    'fail_on' => env('SHIELDCI_FAIL_ON', 'critical'), // never, critical, high, medium, low
+    'fail_on' => env('SHIELDCI_FAIL_ON', 'high'),
 
-    'fail_threshold' => env('SHIELDCI_FAIL_THRESHOLD', null), // minimum score to pass (0-100)
+    'fail_threshold' => env('SHIELDCI_FAIL_THRESHOLD', null),
 
 ];

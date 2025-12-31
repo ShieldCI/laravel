@@ -51,8 +51,6 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                     lineNumber: null,
                     severity: Severity::Critical,
                     recommendation: sprintf('Fix the broken symlink. Target: %s', $target ?: 'unknown'),
-                    column: null,
-                    contextLines: null,
                     code: 'broken-symlink',
                     metadata: [
                         'env_path' => $envPath,
@@ -129,8 +127,6 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                 lineNumber: null,
                 severity: Severity::Critical,
                 recommendation: $this->buildRecommendation($envExampleExists),
-                column: null,
-                contextLines: null,
                 code: 'missing-file',
                 metadata: [
                     'env_path' => $envPath,

@@ -18,17 +18,28 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\AnalyzesMiddleware;
 
 /**
- * Checks for the existence of custom error page templates.
+ * Checks for conventional file-based error page templates.
  *
- * This analyzer:
- * - Checks all configured view paths (not just default)
- * - Detects custom error view namespaces
- * - Verifies that custom error templates exist on the filesystem
+ * This analyzer validates the conventional Laravel approach of creating individual
+ * error template files (401.blade.php, 403.blade.php, etc.) in resources/views/errors/.
+ *
+ * What this analyzer checks:
+ * - Existence of conventional error template files on the filesystem
+ * - All configured view paths (not just default)
+ * - Custom error view namespaces
  * - Skips stateless/API-only apps automatically
- * - Helps prevent framework fingerprinting vulnerability
  *
- * Note: This analyzer performs a filesystem check only. It does not render
- * exceptions or verify that error pages actually work at runtime.
+ * What this analyzer does NOT check:
+ * - Custom exception handlers in app/Exceptions/Handler.php
+ * - Dynamic error views (single template handling multiple HTTP codes)
+ * - Middleware-level error response overrides
+ * - Custom render methods on exception classes
+ * - Error responses returned from controllers
+ *
+ * Note: This analyzer performs a filesystem check only. Applications can implement
+ * custom error handling through various approaches. If you use custom exception
+ * handlers or other non-conventional methods, you can safely ignore this warning
+ * by adding 'custom-error-pages' to the dont_report configuration.
  */
 class CustomErrorPageAnalyzer extends AbstractAnalyzer
 {
@@ -53,9 +64,9 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
         return new AnalyzerMetadata(
             id: 'custom-error-pages',
             name: 'Custom Error Pages Analyzer',
-            description: 'Ensures custom error pages are configured for all common HTTP error codes (401, 403, 404, 419, 429, 500, 503) to prevent framework fingerprinting and improve UX',
+            description: 'Checks for conventional file-based error page templates (401, 403, 404, 419, 429, 500, 503) in resources/views/errors/.',
             category: Category::Reliability,
-            severity: Severity::Medium,
+            severity: Severity::Low,
             tags: ['errors', 'ux', 'reliability', 'security', 'fingerprinting'],
             docsUrl: 'https://docs.shieldci.com/analyzers/reliability/custom-error-pages',
             timeToFix: 30
@@ -92,12 +103,12 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
 
         $resourcesViewsPath = $this->getResourcesViewsPath();
 
-        return $this->failed(
+        return $this->warning(
             'Application uses default Laravel error pages',
             [$this->createIssue(
                 message: 'Custom error pages not configured for: '.implode(', ', $missing),
                 location: new Location($this->getRelativePath($resourcesViewsPath)),
-                severity: Severity::Medium,
+                severity: Severity::Low,
                 recommendation: $this->getCustomErrorPagesRecommendation(),
                 metadata: [
                     'missing_templates' => $missing,

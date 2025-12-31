@@ -23,7 +23,7 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         return new CustomErrorPageAnalyzer($router, $kernel, $files);
     }
 
-    public function test_fails_when_required_templates_missing(): void
+    public function test_warns_when_required_templates_missing(): void
     {
         $tempDir = $this->createTempDirectory([
             'resources/views/welcome.blade.php' => '<html></html>',
@@ -36,8 +36,8 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $analyzer->setStatelessOverride(false);
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
         $this->assertHasIssueContaining('Custom error pages not configured', $result);
+        $this->assertWarning($result);
     }
 
     public function test_passes_with_custom_error_pages(): void
@@ -114,7 +114,7 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $analyzer->setStatelessOverride(false);
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('401.blade.php', $result);
         $this->assertHasIssueContaining('403.blade.php', $result);
         $this->assertHasIssueContaining('419.blade.php', $result);
@@ -136,7 +136,7 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $analyzer->setStatelessOverride(false);
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('401.blade.php', $result);
         $this->assertHasIssueContaining('403.blade.php', $result);
         $this->assertHasIssueContaining('404.blade.php', $result);
@@ -158,7 +158,7 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $analyzer->setStatelessOverride(false);
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('401.blade.php', $result);
         $this->assertHasIssueContaining('403.blade.php', $result);
         $this->assertHasIssueContaining('404.blade.php', $result);
@@ -182,7 +182,7 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $analyzer->setStatelessOverride(false);
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('401.blade.php', $result);
         $this->assertHasIssueContaining('403.blade.php', $result);
         $this->assertHasIssueContaining('419.blade.php', $result);
@@ -204,8 +204,8 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $analyzer->setStatelessOverride(false);
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
         $this->assertHasIssueContaining('Custom error pages not configured', $result);
+        $this->assertWarning($result);
     }
 
     public function test_handles_non_array_view_paths(): void
@@ -219,7 +219,7 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $analyzer->setStatelessOverride(false);
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_handles_invalid_view_path(): void
@@ -231,8 +231,8 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $analyzer->setStatelessOverride(false);
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
         $this->assertHasIssueContaining('Custom error pages not configured', $result);
+        $this->assertWarning($result);
     }
 
     public function test_checks_multiple_view_paths(): void
@@ -278,7 +278,7 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $analyzer->setStatelessOverride(false);
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertArrayHasKey('missing_templates', $issues[0]->metadata);
@@ -304,7 +304,7 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $analyzer->setStatelessOverride(false);
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertArrayHasKey('view_paths_checked', $issues[0]->metadata);
@@ -352,7 +352,7 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $analyzer->setStatelessOverride(false);
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     // =========================================================================
@@ -370,7 +370,7 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $analyzer->setStatelessOverride(false);
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertStringContainsString('resources', $issues[0]->location->file);

@@ -67,17 +67,60 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
         // Parse both files
         $exampleVars = $this->parseEnvFile($envExamplePath);
         $actualVars = $this->parseEnvFile($envPath);
+        $commentedVars = $this->parseCommentedVariables($envPath);
 
-        // Find missing variables
-        $missingVars = array_diff_key($exampleVars, $actualVars);
+        // Find variables that are missing (not active and not commented)
+        $missingVars = [];
+        $commentedOnlyVars = [];
 
-        if (empty($missingVars)) {
+        foreach ($exampleVars as $key => $value) {
+            // Variable is active in .env
+            if (isset($actualVars[$key])) {
+                continue;
+            }
+
+            // Variable is commented out in .env
+            if (isset($commentedVars[$key])) {
+                $commentedOnlyVars[$key] = $value;
+
+                continue;
+            }
+
+            // Variable is completely absent from .env
+            $missingVars[$key] = $value;
+        }
+
+        // All variables are present (either active or commented)
+        if (empty($missingVars) && empty($commentedOnlyVars)) {
             return $this->passed('All environment variables from .env.example are present in .env');
         }
 
-        return $this->failed(
-            sprintf('Found %d missing environment variable(s)', count($missingVars)),
-            [$this->createIssueWithSnippet(
+        // Only commented variables, no truly missing ones
+        if (empty($missingVars) && ! empty($commentedOnlyVars)) {
+            return $this->warning(
+                sprintf('Found %d commented environment variable(s)', count($commentedOnlyVars)),
+                [$this->createIssueWithSnippet(
+                    message: 'Environment variables are commented out',
+                    filePath: $envPath,
+                    lineNumber: null,
+                    severity: Severity::Low,
+                    recommendation: $this->buildCommentedVariablesRecommendation($commentedOnlyVars),
+                    column: null,
+                    contextLines: null,
+                    code: 'commented-variables',
+                    metadata: [
+                        'commented_count' => count($commentedOnlyVars),
+                        'commented_variables' => array_keys($commentedOnlyVars),
+                    ]
+                )]
+            );
+        }
+
+        // Build issues for missing and/or commented variables
+        $issues = [];
+
+        if (! empty($missingVars)) {
+            $issues[] = $this->createIssueWithSnippet(
                 message: 'Missing environment variables',
                 filePath: $envPath,
                 lineNumber: null,
@@ -90,7 +133,31 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
                     'missing_count' => count($missingVars),
                     'missing_variables' => array_keys($missingVars),
                 ]
-            )]
+            );
+        }
+
+        if (! empty($commentedOnlyVars)) {
+            $issues[] = $this->createIssueWithSnippet(
+                message: 'Environment variables are commented out',
+                filePath: $envPath,
+                lineNumber: null,
+                severity: Severity::Low,
+                recommendation: $this->buildCommentedVariablesRecommendation($commentedOnlyVars),
+                column: null,
+                contextLines: null,
+                code: 'commented-variables',
+                metadata: [
+                    'commented_count' => count($commentedOnlyVars),
+                    'commented_variables' => array_keys($commentedOnlyVars),
+                ]
+            );
+        }
+
+        $totalCount = count($missingVars) + count($commentedOnlyVars);
+
+        return $this->failed(
+            sprintf('Found %d environment variable issue(s)', $totalCount),
+            $issues
         );
     }
 
@@ -162,6 +229,28 @@ RECOMMENDATION,
     }
 
     /**
+     * Build recommendation message for commented environment variables.
+     *
+     * @param  array<string, string>  $commentedVars
+     */
+    private function buildCommentedVariablesRecommendation(array $commentedVars): string
+    {
+        $commentedKeys = array_keys($commentedVars);
+        $variablesList = implode(', ', $commentedKeys);
+
+        return sprintf(
+            <<<'RECOMMENDATION'
+The following environment variables are commented out in .env: %s
+
+These variables are defined in .env.example. If they're intentionally disabled, this is fine.
+If they should be active, uncomment them in your .env file.
+
+RECOMMENDATION,
+            $variablesList,
+        );
+    }
+
+    /**
      * Parse environment file and return key-value pairs.
      *
      * @return array<string, string>
@@ -204,5 +293,50 @@ RECOMMENDATION,
         }
 
         return $variables;
+    }
+
+    /**
+     * Parse environment file and return commented-out variables.
+     *
+     * @return array<string, string>
+     */
+    private function parseCommentedVariables(string $filePath): array
+    {
+        if (! file_exists($filePath) || ! is_readable($filePath)) {
+            return [];
+        }
+
+        try {
+            $lines = FileParser::getLines($filePath);
+        } catch (\Throwable $e) {
+            return [];
+        }
+
+        if (! is_array($lines) || empty($lines)) {
+            return [];
+        }
+
+        $commentedVars = [];
+
+        foreach ($lines as $line) {
+            if (! is_string($line)) {
+                continue;
+            }
+
+            $line = trim($line);
+
+            // Skip empty lines
+            if ($line === '') {
+                continue;
+            }
+
+            // Look for commented variable definitions: # KEY=VALUE or #KEY=VALUE
+            if (preg_match('/^#\s*([A-Z_][A-Z0-9_]*)\s*=/', $line, $matches)) {
+                $key = $matches[1];
+                $commentedVars[$key] = $line;
+            }
+        }
+
+        return $commentedVars;
     }
 }

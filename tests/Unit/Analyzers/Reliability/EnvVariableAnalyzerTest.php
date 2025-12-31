@@ -155,7 +155,7 @@ APP_ENV=local';
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertStringContainsString('5 missing environment variable(s)', $result->getMessage());
+        $this->assertStringContainsString('5 environment variable issue(s)', $result->getMessage());
     }
 
     // =========================================================================
@@ -433,7 +433,7 @@ APP_ENV=local';
 
         // Should fail - missing all variables
         $this->assertFailed($result);
-        $this->assertStringContainsString('2 missing environment variable(s)', $result->getMessage());
+        $this->assertStringContainsString('2 environment variable issue(s)', $result->getMessage());
     }
 
     public function test_handles_unreadable_env_example_file(): void
@@ -505,5 +505,157 @@ APP_ENV=local';
         // Should return warning - can't verify without .env.example
         $this->assertWarning($result);
         $this->assertStringContainsString('.env.example file not found', $result->getMessage());
+    }
+
+    // =========================================================================
+    // Commented Variables Tests
+    // =========================================================================
+
+    public function test_detects_commented_variables(): void
+    {
+        $exampleContent = 'APP_NAME=Laravel
+APP_KEY=
+DB_PASSWORD=';
+
+        $envContent = 'APP_NAME=MyApp
+# APP_KEY=base64:test123
+# DB_PASSWORD=secret';
+
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => $exampleContent,
+            '.env' => $envContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertStringContainsString('2 commented environment variable(s)', $result->getMessage());
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(2, $issues[0]->metadata['commented_count']);
+
+        $commentedVars = $issues[0]->metadata['commented_variables'];
+        $this->assertIsArray($commentedVars);
+        $this->assertContains('APP_KEY', $commentedVars);
+        $this->assertContains('DB_PASSWORD', $commentedVars);
+    }
+
+    public function test_distinguishes_missing_from_commented(): void
+    {
+        $exampleContent = 'APP_NAME=Laravel
+APP_KEY=
+DB_PASSWORD=
+MAIL_FROM=';
+
+        $envContent = 'APP_NAME=MyApp
+# APP_KEY=base64:test123';
+        // DB_PASSWORD is completely absent
+        // MAIL_FROM is completely absent
+
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => $exampleContent,
+            '.env' => $envContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+
+        // Find missing and commented issues
+        $missingIssue = collect($issues)->first(fn ($i) => ($i->metadata['missing_count'] ?? 0) > 0);
+        $commentedIssue = collect($issues)->first(fn ($i) => ($i->metadata['commented_count'] ?? 0) > 0);
+
+        $this->assertNotNull($missingIssue);
+        $this->assertNotNull($commentedIssue);
+
+        $this->assertSame(2, $missingIssue->metadata['missing_count']);
+
+        $missingVars = $missingIssue->metadata['missing_variables'];
+        $this->assertIsArray($missingVars);
+        $this->assertContains('DB_PASSWORD', $missingVars);
+        $this->assertContains('MAIL_FROM', $missingVars);
+
+        $this->assertSame(1, $commentedIssue->metadata['commented_count']);
+
+        $commentedVars = $commentedIssue->metadata['commented_variables'];
+        $this->assertIsArray($commentedVars);
+        $this->assertContains('APP_KEY', $commentedVars);
+    }
+
+    public function test_handles_commented_variables_with_spaces(): void
+    {
+        $exampleContent = 'APP_KEY=';
+
+        $envContent = '#   APP_KEY=base64:test123';
+
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => $exampleContent,
+            '.env' => $envContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        $commentedVars = $issues[0]->metadata['commented_variables'];
+        $this->assertIsArray($commentedVars);
+        $this->assertContains('APP_KEY', $commentedVars);
+    }
+
+    public function test_ignores_regular_comments(): void
+    {
+        $exampleContent = 'APP_NAME=Laravel';
+
+        $envContent = '# This is a regular comment
+# TODO: Add more config
+APP_NAME=MyApp';
+
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => $exampleContent,
+            '.env' => $envContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - regular comments are not variable definitions
+        $this->assertPassed($result);
+    }
+
+    public function test_only_commented_variables_returns_warning_not_failed(): void
+    {
+        $exampleContent = 'APP_KEY=';
+
+        $envContent = '# APP_KEY=base64:test123';
+
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => $exampleContent,
+            '.env' => $envContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Only commented variables should be a warning, not a failure
+        $this->assertWarning($result);
+        $this->assertStringContainsString('commented', strtolower($result->getMessage()));
     }
 }

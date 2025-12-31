@@ -9,7 +9,6 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -53,6 +52,8 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
 
         if (empty($failedDirs)) {
             return $this->passed('All critical directories have proper write permissions');
+        if (empty($missingDirs) && empty($nonWritableDirs)) {
+            return $this->passed('All critical directories exist and have proper write permissions');
         }
 
         // Create issues for failed directories

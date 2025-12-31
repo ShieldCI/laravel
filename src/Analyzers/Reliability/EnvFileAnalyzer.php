@@ -95,7 +95,7 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                     message: 'The .env file exists but contains no configuration',
                     filePath: $envPath,
                     lineNumber: null,
-                    severity: Severity::High,
+                    severity: Severity::Critical,
                     recommendation: 'Add environment variables to your .env file. At minimum, configure: APP_KEY, APP_ENV, APP_DEBUG, DB_CONNECTION',
                     code: 'empty-file',
                     metadata: [

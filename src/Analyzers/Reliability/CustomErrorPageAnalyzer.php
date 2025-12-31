@@ -32,11 +32,6 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
     use AnalyzesMiddleware;
 
     /**
-     * Custom error page checks require a web server, not applicable in CI.
-     */
-    public static bool $runInCI = false;
-
-    /**
      * Allows tests to override stateless detection.
      */
     protected ?bool $statelessOverride = null;

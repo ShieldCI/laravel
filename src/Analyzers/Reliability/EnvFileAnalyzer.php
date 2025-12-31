@@ -76,9 +76,7 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                     filePath: $envPath,
                     lineNumber: null,
                     severity: Severity::Critical,
-                    recommendation: 'Fix file permissions to make .env readable. Run: chmod 644 .env',
-                    column: null,
-                    contextLines: null,
+                    recommendation: 'Fix file permissions to make .env readable. Run: chmod 600 .env',
                     code: 'not-readable',
                     metadata: [
                         'env_path' => $envPath,
@@ -186,8 +184,6 @@ RECOMMENDATION,
         }
 
         return <<<'RECOMMENDATION'
-Create a .env file in your application root directory.
-
 1. Create a new file named ".env" in your application root
 2. Add your environment variables in the format: KEY=value
 3. Include at minimum: APP_KEY, APP_ENV, APP_DEBUG, DB_CONNECTION, DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME, DB_PASSWORD

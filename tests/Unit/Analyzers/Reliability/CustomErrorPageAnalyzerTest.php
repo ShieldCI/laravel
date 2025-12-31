@@ -43,7 +43,11 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
     public function test_passes_with_custom_error_pages(): void
     {
         $tempDir = $this->createTempDirectory([
+            'resources/views/errors/401.blade.php' => '<html>401</html>',
+            'resources/views/errors/403.blade.php' => '<html>403</html>',
             'resources/views/errors/404.blade.php' => '<html>404</html>',
+            'resources/views/errors/419.blade.php' => '<html>419</html>',
+            'resources/views/errors/429.blade.php' => '<html>429</html>',
             'resources/views/errors/500.blade.php' => '<html>500</html>',
             'resources/views/errors/503.blade.php' => '<html>503</html>',
         ]);
@@ -61,7 +65,11 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
     public function test_passes_when_error_namespace_is_used(): void
     {
         $tempDir = $this->createTempDirectory([
+            'custom/errors/401.blade.php' => '<html>401</html>',
+            'custom/errors/403.blade.php' => '<html>403</html>',
             'custom/errors/404.blade.php' => '<html>404</html>',
+            'custom/errors/419.blade.php' => '<html>419</html>',
+            'custom/errors/429.blade.php' => '<html>429</html>',
             'custom/errors/500.blade.php' => '<html>500</html>',
             'custom/errors/503.blade.php' => '<html>503</html>',
         ]);
@@ -107,6 +115,10 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
+        $this->assertHasIssueContaining('401.blade.php', $result);
+        $this->assertHasIssueContaining('403.blade.php', $result);
+        $this->assertHasIssueContaining('419.blade.php', $result);
+        $this->assertHasIssueContaining('429.blade.php', $result);
         $this->assertHasIssueContaining('500.blade.php', $result);
         $this->assertHasIssueContaining('503.blade.php', $result);
     }
@@ -125,7 +137,11 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
+        $this->assertHasIssueContaining('401.blade.php', $result);
+        $this->assertHasIssueContaining('403.blade.php', $result);
         $this->assertHasIssueContaining('404.blade.php', $result);
+        $this->assertHasIssueContaining('419.blade.php', $result);
+        $this->assertHasIssueContaining('429.blade.php', $result);
         $this->assertHasIssueContaining('503.blade.php', $result);
     }
 
@@ -143,15 +159,20 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
+        $this->assertHasIssueContaining('401.blade.php', $result);
+        $this->assertHasIssueContaining('403.blade.php', $result);
         $this->assertHasIssueContaining('404.blade.php', $result);
+        $this->assertHasIssueContaining('419.blade.php', $result);
+        $this->assertHasIssueContaining('429.blade.php', $result);
         $this->assertHasIssueContaining('500.blade.php', $result);
     }
 
-    public function test_fails_when_only_404_and_500_exist(): void
+    public function test_fails_when_only_some_templates_exist(): void
     {
         $tempDir = $this->createTempDirectory([
             'resources/views/errors/404.blade.php' => '<html>404</html>',
             'resources/views/errors/500.blade.php' => '<html>500</html>',
+            'resources/views/errors/503.blade.php' => '<html>503</html>',
         ]);
 
         config(['view.paths' => [$tempDir.'/resources/views']]);
@@ -162,7 +183,10 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('503.blade.php', $result);
+        $this->assertHasIssueContaining('401.blade.php', $result);
+        $this->assertHasIssueContaining('403.blade.php', $result);
+        $this->assertHasIssueContaining('419.blade.php', $result);
+        $this->assertHasIssueContaining('429.blade.php', $result);
     }
 
     // =========================================================================
@@ -214,10 +238,14 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
     public function test_checks_multiple_view_paths(): void
     {
         $tempDir1 = $this->createTempDirectory([
+            'views1/errors/401.blade.php' => '<html>401</html>',
+            'views1/errors/403.blade.php' => '<html>403</html>',
             'views1/errors/404.blade.php' => '<html>404</html>',
+            'views1/errors/419.blade.php' => '<html>419</html>',
         ]);
 
         $tempDir2 = $this->createTempDirectory([
+            'views2/errors/429.blade.php' => '<html>429</html>',
             'views2/errors/500.blade.php' => '<html>500</html>',
             'views2/errors/503.blade.php' => '<html>503</html>',
         ]);
@@ -256,6 +284,10 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $this->assertArrayHasKey('missing_templates', $issues[0]->metadata);
         $missingTemplates = $issues[0]->metadata['missing_templates'];
         $this->assertIsArray($missingTemplates);
+        $this->assertContains('401.blade.php', $missingTemplates);
+        $this->assertContains('403.blade.php', $missingTemplates);
+        $this->assertContains('419.blade.php', $missingTemplates);
+        $this->assertContains('429.blade.php', $missingTemplates);
         $this->assertContains('500.blade.php', $missingTemplates);
         $this->assertContains('503.blade.php', $missingTemplates);
         $this->assertNotContains('404.blade.php', $missingTemplates);
@@ -286,10 +318,14 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
     public function test_handles_multiple_namespace_hints(): void
     {
         $tempDir1 = $this->createTempDirectory([
+            'custom1/401.blade.php' => '<html>401</html>',
+            'custom1/403.blade.php' => '<html>403</html>',
             'custom1/404.blade.php' => '<html>404</html>',
+            'custom1/419.blade.php' => '<html>419</html>',
         ]);
 
         $tempDir2 = $this->createTempDirectory([
+            'custom2/429.blade.php' => '<html>429</html>',
             'custom2/500.blade.php' => '<html>500</html>',
             'custom2/503.blade.php' => '<html>503</html>',
         ]);

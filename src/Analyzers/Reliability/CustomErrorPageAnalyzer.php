@@ -53,7 +53,7 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
         return new AnalyzerMetadata(
             id: 'custom-error-pages',
             name: 'Custom Error Pages Analyzer',
-            description: 'Ensures custom error pages are configured to prevent framework fingerprinting and improve UX',
+            description: 'Ensures custom error pages are configured for all common HTTP error codes (401, 403, 404, 419, 429, 500, 503) to prevent framework fingerprinting and improve UX',
             category: Category::Reliability,
             severity: Severity::Medium,
             tags: ['errors', 'ux', 'reliability', 'security', 'fingerprinting'],
@@ -141,7 +141,10 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
                'Default Laravel error pages may reveal framework-specific branding or structure, '.
                'allowing potential attackers to identify Laravel as your framework. '.
                'Run "php artisan vendor:publish --tag=laravel-errors" to publish the default error views, '.
-               'then customize them. At minimum, create 404.blade.php, 500.blade.php, and 503.blade.php in resources/views/errors/';
+               'then customize them. Create the following templates in resources/views/errors/: '.
+               '401.blade.php (Unauthorized), 403.blade.php (Forbidden), 404.blade.php (Not Found), '.
+               '419.blade.php (Page Expired/CSRF), 429.blade.php (Too Many Requests), '.
+               '500.blade.php (Server Error), 503.blade.php (Service Unavailable)';
     }
 
     public function setStatelessOverride(?bool $stateless): void
@@ -154,7 +157,17 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
      */
     private function missingErrorTemplates(): array
     {
-        $required = ['404.blade.php', '500.blade.php', '503.blade.php'];
+        // Common Laravel HTTP error codes that should have custom templates
+        $required = [
+            '401.blade.php', // Unauthorized (authentication required)
+            '403.blade.php', // Forbidden (authorization failed)
+            '404.blade.php', // Not Found
+            '419.blade.php', // Page Expired (CSRF token mismatch)
+            '429.blade.php', // Too Many Requests (rate limiting)
+            '500.blade.php', // Internal Server Error
+            '503.blade.php', // Service Unavailable (maintenance mode)
+        ];
+
         $paths = $this->collectErrorDirectories();
 
         $missing = [];

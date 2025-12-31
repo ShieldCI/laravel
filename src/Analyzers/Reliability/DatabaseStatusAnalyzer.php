@@ -188,7 +188,7 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
 
             // If it's a known persistent exception, it's definitely not transient
             foreach ($persistentExceptions as $persistentClass) {
-                if ($exceptionClass === $persistentClass || is_subclass_of($exceptionClass, $persistentClass)) {
+                if ($exceptionClass === $persistentClass || (class_exists($exceptionClass) && is_subclass_of($exceptionClass, $persistentClass))) {
                     return false;
                 }
             }

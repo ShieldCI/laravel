@@ -184,11 +184,7 @@ RECOMMENDATION,
         }
 
         return <<<'RECOMMENDATION'
-1. Create a new file named ".env" in your application root
-2. Add your environment variables in the format: KEY=value
-3. Include at minimum: APP_KEY, APP_ENV, APP_DEBUG, DB_CONNECTION, DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME, DB_PASSWORD
-
-Without a .env file, your application cannot load configuration and will fail to run.
+Create a .env file in your application root directory. Without a .env file, your application cannot load configuration and will fail to run.
 
 Note: Consider creating a .env.example file as a template for your team members.
 RECOMMENDATION;

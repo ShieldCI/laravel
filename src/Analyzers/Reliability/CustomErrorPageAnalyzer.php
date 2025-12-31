@@ -138,7 +138,7 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
     private function getCustomErrorPagesRecommendation(): string
     {
         return 'Create custom error pages for better user experience and security. '.
-               'Default Laravel error pages expose your application to framework fingerprinting, '.
+               'Default Laravel error pages may reveal framework-specific branding or structure, '.
                'allowing potential attackers to identify Laravel as your framework. '.
                'Run "php artisan vendor:publish --tag=laravel-errors" to publish the default error views, '.
                'then customize them. At minimum, create 404.blade.php, 500.blade.php, and 503.blade.php in resources/views/errors/';

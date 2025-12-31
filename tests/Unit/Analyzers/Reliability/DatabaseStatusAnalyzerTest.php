@@ -381,7 +381,7 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $this->assertSame('mysql', $issues[0]->metadata['driver']);
     }
 
-    public function test_includes_host_in_metadata(): void
+    public function test_does_not_expose_host_in_metadata(): void
     {
         $tempDir = $this->createTempDirectory([
             'config/database.php' => $this->databaseConfig(),
@@ -399,11 +399,11 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertArrayHasKey('host', $issues[0]->metadata);
-        $this->assertSame('127.0.0.1', $issues[0]->metadata['host']);
+        // Host should not be exposed to prevent infrastructure disclosure
+        $this->assertArrayNotHasKey('host', $issues[0]->metadata);
     }
 
-    public function test_includes_database_name_in_metadata(): void
+    public function test_does_not_expose_database_name_in_metadata(): void
     {
         $tempDir = $this->createTempDirectory([
             'config/database.php' => $this->databaseConfig(),
@@ -421,8 +421,8 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertArrayHasKey('database', $issues[0]->metadata);
-        $this->assertSame('test', $issues[0]->metadata['database']);
+        // Database name should not be exposed to prevent infrastructure disclosure
+        $this->assertArrayNotHasKey('database', $issues[0]->metadata);
     }
 
     public function test_includes_exception_class_in_metadata(): void

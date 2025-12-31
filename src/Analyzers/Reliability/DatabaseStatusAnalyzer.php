@@ -80,10 +80,9 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
                     metadata: [
                         'connection' => $connectionName,
                         'driver' => $this->getConnectionDriver($connectionName),
-                        'host' => $this->getConnectionHost($connectionName),
-                        'database' => $this->getConnectionDatabase($connectionName),
                         'exception' => $result->exceptionClass,
                         'is_default' => $connectionName === $defaultConnection,
+                        // Note: host and database omitted to prevent infrastructure exposure in logs/reports
                     ]
                 );
             }
@@ -278,21 +277,5 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
     private function getConnectionDriver(string $connectionName): ?string
     {
         return $this->getConnectionConfig($connectionName, 'driver');
-    }
-
-    /**
-     * Get the host for a database connection.
-     */
-    private function getConnectionHost(string $connectionName): ?string
-    {
-        return $this->getConnectionConfig($connectionName, 'host');
-    }
-
-    /**
-     * Get the database name for a database connection.
-     */
-    private function getConnectionDatabase(string $connectionName): ?string
-    {
-        return $this->getConnectionConfig($connectionName, 'database');
     }
 }

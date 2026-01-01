@@ -64,10 +64,55 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        // Parse both files
-        $exampleVars = $this->parseEnvFile($envExamplePath);
-        $actualVars = $this->parseEnvFile($envPath);
-        $commentedVars = $this->parseCommentedVariables($envPath);
+        // Parse both files and track errors
+        $exampleResult = $this->parseEnvFileWithErrors($envExamplePath);
+        $actualResult = $this->parseEnvFileWithErrors($envPath);
+        $commentedResult = $this->parseCommentedVariablesWithErrors($envPath);
+
+        // Handle parsing failures
+        if ($exampleResult['error'] !== null) {
+            return $this->failed(
+                'Failed to parse .env.example file',
+                [$this->createIssueWithSnippet(
+                    message: 'Unable to parse .env.example file',
+                    filePath: $envExamplePath,
+                    lineNumber: null,
+                    severity: Severity::Critical,
+                    recommendation: sprintf(
+                        "The .env.example file could not be parsed. Error: %s\n\nEnsure the file is readable and properly formatted.",
+                        $exampleResult['error']
+                    ),
+                    column: null,
+                    contextLines: null,
+                    code: 'parse-error-example',
+                    metadata: ['error' => $exampleResult['error']]
+                )]
+            );
+        }
+
+        if ($actualResult['error'] !== null) {
+            return $this->failed(
+                'Failed to parse .env file',
+                [$this->createIssueWithSnippet(
+                    message: 'Unable to parse .env file',
+                    filePath: $envPath,
+                    lineNumber: null,
+                    severity: Severity::High,
+                    recommendation: sprintf(
+                        "The .env file could not be parsed. Error: %s\n\nEnsure the file is readable and properly formatted.",
+                        $actualResult['error']
+                    ),
+                    column: null,
+                    contextLines: null,
+                    code: 'parse-error-env',
+                    metadata: ['error' => $actualResult['error']]
+                )]
+            );
+        }
+
+        $exampleVars = $exampleResult['variables'];
+        $actualVars = $actualResult['variables'];
+        $commentedVars = $commentedResult['variables'];
 
         // Find variables that are missing (not active and not commented)
         $missingVars = [];
@@ -92,7 +137,7 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
 
         // All variables are present (either active or commented)
         if (empty($missingVars) && empty($commentedOnlyVars)) {
-            return $this->passed('All environment variables from .env.example are present in .env');
+            return $this->passed('All environment variables from .env.example are defined and enabled in .env');
         }
 
         // Only commented variables, no truly missing ones
@@ -251,24 +296,33 @@ RECOMMENDATION,
     }
 
     /**
-     * Parse environment file and return key-value pairs.
+     * Parse environment file and return key-value pairs with error tracking.
      *
-     * @return array<string, string>
+     * @return array{variables: array<string, string>, error: string|null}
      */
-    private function parseEnvFile(string $filePath): array
+    private function parseEnvFileWithErrors(string $filePath): array
     {
-        if (! file_exists($filePath) || ! is_readable($filePath)) {
-            return [];
+        if (! file_exists($filePath)) {
+            return ['variables' => [], 'error' => 'File does not exist'];
+        }
+
+        if (! is_readable($filePath)) {
+            return ['variables' => [], 'error' => 'File is not readable'];
         }
 
         try {
             $lines = FileParser::getLines($filePath);
         } catch (\Throwable $e) {
-            return [];
+            return ['variables' => [], 'error' => $e->getMessage()];
         }
 
-        if (! is_array($lines) || empty($lines)) {
-            return [];
+        if (! is_array($lines)) {
+            return ['variables' => [], 'error' => 'Failed to read file lines'];
+        }
+
+        if (empty($lines)) {
+            // Empty file is valid, not an error
+            return ['variables' => [], 'error' => null];
         }
 
         $variables = [];
@@ -292,28 +346,32 @@ RECOMMENDATION,
             }
         }
 
-        return $variables;
+        return ['variables' => $variables, 'error' => null];
     }
 
     /**
-     * Parse environment file and return commented-out variables.
+     * Parse environment file and return commented-out variables with error tracking.
      *
-     * @return array<string, string>
+     * Note: Parsing errors for commented variables are non-critical and ignored.
+     *
+     * @return array{variables: array<string, string>, error: string|null}
      */
-    private function parseCommentedVariables(string $filePath): array
+    private function parseCommentedVariablesWithErrors(string $filePath): array
     {
         if (! file_exists($filePath) || ! is_readable($filePath)) {
-            return [];
+            // Not an error - file might not exist yet or have permission issues already reported
+            return ['variables' => [], 'error' => null];
         }
 
         try {
             $lines = FileParser::getLines($filePath);
         } catch (\Throwable $e) {
-            return [];
+            // Not an error - if we can't read the file for commented vars, it's already reported elsewhere
+            return ['variables' => [], 'error' => null];
         }
 
         if (! is_array($lines) || empty($lines)) {
-            return [];
+            return ['variables' => [], 'error' => null];
         }
 
         $commentedVars = [];
@@ -337,6 +395,6 @@ RECOMMENDATION,
             }
         }
 
-        return $commentedVars;
+        return ['variables' => $commentedVars, 'error' => null];
     }
 }

@@ -455,8 +455,9 @@ APP_ENV=local';
         // Restore permissions for cleanup
         chmod($examplePath, 0644);
 
-        // Should pass - can't read .env.example, treated as empty
-        $this->assertPassed($result);
+        // Should fail - parsing error is now properly reported
+        $this->assertFailed($result);
+        $this->assertStringContainsString('parse', strtolower($result->getMessage()));
     }
 
     public function test_handles_unreadable_env_file(): void
@@ -657,5 +658,120 @@ APP_NAME=MyApp';
         // Only commented variables should be a warning, not a failure
         $this->assertWarning($result);
         $this->assertStringContainsString('commented', strtolower($result->getMessage()));
+    }
+
+    // =========================================================================
+    // Parse Error Handling Tests
+    // =========================================================================
+
+    public function test_reports_parse_error_for_env_example(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => 'APP_NAME=Laravel',
+            '.env' => 'APP_NAME=MyApp',
+        ]);
+
+        // Make .env.example unreadable to simulate parse error
+        $examplePath = $tempDir.'/.env.example';
+        chmod($examplePath, 0000);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Restore permissions
+        chmod($examplePath, 0644);
+
+        $this->assertFailed($result);
+        $this->assertStringContainsString('parse', strtolower($result->getMessage()));
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('parse-error-example', $issues[0]->code);
+        $this->assertArrayHasKey('error', $issues[0]->metadata);
+
+        $error = $issues[0]->metadata['error'];
+        $this->assertIsString($error);
+        $this->assertStringContainsString('not readable', $error);
+    }
+
+    public function test_reports_parse_error_for_env(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => 'APP_NAME=Laravel',
+            '.env' => 'APP_NAME=MyApp',
+        ]);
+
+        // Make .env unreadable to simulate parse error
+        $envPath = $tempDir.'/.env';
+        chmod($envPath, 0000);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Restore permissions
+        chmod($envPath, 0644);
+
+        $this->assertFailed($result);
+        $this->assertStringContainsString('parse', strtolower($result->getMessage()));
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('parse-error-env', $issues[0]->code);
+        $this->assertArrayHasKey('error', $issues[0]->metadata);
+    }
+
+    public function test_parse_error_prevents_false_pass(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => 'APP_KEY=
+DB_PASSWORD=
+REQUIRED_VAR=',
+            '.env' => 'APP_KEY=test',
+        ]);
+
+        // Make .env.example unreadable - this should fail, not pass
+        $examplePath = $tempDir.'/.env.example';
+        chmod($examplePath, 0000);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Restore permissions
+        chmod($examplePath, 0644);
+
+        // Should FAIL due to parse error, not incorrectly PASS
+        $this->assertFailed($result);
+
+        // The old silent behavior would have returned empty [] and passed
+        // The new behavior properly reports the parse error
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('parse', strtolower($issues[0]->message));
+    }
+
+    public function test_empty_env_file_is_not_parse_error(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => 'APP_KEY=',
+            '.env' => '', // Empty but valid
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should fail for missing variable, not for parse error
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('missing-variables', $issues[0]->code);
+        $this->assertNotSame('parse-error-env', $issues[0]->code);
     }
 }

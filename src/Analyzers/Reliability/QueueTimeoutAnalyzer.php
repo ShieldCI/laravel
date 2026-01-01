@@ -16,12 +16,20 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * Checks queue timeout and retry_after configuration.
  *
  * Checks for:
- * - retry_after is greater than timeout
+ * - retry_after is greater than timeout with sufficient buffer
  * - Proper timeout configuration for queue workers
  * - Prevents jobs from being processed twice
  */
 class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * Minimum buffer (in seconds) between timeout and retry_after.
+     *
+     * This ensures jobs have enough time to complete before being retried,
+     * preventing duplicate processing.
+     */
+    private const DEFAULT_MINIMUM_BUFFER_SECONDS = 10;
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
@@ -71,9 +79,10 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
 
             $retryAfter = $this->getRetryAfter($connection);
             $timeout = $this->getTimeout($connection, $driver);
+            $minimumBuffer = $this->getMinimumBuffer();
 
-            // Timeout should be at least several seconds shorter than retry_after
-            if ($timeout >= $retryAfter) {
+            // Timeout plus buffer should not exceed retry_after
+            if ($timeout + $minimumBuffer >= $retryAfter) {
                 $configFile = $this->getQueueConfigPath($basePath);
                 $location = $this->getConnectionLocation($configFile, $name);
 
@@ -81,12 +90,14 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
                     message: "Queue connection '{$name}' has improper timeout configuration",
                     location: $location,
                     severity: Severity::High,
-                    recommendation: $this->getRecommendation($name, $timeout, $retryAfter),
+                    recommendation: $this->getRecommendation($name, $timeout, $retryAfter, $minimumBuffer),
                     metadata: [
                         'connection' => $name,
                         'driver' => $driver,
                         'timeout' => $timeout,
                         'retry_after' => $retryAfter,
+                        'minimum_buffer' => $minimumBuffer,
+                        'actual_buffer' => $retryAfter - $timeout,
                     ]
                 );
             }
@@ -173,24 +184,47 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Get the minimum buffer requirement from config or use default.
+     */
+    private function getMinimumBuffer(): int
+    {
+        if (! function_exists('config')) {
+            return self::DEFAULT_MINIMUM_BUFFER_SECONDS;
+        }
+
+        try {
+            $buffer = config('shieldci.analyzers.reliability.queue-timeout.minimum_buffer');
+
+            return is_numeric($buffer) && $buffer > 0
+                ? (int) $buffer
+                : self::DEFAULT_MINIMUM_BUFFER_SECONDS;
+        } catch (\Throwable $e) {
+            return self::DEFAULT_MINIMUM_BUFFER_SECONDS;
+        }
+    }
+
+    /**
      * Get recommendation message for timeout configuration issue.
      */
-    private function getRecommendation(string $connection, int $timeout, int $retryAfter): string
+    private function getRecommendation(string $connection, int $timeout, int $retryAfter, int $minimumBuffer): string
     {
-        $suggestedRetryAfter = $timeout + 30;
+        $suggestedRetryAfter = $timeout + $minimumBuffer;
+        $actualBuffer = $retryAfter - $timeout;
 
         return sprintf(
-            'The queue timeout value must be at least several seconds shorter than the retry_after value. '.
-            "Your '%s' queue connection's retry_after is set to %d seconds while ".
-            'your timeout is %d seconds. This can cause jobs to be processed twice or the queue worker to crash. '.
-            'Solution: Either increase retry_after to at least %d seconds, or decrease the timeout to less than %d seconds. '.
-            'The retry_after should be: max(timeout) + buffer (e.g., %d seconds).',
+            'The queue timeout value must be at least %d seconds shorter than the retry_after value to prevent duplicate job processing. '.
+            "Your '%s' queue connection has timeout=%d seconds and retry_after=%d seconds (buffer: %d seconds). ".
+            'This configuration can cause jobs to be processed twice or the queue worker to crash. '.
+            'Solution: Either increase retry_after to at least %d seconds, or decrease the timeout to at most %d seconds. '.
+            'Recommended: retry_after = timeout + %d seconds (buffer).',
+            $minimumBuffer,
             $connection,
-            $retryAfter,
             $timeout,
-            $suggestedRetryAfter,
             $retryAfter,
-            30
+            $actualBuffer,
+            $suggestedRetryAfter,
+            $retryAfter - $minimumBuffer,
+            $minimumBuffer
         );
     }
 

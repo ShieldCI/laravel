@@ -533,4 +533,88 @@ PHP;
         // Should pass - connections without driver are skipped
         $this->assertPassed($result);
     }
+
+    #[Test]
+    public function test_enforces_minimum_buffer_requirement(): void
+    {
+        // timeout=60 (default), retry_after=65, buffer=10
+        // 60 + 10 = 70, which is >= 65, so should fail
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'redis',
+    'connections' => [
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => 'default',
+            'queue' => 'default',
+            'retry_after' => 65,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because buffer is only 5 seconds (less than 10 second minimum)
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        $issue = $issues[0];
+        $metadata = $issue->metadata;
+
+        // Verify buffer information is in metadata
+        $this->assertArrayHasKey('minimum_buffer', $metadata);
+        $this->assertSame(10, $metadata['minimum_buffer']);
+        $this->assertArrayHasKey('actual_buffer', $metadata);
+        $this->assertSame(5, $metadata['actual_buffer']); // 65 - 60 = 5
+
+        // Verify recommendation mentions the buffer
+        $this->assertStringContainsString('at least 10 seconds shorter', $issue->recommendation);
+        $this->assertStringContainsString('buffer: 5 seconds', $issue->recommendation);
+    }
+
+    #[Test]
+    public function test_passes_with_sufficient_buffer(): void
+    {
+        // timeout=60 (default), retry_after=71, buffer=10
+        // 60 + 10 = 70, which is < 71, so should pass
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'redis',
+    'connections' => [
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => 'default',
+            'queue' => 'default',
+            'retry_after' => 71,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because buffer is 11 seconds (more than 10 second minimum)
+        $this->assertPassed($result);
+    }
 }

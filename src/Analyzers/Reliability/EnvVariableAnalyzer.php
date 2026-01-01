@@ -56,10 +56,7 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
                     lineNumber: null,
                     severity: Severity::Critical,
                     recommendation: $this->buildMissingEnvFileRecommendation(),
-                    column: null,
-                    contextLines: null,
                     code: 'missing-env',
-                    metadata: []
                 )]
             );
         }
@@ -82,8 +79,6 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
                         "The .env.example file could not be parsed. Error: %s\n\nEnsure the file is readable and properly formatted.",
                         $exampleResult['error']
                     ),
-                    column: null,
-                    contextLines: null,
                     code: 'parse-error-example',
                     metadata: ['error' => $exampleResult['error']]
                 )]
@@ -102,8 +97,6 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
                         "The .env file could not be parsed. Error: %s\n\nEnsure the file is readable and properly formatted.",
                         $actualResult['error']
                     ),
-                    column: null,
-                    contextLines: null,
                     code: 'parse-error-env',
                     metadata: ['error' => $actualResult['error']]
                 )]
@@ -150,8 +143,6 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
                     lineNumber: null,
                     severity: Severity::Low,
                     recommendation: $this->buildCommentedVariablesRecommendation($commentedOnlyVars),
-                    column: null,
-                    contextLines: null,
                     code: 'commented-variables',
                     metadata: [
                         'commented_count' => count($commentedOnlyVars),
@@ -171,8 +162,6 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
                 lineNumber: null,
                 severity: Severity::High,
                 recommendation: $this->buildMissingVariablesRecommendation($missingVars),
-                column: null,
-                contextLines: null,
                 code: 'missing-variables',
                 metadata: [
                     'missing_count' => count($missingVars),
@@ -188,8 +177,6 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
                 lineNumber: null,
                 severity: Severity::Low,
                 recommendation: $this->buildCommentedVariablesRecommendation($commentedOnlyVars),
-                column: null,
-                contextLines: null,
                 code: 'commented-variables',
                 metadata: [
                     'commented_count' => count($commentedOnlyVars),

@@ -102,7 +102,7 @@ PHP;
 
         $issue = $issues[0];
         $this->assertSame("Queue connection 'redis' has improper timeout configuration", $issue->message);
-        $this->assertSame(Severity::Critical, $issue->severity);
+        $this->assertSame(Severity::High, $issue->severity);
     }
 
     #[Test]
@@ -439,7 +439,7 @@ PHP;
 
         $this->assertSame('queue-timeout-configuration', $metadata->id);
         $this->assertSame('Queue Timeout Configuration Analyzer', $metadata->name);
-        $this->assertSame(Severity::Critical, $metadata->severity);
+        $this->assertSame(Severity::High, $metadata->severity);
         $this->assertSame(10, $metadata->timeToFix);
         $this->assertContains('queue', $metadata->tags);
         $this->assertContains('configuration', $metadata->tags);

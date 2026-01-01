@@ -29,7 +29,7 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
             name: 'Queue Timeout Configuration Analyzer',
             description: 'Ensures queue timeout and retry_after values are properly configured to prevent job duplication',
             category: Category::Reliability,
-            severity: Severity::Critical,
+            severity: Severity::High,
             tags: ['queue', 'configuration', 'reliability', 'jobs'],
             docsUrl: 'https://docs.shieldci.com/analyzers/reliability/queue-timeout-configuration',
             timeToFix: 10
@@ -80,7 +80,7 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
                 $issues[] = $this->createIssue(
                     message: "Queue connection '{$name}' has improper timeout configuration",
                     location: $location,
-                    severity: Severity::Critical,
+                    severity: Severity::High,
                     recommendation: $this->getRecommendation($name, $timeout, $retryAfter),
                     metadata: [
                         'connection' => $name,

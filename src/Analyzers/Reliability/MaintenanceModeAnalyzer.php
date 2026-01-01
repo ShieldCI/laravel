@@ -15,7 +15,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * Checks if the application is in maintenance mode.
  *
  * Checks for:
- * - Application is not in maintenance mode in production
+ * - Application is not in maintenance mode
  * - Maintenance mode status
  * - Alerts if maintenance mode is active
  */

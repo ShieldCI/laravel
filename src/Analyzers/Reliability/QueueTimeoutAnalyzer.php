@@ -96,14 +96,24 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
                     'actual_buffer' => $retryAfter - $timeout,
                 ];
 
-                // Add queue name for Redis drivers
+                // Add queue name
                 if (isset($timeoutInfo['queue_name'])) {
                     $metadata['queue_name'] = $timeoutInfo['queue_name'];
+                }
+
+                // Add timeout source
+                if (isset($timeoutInfo['source'])) {
+                    $metadata['timeout_source'] = $timeoutInfo['source'];
                 }
 
                 // Add Horizon-specific metadata if applicable
                 if (isset($timeoutInfo['horizon_detection'])) {
                     $metadata['horizon_detection'] = $timeoutInfo['horizon_detection'];
+                }
+
+                // Add detection warning if present
+                if (isset($timeoutInfo['detection_warning'])) {
+                    $metadata['detection_warning'] = $timeoutInfo['detection_warning'];
                 }
 
                 $issues[] = $this->createIssue(
@@ -139,28 +149,67 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Get timeout value from connection config or Horizon config.
+     * Get timeout value using tiered detection approach.
      *
-     * Returns array with 'timeout' and optional Horizon detection metadata.
+     * Detection order:
+     * 1. Connection-specific timeout in queue config
+     * 2. For Redis: Horizon config
+     * 3. ShieldCI config override
+     * 4. Fallback to 60 with warning
      *
      * @param  array<string, mixed>  $connection
-     * @return array{timeout: int, horizon_detection?: string, queue_name?: string}
+     * @return array{timeout: int, source?: string, horizon_detection?: string, queue_name?: string, detection_warning?: string}
      */
     private function getTimeout(array $connection, string $driver): array
     {
-        // For non-Redis drivers, use default timeout
-        if ($driver !== 'redis') {
-            return ['timeout' => 60];
-        }
-
         $queueName = $this->getQueueName($connection);
+        $connectionName = is_string($connection['connection'] ?? null) ? $connection['connection'] : 'default';
 
-        // For Redis with Horizon, check Horizon config
-        if (! function_exists('config')) {
+        // 1. Check connection-specific timeout (non-standard but possible)
+        if (isset($connection['timeout']) && is_numeric($connection['timeout'])) {
             return [
-                'timeout' => 60,
+                'timeout' => (int) $connection['timeout'],
+                'source' => 'connection_config',
                 'queue_name' => $queueName,
             ];
+        }
+
+        // 2. For Redis, check Horizon config
+        if ($driver === 'redis') {
+            $horizonTimeout = $this->getRedisHorizonTimeout($queueName);
+            if ($horizonTimeout !== null) {
+                return $horizonTimeout;
+            }
+        }
+
+        // 3. Check ShieldCI config override
+        $configuredTimeout = $this->getConfiguredTimeout($driver, $connectionName);
+        if ($configuredTimeout !== null) {
+            return [
+                'timeout' => $configuredTimeout,
+                'source' => 'shieldci_config',
+                'queue_name' => $queueName,
+            ];
+        }
+
+        // 4. Fallback with warning
+        return [
+            'timeout' => 60,
+            'source' => 'default_assumption',
+            'queue_name' => $queueName,
+            'detection_warning' => 'Using default timeout (60s). Actual worker timeout may differ if configured via CLI (--timeout) or process manager. Configure actual timeout in config/shieldci.php if different.',
+        ];
+    }
+
+    /**
+     * Get timeout from Horizon configuration for Redis drivers.
+     *
+     * @return array{timeout: int, horizon_detection: string, queue_name: string}|null
+     */
+    private function getRedisHorizonTimeout(string $queueName): ?array
+    {
+        if (! function_exists('config')) {
+            return null;
         }
 
         try {
@@ -171,6 +220,7 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
                 return [
                     'timeout' => $matchedTimeout,
                     'horizon_detection' => 'matched',
+                    'source' => 'horizon_config',
                     'queue_name' => $queueName,
                 ];
             }
@@ -184,19 +234,50 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
                 return [
                     'timeout' => max($allTimeouts),
                     'horizon_detection' => 'fallback_max',
+                    'source' => 'horizon_config',
                     'queue_name' => $queueName,
                 ];
             }
 
-            return [
-                'timeout' => 60,
-                'queue_name' => $queueName,
-            ];
+            return null;
         } catch (\Throwable $e) {
-            return [
-                'timeout' => 60,
-                'queue_name' => $queueName,
-            ];
+            return null;
+        }
+    }
+
+    /**
+     * Get configured timeout from ShieldCI config.
+     */
+    private function getConfiguredTimeout(string $driver, string $connectionName): ?int
+    {
+        if (! function_exists('config')) {
+            return null;
+        }
+
+        try {
+            // Check connection-specific timeout
+            $connectionTimeouts = config('shieldci.analyzers.reliability.queue-timeout-configuration.connection_timeouts', []);
+
+            if (is_array($connectionTimeouts) && isset($connectionTimeouts[$connectionName])) {
+                $timeout = $connectionTimeouts[$connectionName];
+                if (is_numeric($timeout) && $timeout > 0) {
+                    return (int) $timeout;
+                }
+            }
+
+            // Check driver-specific timeout
+            $driverTimeouts = config('shieldci.analyzers.reliability.queue-timeout-configuration.driver_timeouts', []);
+
+            if (is_array($driverTimeouts) && isset($driverTimeouts[$driver])) {
+                $timeout = $driverTimeouts[$driver];
+                if (is_numeric($timeout) && $timeout > 0) {
+                    return (int) $timeout;
+                }
+            }
+
+            return null;
+        } catch (\Throwable $e) {
+            return null;
         }
     }
 
@@ -320,7 +401,7 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
         }
 
         try {
-            $buffer = config('shieldci.analyzers.reliability.queue-timeout.minimum_buffer');
+            $buffer = config('shieldci.analyzers.reliability.queue-timeout-configuration.minimum_buffer');
 
             return is_numeric($buffer) && $buffer > 0
                 ? (int) $buffer

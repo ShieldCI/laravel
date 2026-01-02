@@ -78,7 +78,8 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
             }
 
             $retryAfter = $this->getRetryAfter($connection);
-            $timeout = $this->getTimeout($connection, $driver);
+            $timeoutInfo = $this->getTimeout($connection, $driver);
+            $timeout = $timeoutInfo['timeout'];
             $minimumBuffer = $this->getMinimumBuffer();
 
             // Timeout plus buffer should not exceed retry_after
@@ -86,19 +87,31 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
                 $configFile = $this->getQueueConfigPath($basePath);
                 $location = $this->getConnectionLocation($configFile, $name);
 
+                $metadata = [
+                    'connection' => $name,
+                    'driver' => $driver,
+                    'timeout' => $timeout,
+                    'retry_after' => $retryAfter,
+                    'minimum_buffer' => $minimumBuffer,
+                    'actual_buffer' => $retryAfter - $timeout,
+                ];
+
+                // Add queue name for Redis drivers
+                if (isset($timeoutInfo['queue_name'])) {
+                    $metadata['queue_name'] = $timeoutInfo['queue_name'];
+                }
+
+                // Add Horizon-specific metadata if applicable
+                if (isset($timeoutInfo['horizon_detection'])) {
+                    $metadata['horizon_detection'] = $timeoutInfo['horizon_detection'];
+                }
+
                 $issues[] = $this->createIssue(
                     message: "Queue connection '{$name}' has improper timeout configuration",
                     location: $location,
                     severity: Severity::High,
                     recommendation: $this->getRecommendation($name, $timeout, $retryAfter, $minimumBuffer),
-                    metadata: [
-                        'connection' => $name,
-                        'driver' => $driver,
-                        'timeout' => $timeout,
-                        'retry_after' => $retryAfter,
-                        'minimum_buffer' => $minimumBuffer,
-                        'actual_buffer' => $retryAfter - $timeout,
-                    ]
+                    metadata: $metadata
                 );
             }
         }
@@ -128,32 +141,146 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
     /**
      * Get timeout value from connection config or Horizon config.
      *
+     * Returns array with 'timeout' and optional Horizon detection metadata.
+     *
      * @param  array<string, mixed>  $connection
+     * @return array{timeout: int, horizon_detection?: string, queue_name?: string}
      */
-    private function getTimeout(array $connection, string $driver): int
+    private function getTimeout(array $connection, string $driver): array
     {
         // For non-Redis drivers, use default timeout
         if ($driver !== 'redis') {
-            return 60;
+            return ['timeout' => 60];
         }
+
+        $queueName = $this->getQueueName($connection);
 
         // For Redis with Horizon, check Horizon config
         if (! function_exists('config')) {
-            return 60;
+            return [
+                'timeout' => 60,
+                'queue_name' => $queueName,
+            ];
         }
 
         try {
-            // Get all timeout values from Horizon configuration
+            // Try to find timeout for this specific queue
+            $matchedTimeout = $this->findHorizonTimeoutForQueue($queueName);
+
+            if ($matchedTimeout !== null) {
+                return [
+                    'timeout' => $matchedTimeout,
+                    'horizon_detection' => 'matched',
+                    'queue_name' => $queueName,
+                ];
+            }
+
+            // Fallback: use maximum timeout from all supervisors
             $defaultTimeouts = $this->getArrayValues(config('horizon.defaults', []), 'timeout');
             $envTimeouts = $this->getArrayValues(config('horizon.environments', []), 'timeout');
-
             $allTimeouts = array_merge($defaultTimeouts, $envTimeouts);
 
-            // Use maximum timeout from Horizon config, fallback to 60
-            return ! empty($allTimeouts) ? max($allTimeouts) : 60;
+            if (! empty($allTimeouts)) {
+                return [
+                    'timeout' => max($allTimeouts),
+                    'horizon_detection' => 'fallback_max',
+                    'queue_name' => $queueName,
+                ];
+            }
+
+            return [
+                'timeout' => 60,
+                'queue_name' => $queueName,
+            ];
         } catch (\Throwable $e) {
-            return 60;
+            return [
+                'timeout' => 60,
+                'queue_name' => $queueName,
+            ];
         }
+    }
+
+    /**
+     * Get queue name from connection configuration.
+     *
+     * @param  array<string, mixed>  $connection
+     */
+    private function getQueueName(array $connection): string
+    {
+        $queue = $connection['queue'] ?? 'default';
+
+        return is_string($queue) ? $queue : 'default';
+    }
+
+    /**
+     * Find Horizon timeout for a specific queue by matching supervisors.
+     *
+     * Searches both defaults and current environment supervisors.
+     *
+     * @return int|null Timeout in seconds if found, null otherwise
+     */
+    private function findHorizonTimeoutForQueue(string $queueName): ?int
+    {
+        if (! function_exists('config')) {
+            return null;
+        }
+
+        try {
+            $timeouts = [];
+
+            // Check defaults
+            $defaults = config('horizon.defaults', []);
+            if (is_array($defaults)) {
+                $timeouts = array_merge($timeouts, $this->extractTimeoutsForQueue($defaults, $queueName));
+            }
+
+            // Check current environment
+            $currentEnv = config('app.env', 'production');
+            $envConfig = config("horizon.environments.{$currentEnv}", []);
+            if (is_array($envConfig)) {
+                $timeouts = array_merge($timeouts, $this->extractTimeoutsForQueue($envConfig, $queueName));
+            }
+
+            // Return maximum timeout from matching supervisors
+            return ! empty($timeouts) ? max($timeouts) : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Extract timeouts from supervisors that handle the specified queue.
+     *
+     * @param  array<string, mixed>  $supervisors
+     * @return array<int>
+     */
+    private function extractTimeoutsForQueue(array $supervisors, string $queueName): array
+    {
+        $timeouts = [];
+
+        foreach ($supervisors as $supervisor) {
+            if (! is_array($supervisor)) {
+                continue;
+            }
+
+            // Check if this supervisor handles the queue
+            $supervisorQueues = $supervisor['queue'] ?? [];
+
+            if (! is_array($supervisorQueues)) {
+                continue;
+            }
+
+            // Match queue name (exact or pattern)
+            if (in_array($queueName, $supervisorQueues, true) || in_array('*', $supervisorQueues, true)) {
+                $timeout = $supervisor['timeout'] ?? null;
+
+                if (is_numeric($timeout)) {
+                    $timeouts[] = (int) $timeout;
+                }
+            }
+        }
+
+        return $timeouts;
     }
 
     /**

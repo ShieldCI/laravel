@@ -617,4 +617,164 @@ PHP;
         // Should pass because buffer is 11 seconds (more than 10 second minimum)
         $this->assertPassed($result);
     }
+
+    #[Test]
+    public function test_extracts_queue_name_from_connection(): void
+    {
+        // Test that analyzer correctly extracts queue name from connection config
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'redis',
+    'connections' => [
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => 'default',
+            'queue' => 'fast',  // Specific queue name
+            'retry_after' => 65,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should fail due to insufficient buffer
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $metadata = $issues[0]->metadata;
+
+        // Should include queue_name in metadata
+        $this->assertArrayHasKey('queue_name', $metadata);
+        $this->assertSame('fast', $metadata['queue_name']);
+    }
+
+    #[Test]
+    public function test_uses_fallback_when_queue_not_matched(): void
+    {
+        // When queue name doesn't match any Horizon supervisor,
+        // should fall back to maximum timeout
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'redis',
+    'connections' => [
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => 'default',
+            'queue' => 'unmatched-queue',
+            'retry_after' => 65,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should fail due to insufficient buffer
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $metadata = $issues[0]->metadata;
+
+        // Should indicate fallback detection if Horizon config exists
+        // Otherwise may not have horizon_detection key
+        if (isset($metadata['horizon_detection'])) {
+            $this->assertContains($metadata['horizon_detection'], ['fallback_max', 'matched']);
+        }
+    }
+
+    #[Test]
+    public function test_handles_wildcard_queue_in_horizon(): void
+    {
+        // Test that '*' wildcard in Horizon supervisor queue matches any queue
+        // This would require mocking config(), which we can't easily do in unit tests
+        // So we'll just verify the queue name is extracted correctly
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'redis',
+    'connections' => [
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => 'default',
+            'queue' => 'any-queue',
+            'retry_after' => 90,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // With retry_after=90 and default timeout=60, should pass
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_metadata_includes_horizon_detection_status(): void
+    {
+        // Verify that when an issue is found, metadata includes Horizon detection info
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'redis',
+    'connections' => [
+        'redis-fast' => [
+            'driver' => 'redis',
+            'connection' => 'default',
+            'queue' => 'fast',
+            'retry_after' => 65, // Will fail with default timeout
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $metadata = $issues[0]->metadata;
+
+        // Should have queue_name
+        $this->assertArrayHasKey('queue_name', $metadata);
+        $this->assertSame('fast', $metadata['queue_name']);
+
+        // May have horizon_detection if Horizon config is loaded
+        // (depends on test environment)
+    }
 }

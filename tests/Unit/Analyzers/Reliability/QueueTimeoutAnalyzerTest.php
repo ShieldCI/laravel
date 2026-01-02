@@ -580,7 +580,7 @@ PHP;
         $this->assertSame(5, $metadata['actual_buffer']); // 65 - 60 = 5
 
         // Verify recommendation mentions the buffer
-        $this->assertStringContainsString('at least 10 seconds shorter', $issue->recommendation);
+        $this->assertStringContainsString('at least 70 seconds', $issue->recommendation);
         $this->assertStringContainsString('buffer: 5 seconds', $issue->recommendation);
     }
 

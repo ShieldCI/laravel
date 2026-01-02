@@ -420,12 +420,12 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
         $actualBuffer = $retryAfter - $timeout;
 
         return sprintf(
-            'The queue timeout value must be at least %d seconds shorter than the retry_after value to prevent duplicate job processing. '.
+            'The queue retry_after value must be at least %d seconds to prevent duplicate job processing. '.
             "Your '%s' queue connection has timeout=%d seconds and retry_after=%d seconds (buffer: %d seconds). ".
             'This configuration can cause jobs to be processed twice or the queue worker to crash. '.
             'Solution: Either increase retry_after to at least %d seconds, or decrease the timeout to at most %d seconds. '.
             'Recommended: retry_after = timeout + %d seconds (buffer).',
-            $minimumBuffer,
+            $suggestedRetryAfter,
             $connection,
             $timeout,
             $retryAfter,

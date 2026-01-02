@@ -26,10 +26,6 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
      */
     public static bool $runInCI = false;
 
-    // Pattern to match pending migrations in migrate:status --pending output
-    // Format: "  2025_12_10_052419_test_pending_migration ......................... Pending  "
-    private const PENDING_MIGRATION_PATTERN = '/^\s*(.+?)\s+\.+\s+Pending\s*$/i';
-
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
@@ -58,17 +54,14 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                     lineNumber: null,
                     severity: Severity::Medium,
                     recommendation: 'Ensure Laravel is properly bootstrapped. Migration status checks require the Artisan facade to be available.',
-                    column: null,
-                    contextLines: null,
                     code: 'artisan-unavailable',
-                    metadata: []
                 )]
             );
         }
 
         try {
             // Run migrations with --pending flag to check if there are any pending
-            Artisan::call('migrate:status', ['--pending' => true]);
+            Artisan::call('migrate:status', ['--pending' => true, '--no-interaction' => true]);
 
             $output = Artisan::output();
 
@@ -98,8 +91,6 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                     lineNumber: null,
                     severity: Severity::High,
                     recommendation: $this->getPendingMigrationsRecommendation($pendingMigrations),
-                    column: null,
-                    contextLines: null,
                     code: 'pending-migrations',
                     metadata: [
                         'pending_count' => count($pendingMigrations),
@@ -120,8 +111,6 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                         lineNumber: null,
                         severity: Severity::High,
                         recommendation: $this->getDatabaseErrorRecommendation($e),
-                        column: null,
-                        contextLines: null,
                         code: 'database-error',
                         metadata: [
                             'exception' => get_class($e),
@@ -177,17 +166,22 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
     private function parsePendingMigrations(string $output): array
     {
         $migrations = [];
-        $lines = explode("\n", $output);
 
-        foreach ($lines as $line) {
-            // Look for lines that indicate pending migrations
-            // Format: "  2025_12_10_052419_migration_name .................... Pending  "
-            if (preg_match(self::PENDING_MIGRATION_PATTERN, $line, $matches)) {
-                // $matches[1] is guaranteed to exist after successful preg_match with capture group
-                $migration = trim($matches[1]);
-                if ($migration !== '') {
-                    $migrations[] = $migration;
-                }
+        foreach (explode("\n", $output) as $line) {
+            if (! str_contains($line, 'Pending')) {
+                continue;
+            }
+
+            // Skip header lines
+            if (str_contains($line, 'Migration') || str_contains($line, 'Batch')) {
+                continue;
+            }
+
+            // Extract migration name (first column)
+            $migration = trim(strtok($line, " \t"));
+
+            if ($migration !== '') {
+                $migrations[] = $migration;
             }
         }
 

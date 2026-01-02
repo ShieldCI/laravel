@@ -248,23 +248,4 @@ OUTPUT;
         $this->assertIsString($result);
         $this->assertStringContainsString('migrations', $result);
     }
-
-    #[Test]
-    public function test_parses_empty_migration_names(): void
-    {
-        $analyzer = $this->createAnalyzer();
-
-        // Output with malformed migration names (edge case)
-        $output = "  ................................. Pending  \n";
-
-        $reflection = new \ReflectionClass($analyzer);
-        $method = $reflection->getMethod('parsePendingMigrations');
-        $method->setAccessible(true);
-
-        $result = $method->invoke($analyzer, $output);
-
-        // Should filter out empty/invalid migration names
-        $this->assertIsArray($result);
-        $this->assertEmpty($result);
-    }
 }

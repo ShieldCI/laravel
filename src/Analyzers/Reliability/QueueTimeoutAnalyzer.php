@@ -93,7 +93,8 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
                     'timeout' => $timeout,
                     'retry_after' => $retryAfter,
                     'minimum_buffer' => $minimumBuffer,
-                    'actual_buffer' => $retryAfter - $timeout,
+                    'actual_buffer' => max(0, $retryAfter - $timeout),
+                    'buffer_deficit' => max(0, ($timeout + $minimumBuffer) - $retryAfter),
                 ];
 
                 // Add queue name
@@ -347,6 +348,10 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
             // Check if this supervisor handles the queue
             $supervisorQueues = $supervisor['queue'] ?? [];
 
+            if (is_string($supervisorQueues)) {
+                $supervisorQueues = array_map('trim', explode(',', $supervisorQueues));
+            }
+
             if (! is_array($supervisorQueues)) {
                 continue;
             }
@@ -379,12 +384,18 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
         }
 
         foreach ($data as $item) {
-            if (is_array($item)) {
-                if (isset($item[$key]) && is_numeric($item[$key])) {
-                    $values[] = (int) $item[$key];
+            if (! is_array($item)) {
+                continue;
+            }
+
+            if (isset($item[$key]) && is_numeric($item[$key])) {
+                $values[] = (int) $item[$key];
+            }
+
+            foreach ($item as $child) {
+                if (is_array($child)) {
+                    $values = array_merge($values, $this->getArrayValues($child, $key));
                 }
-                // Recursively search nested arrays
-                $values = array_merge($values, $this->getArrayValues($item, $key));
             }
         }
 

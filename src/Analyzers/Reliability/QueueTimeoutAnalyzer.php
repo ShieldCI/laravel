@@ -28,7 +28,7 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
      * This ensures jobs have enough time to complete before being retried,
      * preventing duplicate processing.
      */
-    private const DEFAULT_MINIMUM_BUFFER_SECONDS = 10;
+    private const MINIMUM_RETRY_AFTER_BUFFER_SECONDS = 10;
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -316,7 +316,7 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
     private function getMinimumBuffer(): int
     {
         if (! function_exists('config')) {
-            return self::DEFAULT_MINIMUM_BUFFER_SECONDS;
+            return self::MINIMUM_RETRY_AFTER_BUFFER_SECONDS;
         }
 
         try {
@@ -324,9 +324,9 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
 
             return is_numeric($buffer) && $buffer > 0
                 ? (int) $buffer
-                : self::DEFAULT_MINIMUM_BUFFER_SECONDS;
+                : self::MINIMUM_RETRY_AFTER_BUFFER_SECONDS;
         } catch (\Throwable $e) {
-            return self::DEFAULT_MINIMUM_BUFFER_SECONDS;
+            return self::MINIMUM_RETRY_AFTER_BUFFER_SECONDS;
         }
     }
 

@@ -82,8 +82,8 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
             $timeout = $timeoutInfo['timeout'];
             $minimumBuffer = $this->getMinimumBuffer();
 
-            // Timeout plus buffer should not exceed retry_after
-            if ($timeout + $minimumBuffer >= $retryAfter) {
+            // retry_after must be at least (timeout + buffer)
+            if ($retryAfter < $timeout + $minimumBuffer) {
                 $configFile = $this->getQueueConfigPath($basePath);
                 $location = $this->getConnectionLocation($configFile, $name);
 

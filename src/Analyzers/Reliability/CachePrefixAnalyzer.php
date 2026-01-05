@@ -36,7 +36,7 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
      *
      * @var array<string>
      */
-    private array $genericPrefixes = [
+    private const GENERIC_PREFIXES = [
         'laravel_cache',
         'laravel_database_cache',
         'laravel',
@@ -83,13 +83,13 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
         $prefixLine = $this->getPrefixLineNumber($configFile);
 
         // Check if prefix is empty
-        if (empty($prefix)) {
+        if ($prefix === '') {
             return $this->failed(
                 'Cache prefix is not configured',
                 [$this->createIssue(
                     message: 'Cache prefix is empty or not set',
                     location: new Location($this->getRelativePath($configFile), $prefixLine),
-                    severity: Severity::High,
+                    severity: $this->metadata()->severity,
                     recommendation: $this->getEmptyPrefixRecommendation(),
                     code: FileParser::getCodeSnippet($configFile, $prefixLine),
                     metadata: [
@@ -107,7 +107,7 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
                 [$this->createIssue(
                     message: "Cache prefix '{$prefix}' is too generic and may cause collisions",
                     location: new Location($this->getRelativePath($configFile), $prefixLine),
-                    severity: Severity::High,
+                    severity: $this->metadata()->severity,
                     recommendation: $this->getGenericPrefixRecommendation($prefix),
                     code: FileParser::getCodeSnippet($configFile, $prefixLine),
                     metadata: [
@@ -149,7 +149,8 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
         $store = $this->getDefaultStore();
 
         if ($this->hasStoreSpecificPrefix($store)) {
-            $line = ConfigFileHelper::findNestedKeyLine($configFile, 'stores', 'prefix', $store);
+            // Find stores.{store}.prefix (e.g., stores.redis.prefix)
+            $line = ConfigFileHelper::findNestedKeyLine($configFile, 'stores', $store, 'prefix');
 
             return $line > 0 ? $line : 1;
         }
@@ -164,23 +165,28 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
      */
     private function isGenericPrefix(string $prefix): bool
     {
-        $normalized = strtolower($prefix);
-        $slug = Str::slug($prefix, '_');
-        $trimmed = trim($prefix);
+        $raw = trim($prefix);
+        $normalized = strtolower($raw);
+        $slug = Str::slug($raw, '_');
 
         // Check if prefix is in generic list
-        if (in_array($normalized, $this->genericPrefixes, true)
-            || in_array($slug, $this->genericPrefixes, true)) {
+        if (in_array($normalized, self::GENERIC_PREFIXES, true)
+            || in_array($slug, self::GENERIC_PREFIXES, true)) {
             return true;
         }
 
         // Check for very short prefixes (1-2 characters)
-        if (strlen($trimmed) <= 2) {
+        if (mb_strlen($raw) <= 2) {
             return true;
         }
 
         // Check for whitespace-only or underscore-only prefixes
         if (preg_match('/^[\s_]+$/', $prefix)) {
+            return true;
+        }
+
+        // Check for numeric-only prefixes
+        if (ctype_digit($raw)) {
             return true;
         }
 

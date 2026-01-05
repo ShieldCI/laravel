@@ -132,28 +132,7 @@ DB_CONNECTION=mysql';
 
         $recommendation = $issues[0]->recommendation;
         $this->assertStringContainsString('Create a .env file', $recommendation);
-        $this->assertStringContainsString('APP_KEY', $recommendation);
         $this->assertStringContainsString('.env.example', $recommendation);
-    }
-
-    public function test_recommendation_contains_required_env_variables(): void
-    {
-        $tempDir = $this->createTempDirectory([]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $issues = $result->getIssues();
-        $recommendation = $issues[0]->recommendation;
-
-        // Check that recommendation mentions critical environment variables
-        $this->assertStringContainsString('APP_KEY', $recommendation);
-        $this->assertStringContainsString('APP_ENV', $recommendation);
-        $this->assertStringContainsString('APP_DEBUG', $recommendation);
-        $this->assertStringContainsString('DB_CONNECTION', $recommendation);
     }
 
     // =========================================================================

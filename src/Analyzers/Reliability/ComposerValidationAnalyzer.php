@@ -18,7 +18,6 @@ use ShieldCI\Support\ComposerValidator;
  *
  * Checks for:
  * - Valid JSON syntax in composer.json
- * - Required fields are present
  * - Composer validate command passes
  */
 class ComposerValidationAnalyzer extends AbstractFileAnalyzer
@@ -73,9 +72,9 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
                 [$this->createIssue(
                     message: 'composer validate command reported issues',
                     location: new Location($this->getRelativePath($composerJsonPath)),
-                    severity: Severity::High,
+                    severity: Severity::Critical,
                     recommendation: 'Run "composer validate" to see full details and resolve the reported issues. Ensure version constraints and schema match Composer expectations.',
-                    code: FileParser::getCodeSnippet($composerJsonPath, 1),
+                    code: null,
                     metadata: ['composer_output' => trim($result->output)],
                 )]
             );
@@ -96,7 +95,7 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
                 'Unable to read composer.json file',
                 [$this->createIssue(
                     message: 'composer.json file exists but cannot be read',
-                    location: new Location($this->getRelativePath($composerJsonPath), 1),
+                    location: new Location($this->getRelativePath($composerJsonPath)),
                     severity: Severity::Critical,
                     recommendation: 'Check file permissions on composer.json. Ensure the file is readable by the web server user.',
                     metadata: []
@@ -115,7 +114,7 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
                     location: new Location($this->getRelativePath($composerJsonPath)),
                     severity: Severity::Critical,
                     recommendation: 'Fix the JSON syntax errors in composer.json. Use a JSON validator or run "composer validate" to see specific errors. Common issues: missing commas, trailing commas, unescaped quotes.',
-                    code: FileParser::getCodeSnippet($composerJsonPath, 1),
+                    code: null,
                     metadata: [
                         'json_error' => json_last_error_msg(),
                     ]
@@ -133,7 +132,7 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
                     location: new Location($this->getRelativePath($composerJsonPath)),
                     severity: Severity::Critical,
                     recommendation: 'composer.json must be a valid JSON object. Ensure the root element is an object (wrapped in curly braces {}), not an array (square brackets []).',
-                    code: FileParser::getCodeSnippet($composerJsonPath, 1),
+                    code: null,
                     metadata: []
                 )]
             );

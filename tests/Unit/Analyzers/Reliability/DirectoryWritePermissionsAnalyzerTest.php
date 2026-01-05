@@ -64,7 +64,7 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('not writable', $result);
+        $this->assertHasIssueContaining('not found', $result);
     }
 
     public function test_fails_when_directory_not_writable(): void
@@ -113,10 +113,12 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertArrayHasKey('failed_directories', $issues[0]->metadata);
-        $failedDirs = $issues[0]->metadata['failed_directories'];
-        $this->assertIsArray($failedDirs);
-        $this->assertCount(3, $failedDirs);
+        $this->assertArrayHasKey('missing_directories', $issues[0]->metadata);
+        $this->assertArrayHasKey('missing_count', $issues[0]->metadata);
+        $missingDirs = $issues[0]->metadata['missing_directories'];
+        $this->assertIsArray($missingDirs);
+        $this->assertCount(3, $missingDirs);
+        $this->assertSame(3, $issues[0]->metadata['missing_count']);
     }
 
     // =========================================================================
@@ -269,10 +271,9 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $this->assertCount(1, $issues);
 
         $recommendation = $issues[0]->recommendation;
-        $this->assertStringContainsString('chmod -R 775', $recommendation);
-        $this->assertStringContainsString('chown -R www-data:www-data', $recommendation);
-        $this->assertStringContainsString('Unix/Linux', $recommendation);
-        $this->assertStringContainsString('Windows', $recommendation);
+        // Missing directories should get mkdir command
+        $this->assertStringContainsString('mkdir -p', $recommendation);
+        $this->assertStringContainsString('storage', $recommendation);
     }
 
     public function test_includes_failed_directories_in_metadata(): void
@@ -293,9 +294,11 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
 
-        $this->assertArrayHasKey('failed_directories', $issues[0]->metadata);
-        $this->assertArrayHasKey('count', $issues[0]->metadata);
-        $this->assertSame(2, $issues[0]->metadata['count']);
+        $this->assertArrayHasKey('missing_directories', $issues[0]->metadata);
+        $this->assertArrayHasKey('non_writable_directories', $issues[0]->metadata);
+        $this->assertArrayHasKey('missing_count', $issues[0]->metadata);
+        $this->assertArrayHasKey('non_writable_count', $issues[0]->metadata);
+        $this->assertSame(2, $issues[0]->metadata['missing_count']);
     }
 
     public function test_formats_paths_relative_to_basepath(): void
@@ -316,10 +319,163 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $this->assertCount(1, $issues);
 
         // Path should be relative, not absolute
-        $failedDirs = $issues[0]->metadata['failed_directories'];
-        $this->assertIsArray($failedDirs);
-        $this->assertCount(1, $failedDirs);
-        $this->assertSame('storage', $failedDirs[0]);
+        $missingDirs = $issues[0]->metadata['missing_directories'];
+        $this->assertIsArray($missingDirs);
+        $this->assertCount(1, $missingDirs);
+        $this->assertSame('storage', $missingDirs[0]);
+    }
+
+    // =========================================================================
+    // Split Diagnostics Tests
+    // =========================================================================
+
+    public function test_distinguishes_missing_from_non_writable(): void
+    {
+        // Create one directory that exists but is not writable
+        $tempDir = $this->createTempDirectory([
+            'storage/.gitkeep' => '',
+        ]);
+
+        // Make storage read-only
+        chmod($tempDir.'/storage', 0555);
+
+        config(['shieldci.writable_directories' => [
+            $tempDir.'/storage',        // exists but not writable
+            $tempDir.'/bootstrap/cache', // missing
+        ]]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Restore permissions
+        chmod($tempDir.'/storage', 0755);
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        // Should have both types
+        $missingDirs = $issues[0]->metadata['missing_directories'];
+        $nonWritableDirs = $issues[0]->metadata['non_writable_directories'];
+        $this->assertIsArray($missingDirs);
+        $this->assertIsArray($nonWritableDirs);
+        $this->assertCount(1, $missingDirs);
+        $this->assertCount(1, $nonWritableDirs);
+        $this->assertSame(1, $issues[0]->metadata['missing_count']);
+        $this->assertSame(1, $issues[0]->metadata['non_writable_count']);
+
+        // Check correct directories are in correct categories
+        $this->assertContains('bootstrap/cache', $missingDirs);
+        $this->assertContains('storage', $nonWritableDirs);
+    }
+
+    public function test_provides_mkdir_command_for_missing_directories(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        config(['shieldci.writable_directories' => [
+            $tempDir.'/storage',
+        ]]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        $recommendation = $issues[0]->recommendation;
+        $this->assertStringContainsString('Missing directories:', $recommendation);
+        $this->assertStringContainsString('mkdir -p storage', $recommendation);
+        $this->assertStringNotContainsString('chmod', $recommendation);
+    }
+
+    public function test_provides_chmod_command_for_non_writable_directories(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/.gitkeep' => '',
+        ]);
+
+        // Make read-only
+        chmod($tempDir.'/storage', 0555);
+
+        config(['shieldci.writable_directories' => [
+            $tempDir.'/storage',
+        ]]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Restore permissions
+        chmod($tempDir.'/storage', 0755);
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        $recommendation = $issues[0]->recommendation;
+        $this->assertStringContainsString('Non-writable directories:', $recommendation);
+        $this->assertStringContainsString('chmod -R 775 storage', $recommendation);
+        $this->assertStringNotContainsString('mkdir', $recommendation);
+    }
+
+    public function test_provides_both_commands_when_both_types_present(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/.gitkeep' => '',
+        ]);
+
+        chmod($tempDir.'/storage', 0555);
+
+        config(['shieldci.writable_directories' => [
+            $tempDir.'/storage',
+            $tempDir.'/cache',
+        ]]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        chmod($tempDir.'/storage', 0755);
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        $recommendation = $issues[0]->recommendation;
+        $this->assertStringContainsString('Missing directories:', $recommendation);
+        $this->assertStringContainsString('mkdir -p cache', $recommendation);
+        $this->assertStringContainsString('Non-writable directories:', $recommendation);
+        $this->assertStringContainsString('chmod -R 775 storage', $recommendation);
+    }
+
+    public function test_message_reflects_failure_types(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/.gitkeep' => '',
+        ]);
+
+        chmod($tempDir.'/storage', 0555);
+
+        config(['shieldci.writable_directories' => [
+            $tempDir.'/storage',
+            $tempDir.'/cache',
+        ]]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        chmod($tempDir.'/storage', 0755);
+
+        $this->assertFailed($result);
+        // Message should indicate both types
+        $this->assertStringContainsString('1 missing and 1 non-writable', $result->getIssues()[0]->message);
     }
 
     // =========================================================================

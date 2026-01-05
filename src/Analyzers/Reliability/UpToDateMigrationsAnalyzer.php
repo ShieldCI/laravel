@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\Reliability;
 
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Schema;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -60,6 +61,25 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
         }
 
         try {
+            // Check if migrations table exists
+            if (! Schema::hasTable('migrations')) {
+                return $this->failed(
+                    'Migrations table does not exist',
+                    [$this->createIssueWithSnippet(
+                        message: 'The migrations table has not been created yet',
+                        filePath: $migrationsPath,
+                        lineNumber: null,
+                        severity: Severity::High,
+                        recommendation: 'This appears to be a new installation. Run "php artisan migrate:install" to create the migrations table, then run "php artisan migrate" to execute all migrations.',
+                        code: 'migrations-table-missing',
+                        metadata: [
+                            'table' => 'migrations',
+                            'exists' => false,
+                        ]
+                    )]
+                );
+            }
+
             // Run migrations with --pending flag to check if there are any pending
             Artisan::call('migrate:status', ['--pending' => true, '--no-interaction' => true]);
 

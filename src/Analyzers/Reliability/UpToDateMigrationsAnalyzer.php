@@ -167,6 +167,10 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
     {
         $migrations = [];
 
+        if (! str_contains($output, 'Pending')) {
+            return [];
+        }
+
         foreach (explode("\n", $output) as $line) {
             if (! str_contains($line, 'Pending')) {
                 continue;

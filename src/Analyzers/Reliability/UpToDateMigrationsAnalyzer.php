@@ -27,6 +27,36 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
      */
     public static bool $runInCI = false;
 
+    public function shouldRun(): bool
+    {
+        // Check if Artisan facade is available
+        if (! class_exists(Artisan::class)) {
+            return false;
+        }
+
+        // Check if Schema facade is available
+        if (! class_exists(Schema::class)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    public function getSkipReason(): string
+    {
+        // Check if Artisan facade is available
+        if (! class_exists(Artisan::class)) {
+            return 'Laravel Artisan facade not available. Ensure Laravel is properly bootstrapped.';
+        }
+
+        // Check if Schema facade is available
+        if (! class_exists(Schema::class)) {
+            return 'Laravel Schema facade not available. Ensure Laravel is properly bootstrapped.';
+        }
+
+        return 'Unknown reason';
+    }
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
@@ -44,21 +74,6 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         $migrationsPath = $this->getMigrationsPath();
-
-        // Check if Artisan facade is available
-        if (! class_exists(Artisan::class)) {
-            return $this->warning(
-                'Laravel Artisan facade not available',
-                [$this->createIssueWithSnippet(
-                    message: 'Cannot check migration status - Artisan facade not found',
-                    filePath: $migrationsPath,
-                    lineNumber: null,
-                    severity: Severity::Medium,
-                    recommendation: 'Ensure Laravel is properly bootstrapped. Migration status checks require the Artisan facade to be available.',
-                    code: 'artisan-unavailable',
-                )]
-            );
-        }
 
         try {
             // Check if migrations table exists

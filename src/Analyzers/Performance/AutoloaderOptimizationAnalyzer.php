@@ -144,7 +144,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
                 message: $message,
                 location: new Location($this->getRelativePath($composerJsonPath), $configLine),
                 severity: Severity::Low,
-                recommendation: 'For even better performance, use "composer dump-autoload --classmap-authoritative" or add "classmap-authoritative": true to composer.json config. This prevents the autoloader from falling back to filesystem checks, providing faster class loading.',
+                recommendation: 'For even better performance, use "composer dump-autoload --classmap-authoritative" or add "classmap-authoritative": true to composer.json config. This prevents the autoloader from falling back to filesystem checks, providing faster class loading. Only enable this if your application does not rely on runtime class discovery.',
                 metadata: [
                     'optimized' => true,
                     'authoritative' => false,

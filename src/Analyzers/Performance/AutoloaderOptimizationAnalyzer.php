@@ -47,6 +47,8 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
      */
     protected ?array $relevantEnvironments = ['production', 'staging'];
 
+    private const MIN_OPTIMIZED_CLASSMAP_SIZE = 50;
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
@@ -180,7 +182,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
                 // Check for actual ComposerStaticInit class (real optimization)
                 // or at least public static properties (classMap, prefixDirsPsr4, etc.)
                 if (str_contains($content, 'ComposerStaticInit') ||
-                    (str_contains($content, 'public static $') && filesize($staticAutoloadPath) > 100)) {
+                    (str_contains($content, 'public static $') && strlen($content) > 100)) {
                     return true;
                 }
             }
@@ -204,7 +206,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
         // If we have a substantial classmap (>50 classes), likely optimized
         // This catches older Composer versions where static file wasn't generated
         // Note: Small classmaps likely contain only manual entries, not optimization results
-        return count($classMap) > 50;
+        return count($classMap) > self::MIN_OPTIMIZED_CLASSMAP_SIZE;
     }
 
     private function isClassMapAuthoritative(): bool
@@ -277,23 +279,29 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
     {
         foreach ($scripts as $commands) {
             foreach ($this->normalizeScriptCommands($commands) as $command) {
-                $command = strtolower($command);
+                $commandLower = strtolower($command);
 
-                // Check for dump-autoload with optimization flags
-                if (str_contains($command, 'dump-autoload')) {
+                // Skip obvious false positives (echo, comments, string literals)
+                if (preg_match('/^\s*(echo|#|\/\/|\/\*)/', $commandLower) ||
+                    str_contains($commandLower, 'echo ')) {
+                    continue;
+                }
+
+                // Check for composer dump-autoload with optimization flags
+                // Require both "composer" and "dump-autoload" in the same command
+                if (str_contains($commandLower, 'composer') && str_contains($commandLower, 'dump-autoload')) {
                     // Check for -o or --optimize flags
-                    if (str_contains($command, '-o') ||
-                        str_contains($command, '--optimize') ||
-                        str_contains($command, '--optimize-autoloader') ||
-                        str_contains($command, '--classmap-authoritative')) {
+                    if (preg_match('/\s-o[a-z]*\b/', $commandLower) ||
+                        str_contains($commandLower, '--optimize') ||
+                        str_contains($commandLower, '--classmap-authoritative')) {
                         return true;
                     }
                 }
 
-                // Check for install/update with optimization flags
-                if (str_contains($command, 'composer install') || str_contains($command, 'composer update')) {
-                    if (str_contains($command, '--optimize-autoloader') ||
-                        str_contains($command, '--classmap-authoritative')) {
+                // Check for composer install/update with optimization flags
+                if (str_contains($commandLower, 'composer install') || str_contains($commandLower, 'composer update')) {
+                    if (str_contains($commandLower, '--optimize-autoloader') ||
+                        str_contains($commandLower, '--classmap-authoritative')) {
                         return true;
                     }
                 }

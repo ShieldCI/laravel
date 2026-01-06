@@ -1077,4 +1077,118 @@ PHP;
             $this->assertPassed($result);
         }
     }
+
+    public function test_ignores_echo_statements_in_scripts(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $composerJson = json_encode([
+            'scripts' => [
+                'post-install-cmd' => [
+                    "echo 'run composer dump-autoload -o later'",
+                    "echo 'Remember to optimize with composer install --optimize-autoloader'",
+                ],
+            ],
+        ], JSON_PRETTY_PRINT);
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'composer.json' => $composerJson,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [];
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $firstIssue = $issues[0];
+        $this->assertArrayHasKey('configured_via_scripts', $firstIssue->metadata);
+        // Should be false since echo statements shouldn't count
+        $this->assertFalse($firstIssue->metadata['configured_via_scripts']);
+    }
+
+    public function test_requires_composer_and_dump_autoload_in_same_command(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        // These commands should NOT be detected (missing "composer" keyword)
+        $composerJson = json_encode([
+            'scripts' => [
+                'post-install-cmd' => [
+                    'dump-autoload -o',  // Missing "composer" - won't match
+                    './vendor/bin/dump-autoload -o',  // Custom script, not composer
+                ],
+            ],
+        ], JSON_PRETTY_PRINT);
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'composer.json' => $composerJson,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [];
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $firstIssue = $issues[0];
+        $this->assertArrayHasKey('configured_via_scripts', $firstIssue->metadata);
+        // Should be false since "composer" keyword is required
+        $this->assertFalse($firstIssue->metadata['configured_via_scripts']);
+    }
+
+    public function test_detects_actual_composer_optimization_commands(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $composerJson = json_encode([
+            'scripts' => [
+                'post-install-cmd' => [
+                    'composer dump-autoload -o',  // Valid optimization command
+                ],
+            ],
+        ], JSON_PRETTY_PRINT);
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'composer.json' => $composerJson,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [];
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $firstIssue = $issues[0];
+        $this->assertArrayHasKey('configured_via_scripts', $firstIssue->metadata);
+        // Should be true - this is a real composer optimization command
+        $this->assertTrue($firstIssue->metadata['configured_via_scripts']);
+    }
 }

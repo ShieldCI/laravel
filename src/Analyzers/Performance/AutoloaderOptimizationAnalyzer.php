@@ -221,8 +221,9 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        // Check if setClassMapAuthoritative is called
-        return str_contains($content, 'setClassMapAuthoritative(true)');
+        // Check if setClassMapAuthoritative is called with true
+        // Use regex to handle formatting variations and whitespace
+        return preg_match('/setClassMapAuthoritative\s*\(\s*true\s*\)/', $content) === 1;
     }
 
     /**

@@ -1032,4 +1032,49 @@ PHP,
         $issues = $result->getIssues();
         $this->assertFalse($issues[0]->metadata['configured_via_scripts']);
     }
+
+    public function test_detects_authoritative_with_formatting_variations(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        // Setup optimized autoloader
+        $optimizedContent = <<<'PHP'
+<?php
+class ComposerStaticInit {
+    public static $classMap = [];
+}
+PHP;
+
+        // Test different formatting variations of setClassMapAuthoritative(true)
+        $formattingVariations = [
+            'setClassMapAuthoritative(true)',           // Standard
+            'setClassMapAuthoritative( true )',         // Spaces inside
+            'setClassMapAuthoritative (true)',          // Space before paren
+            'setClassMapAuthoritative  (  true  )',     // Multiple spaces
+            "setClassMapAuthoritative(\ntrue\n)",       // Newlines
+            "setClassMapAuthoritative(\ttrue\t)",       // Tabs
+        ];
+
+        foreach ($formattingVariations as $variation) {
+            $authoritativeContent = <<<PHP
+<?php
+\$loader->{$variation};
+PHP;
+
+            $tempDir = $this->createTempDirectory([
+                '.env' => $envContent,
+                'vendor/autoload.php' => '<?php // Autoloader',
+                'vendor/composer/autoload_static.php' => $optimizedContent,
+                'vendor/composer/autoload_real.php' => $authoritativeContent,
+            ]);
+
+            $analyzer = $this->createAnalyzer();
+            $analyzer->setBasePath($tempDir);
+
+            $result = $analyzer->analyze();
+
+            // Should pass for all formatting variations
+            $this->assertPassed($result);
+        }
+    }
 }

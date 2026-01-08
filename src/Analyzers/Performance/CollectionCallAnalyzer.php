@@ -116,7 +116,12 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if Larastan is installed.
+     * Check if Larastan is installed using capability-based detection.
+     *
+     * This approach is more reliable than checking file paths because it:
+     * - Works regardless of vendor directory structure
+     * - Detects Larastan even if loaded via custom neon config
+     * - Handles different installation methods (Composer, custom autoloading)
      */
     protected function hasLarastan(): bool
     {
@@ -125,23 +130,10 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             return true; // Assume Larastan is available when using mocked PHPStan
         }
 
-        // Check actual Larastan installation
-        $basePath = $this->getBasePath();
-
-        // Check multiple possible Larastan paths (current and legacy package names)
-        $possiblePaths = [
-            $basePath.DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR.'larastan'.DIRECTORY_SEPARATOR.'larastan'.DIRECTORY_SEPARATOR.'extension.neon',
-            $basePath.DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR.'nunomaduro'.DIRECTORY_SEPARATOR.'larastan'.DIRECTORY_SEPARATOR.'extension.neon',
-        ];
-
-        foreach ($possiblePaths as $path) {
-            if (file_exists($path)) {
-                return true;
-            }
-        }
-
-        // Fallback: check if Larastan class exists
-        return class_exists('Larastan\\Larastan\\ApplicationServiceProvider');
+        // Primary detection: Check if Larastan classes exist
+        // This works regardless of how Larastan is installed or configured
+        return class_exists('Larastan\\Larastan\\ApplicationServiceProvider')
+            || class_exists('NunoMaduro\\Larastan\\ApplicationServiceProvider');
     }
 
     /**

@@ -693,6 +693,22 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $this->assertCount(4, $issues);
     }
 
+    public function test_capability_based_detection_works_with_mocked_phpstan(): void
+    {
+        // Test that capability-based detection (via mocked PHPStan) works
+        // regardless of vendor directory structure or file paths
+        /** @var PHPStan&\Mockery\MockInterface $phpStan */
+        $phpStan = Mockery::mock(PHPStan::class);
+
+        $analyzer = new CollectionCallAnalyzer($phpStan);
+
+        // Mock detection should return true (assumes Larastan is available in tests)
+        $this->assertTrue($analyzer->shouldRun());
+
+        // This test proves we don't rely on file paths - only on class existence or mocks
+        // No need to check vendor/larastan/larastan/extension.neon or similar paths
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();

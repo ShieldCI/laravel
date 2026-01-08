@@ -305,10 +305,10 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
             'public/build/manifest.json' => $viteManifest,
         ]);
 
-        // Mock responses for both
+        // Mock responses for both with proper long-term caching (1 year)
         $responses = [
-            new Response(200, ['Cache-Control' => 'public, max-age=3600']),
-            new Response(200, ['Cache-Control' => 'public, max-age=3600']),
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000, immutable']),
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000, immutable']),
         ];
 
         /** @var CacheHeaderAnalyzer $analyzer */
@@ -898,9 +898,9 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $analyzer->setPublicPath($tempDir.'/public');
         $result = $analyzer->analyze();
 
-        // max-age=0 is technically present but not optimal, should still pass
-        // (current implementation only checks for presence of max-age=)
-        $this->assertPassed($result);
+        // max-age=0 means "don't cache" and should be rejected as invalid
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('missing Cache-Control headers', $result);
     }
 
     public function test_handles_private_cache_control(): void
@@ -922,7 +922,155 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $analyzer->setPublicPath($tempDir.'/public');
         $result = $analyzer->analyze();
 
-        // Should pass (has max-age, even though private)
+        // Should fail - "private" cache is wrong for public assets (they should use "public")
+        // Additionally, max-age=3600 (1 hour) is too short for versioned assets
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('missing Cache-Control headers', $result);
+    }
+
+    public function test_accepts_s_maxage_for_cdn_caching(): void
+    {
+        $manifest = json_encode([
+            '/css/app.css' => '/css/app.css?id=abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        // s-maxage is valid for CDN/shared caches
+        $responses = [
+            new Response(200, ['Cache-Control' => 'public, s-maxage=31536000']),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        // Should pass - s-maxage is valid
+        $this->assertPassed($result);
+    }
+
+    public function test_accepts_both_max_age_and_s_maxage(): void
+    {
+        $manifest = json_encode([
+            '/css/app.css' => '/css/app.css?id=abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        // Both max-age and s-maxage
+        $responses = [
+            new Response(200, ['Cache-Control' => 'public, max-age=86400, s-maxage=31536000']),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        // Should pass - uses longest duration (s-maxage=1 year)
+        $this->assertPassed($result);
+    }
+
+    public function test_rejects_short_max_age(): void
+    {
+        $manifest = json_encode([
+            '/css/app.css' => '/css/app.css?id=abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        // max-age=3600 (1 hour) is too short for versioned assets
+        $responses = [
+            new Response(200, ['Cache-Control' => 'public, max-age=3600']),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        // Should fail - 1 hour is too short (requires >= 1 day)
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('missing Cache-Control headers', $result);
+    }
+
+    public function test_accepts_minimum_threshold_of_one_day(): void
+    {
+        $manifest = json_encode([
+            '/css/app.css' => '/css/app.css?id=abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        // Exactly 1 day (86400 seconds) - minimum threshold
+        $responses = [
+            new Response(200, ['Cache-Control' => 'public, max-age=86400']),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        // Should pass - exactly at threshold
+        $this->assertPassed($result);
+    }
+
+    public function test_rejects_just_below_threshold(): void
+    {
+        $manifest = json_encode([
+            '/css/app.css' => '/css/app.css?id=abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        // 86399 seconds - just below 1 day threshold
+        $responses = [
+            new Response(200, ['Cache-Control' => 'public, max-age=86399']),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        // Should fail - below threshold
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('missing Cache-Control headers', $result);
+    }
+
+    public function test_handles_whitespace_in_cache_directives(): void
+    {
+        $manifest = json_encode([
+            '/css/app.css' => '/css/app.css?id=abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        // Whitespace around = sign
+        $responses = [
+            new Response(200, ['Cache-Control' => 'public, max-age = 31536000, immutable']),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        // Should pass - handles whitespace correctly
         $this->assertPassed($result);
     }
 

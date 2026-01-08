@@ -500,14 +500,68 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
         return false;
     }
 
+    /**
+     * Check if a Cache-Control header value is optimized for long-term caching.
+     *
+     * For versioned assets (with cache busting), we expect:
+     * - Long max-age (>= 1 year recommended)
+     * - OR s-maxage for CDN/proxy caching
+     * - public directive (allows shared caches)
+     * - immutable is a bonus (prevents revalidation)
+     *
+     * Minimum threshold: 1 day (86400 seconds) to avoid flagging valid short caches
+     * Recommended: 1 year (31536000 seconds) for versioned assets
+     */
     private function isCacheHeaderOptimized(string $headerValue): bool
     {
         $value = strtolower($headerValue);
 
+        // Reject explicit non-caching directives
         if (str_contains($value, 'no-store') || str_contains($value, 'no-cache')) {
             return false;
         }
 
-        return str_contains($value, 'max-age=');
+        // Reject private caching for public assets
+        if (str_contains($value, 'private')) {
+            return false;
+        }
+
+        // Extract max-age value (for browser cache)
+        $maxAge = $this->extractCacheAge($value, 'max-age');
+
+        // Extract s-maxage value (for CDN/shared cache)
+        $sMaxAge = $this->extractCacheAge($value, 's-maxage');
+
+        // Use the longest cache duration found
+        $cacheDuration = max($maxAge ?? 0, $sMaxAge ?? 0);
+
+        // Minimum threshold: 1 day (86400 seconds)
+        // Versioned assets should use much longer (1 year = 31536000)
+        // But we use 1 day to avoid false positives for legitimate short caches
+        return $cacheDuration >= 86400;
+    }
+
+    /**
+     * Extract cache age value from Cache-Control header.
+     *
+     * Examples:
+     * - "max-age=31536000" → 31536000
+     * - "public, max-age=3600, immutable" → 3600
+     * - "s-maxage=86400" → 86400
+     *
+     * @param  string  $headerValue  Lowercase Cache-Control value
+     * @param  string  $directive  Directive name (max-age or s-maxage)
+     * @return int|null Age in seconds, or null if not found
+     */
+    private function extractCacheAge(string $headerValue, string $directive): ?int
+    {
+        // Match: max-age=31536000 or max-age = 31536000 (with optional whitespace)
+        $pattern = '/'.$directive.'\s*=\s*(\d+)/';
+
+        if (preg_match($pattern, $headerValue, $matches)) {
+            return (int) $matches[1];
+        }
+
+        return null;
     }
 }

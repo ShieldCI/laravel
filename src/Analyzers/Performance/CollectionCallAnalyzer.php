@@ -153,6 +153,6 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
         }
 
         // Fallback: check class name for common mock patterns
-        return str_contains($className, 'Mockery') || str_contains($className, 'Mock');
+        return str_contains($className, 'Mockery') || str_contains($className, 'PHPUnit');
     }
 }

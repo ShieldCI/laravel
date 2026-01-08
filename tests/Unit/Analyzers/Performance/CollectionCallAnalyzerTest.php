@@ -709,6 +709,70 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         // No need to check vendor/larastan/larastan/extension.neon or similar paths
     }
 
+    public function test_uses_config_paths_when_paths_not_set(): void
+    {
+        // Mock config to return custom paths
+        config(['shieldci.paths.analyze' => ['app', 'packages', 'modules', 'config', 'database']]);
+
+        /** @var PHPStan&\Mockery\MockInterface $phpStan */
+        $phpStan = Mockery::mock(PHPStan::class);
+
+        /** @phpstan-ignore-next-line */
+        $phpStan->shouldReceive('setRootPath')
+            ->andReturnSelf();
+
+        /** @phpstan-ignore-next-line */
+        $phpStan->shouldReceive('start')
+            // Should filter out 'config' and 'database', keeping only code directories
+            ->with(['app', 'packages', 'modules'])
+            ->once()
+            ->andReturnSelf();
+
+        /** @phpstan-ignore-next-line */
+        $phpStan->shouldReceive('pregMatch')
+            ->andReturn([]);
+
+        $analyzer = new CollectionCallAnalyzer($phpStan);
+        $analyzer->setBasePath('/');
+        // Don't set paths - should use config
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_filters_non_code_directories_from_config(): void
+    {
+        // Config has only non-code paths
+        config(['shieldci.paths.analyze' => ['config', 'database', 'resources/views', 'routes']]);
+
+        /** @var PHPStan&\Mockery\MockInterface $phpStan */
+        $phpStan = Mockery::mock(PHPStan::class);
+
+        /** @phpstan-ignore-next-line */
+        $phpStan->shouldReceive('setRootPath')
+            ->andReturnSelf();
+
+        /** @phpstan-ignore-next-line */
+        $phpStan->shouldReceive('start')
+            // Should fallback to ['app'] when all config paths are filtered
+            ->with(['app'])
+            ->once()
+            ->andReturnSelf();
+
+        /** @phpstan-ignore-next-line */
+        $phpStan->shouldReceive('pregMatch')
+            ->andReturn([]);
+
+        $analyzer = new CollectionCallAnalyzer($phpStan);
+        $analyzer->setBasePath('/');
+        // Don't set paths
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();

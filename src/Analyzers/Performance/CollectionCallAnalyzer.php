@@ -79,7 +79,30 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
         // Run PHPStan on configured paths
         $paths = $this->paths;
         if (! is_array($paths) || empty($paths)) {
-            $paths = ['app'];
+            // Use paths from config, filtering to code directories only
+            // PHPStan should analyze code, not configs/views/migrations
+            $configPaths = config('shieldci.paths.analyze', ['app']);
+
+            if (is_array($configPaths)) {
+                $paths = array_values(array_filter($configPaths, function ($path) {
+                    // Only analyze code directories, not configs, views, migrations, etc.
+                    if (! is_string($path)) {
+                        return false;
+                    }
+
+                    return ! str_starts_with($path, 'config')
+                        && ! str_starts_with($path, 'database')
+                        && ! str_starts_with($path, 'resources')
+                        && ! str_starts_with($path, 'routes');
+                }));
+            } else {
+                $paths = ['app'];
+            }
+
+            // Fallback to 'app' if filtering removed everything
+            if (empty($paths)) {
+                $paths = ['app'];
+            }
         }
 
         try {

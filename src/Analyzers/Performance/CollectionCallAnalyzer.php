@@ -86,10 +86,12 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             $this->phpStan->start($paths);
 
             // Parse results for collection call issues
-            // Larastan reports these with "could have been retrieved as a query"
-            $this->parsePHPStanAnalysis(
+            // Use regex pattern for flexibility across Larastan versions
+            // Matches variations of "could have been retrieved as a query"
+            // or "Called X on collection" patterns
+            $this->pregMatchPHPStanAnalysis(
                 $this->phpStan,
-                'could have been retrieved as a query',
+                '/could\s+have\s+been\s+retrieved\s+as\s+a\s+query|called\s+.*\s+on\s+.*collection/i',
                 $issues
             );
         } catch (\Throwable $e) {

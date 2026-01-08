@@ -31,8 +31,8 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
                 ->andReturnSelf();
 
             /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
-            $phpStan->shouldReceive('parseAnalysis')
-                ->with('could have been retrieved as a query')
+            $phpStan->shouldReceive('pregMatch')
+                ->with('/could\s+have\s+been\s+retrieved\s+as\s+a\s+query|called\s+.*\s+on\s+.*collection/i')
                 ->andReturn($phpstanResult);
         }
 
@@ -158,7 +158,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ->andReturnSelf();
 
         /** @phpstan-ignore-next-line */
-        $phpStan->shouldReceive('parseAnalysis')
+        $phpStan->shouldReceive('pregMatch')
             ->andReturn([]);
 
         $analyzer = new CollectionCallAnalyzer($phpStan);
@@ -186,7 +186,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ->andReturnSelf();
 
         /** @phpstan-ignore-next-line */
-        $phpStan->shouldReceive('parseAnalysis')
+        $phpStan->shouldReceive('pregMatch')
             ->andReturn([]);
 
         $analyzer = new CollectionCallAnalyzer($phpStan);
@@ -216,7 +216,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ->andReturnSelf();
 
         /** @phpstan-ignore-next-line */
-        $phpStan->shouldReceive('parseAnalysis')
+        $phpStan->shouldReceive('pregMatch')
             ->andReturn([]);
 
         $analyzer = new CollectionCallAnalyzer($phpStan);
@@ -242,7 +242,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ->andReturnSelf();
 
         /** @phpstan-ignore-next-line */
-        $phpStan->shouldReceive('parseAnalysis')
+        $phpStan->shouldReceive('pregMatch')
             ->andReturn([]);
 
         $analyzer = new CollectionCallAnalyzer($phpStan);
@@ -276,7 +276,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ->andReturnSelf();
 
         /** @phpstan-ignore-next-line */
-        $phpStan->shouldReceive('parseAnalysis')
+        $phpStan->shouldReceive('pregMatch')
             ->andReturn($phpstanResult);
 
         $analyzer = new CollectionCallAnalyzer($phpStan);
@@ -314,7 +314,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ->andReturnSelf();
 
         /** @phpstan-ignore-next-line */
-        $phpStan->shouldReceive('parseAnalysis')
+        $phpStan->shouldReceive('pregMatch')
             ->andReturn($phpstanResult);
 
         $analyzer = new CollectionCallAnalyzer($phpStan);
@@ -443,7 +443,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ->andReturnSelf();
 
         /** @phpstan-ignore-next-line */
-        $phpStan->shouldReceive('parseAnalysis')
+        $phpStan->shouldReceive('pregMatch')
             ->andThrow(new \RuntimeException('Failed to parse PHPStan output'));
 
         $analyzer = new CollectionCallAnalyzer($phpStan);
@@ -649,6 +649,48 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('count', implode(' ', $messages));
         $this->assertStringContainsString('sum', implode(' ', $messages));
         $this->assertStringContainsString('avg', implode(' ', $messages));
+    }
+
+    public function test_flexible_regex_matches_message_variations(): void
+    {
+        // Test that the regex pattern is flexible enough to match various Larastan message formats
+        $phpstanResult = [
+            [
+                'path' => '/app/Services/Service1.php',
+                'line' => 10,
+                // Standard format with single quotes
+                'message' => "Called 'count' on Laravel collection, but could have been retrieved as a query.",
+            ],
+            [
+                'path' => '/app/Services/Service2.php',
+                'line' => 20,
+                // Different wording but still matches pattern
+                'message' => 'This operation could have been retrieved as a query instead.',
+            ],
+            [
+                'path' => '/app/Services/Service3.php',
+                'line' => 30,
+                // Variation with double quotes
+                'message' => 'Called "sum" on Eloquent collection, but could have been retrieved as a query.',
+            ],
+            [
+                'path' => '/app/Services/Service4.php',
+                'line' => 40,
+                // Extra whitespace variation
+                'message' => 'Called avg on   collection  but could  have  been  retrieved  as  a  query.',
+            ],
+        ];
+
+        $analyzer = $this->createAnalyzer($phpstanResult);
+        $analyzer->setBasePath('/');
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        // All 4 message variations should be detected
+        $this->assertCount(4, $issues);
     }
 
     protected function tearDown(): void

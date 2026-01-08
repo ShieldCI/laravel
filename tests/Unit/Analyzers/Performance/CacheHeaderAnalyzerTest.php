@@ -1135,4 +1135,129 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('[/js/vendor.js via mix]', $recommendation);
         $this->assertStringContainsString(' and ', $recommendation);
     }
+
+    public function test_deduplicates_urls_to_avoid_duplicate_http_requests(): void
+    {
+        // Create Vite manifest with same file referenced multiple times
+        $manifest = json_encode([
+            'resources/js/app.js' => [
+                'file' => 'assets/shared.js',
+            ],
+            'resources/js/another.js' => [
+                'file' => 'assets/shared.js', // Same file as above
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/build/manifest.json' => $manifest,
+        ]);
+
+        // Only provide ONE response - if deduplication doesn't work, test will fail
+        $responses = [
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        // Should pass - URL deduplication prevents duplicate HTTP requests
+        $this->assertPassed($result);
+    }
+
+    public function test_stops_checking_after_reaching_threshold(): void
+    {
+        // Create manifest with 15 assets
+        $manifest = [];
+        for ($i = 1; $i <= 15; $i++) {
+            $manifest["/js/file{$i}.js"] = "/js/file{$i}.js?id=abc{$i}";
+        }
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => json_encode($manifest),
+        ]);
+
+        // All responses have no cache headers
+        // If threshold didn't work, analyzer would make 15 requests
+        // But we only provide 10 responses to verify it stops early
+        $responses = array_fill(0, 10, new Response(200));
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setMaxUncachedAssets(10);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        // Verify it found exactly 10 uncached assets (stopped at threshold)
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertEquals(10, $issues[0]->metadata['count']);
+        $this->assertTrue($issues[0]->metadata['hit_threshold']);
+    }
+
+    public function test_includes_threshold_note_in_recommendation_when_bailout_occurs(): void
+    {
+        // Create manifest with 12 assets
+        $manifest = [];
+        for ($i = 1; $i <= 12; $i++) {
+            $manifest["/js/file{$i}.js"] = "/js/file{$i}.js?id=abc{$i}";
+        }
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => json_encode($manifest),
+        ]);
+
+        // All responses have no cache headers, but only provide 10
+        $responses = array_fill(0, 10, new Response(200));
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setMaxUncachedAssets(10);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        // Verify the threshold note is included in recommendation
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $recommendation = $issues[0]->recommendation;
+        $this->assertStringContainsString('Analysis stopped after finding 10 uncached assets', $recommendation);
+        $this->assertStringContainsString('prevent excessive HTTP requests', $recommendation);
+    }
+
+    public function test_does_not_include_threshold_note_when_all_assets_checked(): void
+    {
+        // Create manifest with only 3 assets (below threshold of 10)
+        $manifest = json_encode([
+            '/css/app.css' => '/css/app.css?id=abc123',
+            '/js/app.js' => '/js/app.js?id=def456',
+            '/js/vendor.js' => '/js/vendor.js?id=ghi789',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        // All responses have no cache headers
+        $responses = array_fill(0, 3, new Response(200));
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setMaxUncachedAssets(10);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        // Verify the threshold note is NOT included
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $recommendation = $issues[0]->recommendation;
+        $this->assertStringNotContainsString('Analysis stopped', $recommendation);
+        $this->assertFalse($issues[0]->metadata['hit_threshold']);
+    }
 }

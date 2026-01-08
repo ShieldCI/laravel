@@ -299,7 +299,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('config.php', $issues[0]->location->file);
     }
 
-    public function test_issue_location_points_to_app_config_for_production(): void
+    public function test_issue_location_points_to_cache_path_for_production(): void
     {
         $analyzer = $this->createAnalyzer(environment: 'production', configIsCached: false);
 
@@ -309,8 +309,8 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertStringContainsString('config', $issues[0]->location->file);
-        $this->assertStringContainsString('app.php', $issues[0]->location->file);
+        // Should point to where the cache file should be (but isn't)
+        $this->assertStringContainsString('bootstrap/cache/config.php', $issues[0]->location->file);
     }
 
     public function test_issue_has_correct_severity(): void
@@ -508,9 +508,9 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
         }
     }
 
-    public function test_app_config_path_uses_build_path_fallback(): void
+    public function test_production_issue_includes_expected_cache_path_in_metadata(): void
     {
-        // This test verifies getAppConfigPath fallback uses buildPath correctly
+        // Verifies that metadata includes the expected cache path
         $analyzer = $this->createAnalyzer(environment: 'production', configIsCached: false);
 
         $result = $analyzer->analyze();
@@ -520,12 +520,14 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
 
-        // Verify path structure from buildPath
-        $path = $issues[0]->location->file;
-        $this->assertStringContainsString('config', $path);
-        $this->assertStringContainsString('app.php', $path);
+        // Verify metadata includes expected cache path
+        $this->assertArrayHasKey('expected_cache_path', $issues[0]->metadata);
+        $this->assertIsString($issues[0]->metadata['expected_cache_path']);
+        $this->assertStringContainsString('bootstrap/cache/config.php', $issues[0]->metadata['expected_cache_path']);
 
-        // Path should be absolute (starts with basePath)
+        // Path should point to cache location
+        $path = $issues[0]->location->file;
+        $this->assertStringContainsString('bootstrap/cache/config.php', $path);
         $this->assertNotEmpty($path);
         $this->assertIsString($path);
     }

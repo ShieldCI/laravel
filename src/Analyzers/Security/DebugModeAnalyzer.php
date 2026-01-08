@@ -34,6 +34,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
         'var_export',
         'debug_backtrace',
         'debug_print_backtrace',
+        'debug_zval_dump',
         'ray',
     ];
 

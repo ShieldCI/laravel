@@ -124,7 +124,7 @@ class DebugLogAnalyzer extends AbstractAnalyzer
             }
         }
 
-        return $channels;
+        return array_values(array_unique($channels));
     }
 
     /**

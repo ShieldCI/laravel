@@ -100,10 +100,10 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
         // Check 1: Verify composer.lock exists (critical for production)
         if (! file_exists($composerLockPath)) {
             $issues[] = $this->createIssue(
-                message: 'composer.lock file not found in production',
+                message: sprintf('composer.lock file not found in %s', $this->getEnvironment()),
                 location: new Location($this->getRelativePath($composerLockPath)),
                 severity: Severity::High,
-                recommendation: 'Always commit composer.lock to ensure consistent dependency versions across environments. Run "composer install" instead of "composer update" in production.',
+                recommendation: sprintf('Always commit composer.lock to ensure consistent dependency versions across environments. Run "composer install" instead of "composer update" in %s.', $this->getEnvironment()),
                 metadata: ['environment' => $this->getEnvironment()]
             );
 
@@ -123,7 +123,7 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
         }
 
         if (count($issues) === 0) {
-            return $this->passed('No dev dependencies detected in production');
+            return $this->passed(sprintf('No dev dependencies detected in %s', $this->getEnvironment()));
         }
 
         return $this->resultBySeverity(
@@ -194,10 +194,10 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
             $removedPackages = array_slice($packageNames, 0, 10);
 
             return $this->createIssue(
-                message: 'Dev dependencies are installed in production environment',
+                message: sprintf('Dev dependencies are installed in %s environment', $this->getEnvironment()),
                 location: new Location($this->getRelativePath($composerJsonPath)),
                 severity: Severity::High,
-                recommendation: 'Use "composer install --no-dev" in production to exclude development dependencies. Dev packages like Ignition and Debugbar can cause memory leaks and slow down your application. Add --no-dev flag to your deployment script.',
+                recommendation: sprintf('Use "composer install --no-dev" in %s to exclude development dependencies. Dev packages like Ignition and Debugbar can cause memory leaks and slow down your application. Add --no-dev flag to your deployment script.', $this->getEnvironment()),
                 metadata: [
                     'detection_method' => 'composer_dry_run',
                     'environment' => $this->getEnvironment(),
@@ -294,10 +294,10 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
         }
 
         return $this->createIssue(
-            message: sprintf('Found %d dev dependencies installed in production', count($installedDevPackages)),
+            message: sprintf('Found %d dev dependencies installed in %s environment', count($installedDevPackages), $this->getEnvironment()),
             location: new Location($this->getRelativePath($composerJsonPath)),
             severity: Severity::High,
-            recommendation: 'Use "composer install --no-dev" in production to exclude development dependencies. Dev packages like Ignition and Debugbar can cause memory leaks and slow down your application. Add --no-dev flag to your deployment script.',
+            recommendation: sprintf('Use "composer install --no-dev" in %s to exclude development dependencies. Dev packages like Ignition and Debugbar can cause memory leaks and slow down your application. Add --no-dev flag to your deployment script.', $this->getEnvironment()),
             metadata: [
                 'detection_method' => 'file_system',
                 'installed_dev_packages' => array_slice($installedDevPackages, 0, 10),

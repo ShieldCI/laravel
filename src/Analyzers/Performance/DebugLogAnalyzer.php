@@ -130,18 +130,11 @@ class DebugLogAnalyzer extends AbstractAnalyzer
     /**
      * Check if a specific log channel is configured with debug level.
      *
-     * Checks both channel-specific level and global LOG_LEVEL fallback.
-     * Laravel allows LOG_LEVEL env variable to set a global default for all channels.
-     *
      * @param  array<int, mixed>  $issues
      */
     private function checkChannelLogLevel(string $channel, array &$issues): void
     {
-        // Check channel-specific level first, then fall back to global logging.level
-        // This captures LOG_LEVEL environment variable which affects all channels
-        $level = $this->config->get("logging.channels.{$channel}.level")
-            ?? $this->config->get('logging.level');
-
+        $level = $this->config->get("logging.channels.{$channel}.level");
         $normalizedLevel = is_string($level) ? strtolower($level) : null;
 
         if ($normalizedLevel === 'debug') {
@@ -158,29 +151,20 @@ class DebugLogAnalyzer extends AbstractAnalyzer
                 $configPath = $this->buildPath('config', 'logging.php');
             }
 
-            // Check if this is from channel-specific config or global LOG_LEVEL
-            $channelSpecificLevel = $this->config->get("logging.channels.{$channel}.level");
-            $isGlobalLevel = $channelSpecificLevel === null;
-
             $lineNumber = ConfigFileHelper::findNestedKeyLine($configPath, 'channels', 'level', $channel);
 
-            $message = $isGlobalLevel
-                ? "Log channel '{$channel}' uses global LOG_LEVEL=debug in {$environment} environment"
-                : "Log channel '{$channel}' is set to debug level in {$environment} environment";
-
             $issues[] = $this->createIssueWithSnippet(
-                message: $message,
+                message: "Log channel '{$channel}' is set to debug level in {$environment} environment",
                 filePath: $configPath,
                 lineNumber: $lineNumber,
                 severity: Severity::High,
-                recommendation: "Change the log level to 'info' or higher in production. Debug logging causes significant performance degradation, generates massive log files that can exhaust disk space, and exposes sensitive data in logs. Update your logging configuration or set LOG_LEVEL environment variable to 'info', 'warning', or 'error'.",
+                recommendation: "Change the log level to 'info' or higher in production. Debug logging causes 50-300% performance degradation, generates massive log files that can exhaust disk space, and exposes sensitive data in logs. This is a critical production misconfiguration. Update your logging configuration or set LOG_LEVEL environment variable to 'info', 'warning', or 'error'.",
                 code: 'debug-log-level',
                 metadata: [
                     'environment' => $environment,
                     'channel' => $channel,
                     'level' => $level,
                     'detection_method' => 'config_repository',
-                    'is_global_level' => $isGlobalLevel,
                 ]
             );
         }

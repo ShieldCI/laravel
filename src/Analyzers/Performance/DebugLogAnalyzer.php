@@ -179,7 +179,8 @@ class DebugLogAnalyzer extends AbstractAnalyzer
                     'environment' => $environment,
                     'channel' => $channel,
                     'level' => $level,
-                    'detection_method' => $isGlobalLevel ? 'global_log_level' : 'channel_specific_level',
+                    'detection_method' => 'config_repository',
+                    'is_global_level' => $isGlobalLevel,
                 ]
             );
         }

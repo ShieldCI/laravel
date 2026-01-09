@@ -674,7 +674,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals('channel_specific_level', $issues[0]->metadata['detection_method'] ?? '');
+        $this->assertEquals('config_repository', $issues[0]->metadata['detection_method'] ?? '');
     }
 
     public function test_handles_warning_level_in_production(): void
@@ -735,6 +735,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
         $this->assertEquals('debug', $issues[0]->metadata['level'] ?? '');
+        $this->assertTrue($issues[0]->metadata['is_global_level'] ?? false);
         $this->assertStringContainsString('global LOG_LEVEL=debug', $issues[0]->message);
     }
 
@@ -769,6 +770,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
         $this->assertEquals('DEBUG', $issues[0]->metadata['level'] ?? '');
+        $this->assertTrue($issues[0]->metadata['is_global_level'] ?? false);
     }
 
     public function test_passes_when_global_level_is_info(): void
@@ -806,6 +808,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
 
         // Check that issues are marked as global level
         foreach ($issues as $issue) {
+            $this->assertTrue($issue->metadata['is_global_level'] ?? false);
             $this->assertStringContainsString('global LOG_LEVEL=debug', $issue->message);
         }
     }
@@ -825,6 +828,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
+        $this->assertFalse($issues[0]->metadata['is_global_level'] ?? true);
         $this->assertStringNotContainsString('global LOG_LEVEL', $issues[0]->message);
     }
 

@@ -522,8 +522,9 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         // Verify metadata includes expected cache path
         $this->assertArrayHasKey('expected_cache_path', $issues[0]->metadata);
-        $this->assertIsString($issues[0]->metadata['expected_cache_path']);
-        $this->assertStringContainsString('bootstrap/cache/config.php', $issues[0]->metadata['expected_cache_path']);
+        $expectedPath = $issues[0]->metadata['expected_cache_path'];
+        $this->assertIsString($expectedPath);
+        $this->assertStringContainsString('bootstrap/cache/config.php', $expectedPath);
 
         // Path should point to cache location
         $path = $issues[0]->location->file;

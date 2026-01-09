@@ -70,20 +70,11 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        // Find all env() function calls and Env::get() static calls, excluding config and test directories
+        // Find all env() function calls and Env::get() static calls in a single parse pass
         $excludePaths = $this->getNormalizedExcludePaths();
 
-        $envCalls = $this->findFunctionCalls(
-            functionName: 'env',
-            paths: self::SEARCH_PATHS,
-            excludePaths: $excludePaths
-        );
-
-        // Also find Env::get() static calls
-        $envStaticCalls = $this->findEnvStaticCalls($excludePaths);
-
-        // Combine both types of calls
-        $allCalls = array_merge($envCalls, $envStaticCalls);
+        // Single parse pass detects both env() functions and Env::get() static calls
+        $allCalls = $this->findAllEnvCalls($excludePaths);
 
         if (count($allCalls) === 0) {
             return $this->passed('No env() calls detected outside configuration files');
@@ -150,14 +141,14 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Find Env::get() static calls outside configuration files.
+     * Find all env() calls (both function and Env::get() static calls) in a single parse pass.
      *
-     * @return array<int, array{file: string, node: StaticCall, args: array<int, mixed>, type: string}>
-     */
-    /**
+     * Parses each file only once to detect both patterns, avoiding duplicate AST parsing.
+     *
      * @param  array<int, string>  $excludePaths
+     * @return array<int, array{file: string, node: \PhpParser\Node, args: array<int, mixed>, type: string}>
      */
-    private function findEnvStaticCalls(array $excludePaths): array
+    private function findAllEnvCalls(array $excludePaths): array
     {
         $results = [];
         $parser = $this->getStaticParser();
@@ -174,11 +165,32 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
             }
 
             try {
+                // Parse file once
                 $ast = $parser->parseFile($filePath);
-                $envClasses = $this->getEnvClassAliases($ast);
-                $calls = $this->findEnvStaticCallsInAst($ast, $envClasses);
 
-                foreach ($calls as $call) {
+                // Find both env() function calls and Env::get() static calls in this AST
+                $nodeFinder = new NodeFinder;
+
+                // 1. Find env() function calls
+                $functionCalls = $nodeFinder->findInstanceOf($ast, \PhpParser\Node\Expr\FuncCall::class);
+                foreach ($functionCalls as $funcCall) {
+                    if ($funcCall->name instanceof \PhpParser\Node\Name
+                        && $funcCall->name->toString() === 'env'
+                    ) {
+                        $results[] = [
+                            'file' => $filePath,
+                            'node' => $funcCall,
+                            'args' => $this->extractFunctionCallArguments($funcCall),
+                            'type' => 'function',
+                        ];
+                    }
+                }
+
+                // 2. Find Env::get() static calls
+                $envClasses = $this->getEnvClassAliases($ast);
+                $staticCalls = $this->findEnvStaticCallsInAst($ast, $envClasses);
+
+                foreach ($staticCalls as $call) {
                     $results[] = [
                         'file' => $filePath,
                         'node' => $call,
@@ -193,6 +205,22 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
         }
 
         return $results;
+    }
+
+    /**
+     * Extract arguments from a function call.
+     *
+     * @return array<int, mixed>
+     */
+    private function extractFunctionCallArguments(\PhpParser\Node\Expr\FuncCall $funcCall): array
+    {
+        $args = [];
+
+        foreach ($funcCall->args as $index => $arg) {
+            $args[$index] = $this->extractStaticArgumentValue($arg->value);
+        }
+
+        return $args;
     }
 
     /**

@@ -201,7 +201,7 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
-        $this->assertStringContainsString('Horizon is installed', $result->getMessage());
+        $this->assertStringContainsString('Horizon is configured', $result->getMessage());
     }
 
     public function test_issue_contains_correct_metadata(): void
@@ -230,12 +230,13 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
 
         $issue = $issues[0];
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issue->severity);
-        $this->assertStringContainsString('queue.php', $issue->location->file);
+        $this->assertNull($issue->location);
 
         $metadata = $issue->metadata;
         $this->assertEquals('redis', $metadata['queue_driver']);
         $this->assertEquals('redis', $metadata['default_connection']);
         $this->assertFalse($metadata['horizon_installed']);
+        $this->assertEquals('config/queue.php', $metadata['detected_via']);
     }
 
     public function test_issue_contains_installation_instructions(): void
@@ -312,5 +313,151 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
 
         $this->assertStringContainsString('dashboard', $recommendation);
         $this->assertStringContainsString('monitoring', $recommendation);
+    }
+
+    public function test_skips_when_vapor_yml_exists(): void
+    {
+        // Create a temporary vapor.yml file
+        $vaporConfig = $this->getBasePath().DIRECTORY_SEPARATOR.'vapor.yml';
+        file_put_contents($vaporConfig, "id: 123\nname: my-app\nenvironments:\n  production:\n    build:\n      - 'composer install'\n");
+
+        try {
+            $analyzer = $this->createAnalyzer([
+                'queue' => [
+                    'default' => 'redis',
+                    'connections' => [
+                        'redis' => [
+                            'driver' => 'redis',
+                        ],
+                    ],
+                ],
+            ]);
+
+            $result = $analyzer->analyze();
+
+            $this->assertSkipped($result);
+            $skipReason = $analyzer->getSkipReason();
+            $this->assertStringContainsString('Vapor', $skipReason);
+            $this->assertStringContainsString('serverless', $skipReason);
+            $this->assertStringContainsString('incompatible', $skipReason);
+        } finally {
+            // Clean up
+            if (file_exists($vaporConfig)) {
+                unlink($vaporConfig);
+            }
+        }
+    }
+
+    public function test_skips_when_vapor_core_directory_exists(): void
+    {
+        // Create a temporary vendor/laravel/vapor-core directory
+        $vaporCoreDir = $this->getBasePath().DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR.'laravel'.DIRECTORY_SEPARATOR.'vapor-core';
+
+        if (! is_dir(dirname(dirname($vaporCoreDir)))) {
+            mkdir(dirname(dirname($vaporCoreDir)), 0755, true);
+        }
+        if (! is_dir(dirname($vaporCoreDir))) {
+            mkdir(dirname($vaporCoreDir), 0755, true);
+        }
+        mkdir($vaporCoreDir, 0755, true);
+
+        try {
+            $analyzer = $this->createAnalyzer([
+                'queue' => [
+                    'default' => 'redis',
+                    'connections' => [
+                        'redis' => [
+                            'driver' => 'redis',
+                        ],
+                    ],
+                ],
+            ]);
+
+            $result = $analyzer->analyze();
+
+            $this->assertSkipped($result);
+            $skipReason = $analyzer->getSkipReason();
+            $this->assertStringContainsString('Vapor', $skipReason);
+            $this->assertStringContainsString('incompatible', $skipReason);
+        } finally {
+            // Clean up
+            if (is_dir($vaporCoreDir)) {
+                rmdir($vaporCoreDir);
+            }
+        }
+    }
+
+    public function test_skip_reason_explains_vapor_incompatibility(): void
+    {
+        // Create vapor.yml to trigger Vapor detection
+        $vaporConfig = $this->getBasePath().DIRECTORY_SEPARATOR.'vapor.yml';
+        file_put_contents($vaporConfig, "id: 123\nname: my-app\n");
+
+        try {
+            $analyzer = $this->createAnalyzer([
+                'queue' => [
+                    'default' => 'redis',
+                    'connections' => [
+                        'redis' => [
+                            'driver' => 'redis',
+                        ],
+                    ],
+                ],
+            ]);
+
+            $result = $analyzer->analyze();
+
+            $this->assertSkipped($result);
+            $skipReason = $analyzer->getSkipReason();
+
+            // Verify skip reason explains the incompatibility
+            $this->assertStringContainsString('Vapor', $skipReason);
+            $this->assertStringContainsString('Horizon', $skipReason);
+            $this->assertStringContainsString('serverless', $skipReason);
+            $this->assertStringContainsString('AWS Lambda', $skipReason);
+            $this->assertStringContainsString('long-running', $skipReason);
+        } finally {
+            // Clean up
+            if (file_exists($vaporConfig)) {
+                unlink($vaporConfig);
+            }
+        }
+    }
+
+    public function test_runs_normally_when_vapor_not_detected(): void
+    {
+        if (class_exists(\Laravel\Horizon\Horizon::class)) {
+            $this->markTestSkipped('Horizon is installed, skipping test for missing Horizon');
+        }
+
+        // Ensure no Vapor indicators exist
+        $vaporConfig = $this->getBasePath().DIRECTORY_SEPARATOR.'vapor.yml';
+        if (file_exists($vaporConfig)) {
+            unlink($vaporConfig);
+        }
+
+        $analyzer = $this->createAnalyzer([
+            'queue' => [
+                'default' => 'redis',
+                'connections' => [
+                    'redis' => [
+                        'driver' => 'redis',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        // Should warn about missing Horizon (not skip due to Vapor)
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('Horizon', $result);
+        $this->assertHasIssueContaining('not installed', $result);
+    }
+
+    protected function tearDown(): void
+    {
+        Mockery::close();
+        parent::tearDown();
     }
 }

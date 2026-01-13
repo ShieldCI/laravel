@@ -311,11 +311,6 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        // Check for source map reference - minified files often include this
-        if ($this->hasSourceMapReference($content)) {
-            return false; // Has source map = likely minified
-        }
-
         $lines = FileParser::getLines($filePath);
         $lineCount = count($lines);
 
@@ -398,28 +393,6 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         }
 
         return false;
-    }
-
-    /**
-     * Check if the file has a source map reference.
-     * Minified files often include //# sourceMappingURL= or /*# sourceMappingURL= comments.
-     */
-    private function hasSourceMapReference(string $content): bool
-    {
-        if (str_contains($content, 'sourceMappingURL=')) {
-            return true;
-        }
-
-        if (str_contains($content, '//# sourceURL=')) {
-            return true;
-        }
-
-        $match = preg_match('/\/[*\/]#\s*sourceMappingURL=/i', $content);
-        if (! is_int($match)) {
-            $match = 0;
-        }
-
-        return $match === 1;
     }
 
     /**

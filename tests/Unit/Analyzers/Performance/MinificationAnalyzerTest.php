@@ -73,9 +73,10 @@ CSS;
         $this->assertHasIssueContaining('unminified', $result);
     }
 
-    public function test_detects_minified_files_by_source_map(): void
+    public function test_detects_unminified_files_even_with_source_map(): void
     {
-        // File with source map reference is considered minified even if multi-line
+        // File with source map reference but unminified code should still be detected as unminified
+        // Source maps are present in both dev and production builds
         $jsWithSourceMap = <<<'JS'
 function test() {
     console.log("test");
@@ -95,12 +96,13 @@ JS;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        // Should fail because the code is unminified (multiple lines, formatting)
+        $this->assertWarning($result);
     }
 
-    public function test_detects_css_with_source_map(): void
+    public function test_detects_unminified_css_even_with_source_map(): void
     {
-        // CSS file with source map reference
+        // CSS file with source map reference but unminified formatting
         $cssWithSourceMap = <<<'CSS'
 body {
     color: red;
@@ -120,6 +122,25 @@ CSS;
 
         $result = $analyzer->analyze();
 
+        // Should fail because the CSS is unminified (indented, multiple lines)
+        $this->assertWarning($result);
+    }
+
+    public function test_minified_code_with_source_map_passes(): void
+    {
+        // Properly minified code with source map should still pass
+        $minifiedJs = str_repeat('function x(){return 1;}', 100)."\n//# sourceMappingURL=app.js.map";
+
+        $tempDir = $this->createTempDirectory([
+            'public/js/app.js' => $minifiedJs,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because the code is actually minified
         $this->assertPassed($result);
     }
 
@@ -530,9 +551,9 @@ JS;
 
     // Category 2: Source Map Detection Tests
 
-    public function test_file_with_source_url_reference_is_minified(): void
+    public function test_file_with_source_url_reference_is_detected_as_unminified(): void
     {
-        // hasSourceMapReference() checks for //# sourceURL=
+        // hasSourceMapReference() checks for //# sourceURL= but doesn't guarantee minification
         $content = <<<'JS'
 function test(){console.log("x");}
 function another(){return true;}
@@ -548,15 +569,31 @@ JS;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        // Should fail because code has multiple statements on separate lines
+        $this->assertWarning($result);
     }
 
-    public function test_file_with_block_comment_source_map_is_minified(): void
+    public function test_file_with_block_comment_source_map_but_unminified_code(): void
     {
-        // /*# sourceMappingURL= */
+        // /*# sourceMappingURL= */ doesn't make unminified code minified
+        // Need enough lines to trigger line count check
         $content = <<<'JS'
 function test() {
     console.log("x");
+}
+
+function another() {
+    return true;
+}
+
+function third() {
+    var x = 1;
+    var y = 2;
+    return x + y;
+}
+
+function fourth() {
+    console.log("more");
 }
 /*# sourceMappingURL=app.js.map */
 JS;
@@ -570,12 +607,13 @@ JS;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        // Should fail because the code is unminified (formatted, indented, many lines)
+        $this->assertWarning($result);
     }
 
-    public function test_file_with_uppercase_sourcemappingurl_is_minified(): void
+    public function test_file_with_uppercase_sourcemappingurl_still_detects_unminified(): void
     {
-        // Case-insensitive regex test
+        // Case-insensitive source map detection, but doesn't override minification checks
         $content = <<<'JS'
 function test(){console.log("x");}
 //# SOURCEMAPPINGURL=app.js.map
@@ -590,12 +628,14 @@ JS;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        // Should fail because code has statements on separate lines
+        $this->assertWarning($result);
     }
 
-    public function test_file_with_source_map_and_unminified_patterns_is_still_minified(): void
+    public function test_file_with_source_map_and_unminified_patterns_is_detected_as_unminified(): void
     {
-        // Source map reference overrides other checks
+        // Source map reference does NOT override objective minification checks
+        // Unminified patterns should be detected regardless of source map presence
         $unminifiedCss = <<<'CSS'
 body {
     color: red;
@@ -619,12 +659,13 @@ CSS;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        // Should fail because the CSS has clear unminified patterns
+        $this->assertWarning($result);
     }
 
-    public function test_file_with_malformed_source_map_comment_is_unminified(): void
+    public function test_file_with_malformed_source_map_comment_is_detected_as_unminified(): void
     {
-        // Malformed - missing URL after =
+        // Malformed source map marker doesn't make unminified code pass
         $content = <<<'JS'
 function test() {
     console.log("x");
@@ -644,8 +685,8 @@ JS;
 
         $result = $analyzer->analyze();
 
-        // Should still be considered minified (has the marker)
-        $this->assertPassed($result);
+        // Should fail because the code is unminified (formatted, indented)
+        $this->assertWarning($result);
     }
 
     // Category 3: hasUnminifiedPatterns() Tests

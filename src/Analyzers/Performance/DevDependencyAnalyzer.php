@@ -11,7 +11,6 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Detects if dev dependencies are installed in production.
@@ -101,10 +100,13 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
         if (! file_exists($composerLockPath)) {
             $issues[] = $this->createIssue(
                 message: sprintf('composer.lock file not found in %s', $this->getEnvironment()),
-                location: new Location($this->getRelativePath($composerLockPath)),
+                location: null,
                 severity: Severity::High,
                 recommendation: sprintf('Always commit composer.lock to ensure consistent dependency versions across environments. Run "composer install" instead of "composer update" in %s.', $this->getEnvironment()),
-                metadata: ['environment' => $this->getEnvironment()]
+                metadata: [
+                    'environment' => $this->getEnvironment(),
+                    'detected_via' => 'composer.lock',
+                ]
             );
 
             return $this->failed('composer.lock missing', $issues);
@@ -195,7 +197,7 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
 
             return $this->createIssue(
                 message: sprintf('Dev dependencies are installed in %s environment', $this->getEnvironment()),
-                location: new Location($this->getRelativePath($composerJsonPath)),
+                location: null,
                 severity: Severity::High,
                 recommendation: sprintf('Use "composer install --no-dev" in %s to exclude development dependencies. Dev packages like Ignition and Debugbar can cause memory leaks and slow down your application. Add --no-dev flag to your deployment script.', $this->getEnvironment()),
                 metadata: [
@@ -203,6 +205,7 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
                     'environment' => $this->getEnvironment(),
                     'packages_to_remove' => $removedPackages,
                     'total_packages' => count($packageNames),
+                    'detected_via' => 'composer.json',
                 ]
             );
         }
@@ -295,7 +298,7 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
 
         return $this->createIssue(
             message: sprintf('Found %d dev dependencies installed in %s environment', count($installedDevPackages), $this->getEnvironment()),
-            location: new Location($this->getRelativePath($composerJsonPath)),
+            location: null,
             severity: Severity::High,
             recommendation: sprintf('Use "composer install --no-dev" in %s to exclude development dependencies. Dev packages like Ignition and Debugbar can cause memory leaks and slow down your application. Add --no-dev flag to your deployment script.', $this->getEnvironment()),
             metadata: [
@@ -303,6 +306,7 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
                 'installed_dev_packages' => array_slice($installedDevPackages, 0, 10),
                 'total_count' => count($installedDevPackages),
                 'environment' => $this->getEnvironment(),
+                'detected_via' => 'composer.json',
             ]
         );
     }

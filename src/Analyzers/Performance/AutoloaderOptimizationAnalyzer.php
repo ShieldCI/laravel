@@ -10,7 +10,6 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Analyzes Composer autoloader optimization for performance.
@@ -119,7 +118,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
 
             $issues[] = $this->createIssue(
                 message: $message,
-                location: new Location($this->getRelativePath($composerJsonPath), $configLine),
+                location: null,
                 severity: Severity::High,
                 recommendation: 'Run "composer dump-autoload -o" or "composer install --optimize-autoloader" in production. This converts PSR-4/PSR-0 rules into classmap rules for improved performance. Add this to your deployment script for best results.',
                 metadata: [
@@ -129,6 +128,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
                     'configured_optimize' => $configFlags['optimize'],
                     'configured_authoritative' => $configFlags['authoritative'],
                     'configured_via_scripts' => $scriptsRunOptimization,
+                    'detected_via' => 'composer.json',
                 ]
             );
         }
@@ -144,7 +144,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
 
             $issues[] = $this->createIssue(
                 message: $message,
-                location: new Location($this->getRelativePath($composerJsonPath), $configLine),
+                location: null,
                 severity: Severity::Low,
                 recommendation: 'For even better performance, use "composer dump-autoload --classmap-authoritative" or add "classmap-authoritative": true to composer.json config. This prevents the autoloader from falling back to filesystem checks, providing faster class loading. Only enable this if your application does not rely on runtime class discovery.',
                 metadata: [
@@ -154,6 +154,7 @@ class AutoloaderOptimizationAnalyzer extends AbstractFileAnalyzer
                     'configured_optimize' => $configFlags['optimize'],
                     'configured_authoritative' => $configFlags['authoritative'],
                     'configured_via_scripts' => $scriptsRunOptimization,
+                    'detected_via' => 'composer.json',
                 ]
             );
         }

@@ -12,7 +12,6 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Analyzes route caching setup using Laravel's official API.
@@ -77,25 +76,27 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
         if ($this->isLocalEnvironment($environment) && $routesAreCached) {
             $issues[] = $this->createIssue(
                 message: "Routes are cached in {$environment} environment",
-                location: new Location($this->getRelativePath($this->getCachedRoutesPath())),
+                location: null,
                 severity: Severity::Low,
                 recommendation: 'Route caching is not recommended for development. Run "php artisan route:clear" to clear the cache. Route changes won\'t be reflected until you clear the cache.',
                 metadata: [
                     'environment' => $environment,
                     'cached' => true,
                     'detection_method' => 'routesAreCached()',
+                    'detected_via' => 'bootstrap/cache/routes-v7.php',
                 ]
             );
         } elseif ($this->isProductionOrStaging($environment) && ! $routesAreCached) {
             $issues[] = $this->createIssue(
                 message: "Routes are not cached in {$environment} environment",
-                location: new Location($this->getRelativePath($this->getRoutesDirectory())),
+                location: null,
                 severity: Severity::High,
                 recommendation: 'Route caching provides significant performance improvements (up to 5x faster). Add "php artisan route:cache" to your deployment script. Remember to regenerate the cache every time you deploy.',
                 metadata: [
                     'environment' => $environment,
                     'cached' => false,
                     'detection_method' => 'routesAreCached()',
+                    'detected_via' => 'bootstrap/cache/routes-v7.php',
                 ]
             );
         }
@@ -121,36 +122,5 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
     private function isProductionOrStaging(string $environment): bool
     {
         return in_array($environment, ['production', 'staging'], true);
-    }
-
-    /**
-     * Get the path to the cached routes file.
-     * Tries multiple locations for different Laravel versions.
-     */
-    private function getCachedRoutesPath(): string
-    {
-        $cacheDir = $this->buildPath('bootstrap', 'cache');
-
-        $paths = [
-            $cacheDir.DIRECTORY_SEPARATOR.'routes-v7.php', // Laravel 10+
-            $cacheDir.DIRECTORY_SEPARATOR.'routes.php',     // Older versions
-        ];
-
-        foreach ($paths as $path) {
-            if (file_exists($path)) {
-                return $path;
-            }
-        }
-
-        // Return default path even if file doesn't exist
-        return $cacheDir.DIRECTORY_SEPARATOR.'routes-v7.php';
-    }
-
-    /**
-     * Get the routes directory path.
-     */
-    private function getRoutesDirectory(): string
-    {
-        return $this->buildPath('routes');
     }
 }

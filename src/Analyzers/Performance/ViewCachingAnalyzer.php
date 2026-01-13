@@ -10,10 +10,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
-use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use Symfony\Component\Finder\Finder;
 
 /**
@@ -114,7 +111,6 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
 
         if ($viewCount > $compiledViewCount) {
             $cachedPercentage = $this->calculateCachedPercentage($compiledViewCount, $viewCount);
-            $configLocation = $this->getViewConfigLocation();
 
             $issues = [
                 $this->createIssue(
@@ -124,16 +120,16 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
                         $viewCount,
                         $cachedPercentage
                     ),
-                    location: $configLocation,
+                    location: null,
                     severity: Severity::Medium,
                     recommendation: 'View caching improves performance by pre-compiling all Blade templates. Add "php artisan view:cache" to your deployment script. This eliminates the need to compile views on each request and is especially important in production environments where view caching can significantly reduce response times.',
-                    code: $configLocation->line ? FileParser::getCodeSnippet($configLocation->file, $configLocation->line) : null,
                     metadata: [
                         'environment' => $environment,
                         'total_views' => $viewCount,
                         'compiled_views' => $compiledViewCount,
                         'cached_percentage' => $cachedPercentage,
                         'missing_views' => $viewCount - $compiledViewCount,
+                        'detected_via' => 'storage/framework/views',
                     ]
                 ),
             ];
@@ -225,30 +221,5 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
         }
 
         return round(($compiledCount / $totalCount) * 100, 1);
-    }
-
-    /**
-     * Get the location of the view configuration file.
-     * Falls back to artisan file if config file not found.
-     */
-    private function getViewConfigLocation(): Location
-    {
-        $basePath = $this->getBasePath();
-        $configPath = ConfigFileHelper::getConfigPath(
-            $basePath,
-            'view.php',
-            fn ($file) => function_exists('config_path') ? config_path($file) : null
-        );
-
-        if (file_exists($configPath)) {
-            $lineNumber = ConfigFileHelper::findKeyLine($configPath, 'compiled');
-
-            return new Location($this->getRelativePath($configPath), $lineNumber < 1 ? null : $lineNumber);
-        }
-
-        // Fallback to artisan file if config not found
-        $artisanPath = $basePath.DIRECTORY_SEPARATOR.'artisan';
-
-        return new Location($this->getRelativePath($artisanPath));
     }
 }

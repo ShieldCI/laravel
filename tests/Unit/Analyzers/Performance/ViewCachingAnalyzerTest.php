@@ -429,7 +429,7 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
-    public function test_fallback_to_artisan_when_config_file_not_found(): void
+    public function test_uses_null_location_for_caching_issues(): void
     {
         $tempDir = $this->createTempDirectory([
             'resources/views/example.blade.php' => '<html></html>',
@@ -449,11 +449,9 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
 
-        // Location should be in view.php config or artisan file
-        // In test environment, config file exists, so we just verify location is set
-        $this->assertNotNull($issues[0]->location);
-        $this->assertNotNull($issues[0]->location->file);
-        $this->assertGreaterThan(0, $issues[0]->location->line);
+        // Location should be null (application-wide caching issue)
+        $this->assertNull($issues[0]->location);
+        $this->assertEquals('storage/framework/views', $issues[0]->metadata['detected_via']);
     }
 
     public function test_handles_non_existent_view_path(): void

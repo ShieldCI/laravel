@@ -934,6 +934,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         foreach ($issues as $issue) {
             if (str_contains($issue->message, 'vendor/unstable-package')) {
                 // The package is on line 7 in the JSON above
+                $this->assertNotNull($issue->location);
                 $this->assertEquals(7, $issue->location->line);
                 $found = true;
                 break;
@@ -989,6 +990,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         foreach ($issues as $issue) {
             if (str_contains($issue->message, 'unstable package versions')) {
                 // The first unstable package "vendor/unstable-package" is on line 8
+                $this->assertNotNull($issue->location);
                 $this->assertEquals(8, $issue->location->line);
                 $found = true;
                 break;

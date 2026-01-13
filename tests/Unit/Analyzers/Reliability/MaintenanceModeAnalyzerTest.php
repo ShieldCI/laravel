@@ -147,6 +147,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $issues = $result->getIssues();
         $issue = $issues[0];
         $location = $issue->location;
+        $this->assertNotNull($location);
 
         $this->assertStringContainsString('storage/framework/down', $location->file);
         $this->assertNull($location->line);

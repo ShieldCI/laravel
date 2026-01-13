@@ -1398,8 +1398,8 @@ class AnalyzeCommand extends Command
     private function generateIssueHash(\ShieldCI\AnalyzersCore\ValueObjects\Issue $issue): string
     {
         $data = [
-            'file' => $issue->location->file ?? 'unknown',
-            'line' => $issue->location->line,
+            'file' => $issue->location?->file ?? 'unknown',
+            'line' => $issue->location?->line ?? 0,
             'message' => $issue->message,
         ];
 

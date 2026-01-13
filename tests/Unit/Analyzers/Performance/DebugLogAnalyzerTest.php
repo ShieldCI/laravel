@@ -638,6 +638,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
         $this->assertNotEmpty($issues);
 
         $location = $issues[0]->location;
+        $this->assertNotNull($location);
         $this->assertStringContainsString('config', $location->file);
         $this->assertStringContainsString('logging.php', $location->file);
         $this->assertGreaterThanOrEqual(1, $location->line);

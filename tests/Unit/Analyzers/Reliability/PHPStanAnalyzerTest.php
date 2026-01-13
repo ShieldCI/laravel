@@ -476,6 +476,7 @@ PHP;
 
         foreach ($issues as $issue) {
             // All issues should be from app directory
+            $this->assertNotNull($issue->location);
             $this->assertStringContainsString('app', $issue->location->file);
             $this->assertStringNotContainsString('src', $issue->location->file);
         }

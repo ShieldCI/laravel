@@ -294,6 +294,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
+        $this->assertNotNull($issues[0]->location);
         $this->assertStringContainsString('bootstrap', $issues[0]->location->file);
         $this->assertStringContainsString('cache', $issues[0]->location->file);
         $this->assertStringContainsString('config.php', $issues[0]->location->file);
@@ -309,6 +310,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
+        $this->assertNotNull($issues[0]->location);
         // Should point to where the cache file should be (but isn't)
         $this->assertStringContainsString('bootstrap/cache/config.php', $issues[0]->location->file);
     }
@@ -493,6 +495,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
+        $this->assertNotNull($issues[0]->location);
 
         // Verify path contains proper separators (buildPath uses DIRECTORY_SEPARATOR)
         $path = $issues[0]->location->file;
@@ -519,6 +522,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
+        $this->assertNotNull($issues[0]->location);
 
         // Verify metadata includes expected cache path
         $this->assertArrayHasKey('expected_cache_path', $issues[0]->metadata);

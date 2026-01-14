@@ -38,7 +38,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
      * Minified output almost always has at least one very long line.
      * Unminified code following style guides never exceeds 120-200 chars/line.
      */
-    private const MIN_MAX_LINE_LENGTH_FOR_MINIFIED = 500;
+    private const MIN_MAX_LINE_LENGTH_FOR_MINIFIED = 350;
 
     /**
      * Minimum average line length (in characters) for secondary minification check.
@@ -125,9 +125,20 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
 
         // Check for build directories
         $mixManifestPath = $this->joinPaths($publicPath, 'mix-manifest.json');
+
+        // Check both possible Vite manifest locations:
+        // 1. Standard: public/build/manifest.json (when build_path = public)
+        // 2. Direct: public/manifest.json (when build_path = public/build)
         $viteManifestPath = $this->joinPaths($publicPath, 'build', 'manifest.json');
+        $viteManifestPathDirect = $this->joinPaths($publicPath, 'manifest.json');
+
         $hasMix = file_exists($mixManifestPath);
-        $hasVite = file_exists($viteManifestPath);
+        $hasVite = file_exists($viteManifestPath) || file_exists($viteManifestPathDirect);
+
+        // Use the manifest path that exists
+        if (! file_exists($viteManifestPath) && file_exists($viteManifestPathDirect)) {
+            $viteManifestPath = $viteManifestPathDirect;
+        }
 
         if (! $hasMix && ! $hasVite) {
             // Check for standalone JS/CSS files
@@ -139,7 +150,8 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             }
 
             if ($hasVite) {
-                $viteBuildPath = $this->joinPaths($publicPath, 'build');
+                // Derive build path from manifest location
+                $viteBuildPath = dirname($viteManifestPath);
                 $this->checkViteAssets($viteBuildPath, $issues);
             }
         }
@@ -266,8 +278,8 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         }
 
         // Vite assets should be minified by default in production builds
-        // Check if there are suspiciously large files
-        $largeAssets = [];
+        // Check if there are suspicious files
+        $suspiciousAssets = [];
         // Note: glob() works with forward slashes on all platforms
         $jsPattern = str_replace('\\', '/', $buildPath).'/assets/*.js';
         $cssPattern = str_replace('\\', '/', $buildPath).'/assets/*.css';
@@ -284,19 +296,19 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
 
         foreach (array_merge($jsFiles, $cssFiles) as $file) {
             if ($this->isUnminified($file)) {
-                $largeAssets[] = $this->getRelativePath($file);
+                $suspiciousAssets[] = $this->getRelativePath($file);
             }
         }
 
-        if (! empty($largeAssets)) {
+        if (! empty($suspiciousAssets)) {
             $issues[] = $this->createIssue(
                 message: 'Vite assets may not be properly minified',
                 location: new Location($this->getRelativePath($buildPath)),
                 severity: Severity::Low,
                 recommendation: 'Ensure you\'re running "npm run build" (not "npm run dev") for production. Vite automatically minifies assets in production mode. Verify your vite.config.js has the correct build settings.',
                 metadata: [
-                    'suspicious_files' => array_slice($largeAssets, 0, 5),
-                    'total_count' => count($largeAssets),
+                    'suspicious_files' => array_slice($suspiciousAssets, 0, 5),
+                    'total_count' => count($suspiciousAssets),
                 ]
             );
         }
@@ -314,7 +326,8 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        $lines = FileParser::getLines($filePath);
+        // Derive lines from content to avoid double file read
+        $lines = preg_split("/\r\n|\r|\n/", $content) ?: [];
         $lineCount = count($lines);
         $fileSize = strlen($content);
 
@@ -324,17 +337,13 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         }
 
         // Primary check: Max line length (most reliable indicator)
-        // Minified code ALWAYS has at least one very long line (the bundled output)
         // Unminified code following style guides NEVER exceeds 120-200 chars/line
         $maxLineLength = empty($lines) ? 0 : max(array_map('strlen', $lines));
 
         if ($maxLineLength >= self::MIN_MAX_LINE_LENGTH_FOR_MINIFIED) {
-            // File has at least one very long line - strong signal of minification
-            // But verify with whitespace ratio to catch edge cases
-            $whitespaceRatio = $this->calculateWhitespaceRatio($content, $fileSize);
-            if ($whitespaceRatio <= self::MAX_WHITESPACE_RATIO_FOR_MINIFIED) {
-                return false; // Minified: long lines + low whitespace
-            }
+            // Definitive: no coding style allows 350+ char lines
+            // License headers don't change the fact that the code is minified
+            return false;
         }
 
         $avgLineLength = $lineCount > 0 ? $fileSize / $lineCount : 0;
@@ -353,13 +362,9 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             return true;
         }
 
-        // Check for newlines in the middle of statements (unminified code)
-        $match = preg_match('/\n\s*[a-zA-Z_$][a-zA-Z0-9_$]*\s*\(/m', $content);
-        if (is_int($match) && $match === 1) {
-            return true;
-        }
-
-        return false;
+        // Fallback: run pattern analysis instead of assuming minified
+        // This catches files with moderate line lengths that might still be unminified
+        return $this->hasUnminifiedPatterns($content);
     }
 
     /**
@@ -397,7 +402,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         // formatted JSDoc/PHPDoc style comments, not preserved license banners.
         // Minified files may have: /*! license */, /* @preserve */, /* harmony export */
         // Pattern matches: /* or /** followed by newline, then indented asterisk continuation
-        $match = preg_match('/\/\*\*?\s*\n\s+\*/', $content);
+        $match = preg_match('/\/\*\*?\s*\n\s*\*.*\n\s*\*/', $content);
         if (is_int($match) && $match === 1) {
             return true;
         }

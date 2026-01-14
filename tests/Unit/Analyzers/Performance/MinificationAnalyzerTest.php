@@ -508,11 +508,12 @@ JS;
     public function test_file_with_16_percent_whitespace_ratio_is_unminified(): void
     {
         // Above MAX_WHITESPACE_RATIO_FOR_MINIFIED (0.16 = 16%)
-        // Need high avg line length (>500) but also high whitespace (>15%)
+        // Lines must be < 350 chars so max line length check doesn't classify as minified
+        // Avg line length > 100 so we reach the whitespace ratio check
         $lines = [];
-        for ($i = 0; $i < 3; $i++) {
-            // Each line is 600+ chars with 17% spaces (102 spaces out of 600)
-            $lines[] = str_repeat('x', 249).str_repeat(' ', 51).str_repeat('y', 249).str_repeat(' ', 51);
+        for ($i = 0; $i < 20; $i++) {
+            // Each line is 200 chars with ~40 spaces = 20% whitespace
+            $lines[] = str_repeat('x', 80).str_repeat(' ', 20).str_repeat('y', 80).str_repeat(' ', 20);
         }
         $content = implode("\n", $lines);
 
@@ -525,7 +526,7 @@ JS;
 
         $result = $analyzer->analyze();
 
-        // Should fail: high avg line length but excessive whitespace (17% > 15%)
+        // Should fail: avg line length > 100 but excessive whitespace (20% > 15%)
         $this->assertWarning($result);
     }
 

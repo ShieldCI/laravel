@@ -409,18 +409,6 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             return true; // Indented CSS properties suggest unminified
         }
 
-        // Check for readable variable names (unminified code has descriptive names)
-        // Minified code often has single-letter variables
-        $match = preg_match('/\b[a-z]{3,}[a-zA-Z0-9_]*\s*=/i', $content);
-        if (is_int($match) && $match === 1) {
-            // But this is not definitive, so combine with other checks
-            $lines = explode("\n", $content);
-            $lineCount = count($lines);
-            if ($lineCount > 5) {
-                return true; // Multiple lines with readable names suggest unminified
-            }
-        }
-
         return false;
     }
 

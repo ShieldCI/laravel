@@ -78,9 +78,15 @@ CSS;
         // File with source map reference but unminified code should still be detected as unminified
         // Source maps are present in both dev and production builds
         $jsWithSourceMap = <<<'JS'
+/**
+ * Test function with JSDoc comment
+ * indicating unminified source code
+ */
 function test() {
     console.log("test");
 }
+
+
 function another() {
     return true;
 }
@@ -96,7 +102,7 @@ JS;
 
         $result = $analyzer->analyze();
 
-        // Should fail because the code is unminified (multiple lines, formatting)
+        // Should fail because the code is unminified (JSDoc comments, blank lines)
         $this->assertWarning($result);
     }
 
@@ -144,12 +150,16 @@ CSS;
         $this->assertPassed($result);
     }
 
-    public function test_line_count_threshold_15_lines(): void
+    public function test_unminified_code_with_jsdoc_comments(): void
     {
-        // File with unminified code should fail (low avg line length + patterns)
+        // File with unminified code should fail (JSDoc comments indicate unminified)
         // Need enough content to exceed MIN_FILE_SIZE_FOR_SIZE_CHECKS (1024 bytes)
         $content = <<<'JS'
-// Helper functions
+/**
+ * Calculate the total price of items
+ * @param {Array} items - Array of items with price property
+ * @returns {number} Total price
+ */
 function calculateTotal(items) {
     let total = 0;
 
@@ -160,6 +170,11 @@ function calculateTotal(items) {
     return total;
 }
 
+/**
+ * Format amount as currency
+ * @param {number} amount - The amount to format
+ * @returns {string} Formatted currency string
+ */
 function formatCurrency(amount) {
     return '$' + amount.toFixed(2);
 }
@@ -170,7 +185,6 @@ function displayTotal(items) {
     console.log(formatted);
 }
 
-// Export functions
 module.exports = { calculateTotal, formatCurrency, displayTotal };
 JS;
 
@@ -183,7 +197,7 @@ JS;
 
         $result = $analyzer->analyze();
 
-        // Should fail: low avg line length + comments + formatting
+        // Should fail: JSDoc comments indicate unminified code
         $this->assertWarning($result);
     }
 
@@ -232,18 +246,22 @@ JS;
 
     public function test_detects_nested_unminified_assets(): void
     {
-        // Realistic unminified code with comments and formatting
+        // Realistic unminified code with JSDoc comments
         $unminifiedJs = <<<'JS'
-// Nested module
+/**
+ * Nested module for example functionality
+ * @module nested
+ */
 function example() {
     console.log('nested');
 }
+
 
 function anotherFunction() {
     return true;
 }
 
-// Export module
+
 module.exports = { example, anotherFunction };
 JS;
 
@@ -283,18 +301,22 @@ JS;
 
     public function test_detects_vite_manifest_assets(): void
     {
-        // Realistic unminified code with comments
+        // Realistic unminified code with JSDoc comments
         $unminifiedJs = <<<'JS'
-// Test module
+/**
+ * Test module for application
+ * @module test
+ */
 function test() {
     console.log('x');
 }
+
 
 function another() {
     return 42;
 }
 
-// Export
+
 module.exports = { test, another };
 JS;
 
@@ -375,12 +397,21 @@ JS;
 
     // Category 1: Boundary Tests for Minification Constants
 
-    public function test_file_with_more_than_15_lines_is_unminified(): void
+    public function test_file_with_jsdoc_is_unminified(): void
     {
-        // File with unminified code (realistic formatting)
-        // Should fail due to low avg line length + patterns
+        // File with unminified code (JSDoc comments)
+        // Should fail due to formatted multi-line comments
         $content = <<<'JS'
-// User management functions
+/**
+ * User management functions
+ * @module users
+ */
+
+/**
+ * Get user by ID
+ * @param {number} id - User ID
+ * @returns {Object} User object
+ */
 function getUserById(id) {
     return database.users.find(u => u.id === id);
 }
@@ -402,7 +433,6 @@ function deleteUser(id) {
     }
 }
 
-// Export API
 module.exports = { getUserById, updateUser, deleteUser };
 JS;
 
@@ -415,7 +445,7 @@ JS;
 
         $result = $analyzer->analyze();
 
-        // Should fail: low avg line length + comments + formatting patterns
+        // Should fail: JSDoc comments indicate unminified code
         $this->assertWarning($result);
     }
 
@@ -653,8 +683,12 @@ JS;
     public function test_file_with_block_comment_source_map_but_unminified_code(): void
     {
         // /*# sourceMappingURL= */ doesn't make unminified code minified
-        // Need enough lines to trigger line count check
+        // JSDoc comments indicate unminified code
         $content = <<<'JS'
+/**
+ * Test functions module
+ * @module testFunctions
+ */
 function test() {
     console.log("x");
 }
@@ -743,7 +777,12 @@ CSS;
     public function test_file_with_malformed_source_map_comment_is_detected_as_unminified(): void
     {
         // Malformed source map marker doesn't make unminified code pass
+        // JSDoc comments indicate unminified code
         $content = <<<'JS'
+/**
+ * Test module with malformed source map
+ * @module test
+ */
 function test() {
     console.log("x");
 }
@@ -844,9 +883,10 @@ CSS;
         $this->assertWarning($result);
     }
 
-    public function test_readable_variable_names_with_more_than_5_lines_is_unminified(): void
+    public function test_readable_variable_names_alone_passes(): void
     {
-        // Readable variable names (3+ chars) with > 5 lines
+        // Readable variable names don't indicate unminified code
+        // Modern minifiers often preserve names (debugging, no-mangle config)
         $content = <<<'JS'
 var userName = "test";
 var userEmail = "test@example.com";
@@ -866,28 +906,7 @@ JS;
 
         $result = $analyzer->analyze();
 
-        $this->assertWarning($result);
-    }
-
-    public function test_readable_variable_names_with_5_or_fewer_lines_passes(): void
-    {
-        // Readable variable names but ≤ 5 lines
-        $content = <<<'JS'
-var userName = "test";
-var userEmail = "test@example.com";
-var userAge = 25;
-JS;
-
-        $tempDir = $this->createTempDirectory([
-            'public/js/app.js' => $content,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        // Should pass (not enough lines to definitively say it's unminified)
+        // Should pass - readable names are not reliable indicators of minification
         $this->assertPassed($result);
     }
 
@@ -1123,9 +1142,12 @@ JS;
     {
         // Some minified, some unminified
         $minifiedJs = str_repeat('function x(){return 1;}', 100);
-        // Realistic unminified code
+        // Realistic unminified code with JSDoc comments
         $unminifiedJs = <<<'JS'
-// Module code
+/**
+ * Module code for testing
+ * @module test
+ */
 function test() {
     console.log('x');
 }
@@ -1134,7 +1156,6 @@ function helper() {
     return 1;
 }
 
-// Export
 module.exports = { test, helper };
 JS;
 
@@ -1252,9 +1273,12 @@ JS;
     public function test_vite_metadata_includes_exactly_5_suspicious_files(): void
     {
         // Create 8 unminified files, verify only 5 are in metadata
-        // Realistic unminified code
+        // Realistic unminified code with JSDoc comments
         $unminifiedJs = <<<'JS'
-// File module
+/**
+ * File module for testing
+ * @module file
+ */
 function test() {
     console.log('x');
 }
@@ -1263,7 +1287,6 @@ function helper() {
     return 1;
 }
 
-// Export
 module.exports = { test, helper };
 JS;
 
@@ -1373,8 +1396,13 @@ JS;
     public function test_truly_unminified_20_lines_fails(): void
     {
         // 20 lines but each line is short, formatted, indented
-        // Should FAIL because low avg line length + formatting patterns
+        // Should FAIL because JSDoc comments indicate unminified code
         $content = <<<'JS'
+/**
+ * Calculate total price of items
+ * @param {Array} items - Items to calculate
+ * @returns {number} Total price
+ */
 function calculateTotal(items) {
     let total = 0;
 
@@ -1405,7 +1433,7 @@ JS;
 
         $result = $analyzer->analyze();
 
-        // Should fail: low avg line length + clear formatting patterns
+        // Should fail: JSDoc comments indicate unminified code
         $this->assertWarning($result);
     }
 

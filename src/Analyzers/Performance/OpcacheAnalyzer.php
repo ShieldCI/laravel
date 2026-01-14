@@ -174,7 +174,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
 
         // Check if OPcache is enabled
         if (! isset($opcacheConfig['directives']['opcache.enable'])
-            || $opcacheConfig['directives']['opcache.enable'] !== true
+            || ! $opcacheConfig['directives']['opcache.enable']
         ) {
             $issues[] = $this->createOpcacheIssue(
                 phpIniPath: $phpIniPath,
@@ -264,7 +264,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
      */
     private function checkValidateTimestamps(array $directives, array &$issues, string $phpIniPath): void
     {
-        if (! isset($directives['opcache.validate_timestamps']) || $directives['opcache.validate_timestamps'] !== true) {
+        if (! isset($directives['opcache.validate_timestamps']) || ! $directives['opcache.validate_timestamps']) {
             return;
         }
 
@@ -426,7 +426,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
      */
     private function checkFastShutdown(array $directives, array &$issues, string $phpIniPath): void
     {
-        if (! isset($directives['opcache.fast_shutdown']) || $directives['opcache.fast_shutdown'] === true) {
+        if (! isset($directives['opcache.fast_shutdown']) || $directives['opcache.fast_shutdown']) {
             return;
         }
 

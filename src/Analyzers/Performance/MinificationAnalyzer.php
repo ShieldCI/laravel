@@ -331,7 +331,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         if ($maxLineLength >= self::MIN_MAX_LINE_LENGTH_FOR_MINIFIED) {
             // File has at least one very long line - strong signal of minification
             // But verify with whitespace ratio to catch edge cases
-            $whitespaceRatio = substr_count($content, ' ') / max($fileSize, 1);
+            $whitespaceRatio = $this->calculateWhitespaceRatio($content, $fileSize);
             if ($whitespaceRatio <= self::MAX_WHITESPACE_RATIO_FOR_MINIFIED) {
                 return false; // Minified: long lines + low whitespace
             }
@@ -348,7 +348,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         // For moderate line lengths, check for formatting patterns
 
         // Check for excessive whitespace (unminified files have more whitespace)
-        $whitespaceRatio = substr_count($content, ' ') / max($fileSize, 1);
+        $whitespaceRatio = $this->calculateWhitespaceRatio($content, $fileSize);
         if ($whitespaceRatio > self::MAX_WHITESPACE_RATIO_FOR_MINIFIED) {
             return true;
         }
@@ -360,6 +360,25 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         }
 
         return false;
+    }
+
+    /**
+     * Calculate the ratio of whitespace characters in content.
+     * Counts spaces, tabs, newlines, and carriage returns.
+     */
+    private function calculateWhitespaceRatio(string $content, int $fileSize): float
+    {
+        if ($fileSize <= 0) {
+            return 0.0;
+        }
+
+        // Count all whitespace characters: spaces, tabs, newlines, carriage returns
+        $whitespaceCount = substr_count($content, ' ')
+            + substr_count($content, "\t")
+            + substr_count($content, "\n")
+            + substr_count($content, "\r");
+
+        return $whitespaceCount / $fileSize;
     }
 
     /**

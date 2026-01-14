@@ -70,7 +70,6 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
                 'opcache.interned_strings_buffer' => 8,
                 'opcache.max_accelerated_files' => 5000,
                 'opcache.revalidate_freq' => 0,
-                'opcache.fast_shutdown' => false,
             ],
         ]);
 
@@ -93,7 +92,6 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
                 'opcache.interned_strings_buffer' => 16,
                 'opcache.max_accelerated_files' => 20000,
                 'opcache.revalidate_freq' => 0,
-                'opcache.fast_shutdown' => true,
             ],
         ]);
 
@@ -582,84 +580,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
-    // Category 7: fast_shutdown Tests
-
-    public function test_warns_when_fast_shutdown_is_false(): void
-    {
-        /** @var OpcacheAnalyzer $analyzer */
-        $analyzer = $this->createAnalyzer();
-        // @phpstan-ignore-next-line
-        $analyzer->setScenario(true, [
-            'directives' => [
-                'opcache.enable' => true,
-                'opcache.fast_shutdown' => false, // Suboptimal
-            ],
-        ]);
-
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('fast_shutdown', $result);
-        $issues = $result->getIssues();
-        $this->assertEquals(false, $issues[0]->metadata['current_value']);
-        $this->assertEquals(1, $issues[0]->metadata['recommended_value']);
-    }
-
-    public function test_passes_when_fast_shutdown_is_true(): void
-    {
-        /** @var OpcacheAnalyzer $analyzer */
-        $analyzer = $this->createAnalyzer();
-        // @phpstan-ignore-next-line
-        $analyzer->setScenario(true, [
-            'directives' => [
-                'opcache.enable' => true,
-                'opcache.fast_shutdown' => true, // Optimal
-            ],
-        ]);
-
-        $result = $analyzer->analyze();
-
-        $this->assertPassed($result);
-    }
-
-    public function test_passes_when_fast_shutdown_is_missing(): void
-    {
-        /** @var OpcacheAnalyzer $analyzer */
-        $analyzer = $this->createAnalyzer();
-        // @phpstan-ignore-next-line
-        $analyzer->setScenario(true, [
-            'directives' => [
-                'opcache.enable' => true,
-                // fast_shutdown not set
-            ],
-        ]);
-
-        $result = $analyzer->analyze();
-
-        // Missing is treated same as true (no warning)
-        $this->assertPassed($result);
-    }
-
-    public function test_handles_non_boolean_fast_shutdown(): void
-    {
-        /** @var OpcacheAnalyzer $analyzer */
-        $analyzer = $this->createAnalyzer();
-        // @phpstan-ignore-next-line
-        $analyzer->setScenario(true, [
-            'directives' => [
-                'opcache.enable' => true,
-                'opcache.fast_shutdown' => 0, // Integer 0
-            ],
-        ]);
-
-        $result = $analyzer->analyze();
-
-        // 0 is not === true, so should warn
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('fast_shutdown', $result);
-    }
-
-    // Category 8: Combined Configuration Scenarios
+    // Category 7: Combined Configuration Scenarios
 
     public function test_reports_multiple_issues_when_multiple_settings_suboptimal(): void
     {
@@ -673,7 +594,6 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
                 'opcache.memory_consumption' => 64, // Issue 2
                 'opcache.interned_strings_buffer' => 8, // Issue 3
                 'opcache.max_accelerated_files' => 5000, // Issue 4
-                'opcache.fast_shutdown' => false, // Issue 5
             ],
         ]);
 
@@ -681,7 +601,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $this->assertWarning($result);
         $issues = $result->getIssues();
-        $this->assertCount(5, $issues);
+        $this->assertCount(4, $issues);
     }
 
     public function test_reports_single_issue_when_only_one_setting_suboptimal(): void
@@ -693,11 +613,10 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
             'directives' => [
                 'opcache.enable' => true,
                 'opcache.validate_timestamps' => false,
-                'opcache.memory_consumption' => 256,
+                'opcache.memory_consumption' => 64, // Only this is suboptimal
                 'opcache.interned_strings_buffer' => 16,
                 'opcache.max_accelerated_files' => 20000,
                 'opcache.revalidate_freq' => 0,
-                'opcache.fast_shutdown' => false, // Only this is suboptimal
             ],
         ]);
 
@@ -706,7 +625,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertStringContainsString('fast_shutdown', $issues[0]->message);
+        $this->assertStringContainsString('memory', $issues[0]->message);
     }
 
     // Category 9: Metadata & Severity Tests

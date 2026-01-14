@@ -251,9 +251,6 @@ class OpcacheAnalyzer extends AbstractAnalyzer
 
         // Check opcache.revalidate_freq (should be 0 in production when validate_timestamps=0)
         $this->checkRevalidateFreq($directives, $issues, $phpIniPath);
-
-        // Check opcache.fast_shutdown (should be 1 for better performance)
-        $this->checkFastShutdown($directives, $issues, $phpIniPath);
     }
 
     /**
@@ -416,49 +413,6 @@ class OpcacheAnalyzer extends AbstractAnalyzer
                 ]
             );
         }
-    }
-
-    /**
-     * Check opcache.fast_shutdown setting.
-     *
-     * @param  array<string, mixed>  $directives
-     * @param  array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
-     */
-    private function checkFastShutdown(array $directives, array &$issues, string $phpIniPath): void
-    {
-        if (! isset($directives['opcache.fast_shutdown']) || $directives['opcache.fast_shutdown']) {
-            return;
-        }
-
-        $currentValue = $directives['opcache.fast_shutdown'];
-        // At this point, we know:
-        // - isset() returned true, so value is NOT null
-        // - value !== true (filtered by early return)
-        // Therefore: $currentValue can be false, int, float, string, array, object, or resource
-        if (is_bool($currentValue)) {
-            $currentValueString = '0'; // Must be false since true was filtered out
-        } elseif (is_scalar($currentValue)) {
-            // Handles int, float, string (bool already handled above)
-            $currentValueString = (string) $currentValue;
-        } else {
-            // Handle arrays, objects, resources, etc.
-            $currentValueString = 'invalid value';
-        }
-
-        $issues[] = $this->createOpcacheIssue(
-            phpIniPath: $phpIniPath,
-            setting: 'opcache.fast_shutdown',
-            message: 'opcache.fast_shutdown is disabled',
-            severity: Severity::Low,
-            recommendation: sprintf(
-                'Enable "opcache.fast_shutdown=1" for faster PHP shutdown and better performance. Current: %s.',
-                $currentValueString
-            ),
-            metadata: [
-                'current_value' => $currentValue,
-                'recommended_value' => 1,
-            ]
-        );
     }
 
     /**

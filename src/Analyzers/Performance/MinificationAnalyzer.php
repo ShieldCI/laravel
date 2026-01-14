@@ -33,12 +33,6 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
     public static bool $runInCI = false;
 
     /**
-     * Maximum line count for a file to be considered minified.
-     * Minified files typically have very few lines (1-5 for small files, maybe 10-15 for large ones).
-     */
-    private const MAX_LINE_COUNT_FOR_MINIFIED = 15;
-
-    /**
      * Minimum average line length (in characters) for a file to be considered minified.
      * Minified files typically have very long lines (> 500 chars on average).
      */
@@ -313,41 +307,38 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
 
         $lines = FileParser::getLines($filePath);
         $lineCount = count($lines);
-
-        // Minified files typically have very few lines (usually 1-5 for small files, maybe 10-15 for large ones)
-        // Files with more than the threshold are likely not minified (accounting for source maps and copyright notices)
-        if ($lineCount > self::MAX_LINE_COUNT_FOR_MINIFIED) {
-            return true;
-        }
-
-        // Check file size - very small files might need pattern analysis
         $fileSize = strlen($content);
+
+        // Small files need pattern-based analysis
         if ($fileSize < self::MIN_FILE_SIZE_FOR_SIZE_CHECKS) {
-            // For very small files, check if they have typical minification patterns
-            // (e.g., single line, no whitespace, or very compact)
             return $this->hasUnminifiedPatterns($content);
         }
 
-        // Also check average line length - minified files have very long lines
         $avgLineLength = $lineCount > 0 ? $fileSize / $lineCount : 0;
 
-        // Minified files typically have average line length above the threshold
-        // But also check for other indicators
+        // Primary check: Average line length (most reliable indicator)
+        // Minified files have very long lines (>500 chars) regardless of line count
+        // A file with 100 lines but 2000+ chars/line is likely minified (with banners/chunks)
+        // A file with 20 lines but 100 chars/line is likely unminified
         if ($avgLineLength < self::MIN_AVG_LINE_LENGTH_FOR_MINIFIED) {
-            // Check for patterns that indicate unminified code
+            // Low average line length + unminified patterns = definitely unminified
             return $this->hasUnminifiedPatterns($content);
         }
+
+        // If average line length is high (>500 chars), likely minified
+        // Even with many lines (license banners, webpack chunks, etc.)
+        // But double-check with whitespace and statement formatting patterns
 
         // Check for excessive whitespace (unminified files have more whitespace)
         $whitespaceRatio = substr_count($content, ' ') / max($fileSize, 1);
         if ($whitespaceRatio > self::MAX_WHITESPACE_RATIO_FOR_MINIFIED) {
-            return true; // More than the threshold suggests unminified
+            return true;
         }
 
         // Check for newlines in the middle of statements (unminified code)
         $match = preg_match('/\n\s*[a-zA-Z_$][a-zA-Z0-9_$]*\s*\(/m', $content);
         if (is_int($match) && $match === 1) {
-            return true; // Function calls on new lines suggest unminified
+            return true;
         }
 
         return false;

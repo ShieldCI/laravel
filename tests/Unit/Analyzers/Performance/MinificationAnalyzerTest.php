@@ -146,12 +146,33 @@ CSS;
 
     public function test_line_count_threshold_15_lines(): void
     {
-        // File with exactly 16 lines should fail (threshold is 15)
-        $lines = [];
-        for ($i = 1; $i <= 16; $i++) {
-            $lines[] = "line{$i}";
-        }
-        $content = implode("\n", $lines);
+        // File with unminified code should fail (low avg line length + patterns)
+        // Need enough content to exceed MIN_FILE_SIZE_FOR_SIZE_CHECKS (1024 bytes)
+        $content = <<<'JS'
+// Helper functions
+function calculateTotal(items) {
+    let total = 0;
+
+    for (let i = 0; i < items.length; i++) {
+        total += items[i].price;
+    }
+
+    return total;
+}
+
+function formatCurrency(amount) {
+    return '$' + amount.toFixed(2);
+}
+
+function displayTotal(items) {
+    const total = calculateTotal(items);
+    const formatted = formatCurrency(total);
+    console.log(formatted);
+}
+
+// Export functions
+module.exports = { calculateTotal, formatCurrency, displayTotal };
+JS;
 
         $tempDir = $this->createTempDirectory([
             'public/js/app.js' => $content,
@@ -162,6 +183,7 @@ CSS;
 
         $result = $analyzer->analyze();
 
+        // Should fail: low avg line length + comments + formatting
         $this->assertWarning($result);
     }
 
@@ -210,7 +232,20 @@ CSS;
 
     public function test_detects_nested_unminified_assets(): void
     {
-        $unminifiedJs = str_repeat("function example() {\n    console.log('nested');\n}\n", 10);
+        // Realistic unminified code with comments and formatting
+        $unminifiedJs = <<<'JS'
+// Nested module
+function example() {
+    console.log('nested');
+}
+
+function anotherFunction() {
+    return true;
+}
+
+// Export module
+module.exports = { example, anotherFunction };
+JS;
 
         $tempDir = $this->createTempDirectory([
             'public/js/nested/app.js' => $unminifiedJs,
@@ -248,7 +283,20 @@ CSS;
 
     public function test_detects_vite_manifest_assets(): void
     {
-        $unminifiedJs = str_repeat("function test() {\n    console.log('x');\n}\n", 10);
+        // Realistic unminified code with comments
+        $unminifiedJs = <<<'JS'
+// Test module
+function test() {
+    console.log('x');
+}
+
+function another() {
+    return 42;
+}
+
+// Export
+module.exports = { test, another };
+JS;
 
         $viteManifest = json_encode([
             'resources/js/app.js' => [
@@ -329,12 +377,34 @@ CSS;
 
     public function test_file_with_more_than_15_lines_is_unminified(): void
     {
-        // More than MAX_LINE_COUNT_FOR_MINIFIED (15 lines) with short lines
-        $lines = [];
-        for ($i = 1; $i <= 20; $i++) {
-            $lines[] = "short line {$i}";
-        }
-        $content = implode("\n", $lines);
+        // File with unminified code (realistic formatting)
+        // Should fail due to low avg line length + patterns
+        $content = <<<'JS'
+// User management functions
+function getUserById(id) {
+    return database.users.find(u => u.id === id);
+}
+
+function updateUser(id, data) {
+    const user = getUserById(id);
+    if (!user) {
+        throw new Error('User not found');
+    }
+
+    Object.assign(user, data);
+    return user;
+}
+
+function deleteUser(id) {
+    const index = database.users.findIndex(u => u.id === id);
+    if (index !== -1) {
+        database.users.splice(index, 1);
+    }
+}
+
+// Export API
+module.exports = { getUserById, updateUser, deleteUser };
+JS;
 
         $tempDir = $this->createTempDirectory([
             'public/js/app.js' => $content,
@@ -345,6 +415,7 @@ CSS;
 
         $result = $analyzer->analyze();
 
+        // Should fail: low avg line length + comments + formatting patterns
         $this->assertWarning($result);
     }
 
@@ -407,11 +478,11 @@ CSS;
     public function test_file_with_16_percent_whitespace_ratio_is_unminified(): void
     {
         // Above MAX_WHITESPACE_RATIO_FOR_MINIFIED (0.16 = 16%)
-        // Need to have > 15 lines to fail line count check first
+        // Need high avg line length (>500) but also high whitespace (>15%)
         $lines = [];
-        for ($i = 0; $i < 20; $i++) {
-            // Each line has 16% spaces: 84 non-spaces, 16 spaces
-            $lines[] = str_repeat('x', 42).str_repeat(' ', 8).str_repeat('y', 42).str_repeat(' ', 8);
+        for ($i = 0; $i < 3; $i++) {
+            // Each line is 600+ chars with 17% spaces (102 spaces out of 600)
+            $lines[] = str_repeat('x', 249).str_repeat(' ', 51).str_repeat('y', 249).str_repeat(' ', 51);
         }
         $content = implode("\n", $lines);
 
@@ -424,6 +495,7 @@ CSS;
 
         $result = $analyzer->analyze();
 
+        // Should fail: high avg line length but excessive whitespace (17% > 15%)
         $this->assertWarning($result);
     }
 
@@ -515,26 +587,30 @@ CSS;
 
     public function test_file_with_newline_function_call_pattern_is_unminified(): void
     {
-        // Pattern: \n\s*functionName\s*\(
-        // Need > 15 lines to trigger this check
+        // Test with realistic unminified code showing function calls on newlines
         $content = <<<'JS'
-console.log("test");
+// Initialize application
+const app = {};
 
-myFunction();
+// Setup configuration
+app.config = {
+    debug: true,
+    version: '1.0.0'
+};
 
-anotherFunction(param);
+// Helper functions
+app.init = function() {
+    console.log('Initializing...');
 
-thirdFunction();
+    setupDatabase();
 
-fourthFunction();
+    loadPlugins();
 
-fifthFunction();
+    startServer();
+};
 
-sixthFunction();
-
-seventhFunction();
-
-eighthFunction();
+// Export module
+module.exports = app;
 JS;
 
         $tempDir = $this->createTempDirectory([
@@ -546,6 +622,7 @@ JS;
 
         $result = $analyzer->analyze();
 
+        // Should fail: comments + function calls on newlines
         $this->assertWarning($result);
     }
 
@@ -1037,7 +1114,20 @@ JS;
     {
         // Some minified, some unminified
         $minifiedJs = str_repeat('function x(){return 1;}', 100);
-        $unminifiedJs = str_repeat("function test() {\n    console.log('x');\n}\n", 10);
+        // Realistic unminified code
+        $unminifiedJs = <<<'JS'
+// Module code
+function test() {
+    console.log('x');
+}
+
+function helper() {
+    return 1;
+}
+
+// Export
+module.exports = { test, helper };
+JS;
 
         $viteManifest = json_encode([
             'resources/js/app.js' => [
@@ -1153,7 +1243,20 @@ JS;
     public function test_vite_metadata_includes_exactly_5_suspicious_files(): void
     {
         // Create 8 unminified files, verify only 5 are in metadata
-        $unminifiedJs = str_repeat("function test() {\n    console.log('x');\n}\n", 10);
+        // Realistic unminified code
+        $unminifiedJs = <<<'JS'
+// File module
+function test() {
+    console.log('x');
+}
+
+function helper() {
+    return 1;
+}
+
+// Export
+module.exports = { test, helper };
+JS;
 
         $files = [
             'public/build/manifest.json' => '{}',
@@ -1209,5 +1312,115 @@ JS;
         $this->assertIsArray($metadata['unminified_assets']);
         $this->assertCount(10, $metadata['unminified_assets']);
         $this->assertEquals(12, $metadata['total_count']);
+    }
+
+    // New tests for line count fix (handling >15 lines with high avg line length)
+
+    public function test_minified_file_with_license_banner_passes(): void
+    {
+        // Minified file with 30-line license banner at top
+        // Should PASS because avg line length is very high (minified code)
+        $banner = "/*!\n * Copyright (c) 2024 Example Corp.\n * Licensed under MIT\n */\n";
+        $minifiedCode = str_repeat('function x(){return 1;}', 200); // Very long single line (4600+ chars)
+        $content = $banner.$minifiedCode;
+
+        $tempDir = $this->createTempDirectory([
+            'public/js/app.js' => $content,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass: high avg line length (900+ chars/line) indicates minified
+        $this->assertPassed($result);
+    }
+
+    public function test_minified_with_webpack_chunks_passes(): void
+    {
+        // Webpack output with runtime chunks (40+ lines)
+        // Each line is very long, minified content
+        $lines = [];
+        for ($i = 1; $i <= 40; $i++) {
+            // Each line is 1000+ chars of minified code
+            $lines[] = str_repeat('function chunk'.$i.'(){return '.$i.';}', 50);
+        }
+        $content = implode("\n", $lines);
+
+        $tempDir = $this->createTempDirectory([
+            'public/js/app.js' => $content,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass: many lines but each line is very long (minified chunks)
+        $this->assertPassed($result);
+    }
+
+    public function test_truly_unminified_20_lines_fails(): void
+    {
+        // 20 lines but each line is short, formatted, indented
+        // Should FAIL because low avg line length + formatting patterns
+        $content = <<<'JS'
+function calculateTotal(items) {
+    let total = 0;
+
+    for (let i = 0; i < items.length; i++) {
+        total += items[i].price;
+    }
+
+    return total;
+}
+
+function formatCurrency(amount) {
+    return '$' + amount.toFixed(2);
+}
+
+function displayTotal(items) {
+    const total = calculateTotal(items);
+    const formatted = formatCurrency(total);
+    console.log(formatted);
+}
+JS;
+
+        $tempDir = $this->createTempDirectory([
+            'public/js/app.js' => $content,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should fail: low avg line length + clear formatting patterns
+        $this->assertWarning($result);
+    }
+
+    public function test_pretty_minified_css_with_strategic_line_breaks(): void
+    {
+        // PostCSS output with strategic line breaks for debugging
+        // Still minified (no spaces, compact) but has line breaks
+        $lines = [];
+        for ($i = 1; $i <= 25; $i++) {
+            // Each line is 800+ chars of minified CSS
+            $lines[] = '.class'.$i.'{color:red;background:blue;margin:0;padding:0;}'.str_repeat('.another{width:100%;}', 30);
+        }
+        $content = implode("\n", $lines);
+
+        $tempDir = $this->createTempDirectory([
+            'public/css/app.css' => $content,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass: high avg line length indicates minification despite line breaks
+        $this->assertPassed($result);
     }
 }

@@ -392,13 +392,14 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             return true;
         }
 
-        // Check for comments (unminified code often has comments)
-        $match = preg_match('/\/\/[^\n]*|\/\*[\s\S]*?\*\//', $content);
+        // Check for multi-line formatted comments (unminified documentation)
+        // Only flag comments with internal newlines and indentation - these indicate
+        // formatted JSDoc/PHPDoc style comments, not preserved license banners.
+        // Minified files may have: /*! license */, /* @preserve */, /* harmony export */
+        // Pattern matches: /* or /** followed by newline, then indented asterisk continuation
+        $match = preg_match('/\/\*\*?\s*\n\s+\*/', $content);
         if (is_int($match) && $match === 1) {
-            // But exclude source map comments which are in minified files
-            if (! str_contains($content, 'sourceMappingURL=')) {
-                return true;
-            }
+            return true;
         }
 
         // Check for CSS-style formatting (indented properties)

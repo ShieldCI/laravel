@@ -297,7 +297,6 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
      * Check if raw middleware array contains session middleware.
      * Used as fallback when gatherRouteMiddleware is not available.
      *
-     * @param  mixed  $middleware
      * @param  array<int, string>  $sessionGroups
      */
     private function routeMiddlewareContainsSession(mixed $middleware, array $sessionGroups): bool

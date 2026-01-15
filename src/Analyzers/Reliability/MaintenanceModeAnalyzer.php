@@ -9,7 +9,6 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Checks if the application is in maintenance mode.
@@ -94,13 +93,14 @@ class MaintenanceModeAnalyzer extends AbstractFileAnalyzer
                 'Application is in maintenance mode',
                 [$this->createIssue(
                     message: $message,
-                    location: new Location($this->getRelativePath($maintenanceFilePath)),
+                    location: null,
                     severity: Severity::High,
                     recommendation: $recommendation,
                     metadata: [
                         'is_down' => true,
                         'maintenance_file' => $maintenanceFilePath,
                         'environment' => $environment,
+                        'detected_via' => 'storage/framework/down',
                     ]
                 )]
             );

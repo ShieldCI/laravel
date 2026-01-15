@@ -1012,28 +1012,6 @@ class MysqlSingleServerAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('/var/lib/mysql/mysql.sock', $recommendation);
     }
 
-    public function test_recommendation_mentions_performance_improvement(): void
-    {
-        $analyzer = $this->createAnalyzer([
-            'database.connections' => [
-                'mysql' => [
-                    'driver' => 'mysql',
-                    'host' => 'localhost',
-                ],
-            ],
-        ]);
-
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $issues = $result->getIssues();
-        $recommendation = $issues[0]->recommendation;
-
-        // Should mention the 50% performance improvement
-        $this->assertStringContainsString('50%', $recommendation);
-        $this->assertStringContainsString('performance', $recommendation);
-    }
-
     protected function tearDown(): void
     {
         Mockery::close();

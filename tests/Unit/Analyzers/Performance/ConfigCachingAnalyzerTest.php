@@ -294,12 +294,11 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertStringContainsString('bootstrap', $issues[0]->location->file);
-        $this->assertStringContainsString('cache', $issues[0]->location->file);
-        $this->assertStringContainsString('config.php', $issues[0]->location->file);
+        $this->assertNull($issues[0]->location);
+        $this->assertEquals('bootstrap/cache/config.php', $issues[0]->metadata['detected_via']);
     }
 
-    public function test_issue_location_points_to_app_config_for_production(): void
+    public function test_issue_location_points_to_cache_path_for_production(): void
     {
         $analyzer = $this->createAnalyzer(environment: 'production', configIsCached: false);
 
@@ -309,8 +308,8 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertStringContainsString('config', $issues[0]->location->file);
-        $this->assertStringContainsString('app.php', $issues[0]->location->file);
+        $this->assertNull($issues[0]->location);
+        $this->assertEquals('bootstrap/cache/config.php', $issues[0]->metadata['detected_via']);
     }
 
     public function test_issue_has_correct_severity(): void
@@ -493,24 +492,13 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-
-        // Verify path contains proper separators (buildPath uses DIRECTORY_SEPARATOR)
-        $path = $issues[0]->location->file;
-        $this->assertStringContainsString('bootstrap', $path);
-        $this->assertStringContainsString('cache', $path);
-        $this->assertStringContainsString('config.php', $path);
-
-        // Verify path uses system directory separator
-        if (DIRECTORY_SEPARATOR === '/') {
-            $this->assertStringContainsString('bootstrap/cache/config.php', $path);
-        } else {
-            $this->assertStringContainsString('\\bootstrap\\cache\\config.php', $path);
-        }
+        $this->assertNull($issues[0]->location);
+        $this->assertEquals('bootstrap/cache/config.php', $issues[0]->metadata['detected_via']);
     }
 
-    public function test_app_config_path_uses_build_path_fallback(): void
+    public function test_production_issue_includes_expected_cache_path_in_metadata(): void
     {
-        // This test verifies getAppConfigPath fallback uses buildPath correctly
+        // Verifies that metadata includes the expected cache path
         $analyzer = $this->createAnalyzer(environment: 'production', configIsCached: false);
 
         $result = $analyzer->analyze();
@@ -519,15 +507,16 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
+        $this->assertNull($issues[0]->location);
 
-        // Verify path structure from buildPath
-        $path = $issues[0]->location->file;
-        $this->assertStringContainsString('config', $path);
-        $this->assertStringContainsString('app.php', $path);
+        // Verify metadata includes expected cache path
+        $this->assertArrayHasKey('expected_cache_path', $issues[0]->metadata);
+        $expectedPath = $issues[0]->metadata['expected_cache_path'];
+        $this->assertIsString($expectedPath);
+        $this->assertStringContainsString('bootstrap/cache/config.php', $expectedPath);
 
-        // Path should be absolute (starts with basePath)
-        $this->assertNotEmpty($path);
-        $this->assertIsString($path);
+        // Verify detected_via metadata
+        $this->assertEquals('bootstrap/cache/config.php', $issues[0]->metadata['detected_via']);
     }
 
     protected function tearDown(): void

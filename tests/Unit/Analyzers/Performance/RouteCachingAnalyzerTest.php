@@ -311,10 +311,12 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
         $this->assertArrayHasKey('environment', $metadata);
         $this->assertArrayHasKey('cached', $metadata);
         $this->assertArrayHasKey('detection_method', $metadata);
+        $this->assertArrayHasKey('detected_via', $metadata);
 
         $this->assertEquals('production', $metadata['environment']);
         $this->assertFalse($metadata['cached']);
         $this->assertEquals('routesAreCached()', $metadata['detection_method']);
+        $this->assertEquals('bootstrap/cache/routes-v7.php', $metadata['detected_via']);
     }
 
     public function test_local_cached_routes_metadata_is_complete(): void
@@ -333,10 +335,12 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
         $this->assertArrayHasKey('environment', $metadata);
         $this->assertArrayHasKey('cached', $metadata);
         $this->assertArrayHasKey('detection_method', $metadata);
+        $this->assertArrayHasKey('detected_via', $metadata);
 
         $this->assertEquals('local', $metadata['environment']);
         $this->assertTrue($metadata['cached']);
         $this->assertEquals('routesAreCached()', $metadata['detection_method']);
+        $this->assertEquals('bootstrap/cache/routes-v7.php', $metadata['detected_via']);
     }
 
     public function test_staging_uncached_routes_has_correct_severity(): void

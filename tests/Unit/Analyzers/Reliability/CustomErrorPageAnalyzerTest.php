@@ -373,6 +373,7 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
+        $this->assertNotNull($issues[0]->location);
         $this->assertStringContainsString('resources', $issues[0]->location->file);
         $this->assertStringContainsString('views', $issues[0]->location->file);
     }

@@ -52,7 +52,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     /**
      * The list of uncached assets and their sources.
      *
-     * @var \Illuminate\Support\Collection<int, array{path: string, source: string}>
+     * @var \Illuminate\Support\Collection<int, array{path: string, source: string, type?: string}>
      */
     protected $uncachedAssets;
 
@@ -71,9 +71,30 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
      */
     private bool $appUrlExplicitlySet = false;
 
+    /**
+     * Cache of URL header check results to avoid duplicate HTTP requests.
+     *
+     * @var array<string, bool>
+     */
+    private array $headerCheckCache = [];
+
+    /**
+     * Maximum number of uncached assets to detect before stopping.
+     * Prevents excessive HTTP requests for large builds.
+     */
+    private int $maxUncachedAssets = 10;
+
     public function __construct(
         private Filesystem $files
     ) {}
+
+    /**
+     * Set the maximum number of uncached assets to detect (for testing).
+     */
+    public function setMaxUncachedAssets(int $max): void
+    {
+        $this->maxUncachedAssets = $max;
+    }
 
     /**
      * Set the public path (for testing).
@@ -154,6 +175,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         $this->uncachedAssets = collect();
+        $this->headerCheckCache = []; // Reset cache for each analysis run
 
         // Validate APP_URL configuration before making HTTP requests
         if (! $this->isAppUrlConfigured()) {
@@ -163,13 +185,13 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             );
         }
 
-        // Check Laravel Mix assets
-        if ($this->hasMixManifest()) {
+        // Check Laravel Mix assets (with early bailout)
+        if ($this->hasMixManifest() && ! $this->hasReachedMaxUncached()) {
             $this->checkMixAssets();
         }
 
-        // Check Vite assets
-        if ($this->hasViteManifest()) {
+        // Check Vite assets (with early bailout)
+        if ($this->hasViteManifest() && ! $this->hasReachedMaxUncached()) {
             $this->checkViteAssets();
         }
 
@@ -182,6 +204,12 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
         $firstSource = $firstAsset['source'];
         $issueLocation = $firstSource === 'vite' ? 'public/build/manifest.json' : 'public/mix-manifest.json';
 
+        // Check if we hit the threshold (early bailout)
+        $hitThreshold = $this->uncachedAssets->count() >= $this->maxUncachedAssets;
+        $thresholdNote = $hitThreshold
+            ? ' Note: Analysis stopped after finding '.$this->maxUncachedAssets.' uncached assets to prevent excessive HTTP requests. Additional assets may also be missing headers.'
+            : '';
+
         $issues = [$this->createIssueWithSnippet(
             message: 'Compiled assets are missing Cache-Control headers or use non-cacheable directives',
             filePath: $this->buildPath($issueLocation),
@@ -192,13 +220,15 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
                 'To improve performance, configure Cache-Control headers via your web server. '.
                 'Uncached assets: %s. '.
                 'For Apache, add rules to .htaccess. For Nginx, add cache headers in server config. '.
-                'Versioned assets should use "Cache-Control: public, max-age=31536000, immutable".',
-                $this->formatUncachedAssets()
+                'Versioned assets should use "Cache-Control: public, max-age=31536000, immutable".%s',
+                $this->formatUncachedAssets(),
+                $thresholdNote
             ),
             code: 'cache-headers',
             metadata: [
                 'uncached_assets' => $this->uncachedAssets->toArray(),
                 'count' => $this->uncachedAssets->count(),
+                'hit_threshold' => $hitThreshold,
             ]
         )];
 
@@ -222,6 +252,11 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             }
 
             foreach ($manifest as $key => $value) {
+                // Early bailout if we've found enough uncached assets
+                if ($this->hasReachedMaxUncached()) {
+                    break;
+                }
+
                 // Only check versioned (cache-busted) files
                 if (is_string($value) && Str::contains($value, '?id=')) {
                     $compiledUrl = $this->getMixUrl($value);
@@ -281,6 +316,11 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             return;
         }
 
+        // Early bailout if we've found enough uncached assets
+        if ($this->hasReachedMaxUncached()) {
+            return;
+        }
+
         if ($entryKey !== null) {
             if (isset($visited[$entryKey])) {
                 return;
@@ -300,6 +340,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             }
         }
 
+        // No need to check hasReachedMaxUncached() again - we already return early above
         $this->checkViteAssetList($entry['css'] ?? null, 'css');
 
         // Check preloaded imports (Vite feature for code splitting)
@@ -324,6 +365,11 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
         $files = is_array($items) ? $items : [$items];
 
         foreach ($files as $file) {
+            // Early bailout if we've found enough uncached assets
+            if ($this->hasReachedMaxUncached()) {
+                break;
+            }
+
             if (! is_string($file)) {
                 continue;
             }
@@ -347,6 +393,11 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     private function checkViteImports(array $imports, array $manifest, array &$visited, int $depth = 0): void
     {
         foreach ($imports as $importKey) {
+            // Early bailout if we've found enough uncached assets
+            if ($this->hasReachedMaxUncached()) {
+                break;
+            }
+
             if (! is_string($importKey)) {
                 continue;
             }
@@ -479,35 +530,111 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             : $base.'/'.$trimmed;
     }
 
+    /**
+     * Check if we've reached the maximum number of uncached assets.
+     */
+    private function hasReachedMaxUncached(): bool
+    {
+        return $this->uncachedAssets->count() >= $this->maxUncachedAssets;
+    }
+
     private function assetHasCacheHeaders(?string $url): bool
     {
         if ($url === null) {
             return false;
         }
 
+        // Check cache first to avoid duplicate HTTP requests
+        if (isset($this->headerCheckCache[$url])) {
+            return $this->headerCheckCache[$url];
+        }
+
         $headers = $this->getHeadersOnUrl($url, 'Cache-Control');
 
         if (empty($headers)) {
+            // Cache the result (no headers = not cached)
+            $this->headerCheckCache[$url] = false;
+
             return false;
         }
 
         foreach ($headers as $header) {
             if ($this->isCacheHeaderOptimized($header)) {
+                // Cache the result (valid headers found)
+                $this->headerCheckCache[$url] = true;
+
                 return true;
             }
         }
 
+        // Cache the result (headers present but not optimized)
+        $this->headerCheckCache[$url] = false;
+
         return false;
     }
 
+    /**
+     * Check if a Cache-Control header value is optimized for long-term caching.
+     *
+     * For versioned assets (with cache busting), we expect:
+     * - Long max-age (>= 1 year recommended)
+     * - OR s-maxage for CDN/proxy caching
+     * - public directive (allows shared caches)
+     * - immutable is a bonus (prevents revalidation)
+     *
+     * Minimum threshold: 1 day (86400 seconds) to avoid flagging valid short caches
+     * Recommended: 1 year (31536000 seconds) for versioned assets
+     */
     private function isCacheHeaderOptimized(string $headerValue): bool
     {
         $value = strtolower($headerValue);
 
+        // Reject explicit non-caching directives
         if (str_contains($value, 'no-store') || str_contains($value, 'no-cache')) {
             return false;
         }
 
-        return str_contains($value, 'max-age=');
+        // Reject private caching for public assets
+        if (str_contains($value, 'private')) {
+            return false;
+        }
+
+        // Extract max-age value (for browser cache)
+        $maxAge = $this->extractCacheAge($value, 'max-age');
+
+        // Extract s-maxage value (for CDN/shared cache)
+        $sMaxAge = $this->extractCacheAge($value, 's-maxage');
+
+        // Use the longest cache duration found
+        $cacheDuration = max($maxAge ?? 0, $sMaxAge ?? 0);
+
+        // Minimum threshold: 1 day (86400 seconds)
+        // Versioned assets should use much longer (1 year = 31536000)
+        // But we use 1 day to avoid false positives for legitimate short caches
+        return $cacheDuration >= 86400;
+    }
+
+    /**
+     * Extract cache age value from Cache-Control header.
+     *
+     * Examples:
+     * - "max-age=31536000" → 31536000
+     * - "public, max-age=3600, immutable" → 3600
+     * - "s-maxage=86400" → 86400
+     *
+     * @param  string  $headerValue  Lowercase Cache-Control value
+     * @param  string  $directive  Directive name (max-age or s-maxage)
+     * @return int|null Age in seconds, or null if not found
+     */
+    private function extractCacheAge(string $headerValue, string $directive): ?int
+    {
+        // Match: max-age=31536000 or max-age = 31536000 (with optional whitespace)
+        $pattern = '/'.$directive.'\s*=\s*(\d+)/';
+
+        if (preg_match($pattern, $headerValue, $matches)) {
+            return (int) $matches[1];
+        }
+
+        return null;
     }
 }

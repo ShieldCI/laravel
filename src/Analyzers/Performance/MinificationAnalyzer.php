@@ -33,16 +33,19 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
     public static bool $runInCI = false;
 
     /**
-     * Maximum line count for a file to be considered minified.
-     * Minified files typically have very few lines (1-5 for small files, maybe 10-15 for large ones).
+     * Minimum max line length for a file to be considered minified.
+     * If ANY line exceeds this, the file likely contains minified code.
+     * Minified output almost always has at least one very long line.
+     * Unminified code following style guides never exceeds 120-200 chars/line.
      */
-    private const MAX_LINE_COUNT_FOR_MINIFIED = 15;
+    private const MIN_MAX_LINE_LENGTH_FOR_MINIFIED = 350;
 
     /**
-     * Minimum average line length (in characters) for a file to be considered minified.
-     * Minified files typically have very long lines (> 500 chars on average).
+     * Minimum average line length (in characters) for secondary minification check.
+     * Unminified code typically has 40-80 chars/line due to formatting.
+     * Files below this threshold get pattern analysis.
      */
-    private const MIN_AVG_LINE_LENGTH_FOR_MINIFIED = 500;
+    private const MIN_AVG_LINE_LENGTH_FOR_MINIFIED = 100;
 
     /**
      * Maximum whitespace ratio (0.15 = 15%) for a file to be considered minified.
@@ -122,9 +125,20 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
 
         // Check for build directories
         $mixManifestPath = $this->joinPaths($publicPath, 'mix-manifest.json');
+
+        // Check both possible Vite manifest locations:
+        // 1. Standard: public/build/manifest.json (when build_path = public)
+        // 2. Direct: public/manifest.json (when build_path = public/build)
         $viteManifestPath = $this->joinPaths($publicPath, 'build', 'manifest.json');
+        $viteManifestPathDirect = $this->joinPaths($publicPath, 'manifest.json');
+
         $hasMix = file_exists($mixManifestPath);
-        $hasVite = file_exists($viteManifestPath);
+        $hasVite = file_exists($viteManifestPath) || file_exists($viteManifestPathDirect);
+
+        // Use the manifest path that exists
+        if (! file_exists($viteManifestPath) && file_exists($viteManifestPathDirect)) {
+            $viteManifestPath = $viteManifestPathDirect;
+        }
 
         if (! $hasMix && ! $hasVite) {
             // Check for standalone JS/CSS files
@@ -136,7 +150,8 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             }
 
             if ($hasVite) {
-                $viteBuildPath = $this->joinPaths($publicPath, 'build');
+                // Derive build path from manifest location
+                $viteBuildPath = dirname($viteManifestPath);
                 $this->checkViteAssets($viteBuildPath, $issues);
             }
         }
@@ -263,8 +278,8 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         }
 
         // Vite assets should be minified by default in production builds
-        // Check if there are suspiciously large files
-        $largeAssets = [];
+        // Check if there are suspicious files
+        $suspiciousAssets = [];
         // Note: glob() works with forward slashes on all platforms
         $jsPattern = str_replace('\\', '/', $buildPath).'/assets/*.js';
         $cssPattern = str_replace('\\', '/', $buildPath).'/assets/*.css';
@@ -281,19 +296,19 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
 
         foreach (array_merge($jsFiles, $cssFiles) as $file) {
             if ($this->isUnminified($file)) {
-                $largeAssets[] = $this->getRelativePath($file);
+                $suspiciousAssets[] = $this->getRelativePath($file);
             }
         }
 
-        if (! empty($largeAssets)) {
+        if (! empty($suspiciousAssets)) {
             $issues[] = $this->createIssue(
                 message: 'Vite assets may not be properly minified',
                 location: new Location($this->getRelativePath($buildPath)),
                 severity: Severity::Low,
                 recommendation: 'Ensure you\'re running "npm run build" (not "npm run dev") for production. Vite automatically minifies assets in production mode. Verify your vite.config.js has the correct build settings.',
                 metadata: [
-                    'suspicious_files' => array_slice($largeAssets, 0, 5),
-                    'total_count' => count($largeAssets),
+                    'suspicious_files' => array_slice($suspiciousAssets, 0, 5),
+                    'total_count' => count($suspiciousAssets),
                 ]
             );
         }
@@ -311,51 +326,64 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        // Check for source map reference - minified files often include this
-        if ($this->hasSourceMapReference($content)) {
-            return false; // Has source map = likely minified
+        // Derive lines from content to avoid double file read
+        $lines = preg_split("/\r\n|\r|\n/", $content) ?: [];
+        $lineCount = count($lines);
+        $fileSize = strlen($content);
+
+        // Small files need pattern-based analysis
+        if ($fileSize < self::MIN_FILE_SIZE_FOR_SIZE_CHECKS) {
+            return $this->hasUnminifiedPatterns($content);
         }
 
-        $lines = FileParser::getLines($filePath);
-        $lineCount = count($lines);
+        // Primary check: Max line length (most reliable indicator)
+        // Unminified code following style guides NEVER exceeds 120-200 chars/line
+        $maxLineLength = empty($lines) ? 0 : max(array_map('strlen', $lines));
 
-        // Minified files typically have very few lines (usually 1-5 for small files, maybe 10-15 for large ones)
-        // Files with more than the threshold are likely not minified (accounting for source maps and copyright notices)
-        if ($lineCount > self::MAX_LINE_COUNT_FOR_MINIFIED) {
+        if ($maxLineLength >= self::MIN_MAX_LINE_LENGTH_FOR_MINIFIED) {
+            // Definitive: no coding style allows 350+ char lines
+            // License headers don't change the fact that the code is minified
+            return false;
+        }
+
+        $avgLineLength = $lineCount > 0 ? $fileSize / $lineCount : 0;
+
+        // Secondary check: Average line length
+        // Files with low average line length need pattern analysis
+        if ($avgLineLength < self::MIN_AVG_LINE_LENGTH_FOR_MINIFIED) {
+            return $this->hasUnminifiedPatterns($content);
+        }
+
+        // For moderate line lengths, check for formatting patterns
+
+        // Check for excessive whitespace (unminified files have more whitespace)
+        $whitespaceRatio = $this->calculateWhitespaceRatio($content, $fileSize);
+        if ($whitespaceRatio > self::MAX_WHITESPACE_RATIO_FOR_MINIFIED) {
             return true;
         }
 
-        // Check file size - very small files might need pattern analysis
-        $fileSize = strlen($content);
-        if ($fileSize < self::MIN_FILE_SIZE_FOR_SIZE_CHECKS) {
-            // For very small files, check if they have typical minification patterns
-            // (e.g., single line, no whitespace, or very compact)
-            return $this->hasUnminifiedPatterns($content);
+        // Fallback: run pattern analysis instead of assuming minified
+        // This catches files with moderate line lengths that might still be unminified
+        return $this->hasUnminifiedPatterns($content);
+    }
+
+    /**
+     * Calculate the ratio of whitespace characters in content.
+     * Counts spaces, tabs, newlines, and carriage returns.
+     */
+    private function calculateWhitespaceRatio(string $content, int $fileSize): float
+    {
+        if ($fileSize <= 0) {
+            return 0.0;
         }
 
-        // Also check average line length - minified files have very long lines
-        $avgLineLength = $lineCount > 0 ? $fileSize / $lineCount : 0;
+        // Count all whitespace characters: spaces, tabs, newlines, carriage returns
+        $whitespaceCount = substr_count($content, ' ')
+            + substr_count($content, "\t")
+            + substr_count($content, "\n")
+            + substr_count($content, "\r");
 
-        // Minified files typically have average line length above the threshold
-        // But also check for other indicators
-        if ($avgLineLength < self::MIN_AVG_LINE_LENGTH_FOR_MINIFIED) {
-            // Check for patterns that indicate unminified code
-            return $this->hasUnminifiedPatterns($content);
-        }
-
-        // Check for excessive whitespace (unminified files have more whitespace)
-        $whitespaceRatio = substr_count($content, ' ') / max($fileSize, 1);
-        if ($whitespaceRatio > self::MAX_WHITESPACE_RATIO_FOR_MINIFIED) {
-            return true; // More than the threshold suggests unminified
-        }
-
-        // Check for newlines in the middle of statements (unminified code)
-        $match = preg_match('/\n\s*[a-zA-Z_$][a-zA-Z0-9_$]*\s*\(/m', $content);
-        if (is_int($match) && $match === 1) {
-            return true; // Function calls on new lines suggest unminified
-        }
-
-        return false;
+        return $whitespaceCount / $fileSize;
     }
 
     /**
@@ -369,13 +397,14 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             return true;
         }
 
-        // Check for comments (unminified code often has comments)
-        $match = preg_match('/\/\/[^\n]*|\/\*[\s\S]*?\*\//', $content);
+        // Check for multi-line formatted comments (unminified documentation)
+        // Only flag comments with internal newlines and indentation - these indicate
+        // formatted JSDoc/PHPDoc style comments, not preserved license banners.
+        // Minified files may have: /*! license */, /* @preserve */, /* harmony export */
+        // Pattern matches: /* or /** followed by newline, then indented asterisk continuation
+        $match = preg_match('/\/\*\*?\s*\n\s*\*.*\n\s*\*/', $content);
         if (is_int($match) && $match === 1) {
-            // But exclude source map comments which are in minified files
-            if (! str_contains($content, 'sourceMappingURL=')) {
-                return true;
-            }
+            return true;
         }
 
         // Check for CSS-style formatting (indented properties)
@@ -385,41 +414,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             return true; // Indented CSS properties suggest unminified
         }
 
-        // Check for readable variable names (unminified code has descriptive names)
-        // Minified code often has single-letter variables
-        $match = preg_match('/\b[a-z]{3,}[a-zA-Z0-9_]*\s*=/i', $content);
-        if (is_int($match) && $match === 1) {
-            // But this is not definitive, so combine with other checks
-            $lines = explode("\n", $content);
-            $lineCount = count($lines);
-            if ($lineCount > 5) {
-                return true; // Multiple lines with readable names suggest unminified
-            }
-        }
-
         return false;
-    }
-
-    /**
-     * Check if the file has a source map reference.
-     * Minified files often include //# sourceMappingURL= or /*# sourceMappingURL= comments.
-     */
-    private function hasSourceMapReference(string $content): bool
-    {
-        if (str_contains($content, 'sourceMappingURL=')) {
-            return true;
-        }
-
-        if (str_contains($content, '//# sourceURL=')) {
-            return true;
-        }
-
-        $match = preg_match('/\/[*\/]#\s*sourceMappingURL=/i', $content);
-        if (! is_int($match)) {
-            $match = 0;
-        }
-
-        return $match === 1;
     }
 
     /**

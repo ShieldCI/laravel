@@ -1276,6 +1276,7 @@ PHP;
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
+        $this->assertNotNull($issues[0]->location);
         $this->assertSame(21, $issues[0]->location->line); // Line with Model::unguard()
     }
 

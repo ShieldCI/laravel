@@ -147,7 +147,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
                 message: 'OPcache extension is not loaded',
                 location: new Location($phpIniPath),
                 severity: Severity::Critical,
-                recommendation: 'Install and enable the OPcache extension. OPcache can improve PHP performance by 30-70% by caching precompiled bytecode. Add "zend_extension=opcache.so" to your php.ini file and restart your web server.',
+                recommendation: 'Install and enable the OPcache extension in your PHP installation / php.ini (zend_extension/opcache depending on distribution).',
                 metadata: [
                     'php_version' => PHP_VERSION,
                     'loaded_extensions' => get_loaded_extensions(),
@@ -173,9 +173,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         }
 
         // Check if OPcache is enabled
-        if (! isset($opcacheConfig['directives']['opcache.enable'])
-            || $opcacheConfig['directives']['opcache.enable'] !== true
-        ) {
+        if (! isset($opcacheConfig['directives']['opcache.enable']) || ! $this->isIniEnabled($opcacheConfig['directives']['opcache.enable'])) {
             $issues[] = $this->createOpcacheIssue(
                 phpIniPath: $phpIniPath,
                 setting: 'opcache.enable',
@@ -251,9 +249,6 @@ class OpcacheAnalyzer extends AbstractAnalyzer
 
         // Check opcache.revalidate_freq (should be 0 in production when validate_timestamps=0)
         $this->checkRevalidateFreq($directives, $issues, $phpIniPath);
-
-        // Check opcache.fast_shutdown (should be 1 for better performance)
-        $this->checkFastShutdown($directives, $issues, $phpIniPath);
     }
 
     /**
@@ -264,7 +259,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
      */
     private function checkValidateTimestamps(array $directives, array &$issues, string $phpIniPath): void
     {
-        if (! isset($directives['opcache.validate_timestamps']) || $directives['opcache.validate_timestamps'] !== true) {
+        if (! isset($directives['opcache.validate_timestamps']) || ! $this->isIniEnabled($directives['opcache.validate_timestamps'])) {
             return;
         }
 
@@ -397,10 +392,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
 
         $revalidateFreq = (int) $directives['opcache.revalidate_freq'];
 
-        if ($revalidateFreq > 0
-            && isset($directives['opcache.validate_timestamps'])
-            && $directives['opcache.validate_timestamps'] === false
-        ) {
+        if ($revalidateFreq > 0 && isset($directives['opcache.validate_timestamps']) && ! $this->isIniEnabled($directives['opcache.validate_timestamps'])) {
             $issues[] = $this->createOpcacheIssue(
                 phpIniPath: $phpIniPath,
                 setting: 'opcache.revalidate_freq',
@@ -419,49 +411,6 @@ class OpcacheAnalyzer extends AbstractAnalyzer
     }
 
     /**
-     * Check opcache.fast_shutdown setting.
-     *
-     * @param  array<string, mixed>  $directives
-     * @param  array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
-     */
-    private function checkFastShutdown(array $directives, array &$issues, string $phpIniPath): void
-    {
-        if (! isset($directives['opcache.fast_shutdown']) || $directives['opcache.fast_shutdown'] === true) {
-            return;
-        }
-
-        $currentValue = $directives['opcache.fast_shutdown'];
-        // At this point, we know:
-        // - isset() returned true, so value is NOT null
-        // - value !== true (filtered by early return)
-        // Therefore: $currentValue can be false, int, float, string, array, object, or resource
-        if (is_bool($currentValue)) {
-            $currentValueString = '0'; // Must be false since true was filtered out
-        } elseif (is_scalar($currentValue)) {
-            // Handles int, float, string (bool already handled above)
-            $currentValueString = (string) $currentValue;
-        } else {
-            // Handle arrays, objects, resources, etc.
-            $currentValueString = 'invalid value';
-        }
-
-        $issues[] = $this->createOpcacheIssue(
-            phpIniPath: $phpIniPath,
-            setting: 'opcache.fast_shutdown',
-            message: 'opcache.fast_shutdown is disabled',
-            severity: Severity::Low,
-            recommendation: sprintf(
-                'Enable "opcache.fast_shutdown=1" for faster PHP shutdown and better performance. Current: %s.',
-                $currentValueString
-            ),
-            metadata: [
-                'current_value' => $currentValue,
-                'recommended_value' => 1,
-            ]
-        );
-    }
-
-    /**
      * Create an issue for an OPcache setting with automatic location and code snippet.
      *
      * @param  array<string, mixed>  $metadata
@@ -470,8 +419,8 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         string $phpIniPath,
         string $setting,
         string $message,
-        string $recommendation,
         Severity $severity,
+        string $recommendation,
         array $metadata = []
     ): Issue {
         $line = $this->getSettingLine($phpIniPath, $setting);
@@ -546,5 +495,16 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         }
 
         return $this->phpIniLinesCache ?? [];
+    }
+
+    /**
+     * Check if an INI-style value represents "enabled".
+     *
+     * Handles: true, 1, "1", "on", "yes", "true" (case-insensitive)
+     * Returns false for: false, 0, "0", "off", "no", "false", "" (case-insensitive)
+     */
+    private function isIniEnabled(mixed $value): bool
+    {
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) === true;
     }
 }

@@ -305,10 +305,10 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
             'public/build/manifest.json' => $viteManifest,
         ]);
 
-        // Mock responses for both
+        // Mock responses for both with proper long-term caching (1 year)
         $responses = [
-            new Response(200, ['Cache-Control' => 'public, max-age=3600']),
-            new Response(200, ['Cache-Control' => 'public, max-age=3600']),
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000, immutable']),
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000, immutable']),
         ];
 
         /** @var CacheHeaderAnalyzer $analyzer */
@@ -898,9 +898,9 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $analyzer->setPublicPath($tempDir.'/public');
         $result = $analyzer->analyze();
 
-        // max-age=0 is technically present but not optimal, should still pass
-        // (current implementation only checks for presence of max-age=)
-        $this->assertPassed($result);
+        // max-age=0 means "don't cache" and should be rejected as invalid
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('missing Cache-Control headers', $result);
     }
 
     public function test_handles_private_cache_control(): void
@@ -922,7 +922,155 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $analyzer->setPublicPath($tempDir.'/public');
         $result = $analyzer->analyze();
 
-        // Should pass (has max-age, even though private)
+        // Should fail - "private" cache is wrong for public assets (they should use "public")
+        // Additionally, max-age=3600 (1 hour) is too short for versioned assets
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('missing Cache-Control headers', $result);
+    }
+
+    public function test_accepts_s_maxage_for_cdn_caching(): void
+    {
+        $manifest = json_encode([
+            '/css/app.css' => '/css/app.css?id=abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        // s-maxage is valid for CDN/shared caches
+        $responses = [
+            new Response(200, ['Cache-Control' => 'public, s-maxage=31536000']),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        // Should pass - s-maxage is valid
+        $this->assertPassed($result);
+    }
+
+    public function test_accepts_both_max_age_and_s_maxage(): void
+    {
+        $manifest = json_encode([
+            '/css/app.css' => '/css/app.css?id=abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        // Both max-age and s-maxage
+        $responses = [
+            new Response(200, ['Cache-Control' => 'public, max-age=86400, s-maxage=31536000']),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        // Should pass - uses longest duration (s-maxage=1 year)
+        $this->assertPassed($result);
+    }
+
+    public function test_rejects_short_max_age(): void
+    {
+        $manifest = json_encode([
+            '/css/app.css' => '/css/app.css?id=abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        // max-age=3600 (1 hour) is too short for versioned assets
+        $responses = [
+            new Response(200, ['Cache-Control' => 'public, max-age=3600']),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        // Should fail - 1 hour is too short (requires >= 1 day)
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('missing Cache-Control headers', $result);
+    }
+
+    public function test_accepts_minimum_threshold_of_one_day(): void
+    {
+        $manifest = json_encode([
+            '/css/app.css' => '/css/app.css?id=abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        // Exactly 1 day (86400 seconds) - minimum threshold
+        $responses = [
+            new Response(200, ['Cache-Control' => 'public, max-age=86400']),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        // Should pass - exactly at threshold
+        $this->assertPassed($result);
+    }
+
+    public function test_rejects_just_below_threshold(): void
+    {
+        $manifest = json_encode([
+            '/css/app.css' => '/css/app.css?id=abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        // 86399 seconds - just below 1 day threshold
+        $responses = [
+            new Response(200, ['Cache-Control' => 'public, max-age=86399']),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        // Should fail - below threshold
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('missing Cache-Control headers', $result);
+    }
+
+    public function test_handles_whitespace_in_cache_directives(): void
+    {
+        $manifest = json_encode([
+            '/css/app.css' => '/css/app.css?id=abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        // Whitespace around = sign
+        $responses = [
+            new Response(200, ['Cache-Control' => 'public, max-age = 31536000, immutable']),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        // Should pass - handles whitespace correctly
         $this->assertPassed($result);
     }
 
@@ -986,5 +1134,130 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('[/js/app.js via mix]', $recommendation);
         $this->assertStringContainsString('[/js/vendor.js via mix]', $recommendation);
         $this->assertStringContainsString(' and ', $recommendation);
+    }
+
+    public function test_deduplicates_urls_to_avoid_duplicate_http_requests(): void
+    {
+        // Create Vite manifest with same file referenced multiple times
+        $manifest = json_encode([
+            'resources/js/app.js' => [
+                'file' => 'assets/shared.js',
+            ],
+            'resources/js/another.js' => [
+                'file' => 'assets/shared.js', // Same file as above
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/build/manifest.json' => $manifest,
+        ]);
+
+        // Only provide ONE response - if deduplication doesn't work, test will fail
+        $responses = [
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),
+        ];
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        // Should pass - URL deduplication prevents duplicate HTTP requests
+        $this->assertPassed($result);
+    }
+
+    public function test_stops_checking_after_reaching_threshold(): void
+    {
+        // Create manifest with 15 assets
+        $manifest = [];
+        for ($i = 1; $i <= 15; $i++) {
+            $manifest["/js/file{$i}.js"] = "/js/file{$i}.js?id=abc{$i}";
+        }
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => json_encode($manifest),
+        ]);
+
+        // All responses have no cache headers
+        // If threshold didn't work, analyzer would make 15 requests
+        // But we only provide 10 responses to verify it stops early
+        $responses = array_fill(0, 10, new Response(200));
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setMaxUncachedAssets(10);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        // Verify it found exactly 10 uncached assets (stopped at threshold)
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertEquals(10, $issues[0]->metadata['count']);
+        $this->assertTrue($issues[0]->metadata['hit_threshold']);
+    }
+
+    public function test_includes_threshold_note_in_recommendation_when_bailout_occurs(): void
+    {
+        // Create manifest with 12 assets
+        $manifest = [];
+        for ($i = 1; $i <= 12; $i++) {
+            $manifest["/js/file{$i}.js"] = "/js/file{$i}.js?id=abc{$i}";
+        }
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => json_encode($manifest),
+        ]);
+
+        // All responses have no cache headers, but only provide 10
+        $responses = array_fill(0, 10, new Response(200));
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setMaxUncachedAssets(10);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        // Verify the threshold note is included in recommendation
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $recommendation = $issues[0]->recommendation;
+        $this->assertStringContainsString('Analysis stopped after finding 10 uncached assets', $recommendation);
+        $this->assertStringContainsString('prevent excessive HTTP requests', $recommendation);
+    }
+
+    public function test_does_not_include_threshold_note_when_all_assets_checked(): void
+    {
+        // Create manifest with only 3 assets (below threshold of 10)
+        $manifest = json_encode([
+            '/css/app.css' => '/css/app.css?id=abc123',
+            '/js/app.js' => '/js/app.js?id=def456',
+            '/js/vendor.js' => '/js/vendor.js?id=ghi789',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        // All responses have no cache headers
+        $responses = array_fill(0, 3, new Response(200));
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer($responses);
+        $analyzer->setMaxUncachedAssets(10);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        // Verify the threshold note is NOT included
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $recommendation = $issues[0]->recommendation;
+        $this->assertStringNotContainsString('Analysis stopped', $recommendation);
+        $this->assertFalse($issues[0]->metadata['hit_threshold']);
     }
 }

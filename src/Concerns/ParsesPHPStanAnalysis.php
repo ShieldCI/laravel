@@ -77,6 +77,15 @@ trait ParsesPHPStanAnalysis
     protected function pregMatchPHPStanAnalysis(PHPStan $phpStan, string $pattern, array &$issues): void
     {
         foreach ($phpStan->pregMatch($pattern) as $trace) {
+            // Validate trace structure
+            if (! isset($trace['message'], $trace['path'], $trace['line'])) {
+                continue;  // Skip malformed traces
+            }
+
+            if (! is_string($trace['message']) || ! is_string($trace['path']) || ! is_int($trace['line'])) {
+                continue;  // Skip invalid types
+            }
+
             $issues[] = $this->createIssueWithSnippet(
                 message: $trace['message'],
                 filePath: $trace['path'],

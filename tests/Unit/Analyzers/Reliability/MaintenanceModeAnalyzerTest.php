@@ -146,10 +146,9 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $issue = $issues[0];
-        $location = $issue->location;
 
-        $this->assertStringContainsString('storage/framework/down', $location->file);
-        $this->assertNull($location->line);
+        $this->assertNull($issue->location);
+        $this->assertEquals('storage/framework/down', $issue->metadata['detected_via']);
     }
 
     #[Test]

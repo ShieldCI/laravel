@@ -72,7 +72,7 @@ PHP;
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths([$tempDir.'/app']);
+        $analyzer->setPaths(['app']);
 
         $result = $analyzer->analyze();
 
@@ -120,7 +120,7 @@ PHP;
             cacheConnection: 'cache'
         );
         $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths([$tempDir.'/app']);
+        $analyzer->setPaths(['app']);
 
         $result = $analyzer->analyze();
 
@@ -207,5 +207,165 @@ PHP;
 
         $this->assertPassed($result);
         $this->assertStringContainsString('separate connection', $result->getMessage());
+    }
+
+    public function test_skips_variable_assigned_from_store_with_dedicated_lock_connection(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache;
+
+class LockService
+{
+    public function acquireLock()
+    {
+        $cache = Cache::store('locks');
+        return $cache->lock('resource', 10);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/LockService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzerWithStores(
+            defaultStore: 'redis',
+            driver: 'redis',
+            stores: [
+                'redis' => ['lock_connection' => null, 'connection' => 'cache'],
+                'locks' => ['lock_connection' => 'lock_redis', 'connection' => 'cache'],
+            ]
+        );
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because $cache is assigned from a store with dedicated lock connection
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_cache_store_chain_with_dedicated_lock_connection(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache;
+
+class LockService
+{
+    public function acquireLock()
+    {
+        return Cache::store('locks')->lock('resource', 10);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/LockService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzerWithStores(
+            defaultStore: 'redis',
+            driver: 'redis',
+            stores: [
+                'redis' => ['lock_connection' => null, 'connection' => 'cache'],
+                'locks' => ['lock_connection' => 'lock_redis', 'connection' => 'cache'],
+            ]
+        );
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because Cache::store('locks') has dedicated lock connection
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_variable_assigned_from_store_without_dedicated_lock_connection(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache;
+
+class LockService
+{
+    public function acquireLock()
+    {
+        $cache = Cache::store('redis');
+        return $cache->lock('resource', 10);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/LockService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzerWithStores(
+            defaultStore: 'redis',
+            driver: 'redis',
+            stores: [
+                'redis' => ['lock_connection' => null, 'connection' => 'cache'],
+            ]
+        );
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should flag because the 'redis' store has no dedicated lock connection
+        // Result is "warning" due to Low severity
+        $this->assertWarning($result);
+    }
+
+    /**
+     * Create an analyzer with multiple store configurations for testing false positive scenarios.
+     *
+     * @param  array<string, array{lock_connection: string|null, connection: string|null}>  $stores
+     */
+    protected function createAnalyzerWithStores(
+        string $defaultStore,
+        string $driver,
+        array $stores
+    ): AnalyzerInterface {
+        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        $config = Mockery::mock(ConfigRepository::class);
+
+        // Mock cache.default
+        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
+        $config->shouldReceive('get')
+            ->with('cache.default')
+            ->andReturn($defaultStore);
+
+        // Mock cache driver for default store
+        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
+        $config->shouldReceive('get')
+            ->with("cache.stores.$defaultStore.driver")
+            ->andReturn($driver);
+
+        // Mock each store's configuration
+        foreach ($stores as $storeName => $storeConfig) {
+            /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
+            $config->shouldReceive('get')
+                ->with("cache.stores.$storeName.lock_connection")
+                ->andReturn($storeConfig['lock_connection']);
+
+            /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
+            $config->shouldReceive('get')
+                ->with("cache.stores.$storeName.connection")
+                ->andReturn($storeConfig['connection']);
+        }
+
+        return new SharedCacheLockAnalyzer($this->parser, $config);
     }
 }

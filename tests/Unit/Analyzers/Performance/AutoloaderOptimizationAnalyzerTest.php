@@ -110,17 +110,24 @@ class AutoloaderOptimizationAnalyzerTest extends AnalyzerTestCase
         $this->assertHasIssueContaining('not optimized', $result);
     }
 
-    public function test_fails_when_generated_classmap_is_empty_even_if_static_contains_laravel_classes(): void
+    public function test_passes_when_static_file_exists_even_with_empty_classmap(): void
     {
         $envContent = 'APP_ENV=production';
 
+        // Valid optimization: autoload_static.php exists with ComposerStaticInit class
+        // Empty classmap is fine for pure PSR-4 applications
         $staticContent = <<<'PHP'
 <?php
-class ComposerAutoloaderInit {
+class ComposerStaticInit {
     public static $classMap = [
         'Illuminate\\Foundation\\Application' => __DIR__.'/../../vendor/laravel/framework/src/Illuminate/Foundation/Application.php',
     ];
 }
+PHP;
+
+        $authoritativeContent = <<<'PHP'
+<?php
+$loader->setClassMapAuthoritative(true);
 PHP;
 
         $tempDir = $this->createTempDirectory([
@@ -131,6 +138,7 @@ PHP;
 <?php
 return [];
 PHP,
+            'vendor/composer/autoload_real.php' => $authoritativeContent,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -138,11 +146,11 @@ PHP,
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('not optimized', $result);
+        // Should pass: static file exists (optimized) and authoritative mode enabled
+        $this->assertPassed($result);
     }
 
-    public function test_fails_when_classmap_contains_only_vendor_entries(): void
+    public function test_warns_when_optimized_with_only_vendor_entries_but_not_authoritative(): void
     {
         $envContent = 'APP_ENV=production';
 
@@ -153,11 +161,23 @@ return [
 ];
 PHP;
 
+        // Valid static file indicating optimization
+        $staticContent = <<<'PHP'
+<?php
+namespace Composer\Autoload;
+
+class ComposerStaticInit {
+    public static $prefixLengthsPsr4 = [];
+    public static $prefixDirsPsr4 = [];
+}
+PHP;
+
         $tempDir = $this->createTempDirectory([
             '.env' => $envContent,
             'vendor/autoload.php' => '<?php // Autoloader',
             'vendor/composer/autoload_classmap.php' => $vendorOnlyClassmap,
-            'vendor/composer/autoload_static.php' => '<?php class ComposerAutoloaderInit {}',
+            'vendor/composer/autoload_static.php' => $staticContent,
+            'vendor/composer/autoload_real.php' => '<?php // No authoritative',
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -165,8 +185,9 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('not optimized', $result);
+        // Should warn: optimized (has static file) but not authoritative
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('authoritative', $result);
     }
 
     public function test_reports_when_config_enables_optimize_without_optimized_files(): void
@@ -646,7 +667,7 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_recommends_authoritative_when_real_file_missing(): void
+    public function test_fails_when_only_manual_classmap_entries_without_static_file(): void
     {
         $envContent = 'APP_ENV=production';
 
@@ -659,6 +680,7 @@ return [
     'App\\MyClass' => __DIR__.'/../../app/MyClass.php',
 ];
 PHP,
+            // No autoload_static.php - means no optimization, just manual classmap entries
             // No autoload_real.php
         ]);
 
@@ -667,12 +689,13 @@ PHP,
 
         $result = $analyzer->analyze();
 
-        // Should recommend authoritative (optimized but not authoritative)
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('authoritative', $result);
+        // Should fail: having project classes in classmap without autoload_static.php
+        // means these are manual classmap entries, not optimization
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('not optimized', $result);
 
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
     }
 
     public function test_handles_invalid_composer_json(): void
@@ -1008,5 +1031,164 @@ PHP,
 
         $issues = $result->getIssues();
         $this->assertFalse($issues[0]->metadata['configured_via_scripts']);
+    }
+
+    public function test_detects_authoritative_with_formatting_variations(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        // Setup optimized autoloader
+        $optimizedContent = <<<'PHP'
+<?php
+class ComposerStaticInit {
+    public static $classMap = [];
+}
+PHP;
+
+        // Test different formatting variations of setClassMapAuthoritative(true)
+        $formattingVariations = [
+            'setClassMapAuthoritative(true)',           // Standard
+            'setClassMapAuthoritative( true )',         // Spaces inside
+            'setClassMapAuthoritative (true)',          // Space before paren
+            'setClassMapAuthoritative  (  true  )',     // Multiple spaces
+            "setClassMapAuthoritative(\ntrue\n)",       // Newlines
+            "setClassMapAuthoritative(\ttrue\t)",       // Tabs
+        ];
+
+        foreach ($formattingVariations as $variation) {
+            $authoritativeContent = <<<PHP
+<?php
+\$loader->{$variation};
+PHP;
+
+            $tempDir = $this->createTempDirectory([
+                '.env' => $envContent,
+                'vendor/autoload.php' => '<?php // Autoloader',
+                'vendor/composer/autoload_static.php' => $optimizedContent,
+                'vendor/composer/autoload_real.php' => $authoritativeContent,
+            ]);
+
+            $analyzer = $this->createAnalyzer();
+            $analyzer->setBasePath($tempDir);
+
+            $result = $analyzer->analyze();
+
+            // Should pass for all formatting variations
+            $this->assertPassed($result);
+        }
+    }
+
+    public function test_ignores_echo_statements_in_scripts(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $composerJson = json_encode([
+            'scripts' => [
+                'post-install-cmd' => [
+                    "echo 'run composer dump-autoload -o later'",
+                    "echo 'Remember to optimize with composer install --optimize-autoloader'",
+                ],
+            ],
+        ], JSON_PRETTY_PRINT);
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'composer.json' => $composerJson,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [];
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $firstIssue = $issues[0];
+        $this->assertArrayHasKey('configured_via_scripts', $firstIssue->metadata);
+        // Should be false since echo statements shouldn't count
+        $this->assertFalse($firstIssue->metadata['configured_via_scripts']);
+    }
+
+    public function test_requires_composer_and_dump_autoload_in_same_command(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        // These commands should NOT be detected (missing "composer" keyword)
+        $composerJson = json_encode([
+            'scripts' => [
+                'post-install-cmd' => [
+                    'dump-autoload -o',  // Missing "composer" - won't match
+                    './vendor/bin/dump-autoload -o',  // Custom script, not composer
+                ],
+            ],
+        ], JSON_PRETTY_PRINT);
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'composer.json' => $composerJson,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [];
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $firstIssue = $issues[0];
+        $this->assertArrayHasKey('configured_via_scripts', $firstIssue->metadata);
+        // Should be false since "composer" keyword is required
+        $this->assertFalse($firstIssue->metadata['configured_via_scripts']);
+    }
+
+    public function test_detects_actual_composer_optimization_commands(): void
+    {
+        $envContent = 'APP_ENV=production';
+
+        $composerJson = json_encode([
+            'scripts' => [
+                'post-install-cmd' => [
+                    'composer dump-autoload -o',  // Valid optimization command
+                ],
+            ],
+        ], JSON_PRETTY_PRINT);
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'composer.json' => $composerJson,
+            'vendor/autoload.php' => '<?php // Autoloader',
+            'vendor/composer/autoload_classmap.php' => <<<'PHP'
+<?php
+return [];
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $firstIssue = $issues[0];
+        $this->assertArrayHasKey('configured_via_scripts', $firstIssue->metadata);
+        // Should be true - this is a real composer optimization command
+        $this->assertTrue($firstIssue->metadata['configured_via_scripts']);
     }
 }

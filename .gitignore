@@ -12,3 +12,6 @@ coverage/
 *.cache
 .DS_Store
 Thumbs.db
+coverage.xml
+*.md
+.claude

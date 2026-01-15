@@ -20,13 +20,15 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
      * @param  array<string, mixed>  $configValues
      * @param  array<string>  $globalMiddleware
      * @param  array<string, array<string>>|null  $middlewareGroups
+     * @param  array<string>|null  $routeMiddleware  Middleware assigned to mock routes
      */
     protected function createAnalyzer(
         array $configValues = [],
         bool $usesSession = true,
         array $globalMiddleware = [],
         ?Kernel $kernelInstance = null,
-        ?array $middlewareGroups = null
+        ?array $middlewareGroups = null,
+        ?array $routeMiddleware = null
     ): AnalyzerInterface {
         /** @var ConfigRepository&\Mockery\MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
@@ -76,10 +78,42 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
         $router->shouldReceive('getMiddlewareGroups')
             ->andReturn($middlewareGroups);
 
-        // Mock router - return empty routes (middleware groups should be checked first)
+        // Determine route middleware - default to 'web' when usesSession is true
+        if ($routeMiddleware === null) {
+            $routeMiddleware = $usesSession ? ['web'] : [];
+        }
+
+        // Mock routes with specified middleware
+        $mockRoutes = [];
+        if ($routeMiddleware !== []) {
+            $route = Mockery::mock(Route::class);
+            /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
+            $route->shouldReceive('middleware')
+                ->andReturn($routeMiddleware);
+            $mockRoutes[] = $route;
+        }
+
         /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $router->shouldReceive('getRoutes')
-            ->andReturn([]);
+            ->andReturn($mockRoutes);
+
+        // Mock gatherRouteMiddleware to return resolved middleware
+        // When routes use 'web' and 'web' group contains StartSession, return StartSession
+        $resolvedMiddleware = [];
+        if ($routeMiddleware !== []) {
+            foreach ($routeMiddleware as $m) {
+                // Check if this middleware is a group that contains StartSession
+                if (isset($middlewareGroups[$m])) {
+                    $resolvedMiddleware = array_merge($resolvedMiddleware, $middlewareGroups[$m]);
+                } else {
+                    $resolvedMiddleware[] = $m;
+                }
+            }
+        }
+
+        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
+        $router->shouldReceive('gatherRouteMiddleware')
+            ->andReturn($resolvedMiddleware);
 
         if ($kernelInstance !== null) {
             $kernel = $kernelInstance;
@@ -692,7 +726,7 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
     public function test_detects_session_in_web_middleware_group(): void
     {
-        // Test that session is detected via middleware groups (optimized path)
+        // Test that session is detected via middleware groups when routes use that group
         $analyzer = $this->createAnalyzer(
             usesSession: false,
             middlewareGroups: [
@@ -701,7 +735,8 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
                     StartSession::class,
                     'Illuminate\View\Middleware\ShareErrorsFromSession',
                 ],
-            ]
+            ],
+            routeMiddleware: ['web'] // Routes use the 'web' group
         );
 
         $this->assertTrue($analyzer->shouldRun());
@@ -718,7 +753,8 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
                     StartSession::class,
                 ],
                 'api' => [],
-            ]
+            ],
+            routeMiddleware: ['admin'] // Routes use the 'admin' group
         );
 
         $this->assertTrue($analyzer->shouldRun());
@@ -733,7 +769,8 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
                 'api' => [
                     'Illuminate\Routing\Middleware\ThrottleRequests:api',
                 ],
-            ]
+            ],
+            routeMiddleware: ['api'] // Routes use 'api' which has no sessions
         );
 
         $this->assertFalse($analyzer->shouldRun());
@@ -749,6 +786,30 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
         );
 
         $this->assertFalse($analyzer->shouldRun());
+    }
+
+    public function test_api_only_app_with_web_group_defined_is_stateless(): void
+    {
+        // This is the FALSE POSITIVE fix test:
+        // An API-only app has 'web' group with StartSession defined (Laravel default),
+        // but routes only use 'api' middleware - app should be stateless
+        $analyzer = $this->createAnalyzer(
+            usesSession: false,
+            middlewareGroups: [
+                'web' => [
+                    'Illuminate\Cookie\Middleware\EncryptCookies',
+                    StartSession::class,
+                    'Illuminate\View\Middleware\ShareErrorsFromSession',
+                ],
+                'api' => [
+                    'Illuminate\Routing\Middleware\ThrottleRequests:api',
+                ],
+            ],
+            routeMiddleware: ['api'] // Routes only use 'api', not 'web'
+        );
+
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertSame('Application does not use sessions (stateless)', $analyzer->getSkipReason());
     }
 
     public function test_analyzer_metadata_values(): void

@@ -46,7 +46,7 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
             name: 'Session Driver Configuration Analyzer',
             description: 'Ensures a proper session driver is configured for scalability and performance',
             category: Category::Performance,
-            severity: Severity::Medium,
+            severity: Severity::Critical,
             tags: ['session', 'performance', 'configuration', 'redis', 'scalability'],
             docsUrl: 'https://docs.shieldci.com/analyzers/performance/session-driver',
             timeToFix: 30

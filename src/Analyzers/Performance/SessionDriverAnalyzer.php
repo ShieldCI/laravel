@@ -4,9 +4,13 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Performance;
 
+use Closure;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Routing\Router;
+use Illuminate\Session\Middleware\StartSession;
+use Illuminate\Support\Str;
+use ReflectionClass;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -181,72 +185,195 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
 
     /**
      * Check if the application is stateless (doesn't use sessions).
-     * Checks if session middleware is registered globally or on any routes.
+     *
+     * Optimized detection order:
+     * 1. Check global middleware (fast, usually empty or few items)
+     * 2. Check middleware groups directly (fast, avoids route iteration)
+     * 3. Fall back to route middleware only if needed (expensive, rare)
      */
     private function appIsStateless(): bool
     {
-        // Check if session middleware is in global middleware
-        $globalMiddleware = method_exists($this->kernel, 'getGlobalMiddleware')
-            ? $this->kernel->getGlobalMiddleware()
-            : [];
-
-        if (! is_array($globalMiddleware)) {
-            $globalMiddleware = [];
+        // 1. Check global middleware first (fast)
+        if ($this->hasSessionInGlobalMiddleware()) {
+            return false;
         }
 
-        foreach ($globalMiddleware as $middleware) {
-            if (! is_string($middleware)) {
-                continue;
-            }
-
-            if ($this->isSessionMiddleware($middleware)) {
-                return false; // App uses sessions
-            }
+        // 2. Check middleware groups directly (fast, O(groups) not O(routes))
+        if ($this->hasSessionInMiddlewareGroups()) {
+            return false;
         }
 
-        // Check if any route uses session middleware
-        $routes = $this->router->getRoutes();
-        /** @phpstan-ignore-next-line RouteCollection implements Traversable */
-        foreach ($routes as $route) {
-            $middleware = $route->middleware();
-
-            if (! is_array($middleware)) {
-                continue;
-            }
-
-            foreach ($middleware as $m) {
-                if (! is_string($m)) {
-                    continue;
-                }
-
-                if ($this->isSessionMiddleware($m)) {
-                    return false; // App uses sessions
-                }
-            }
-        }
-
-        return true; // App is stateless
+        // 3. Only if needed: check route-level middleware (expensive, rare case)
+        return ! $this->hasSessionInRouteMiddleware();
     }
 
     /**
-     * Check if a middleware is session-related.
+     * Check if StartSession middleware is in global middleware.
      */
-    private function isSessionMiddleware(string $middleware): bool
+    private function hasSessionInGlobalMiddleware(): bool
     {
-        // Check for exact middleware class names
-        $sessionMiddlewareClasses = [
-            'Illuminate\Session\Middleware\StartSession',
-            'StartSession',
-        ];
+        $globalMiddleware = $this->getGlobalMiddleware();
 
-        foreach ($sessionMiddlewareClasses as $class) {
-            if ($middleware === $class || str_ends_with($middleware, '\\'.$class)) {
+        foreach ($globalMiddleware as $middleware) {
+            if ($this->isStartSessionMiddleware($middleware)) {
                 return true;
             }
         }
 
-        // Check for 'web' middleware group (typically includes session)
-        if ($middleware === 'web') {
+        return false;
+    }
+
+    /**
+     * Check if any middleware group contains StartSession.
+     * This is much faster than iterating all routes.
+     */
+    private function hasSessionInMiddlewareGroups(): bool
+    {
+        if (! method_exists($this->router, 'getMiddlewareGroups')) {
+            return false;
+        }
+
+        $groups = $this->router->getMiddlewareGroups();
+
+        if (! is_array($groups)) {
+            return false;
+        }
+
+        foreach ($groups as $middlewareList) {
+            if (! is_array($middlewareList)) {
+                continue;
+            }
+
+            foreach ($middlewareList as $middleware) {
+                if (! is_string($middleware)) {
+                    continue;
+                }
+
+                if ($this->isStartSessionMiddleware($middleware)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if any route has StartSession middleware directly assigned.
+     * Uses gatherRouteMiddleware to properly resolve middleware aliases/groups.
+     */
+    private function hasSessionInRouteMiddleware(): bool
+    {
+        $routes = $this->router->getRoutes();
+
+        /** @phpstan-ignore-next-line RouteCollection implements Traversable */
+        foreach ($routes as $route) {
+            if (! $route instanceof \Illuminate\Routing\Route) {
+                continue;
+            }
+
+            // Use gatherRouteMiddleware to resolve aliases and groups to actual classes
+            $resolvedMiddleware = $this->getResolvedMiddleware($route);
+
+            foreach ($resolvedMiddleware as $middleware) {
+                if ($this->isStartSessionMiddleware($middleware)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Get the global middleware from the kernel.
+     *
+     * @return array<int, string>
+     */
+    private function getGlobalMiddleware(): array
+    {
+        // Try the public method first (Laravel 10+)
+        if (method_exists($this->kernel, 'getGlobalMiddleware')) {
+            $middleware = $this->kernel->getGlobalMiddleware();
+
+            return is_array($middleware) ? $middleware : [];
+        }
+
+        // Fall back to reflection for older Laravel versions
+        try {
+            $mirror = new ReflectionClass($this->kernel);
+            $property = $mirror->getProperty('middleware');
+            $property->setAccessible(true);
+
+            $middlewareList = $property->getValue($this->kernel);
+
+            if (! is_array($middlewareList)) {
+                return [];
+            }
+
+            /** @var array<int, string> */
+            return array_values(array_filter(array_map(
+                fn ($m): string => is_string($m) ? Str::before($m, ':') : '',
+                $middlewareList
+            )));
+        } catch (\ReflectionException) {
+            return [];
+        }
+    }
+
+    /**
+     * Get resolved middleware for a route.
+     *
+     * @return array<int, string>
+     */
+    private function getResolvedMiddleware(\Illuminate\Routing\Route $route): array
+    {
+        // Use gatherRouteMiddleware to resolve aliases and groups
+        if (! method_exists($this->router, 'gatherRouteMiddleware')) {
+            // Fallback: use route's own middleware method
+            $middleware = $route->middleware();
+
+            return is_array($middleware) ? $middleware : [];
+        }
+
+        $gathered = $this->router->gatherRouteMiddleware($route);
+
+        if (! is_array($gathered)) {
+            return [];
+        }
+
+        /** @var array<int, string> */
+        return array_values(array_filter(array_map(
+            function ($middleware): string {
+                if ($middleware instanceof Closure) {
+                    return 'Closure';
+                }
+
+                $middlewareStr = is_string($middleware) ? $middleware : '';
+
+                return Str::before($middlewareStr, ':');
+            },
+            $gathered
+        )));
+    }
+
+    /**
+     * Check if a middleware class is StartSession or a subclass of it.
+     */
+    private function isStartSessionMiddleware(string $middleware): bool
+    {
+        // Exact match
+        if ($middleware === StartSession::class) {
+            return true;
+        }
+
+        // Check basename match (e.g., "StartSession" without namespace)
+        if (class_basename($middleware) === 'StartSession') {
+            return true;
+        }
+
+        // Check if it's a subclass of StartSession
+        if (class_exists($middleware) && is_subclass_of($middleware, StartSession::class)) {
             return true;
         }
 

@@ -707,21 +707,6 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $this->assertIsArray($issues[0]->metadata['loaded_extensions']);
     }
 
-    public function test_recommendation_mentions_performance_improvement(): void
-    {
-        /** @var OpcacheAnalyzer $analyzer */
-        $analyzer = $this->createAnalyzer();
-        // @phpstan-ignore-next-line
-        $analyzer->setScenario(false, null);
-
-        $result = $analyzer->analyze();
-
-        $issues = $result->getIssues();
-        $recommendation = $issues[0]->recommendation;
-        $this->assertStringContainsString('30-70%', $recommendation);
-        $this->assertStringContainsString('performance', $recommendation);
-    }
-
     public function test_memory_consumption_recommendation_contains_specific_values(): void
     {
         /** @var OpcacheAnalyzer $analyzer */

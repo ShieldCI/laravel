@@ -147,7 +147,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
                 message: 'OPcache extension is not loaded',
                 location: new Location($phpIniPath),
                 severity: Severity::Critical,
-                recommendation: 'Install and enable the OPcache extension. OPcache can improve PHP performance by 30-70% by caching precompiled bytecode. Add "zend_extension=opcache.so" to your php.ini file and restart your web server.',
+                recommendation: 'Install and enable the OPcache extension in your PHP installation / php.ini (zend_extension/opcache depending on distribution).',
                 metadata: [
                     'php_version' => PHP_VERSION,
                     'loaded_extensions' => get_loaded_extensions(),

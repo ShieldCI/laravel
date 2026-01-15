@@ -393,11 +393,9 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         }
 
         $revalidateFreq = (int) $directives['opcache.revalidate_freq'];
+        $validateOff = in_array($directives['opcache.validate_timestamps'], [0, '0', false], true);
 
-        if ($revalidateFreq > 0
-            && isset($directives['opcache.validate_timestamps'])
-            && $directives['opcache.validate_timestamps'] === false
-        ) {
+        if ($revalidateFreq > 0 && isset($directives['opcache.validate_timestamps']) && $validateOff) {
             $issues[] = $this->createOpcacheIssue(
                 phpIniPath: $phpIniPath,
                 setting: 'opcache.revalidate_freq',

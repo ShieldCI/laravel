@@ -424,8 +424,8 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         string $phpIniPath,
         string $setting,
         string $message,
-        string $recommendation,
         Severity $severity,
+        string $recommendation,
         array $metadata = []
     ): Issue {
         $line = $this->getSettingLine($phpIniPath, $setting);

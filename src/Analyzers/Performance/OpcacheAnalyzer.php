@@ -173,9 +173,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         }
 
         // Check if OPcache is enabled
-        if (! isset($opcacheConfig['directives']['opcache.enable'])
-            || ! $opcacheConfig['directives']['opcache.enable']
-        ) {
+        if (! isset($opcacheConfig['directives']['opcache.enable']) || ! $this->isIniEnabled($opcacheConfig['directives']['opcache.enable'])) {
             $issues[] = $this->createOpcacheIssue(
                 phpIniPath: $phpIniPath,
                 setting: 'opcache.enable',
@@ -261,7 +259,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
      */
     private function checkValidateTimestamps(array $directives, array &$issues, string $phpIniPath): void
     {
-        if (! isset($directives['opcache.validate_timestamps']) || ! $directives['opcache.validate_timestamps']) {
+        if (! isset($directives['opcache.validate_timestamps']) || ! $this->isIniEnabled($directives['opcache.validate_timestamps'])) {
             return;
         }
 
@@ -501,5 +499,16 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         }
 
         return $this->phpIniLinesCache ?? [];
+    }
+
+    /**
+     * Check if an INI-style value represents "enabled".
+     *
+     * Handles: true, 1, "1", "on", "yes", "true" (case-insensitive)
+     * Returns false for: false, 0, "0", "off", "no", "false", "" (case-insensitive)
+     */
+    private function isIniEnabled(mixed $value): bool
+    {
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) === true;
     }
 }

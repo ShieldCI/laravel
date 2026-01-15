@@ -14,19 +14,19 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use Symfony\Component\Finder\Finder;
 
 /**
- * Analyzes view caching configuration using runtime analysis.
+ * Analyzes view caching freshness using timestamp comparison.
  *
- * Uses runtime analysis to accurately detect view caching status by:
- * - Counting actual blade files using Laravel's view finder
- * - Comparing blade file count with compiled view count
- * - Detecting partial caching scenarios
- * - Supporting custom view paths and package views
+ * Uses timestamp-based analysis to detect view caching status by:
+ * - Finding the newest blade file modification time
+ * - Finding the newest compiled view modification time
+ * - Comparing timestamps to determine if cache is fresh
  *
  * Checks:
- * - Whether all views are compiled in non-local environments
- * - Whether compiled view count matches blade file count
+ * - Whether compiled views exist
+ * - Whether compiled views are newer than all blade files
  *
- * View caching improves performance by pre-compiling blade templates.
+ * This approach avoids the complexity of hash verification and handles
+ * Laravel's inlining of includes, components, and slots.
  */
 class ViewCachingAnalyzer extends AbstractAnalyzer
 {
@@ -91,68 +91,101 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
             return $this->error('Invalid environment configuration');
         }
 
-        // Count blade files in all view paths
-        $viewCount = 0;
-
-        $this->getViewPaths()->each(function ($path) use (&$viewCount) {
-            if (is_dir($path)) {
-                $viewCount += $this->countBladeFilesIn($path);
-            }
-        });
-
-        // Count compiled views
         $compiledPath = $this->config->get('view.compiled');
 
         if (! is_string($compiledPath)) {
             return $this->error('Invalid view.compiled configuration');
         }
 
-        $compiledViewCount = $this->getCompiledViewCount($compiledPath);
+        $newestBladeMtime = $this->getNewestBladeTimestamp();
 
-        if ($viewCount > $compiledViewCount) {
-            $cachedPercentage = $this->calculateCachedPercentage($compiledViewCount, $viewCount);
+        // No blade files found = passed (nothing to cache)
+        if ($newestBladeMtime === null) {
+            return $this->passed('No Blade templates found to cache');
+        }
 
+        if (! is_dir($compiledPath)) {
             $issues = [
                 $this->createIssue(
-                    message: sprintf(
-                        'Only %d out of %d blade views are compiled (%.1f%% cached)',
-                        $compiledViewCount,
-                        $viewCount,
-                        $cachedPercentage
-                    ),
+                    message: 'Compiled views directory does not exist - view cache has not been generated',
                     location: null,
                     severity: Severity::Medium,
-                    recommendation: 'View caching improves performance by pre-compiling all Blade templates. Add "php artisan view:cache" to your deployment script. This eliminates the need to compile views on each request and is especially important in production environments where view caching can significantly reduce response times.',
+                    recommendation: 'Run "php artisan view:cache" as part of your deployment process to generate compiled views.',
                     metadata: [
                         'environment' => $environment,
-                        'total_views' => $viewCount,
-                        'compiled_views' => $compiledViewCount,
-                        'cached_percentage' => $cachedPercentage,
-                        'missing_views' => $viewCount - $compiledViewCount,
-                        'detected_via' => 'storage/framework/views',
+                        'compiled_path' => $compiledPath,
+                        'newest_blade_mtime' => date('Y-m-d H:i:s', $newestBladeMtime),
                     ]
                 ),
             ];
 
-            $summary = sprintf(
-                'Views are not fully cached (%d/%d views cached, %.1f%%)',
-                $compiledViewCount,
-                $viewCount,
-                $cachedPercentage
-            );
-
-            return $this->resultBySeverity($summary, $issues);
+            return $this->resultBySeverity('View cache has not been generated', $issues);
         }
 
+        $newestCompiledMtime = $this->getNewestCompiledTimestamp($compiledPath);
+
+        // Blade files exist but no compiled views = not cached at all
+        if ($newestCompiledMtime === null) {
+            $issues = [
+                $this->createIssue(
+                    message: 'No compiled views found - view cache has not been generated',
+                    location: null,
+                    severity: Severity::Medium,
+                    recommendation: 'Run "php artisan view:cache" as part of your deployment process to pre-compile all Blade templates. This eliminates on-demand compilation overhead in production.',
+                    metadata: [
+                        'environment' => $environment,
+                        'compiled_path' => $compiledPath,
+                        'newest_blade_mtime' => date('Y-m-d H:i:s', $newestBladeMtime),
+                    ]
+                ),
+            ];
+
+            return $this->resultBySeverity('View cache has not been generated', $issues);
+        }
+
+        // Blade files newer than newest compiled = stale cache
+        if ($newestBladeMtime > $newestCompiledMtime) {
+            $staleDuration = max(0, $newestBladeMtime - $newestCompiledMtime);
+
+            $issues = [
+                $this->createIssue(
+                    message: sprintf(
+                        'View cache is stale - Blade templates were modified %s after cache was generated',
+                        $this->humanDuration($staleDuration)
+                    ),
+                    location: null,
+                    severity: Severity::Medium,
+                    recommendation: 'Run "php artisan view:cache" to regenerate the view cache. Add this command to your deployment script after any code changes.',
+                    metadata: [
+                        'environment' => $environment,
+                        'newest_blade_mtime' => date('Y-m-d H:i:s', $newestBladeMtime),
+                        'newest_compiled_mtime' => date('Y-m-d H:i:s', $newestCompiledMtime),
+                        'stale_by_seconds' => $staleDuration,
+                        'cache_age_seconds' => max(0, time() - $newestCompiledMtime),
+                    ]
+                ),
+            ];
+
+            return $this->resultBySeverity('View cache is stale', $issues);
+        }
+
+        $cacheAge = max(0, time() - $newestCompiledMtime);
+
         return $this->passed(sprintf(
-            'All %d views are properly cached in %s environment',
-            $viewCount,
-            $environment
+            'View cache is fresh in %s environment (cached %s ago)',
+            $environment,
+            $this->humanDuration($cacheAge)
         ));
     }
 
     /**
-     * Get all view paths from Laravel's view finder.
+     * Get view paths to check for freshness.
+     *
+     * By default, only returns application view paths (e.g., resources/views).
+     * Package views (from hints) are excluded by default to avoid false positives
+     * when composer install/update changes vendor file timestamps.
+     *
+     * Set 'shieldci.analyzers.performance.view-caching.include_package_views' to true to include them.
      *
      * @return \Illuminate\Support\Collection<int, string>
      */
@@ -163,11 +196,19 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
             $viewFactory = app('view');
             $finder = $viewFactory->getFinder();
 
-            // Get regular paths and hint paths (package views)
             /** @var \Illuminate\View\FileViewFinder $finder */
-            return collect($finder->getPaths())->merge(
-                collect($finder->getHints())->flatten()
-            )->unique();
+            $paths = collect($finder->getPaths());
+
+            // Only include package views if explicitly configured
+            $includePackageViews = $this->config->get('shieldci.analyzers.performance.view-caching.include_package_views', false);
+
+            if ($includePackageViews) {
+                $paths = $paths->merge(
+                    collect($finder->getHints())->flatten()
+                );
+            }
+
+            return $paths->unique();
         } catch (\Throwable $e) {
             // Fallback to default resource/views path if view factory not available
             return collect([resource_path('views')]);
@@ -175,51 +216,88 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
     }
 
     /**
-     * Count blade files in the given path.
+     * Get the newest modification timestamp across all blade files.
      */
-    private function countBladeFilesIn(string $path): int
+    private function getNewestBladeTimestamp(): ?int
     {
-        if (! is_string($path) || empty(trim($path))) {
-            return 0;
-        }
+        $newest = 0;
 
-        try {
-            return collect(
-                Finder::create()
+        $this->getViewPaths()->each(function ($path) use (&$newest) {
+            if (! is_string($path) || empty(trim($path)) || ! is_dir($path)) {
+                return;
+            }
+
+            try {
+                $finder = Finder::create()
                     ->in($path)
-                    ->exclude('vendor')
+                    ->ignoreUnreadableDirs()
                     ->name('*.blade.php')
-                    ->files()
-            )->count();
-        } catch (\Throwable $e) {
-            return 0;
-        }
+                    ->files();
+
+                foreach ($finder as $file) {
+                    $mtime = $file->getMTime();
+                    if ($mtime > $newest) {
+                        $newest = $mtime;
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Skip paths that cause errors
+            }
+        });
+
+        return $newest > 0 ? $newest : null;
     }
 
     /**
-     * Get the count of compiled views in the compiled path.
+     * Get the newest modification timestamp from compiled views.
+     *
+     * When view:cache runs, all compiled views get similar timestamps.
+     * The newest compiled file represents when the cache was last generated.
+     * If any blade file is newer than this, the cache is stale.
      */
-    private function getCompiledViewCount(string $compiledPath): int
+    private function getNewestCompiledTimestamp(string $compiledPath): ?int
     {
         $globResult = $this->files->glob("{$compiledPath}/*.php");
 
-        // Filesystem::glob() can return false on error
-        if ($globResult === false) {
-            return 0;
+        if ($globResult === false || empty($globResult)) {
+            return null;
         }
 
-        return is_array($globResult) ? count($globResult) : 0;
+        $newest = 0;
+
+        foreach ($globResult as $file) {
+            $mtime = @filemtime($file);
+            if ($mtime !== false && $mtime > $newest) {
+                $newest = $mtime;
+            }
+        }
+
+        return $newest > 0 ? $newest : null;
     }
 
     /**
-     * Calculate the cached percentage, protecting against division by zero.
+     * Format a duration in seconds to a human-readable string.
      */
-    private function calculateCachedPercentage(int $compiledCount, int $totalCount): float
+    private function humanDuration(int $seconds): string
     {
-        if ($totalCount === 0) {
-            return 0.0;
+        if ($seconds < 60) {
+            return $seconds === 1 ? '1 second' : "{$seconds} seconds";
         }
 
-        return round(($compiledCount / $totalCount) * 100, 1);
+        if ($seconds < 3600) {
+            $minutes = (int) floor($seconds / 60);
+
+            return $minutes === 1 ? '1 minute' : "{$minutes} minutes";
+        }
+
+        if ($seconds < 86400) {
+            $hours = (int) floor($seconds / 3600);
+
+            return $hours === 1 ? '1 hour' : "{$hours} hours";
+        }
+
+        $days = (int) floor($seconds / 86400);
+
+        return $days === 1 ? '1 day' : "{$days} days";
     }
 }

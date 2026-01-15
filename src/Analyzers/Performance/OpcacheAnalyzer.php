@@ -392,25 +392,21 @@ class OpcacheAnalyzer extends AbstractAnalyzer
 
         $revalidateFreq = (int) $directives['opcache.revalidate_freq'];
 
-        if ($revalidateFreq > 0 && isset($directives['opcache.validate_timestamps'])) {
-            $validateOff = in_array($directives['opcache.validate_timestamps'], [0, '0', false], true);
-
-            if ($validateOff) {
-                $issues[] = $this->createOpcacheIssue(
-                    phpIniPath: $phpIniPath,
-                    setting: 'opcache.revalidate_freq',
-                    message: 'opcache.revalidate_freq should be 0 when validate_timestamps is disabled',
-                    severity: Severity::Low,
-                    recommendation: sprintf(
-                        'Set "opcache.revalidate_freq=0" when "opcache.validate_timestamps=0" for maximum performance. Current: %d seconds.',
-                        $revalidateFreq
-                    ),
-                    metadata: [
-                        'current_value' => $revalidateFreq,
-                        'recommended_value' => 0,
-                    ]
-                );
-            }
+        if ($revalidateFreq > 0 && isset($directives['opcache.validate_timestamps']) && ! $this->isIniEnabled($directives['opcache.validate_timestamps'])) {
+            $issues[] = $this->createOpcacheIssue(
+                phpIniPath: $phpIniPath,
+                setting: 'opcache.revalidate_freq',
+                message: 'opcache.revalidate_freq should be 0 when validate_timestamps is disabled',
+                severity: Severity::Low,
+                recommendation: sprintf(
+                    'Set "opcache.revalidate_freq=0" when "opcache.validate_timestamps=0" for maximum performance. Current: %d seconds.',
+                    $revalidateFreq
+                ),
+                metadata: [
+                    'current_value' => $revalidateFreq,
+                    'recommended_value' => 0,
+                ]
+            );
         }
     }
 

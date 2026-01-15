@@ -5,12 +5,15 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\Performance;
 
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use PhpParser\Node;
+use PhpParser\Node\Expr\Assign;
 use PhpParser\Node\Expr\MethodCall;
 use PhpParser\Node\Expr\PropertyFetch;
 use PhpParser\Node\Expr\StaticCall;
 use PhpParser\Node\Expr\Variable;
 use PhpParser\Node\Identifier;
 use PhpParser\Node\Name;
+use PhpParser\Node\Scalar\String_;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -34,6 +37,13 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
      * @var array<string, array{file: string, line: int}>
      */
     private array $lockUsages = [];
+
+    /**
+     * Maps variable names to their assigned cache store names.
+     *
+     * @var array<string, string>
+     */
+    private array $variableStores = [];
 
     public function __construct(
         private ParserInterface $parser,
@@ -95,7 +105,7 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
         }
 
         // Set paths to analyze (app directory only)
-        $this->setPaths([$this->basePath.DIRECTORY_SEPARATOR.'app']);
+        $this->setPaths(['app']);
 
         // Search for Cache::lock() usage in the codebase
         $this->findCacheLockUsage();
@@ -145,6 +155,9 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
                 try {
                     $ast = $this->parser->parseFile($filePath);
 
+                    // Track variable assignments to identify cache stores
+                    $this->trackCacheVariableAssignments($ast);
+
                     // Find Cache::lock() static calls
                     $lockCalls = $this->parser->findStaticCalls($ast, 'Cache', 'lock');
 
@@ -171,17 +184,36 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
     {
         $caller = $call->var;
 
+        // Check variable-based calls like $cache->lock()
         if ($caller instanceof Variable && is_string($caller->name)) {
-            return str_contains(strtolower($caller->name), 'cache');
+            // Check if this variable was assigned a specific store with dedicated lock connection
+            if (isset($this->variableStores[$caller->name])) {
+                $storeName = $this->variableStores[$caller->name];
+                if ($this->storeHasDedicatedLockConnection($storeName)) {
+                    return false; // Skip - uses dedicated lock connection
+                }
+            }
+
+            return in_array(strtolower($caller->name), ['cache', 'redis', 'store'], true);
         }
 
+        // Check property-based calls like $this->cache->lock()
         if ($caller instanceof PropertyFetch && $caller->name instanceof Identifier) {
-            return str_contains(strtolower($caller->name->name), 'cache');
+            return in_array(strtolower($caller->name->name), ['cache'], true);
         }
 
+        // Check Cache::store('X')->lock() chains
         if ($caller instanceof StaticCall && $caller->class instanceof Name) {
             if ($caller->class->toString() === 'Cache') {
-                return $caller->name instanceof Identifier && $caller->name->name === 'store';
+                if ($caller->name instanceof Identifier && $caller->name->name === 'store') {
+                    // Extract store name and check if it has dedicated lock connection
+                    $storeName = $this->extractStoreFromStaticCall($caller);
+                    if ($storeName !== null && $this->storeHasDedicatedLockConnection($storeName)) {
+                        return false; // Skip - uses dedicated lock connection
+                    }
+
+                    return true;
+                }
             }
         }
 
@@ -227,6 +259,108 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
         $driver = $this->config->get("cache.stores.$defaultStore.driver");
 
         return is_string($driver) ? $driver : null;
+    }
+
+    /**
+     * Check if a specific cache store has a dedicated lock connection configured.
+     */
+    private function storeHasDedicatedLockConnection(string $storeName): bool
+    {
+        $lockConnection = $this->config->get("cache.stores.$storeName.lock_connection");
+        $cacheConnection = $this->config->get("cache.stores.$storeName.connection");
+
+        if ($lockConnection !== null && ! is_string($lockConnection)) {
+            return false;
+        }
+        if ($cacheConnection !== null && ! is_string($cacheConnection)) {
+            $cacheConnection = null;
+        }
+
+        return $lockConnection !== null && $lockConnection !== $cacheConnection;
+    }
+
+    /**
+     * Track variable assignments that assign cache stores.
+     *
+     * @param  array<Node>  $ast
+     */
+    private function trackCacheVariableAssignments(array $ast): void
+    {
+        // Note: only tracks direct Cache::store('x') assignments.
+        // It does NOT follow constructor injection, method returns,
+        // helper functions, or conditional/dataflow assignments.
+
+        $this->variableStores = [];
+
+        $assignments = $this->parser->findNodes($ast, Assign::class);
+        foreach ($assignments as $assign) {
+            if (! $assign instanceof Assign) {
+                continue;
+            }
+
+            if (! $assign->var instanceof Variable || ! is_string($assign->var->name)) {
+                continue;
+            }
+
+            $storeName = $this->extractStoreFromExpression($assign->expr);
+            if ($storeName !== null) {
+                $this->variableStores[$assign->var->name] = $storeName;
+            }
+        }
+    }
+
+    /**
+     * Extract store name from Cache::store('name') expression.
+     */
+    private function extractStoreFromExpression(Node $expr): ?string
+    {
+        if (! $expr instanceof StaticCall) {
+            return null;
+        }
+
+        if (! $expr->class instanceof Name || $expr->class->toString() !== 'Cache') {
+            return null;
+        }
+
+        if (! $expr->name instanceof Identifier || $expr->name->name !== 'store') {
+            return null;
+        }
+
+        if (empty($expr->args) || ! isset($expr->args[0])) {
+            return null;
+        }
+
+        $arg = $expr->args[0];
+        if (! $arg instanceof Node\Arg) {
+            return null;
+        }
+
+        if ($arg->value instanceof String_) {
+            return $arg->value->value;
+        }
+
+        return null;
+    }
+
+    /**
+     * Extract store name from a Cache::store() static call.
+     */
+    private function extractStoreFromStaticCall(StaticCall $call): ?string
+    {
+        if (empty($call->args) || ! isset($call->args[0])) {
+            return null;
+        }
+
+        $arg = $call->args[0];
+        if (! $arg instanceof Node\Arg) {
+            return null;
+        }
+
+        if ($arg->value instanceof String_) {
+            return $arg->value->value;
+        }
+
+        return null;
     }
 
     private function getRecommendation(): string

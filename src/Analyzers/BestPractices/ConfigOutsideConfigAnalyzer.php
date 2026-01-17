@@ -134,7 +134,7 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Load configuration for excluded domains.
+     * Load user-configured excluded domains.
      */
     private function loadConfiguration(): void
     {
@@ -144,15 +144,9 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
         $userExcludedDomains = $analyzerConfig['excluded_domains'] ?? [];
         $userExcludedDomains = is_array($userExcludedDomains) ? $userExcludedDomains : [];
 
-        // Normalize and merge domains
-        $allDomains = array_merge(
-            ConfigHardcodeVisitor::DEFAULT_EXCLUDED_DOMAINS,
-            $userExcludedDomains
-        );
-
-        // Normalize (trim, lowercase, extract host from URLs) and de-duplicate
+        // Normalize user domains only (visitor handles defaults internally)
         $this->excludedDomains = array_values(array_unique(
-            array_filter(array_map([$this, 'normalizeDomain'], $allDomains))
+            array_filter(array_map([$this, 'normalizeDomain'], $userExcludedDomains))
         ));
     }
 }
@@ -210,10 +204,17 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
         'picsum.photos',
     ];
 
-    /** @param array<string> $excludedDomains Domains to exclude from URL detection */
-    public function __construct(
-        private array $excludedDomains = []
-    ) {}
+    /** @var array<string> Merged excluded domains */
+    private array $excludedDomains;
+
+    /** @param array<string> $additionalExcludedDomains Extra domains to exclude (merged with defaults) */
+    public function __construct(array $additionalExcludedDomains = [])
+    {
+        $this->excludedDomains = array_merge(
+            self::DEFAULT_EXCLUDED_DOMAINS,
+            $additionalExcludedDomains
+        );
+    }
 
     public function enterNode(Node $node): ?Node
     {

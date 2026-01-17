@@ -213,11 +213,7 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
     /** @param array<string> $excludedDomains Domains to exclude from URL detection */
     public function __construct(
         private array $excludedDomains = []
-    ) {
-        if (empty($this->excludedDomains)) {
-            $this->excludedDomains = self::DEFAULT_EXCLUDED_DOMAINS;
-        }
-    }
+    ) {}
 
     public function enterNode(Node $node): ?Node
     {

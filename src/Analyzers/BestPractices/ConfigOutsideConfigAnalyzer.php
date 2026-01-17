@@ -25,7 +25,6 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
     private const EXCLUDE_PATHS = [
         '/config/',
         '/tests/',
-        '/Tests/',
         '/database/seeders/',
         '/database/factories/',
         '/vendor/',
@@ -107,7 +106,7 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
      */
     private function shouldSkipFile(string $file): bool
     {
-        $normalizedPath = str_replace('\\', '/', $file);
+        $normalizedPath = strtolower(str_replace('\\', '/', $file));
 
         foreach (self::EXCLUDE_PATHS as $excludePath) {
             if (str_contains($normalizedPath, $excludePath)) {
@@ -224,7 +223,11 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
             // Check for hardcoded URLs (including localhost and IP addresses)
             if ($this->isHardcodedUrl($value)) {
                 $this->issues[] = [
-                    'message' => sprintf('Hardcoded URL: "%s"', mb_substr($value, 0, self::URL_DISPLAY_LENGTH)),
+                    'message' => sprintf(
+                        'Hardcoded URL: "%s%s"',
+                        mb_substr($value, 0, self::URL_DISPLAY_LENGTH),
+                        mb_strlen($value) > self::URL_DISPLAY_LENGTH ? '...' : ''
+                    ),
                     'line' => $node->getLine(),
                     'severity' => Severity::Medium,
                     'recommendation' => 'Move URLs to config file (e.g., config/services.php). Use config(\'services.api.url\') instead of hardcoding',

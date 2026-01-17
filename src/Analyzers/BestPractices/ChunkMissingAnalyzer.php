@@ -96,8 +96,11 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         // Track variable assignments with ->all() or ->get()
         if ($node instanceof Node\Expr\Assign) {
             if ($node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
+                $name = $node->var->name;
                 if ($this->isAllOrGetCall($node->expr)) {
-                    $this->variableAssignments[$node->var->name] = $node->expr;
+                    $this->variableAssignments[$name] = $node->expr;
+                } else {
+                    unset($this->variableAssignments[$name]);
                 }
             }
         }

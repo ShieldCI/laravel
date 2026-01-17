@@ -4,15 +4,29 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
+use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\BestPractices\ConfigOutsideConfigAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class ConfigOutsideConfigAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    protected function createAnalyzer(array $config = []): AnalyzerInterface
     {
-        return new ConfigOutsideConfigAnalyzer($this->parser);
+        $configRepo = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'best-practices' => [
+                        'config-outside-config' => $config,
+                    ],
+                ],
+            ],
+        ]);
+
+        return new ConfigOutsideConfigAnalyzer($this->parser, $configRepo);
     }
 
     public function test_passes_with_config_helper(): void
@@ -834,6 +848,119 @@ PHP;
         $tempDir = $this->createTempDirectory(['Services/TextService.php' => $code]);
 
         $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_custom_excluded_domains_are_respected(): void
+    {
+        // This URL would normally be flagged
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class StripeService
+{
+    private $url = 'https://api.stripe.com/v1/charges';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/StripeService.php' => $code]);
+
+        // Configure custom excluded domain
+        $analyzer = $this->createAnalyzer([
+            'excluded_domains' => ['stripe.com'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_custom_excluded_domains_merge_with_defaults(): void
+    {
+        // Test that default domains still work when custom ones are added
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class MultiService
+{
+    // Default exclusion (laravel.com)
+    private $docs = 'https://laravel.com/docs';
+    // Custom exclusion
+    private $api = 'https://api.custom-service.com/endpoint';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/MultiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([
+            'excluded_domains' => ['custom-service.com'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_non_excluded_domains_still_flagged_with_custom_config(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    // Not in custom exclusions
+    private $url = 'https://api.another-service.com/endpoint';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        // Only exclude stripe.com
+        $analyzer = $this->createAnalyzer([
+            'excluded_domains' => ['stripe.com'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('URL', $result);
+    }
+
+    public function test_empty_custom_config_uses_defaults(): void
+    {
+        // Test that default excluded domains work with empty config
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DefaultsService
+{
+    private $docs = 'https://laravel.com/docs';
+    private $github = 'https://github.com/laravel/laravel';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DefaultsService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([]);
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 

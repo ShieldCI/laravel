@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\BestPractices;
 
+use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
@@ -29,8 +30,12 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
         '/vendor/',
     ];
 
+    /** @var array<string> User-configured excluded domains */
+    private array $excludedDomains = [];
+
     public function __construct(
-        private ParserInterface $parser
+        private ParserInterface $parser,
+        private Config $config
     ) {}
 
     protected function metadata(): AnalyzerMetadata
@@ -49,6 +54,8 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
+        $this->loadConfiguration();
+
         $issues = [];
         $phpFiles = $this->getPhpFiles();
 
@@ -64,7 +71,7 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $visitor = new ConfigHardcodeVisitor;
+                $visitor = new ConfigHardcodeVisitor($this->excludedDomains);
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
@@ -109,6 +116,24 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
 
         return false;
     }
+
+    /**
+     * Load configuration for excluded domains.
+     */
+    private function loadConfiguration(): void
+    {
+        $analyzerConfig = $this->config->get('shieldci.analyzers.best-practices.config-outside-config', []);
+        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
+
+        $userExcludedDomains = $analyzerConfig['excluded_domains'] ?? [];
+        $userExcludedDomains = is_array($userExcludedDomains) ? $userExcludedDomains : [];
+
+        // Merge user-defined domains with default excluded domains
+        $this->excludedDomains = array_merge(
+            ConfigHardcodeVisitor::DEFAULT_EXCLUDED_DOMAINS,
+            $userExcludedDomains
+        );
+    }
 }
 
 class ConfigHardcodeVisitor extends NodeVisitorAbstract
@@ -124,8 +149,8 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
     /** @var int Maximum characters to display in URL messages */
     private const URL_DISPLAY_LENGTH = 50;
 
-    /** @var array<string> Domains to exclude from URL detection */
-    private const EXCLUDED_DOMAINS = [
+    /** @var array<string> Default domains to exclude from URL detection */
+    public const DEFAULT_EXCLUDED_DOMAINS = [
         // Documentation sites
         'laravel.com',
         'github.com',
@@ -163,6 +188,15 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
         'via.placeholder.com',
         'picsum.photos',
     ];
+
+    /** @param array<string> $excludedDomains Domains to exclude from URL detection */
+    public function __construct(
+        private array $excludedDomains = []
+    ) {
+        if (empty($this->excludedDomains)) {
+            $this->excludedDomains = self::DEFAULT_EXCLUDED_DOMAINS;
+        }
+    }
 
     public function enterNode(Node $node): ?Node
     {
@@ -205,8 +239,8 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // Exclude allowed domains (documentation, CDNs, schemas, placeholders)
-        foreach (self::EXCLUDED_DOMAINS as $domain) {
+        // Exclude allowed domains (documentation, CDNs, schemas, placeholders, and user-configured)
+        foreach ($this->excludedDomains as $domain) {
             if (str_contains($value, $domain)) {
                 return false;
             }

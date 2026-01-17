@@ -521,4 +521,324 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    public function test_skips_tests_directory(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace Tests\Feature;
+
+class ApiTest
+{
+    private $testUrl = 'http://localhost:8000/api';
+    private $testKey = 'sk_test_4eC39HqLyjWDarjtT1zdp7dc1234567890abcdef';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['tests/Feature/ApiTest.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_database_seeders_directory(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace Database\Seeders;
+
+class UserSeeder
+{
+    private $webhookUrl = 'https://api.production.com/webhook';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['database/seeders/UserSeeder.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_database_factories_directory(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace Database\Factories;
+
+class UserFactory
+{
+    private $apiUrl = 'http://localhost:3000/api';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['database/factories/UserFactory.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_excludes_cdn_urls(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class AssetService
+{
+    private $cdnUrl = 'https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css';
+    private $fontUrl = 'https://fonts.googleapis.com/css2?family=Roboto';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/AssetService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_excludes_schema_urls(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class SchemaService
+{
+    private $jsonSchema = 'https://json-schema.org/draft/2020-12/schema';
+    private $w3Namespace = 'https://www.w3.org/2001/XMLSchema';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/SchemaService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_excludes_snake_case_identifiers(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class MethodService
+{
+    private $method = 'handle_user_registration_with_email_verification_and_profile';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/MethodService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_excludes_screaming_snake_case_constants(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ConfigService
+{
+    private $constant = 'SOME_VERY_LONG_CONFIGURATION_CONSTANT_NAME_HERE';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ConfigService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_excludes_camel_case_identifiers(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class MethodService
+{
+    private $method = 'handleUserRegistrationWithEmailVerificationProcess';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/MethodService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_excludes_css_class_combinations(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class StyleService
+{
+    private $classes = 'container-fluid-responsive-layout-content-wrapper-main';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/StyleService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_detects_api_keys_with_prefixes(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class PaymentService
+{
+    private $stripeKey = 'sk_live_51HqLyjWDarjtT1zdp7dc';
+    private $testKey = 'test_key_abc123def456ghi789jkl012mno345pqr678';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/PaymentService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('API key', $result);
+    }
+
+    public function test_excludes_placeholder_image_urls(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ImageService
+{
+    private $placeholder = 'https://via.placeholder.com/150';
+    private $gravatar = 'https://gravatar.com/avatar/example';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ImageService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_excludes_sha512_hashes(): void
+    {
+        // SHA512 hash (128 hex characters)
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class HashService
+{
+    private $hash = 'cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/HashService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_requires_mixed_letters_and_digits_for_api_key_detection(): void
+    {
+        // Pure letter string should not be flagged (even if >30 chars)
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class TextService
+{
+    private $text = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/TextService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

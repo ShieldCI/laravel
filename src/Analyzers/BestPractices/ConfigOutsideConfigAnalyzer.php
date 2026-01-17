@@ -19,6 +19,16 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  */
 class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
 {
+    /** @var array<string> Paths to exclude from analysis */
+    private const EXCLUDE_PATHS = [
+        '/config/',
+        '/tests/',
+        '/Tests/',
+        '/database/seeders/',
+        '/database/factories/',
+        '/vendor/',
+    ];
+
     public function __construct(
         private ParserInterface $parser
     ) {}
@@ -43,9 +53,8 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
         $phpFiles = $this->getPhpFiles();
 
         foreach ($phpFiles as $file) {
-            // Skip config files themselves (normalize path separators for cross-platform compatibility)
-            $normalizedPath = str_replace('\\', '/', $file);
-            if (str_contains($normalizedPath, '/config/')) {
+            // Skip excluded directories (normalize path separators for cross-platform compatibility)
+            if ($this->shouldSkipFile($file)) {
                 continue;
             }
 
@@ -84,6 +93,22 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
             $issues
         );
     }
+
+    /**
+     * Check if a file should be skipped based on its path.
+     */
+    private function shouldSkipFile(string $file): bool
+    {
+        $normalizedPath = str_replace('\\', '/', $file);
+
+        foreach (self::EXCLUDE_PATHS as $excludePath) {
+            if (str_contains($normalizedPath, $excludePath)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }
 
 class ConfigHardcodeVisitor extends NodeVisitorAbstract
@@ -99,12 +124,44 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
     /** @var int Maximum characters to display in URL messages */
     private const URL_DISPLAY_LENGTH = 50;
 
-    /** @var array<string> Documentation domains to exclude from URL detection */
-    private const DOCUMENTATION_DOMAINS = [
+    /** @var array<string> Domains to exclude from URL detection */
+    private const EXCLUDED_DOMAINS = [
+        // Documentation sites
         'laravel.com',
         'github.com',
         'stackoverflow.com',
         'example.com',
+        'php.net',
+        'packagist.org',
+        'readthedocs.io',
+        'docs.microsoft.com',
+        'developer.mozilla.org',
+        'wikipedia.org',
+
+        // Schema/namespace URLs (identifiers, not fetched)
+        'w3.org',
+        'schema.org',
+        'json-schema.org',
+        'swagger.io',
+        'openapis.org',
+        'xmlns.com',
+        'purl.org',
+
+        // CDN/asset URLs (typically static, version-pinned)
+        'fonts.googleapis.com',
+        'fonts.gstatic.com',
+        'cdnjs.cloudflare.com',
+        'jsdelivr.net',
+        'unpkg.com',
+        'bootstrapcdn.com',
+
+        // Placeholder/testing services
+        'placehold.co',
+        'placeholder.com',
+        'placekitten.com',
+        'gravatar.com',
+        'via.placeholder.com',
+        'picsum.photos',
     ];
 
     public function enterNode(Node $node): ?Node
@@ -148,8 +205,8 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // Exclude documentation URLs
-        foreach (self::DOCUMENTATION_DOMAINS as $domain) {
+        // Exclude allowed domains (documentation, CDNs, schemas, placeholders)
+        foreach (self::EXCLUDED_DOMAINS as $domain) {
             if (str_contains($value, $domain)) {
                 return false;
             }
@@ -169,6 +226,14 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
         return true;
     }
 
+    /** @var array<string> Common CSS/UI keywords that indicate non-secrets */
+    private const CSS_KEYWORDS = [
+        'container', 'wrapper', 'button', 'input', 'flex', 'grid', 'layout',
+        'content', 'header', 'footer', 'sidebar', 'modal', 'card', 'form',
+        'table', 'list', 'item', 'row', 'col', 'nav', 'menu', 'text', 'icon',
+        'image', 'link', 'title', 'label', 'field', 'section', 'panel', 'view',
+    ];
+
     /**
      * Check if a string looks like an API key (excluding common false positives).
      */
@@ -181,8 +246,8 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // Check for common API key prefixes (sk_, pk_, etc.)
-        if (preg_match('/^(sk|pk|live|test)_[a-zA-Z0-9_-]+$/', $value)) {
+        // Check for common API key prefixes - these are definite API keys
+        if (preg_match('/^(sk|pk|live|test|key|api|secret|token|bearer|auth)_[a-zA-Z0-9_-]+$/', $value)) {
             return true;
         }
 
@@ -191,23 +256,76 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // Exclude MD5 hashes (32 hex characters, no special chars)
-        if ($length === 32 && ctype_xdigit($value)) {
+        // Exclude snake_case identifiers (method names, constants, etc.)
+        // Pattern: lowercase words separated by underscores
+        if (preg_match('/^[a-z][a-z0-9]*(_[a-z][a-z0-9]*){2,}$/', $value)) {
             return false;
         }
 
-        // Exclude SHA1 hashes (40 hex characters, no special chars)
-        if ($length === 40 && ctype_xdigit($value)) {
+        // Exclude SCREAMING_SNAKE_CASE constants
+        if (preg_match('/^[A-Z][A-Z0-9]*(_[A-Z][A-Z0-9]*){2,}$/', $value)) {
             return false;
         }
 
-        // Exclude SHA256 hashes (64 hex characters, no special chars)
-        if ($length === 64 && ctype_xdigit($value)) {
+        // Exclude camelCase identifiers (require lowercase after each capital)
+        if (preg_match('/^[a-z][a-z0-9]*([A-Z][a-z0-9]+){2,}$/', $value)) {
             return false;
         }
 
-        // Likely an API key if it's a long alphanumeric string
+        // Exclude CSS class combinations (only check if contains dashes, which are typical in CSS)
+        if (str_contains($value, '-')) {
+            $lowerValue = strtolower($value);
+            foreach (self::CSS_KEYWORDS as $keyword) {
+                if (str_contains($lowerValue, $keyword)) {
+                    return false;
+                }
+            }
+        }
+
+        // Exclude known hash formats
+        if ($this->isKnownHashFormat($value, $length)) {
+            return false;
+        }
+
+        // For remaining strings, require both letters AND digits (entropy indicator)
+        // Pure letter or pure digit strings are more likely to be identifiers
+        $hasLetter = preg_match('/[a-zA-Z]/', $value);
+        $hasDigit = preg_match('/\d/', $value);
+
+        if (! $hasLetter || ! $hasDigit) {
+            return false;
+        }
+
+        // Likely an API key if it passes all filters
         return true;
+    }
+
+    /**
+     * Check if a string matches known hash formats.
+     */
+    private function isKnownHashFormat(string $value, int $length): bool
+    {
+        // MD5 hashes (32 hex characters)
+        if ($length === 32 && ctype_xdigit($value)) {
+            return true;
+        }
+
+        // SHA1 hashes (40 hex characters)
+        if ($length === 40 && ctype_xdigit($value)) {
+            return true;
+        }
+
+        // SHA256 hashes (64 hex characters)
+        if ($length === 64 && ctype_xdigit($value)) {
+            return true;
+        }
+
+        // SHA512 hashes (128 hex characters)
+        if ($length === 128 && ctype_xdigit($value)) {
+            return true;
+        }
+
+        return false;
     }
 
     public function getIssues(): array

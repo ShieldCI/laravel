@@ -97,7 +97,7 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         if ($node instanceof Node\Expr\Assign) {
             if ($node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
                 $name = $node->var->name;
-                if ($this->isAllOrGetCall($node->expr)) {
+                if ($this->isFetchCollectionCall($node->expr)) {
                     $this->variableAssignments[$name] = $node->expr;
                 } else {
                     unset($this->variableAssignments[$name]);
@@ -110,7 +110,7 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
             $loopIterator = $node->expr;
 
             // Check if iterator is a direct ->all() or ->get() call
-            if ($this->isAllOrGetCall($loopIterator)) {
+            if ($this->isFetchCollectionCall($loopIterator)) {
                 $this->issues[] = [
                     'message' => 'Looping over ->all() or ->get() without chunk() can cause memory issues on large datasets',
                     'line' => $node->getLine(),
@@ -136,7 +136,7 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         return null;
     }
 
-    private function isAllOrGetCall(?Node\Expr $expr): bool
+    private function isFetchCollectionCall(?Node\Expr $expr): bool
     {
         if ($expr === null) {
             return false;
@@ -170,7 +170,7 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
 
         // Safe chunking/pagination methods that handle memory efficiently
         $safeChunkingMethods = [
-            'chunk', 'chunkById', 'cursor', 'lazy', 'lazyById',
+            'chunk', 'chunkById', 'chunkByIdDesc', 'cursor', 'lazy', 'lazyById', 'lazyByIdDesc',
             'paginate', 'simplePaginate', 'cursorPaginate',
         ];
         $hasChunking = ! empty(array_intersect($methods, $safeChunkingMethods));

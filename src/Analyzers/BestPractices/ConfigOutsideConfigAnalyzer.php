@@ -118,6 +118,22 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Normalize a domain string for consistent matching.
+     */
+    private function normalizeDomain(string $domain): string
+    {
+        $domain = trim($domain);
+
+        // Extract host if user provided a full URL
+        if (preg_match('/^https?:\/\//', $domain)) {
+            $host = parse_url($domain, PHP_URL_HOST);
+            $domain = $host !== null && $host !== false ? $host : $domain;
+        }
+
+        return strtolower($domain);
+    }
+
+    /**
      * Load configuration for excluded domains.
      */
     private function loadConfiguration(): void
@@ -128,11 +144,16 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
         $userExcludedDomains = $analyzerConfig['excluded_domains'] ?? [];
         $userExcludedDomains = is_array($userExcludedDomains) ? $userExcludedDomains : [];
 
-        // Merge user-defined domains with default excluded domains
-        $this->excludedDomains = array_merge(
+        // Normalize and merge domains
+        $allDomains = array_merge(
             ConfigHardcodeVisitor::DEFAULT_EXCLUDED_DOMAINS,
             $userExcludedDomains
         );
+
+        // Normalize (trim, lowercase, extract host from URLs) and de-duplicate
+        $this->excludedDomains = array_values(array_unique(
+            array_filter(array_map([$this, 'normalizeDomain'], $allDomains))
+        ));
     }
 }
 

@@ -232,22 +232,11 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
     /**
      * Get a code snippet from a node for display purposes.
      */
-    private function getCodeSnippet(Node\Expr $expr): ?string
+    private function getCodeSnippet(Node\Expr $expr): string
     {
-        // Try to get a meaningful code representation
-        if ($expr instanceof Node\Expr\Variable && is_string($expr->name)) {
-            return '$'.$expr->name;
-        }
+        $printer = new \PhpParser\PrettyPrinter\Standard;
 
-        // For method/static calls, try to reconstruct the call
-        if ($expr instanceof Node\Expr\MethodCall || $expr instanceof Node\Expr\StaticCall) {
-            $methods = $this->getMethodChain($expr);
-            if (! empty($methods)) {
-                return implode('->', $methods).'()';
-            }
-        }
-
-        return null;
+        return $printer->prettyPrintExpr($expr);
     }
 
     public function getIssues(): array

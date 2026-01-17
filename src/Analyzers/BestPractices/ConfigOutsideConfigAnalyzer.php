@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\BestPractices;
 
 use Illuminate\Contracts\Config\Repository as Config;
+use PhpParser\Error as PhpParserError;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
@@ -86,7 +87,7 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
                         code: $issue['code'] ?? null,
                     );
                 }
-            } catch (\Throwable $e) {
+            } catch (PhpParserError $e) {
                 continue;
             }
         }

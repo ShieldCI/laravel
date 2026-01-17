@@ -240,8 +240,13 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
         }
 
         // Exclude allowed domains (documentation, CDNs, schemas, placeholders, and user-configured)
+        // Parse the URL host to avoid substring collisions (e.g., "w3.org" matching "notw3.org.evil.com")
+        $host = strtolower((string) parse_url($value, PHP_URL_HOST));
         foreach ($this->excludedDomains as $domain) {
-            if (str_contains($value, $domain)) {
+            $domain = strtolower(trim($domain));
+
+            // Exact match or subdomain match (host ends with ".domain")
+            if ($host === $domain || str_ends_with($host, '.'.$domain)) {
                 return false;
             }
         }

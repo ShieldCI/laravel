@@ -150,17 +150,29 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // If chain ends with all() or get() and doesn't have chunk/cursor/lazy/lazyById/chunkById
-        $endsWithFetch = in_array(end($methods), ['all', 'get'], true);
-        $safeChunkingMethods = ['chunk', 'cursor', 'lazy', 'lazyById', 'chunkById'];
+        // Check if chain contains all() or get() ANYWHERE (not just at end)
+        // This catches: User::all()->sortBy('name'), User::get()->filter(...)
+        $hasFetchMethod = in_array('all', $methods, true) || in_array('get', $methods, true);
+
+        if (! $hasFetchMethod) {
+            return false;
+        }
+
+        // Safe chunking/pagination methods that handle memory efficiently
+        $safeChunkingMethods = [
+            'chunk', 'chunkById', 'cursor', 'lazy', 'lazyById',
+            'paginate', 'simplePaginate', 'cursorPaginate',
+        ];
         $hasChunking = ! empty(array_intersect($methods, $safeChunkingMethods));
 
-        // Check if query has explicit limit/take/first (small dataset)
-        $hasSmallDatasetModifier = in_array('limit', $methods, true)
-            || in_array('take', $methods, true)
-            || in_array('first', $methods, true);
+        // Single-record or limited-result methods (small dataset)
+        $smallDatasetMethods = [
+            'limit', 'take', 'first', 'firstOrFail', 'firstWhere',
+            'find', 'findOrFail', 'findOr', 'sole', 'soleOrFail', 'value',
+        ];
+        $hasSmallDatasetModifier = ! empty(array_intersect($methods, $smallDatasetMethods));
 
-        return $endsWithFetch && ! $hasChunking && ! $hasSmallDatasetModifier;
+        return ! $hasChunking && ! $hasSmallDatasetModifier;
     }
 
     private function getMethodChain(Node\Expr $expr): array

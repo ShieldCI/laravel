@@ -158,6 +158,13 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
             return false;
         }
 
+        // If single method chain (just 'all' or 'get') and NOT a static call, skip.
+        // This filters out $request->all(), $config->get(), collect()->all(), etc.
+        // Eloquent calls are either static (User::all()) or have query methods (->where()->get())
+        if (count($methods) === 1 && ! $this->isStaticCallChain($expr)) {
+            return false;
+        }
+
         // Safe chunking/pagination methods that handle memory efficiently
         $safeChunkingMethods = [
             'chunk', 'chunkById', 'cursor', 'lazy', 'lazyById',
@@ -173,6 +180,21 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         $hasSmallDatasetModifier = ! empty(array_intersect($methods, $smallDatasetMethods));
 
         return ! $hasChunking && ! $hasSmallDatasetModifier;
+    }
+
+    /**
+     * Check if the expression chain originates from a static call (e.g., User::all()).
+     * This helps distinguish Eloquent calls from instance method calls like $request->all().
+     */
+    private function isStaticCallChain(Node\Expr $expr): bool
+    {
+        $current = $expr;
+
+        while ($current instanceof Node\Expr\MethodCall) {
+            $current = $current->var;
+        }
+
+        return $current instanceof Node\Expr\StaticCall;
     }
 
     private function getMethodChain(Node\Expr $expr): array

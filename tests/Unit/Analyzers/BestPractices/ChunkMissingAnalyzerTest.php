@@ -643,6 +643,131 @@ PHP;
         $this->assertFailed($result);
     }
 
+    public function test_passes_with_request_all(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+
+class UserController
+{
+    public function store(Request $request)
+    {
+        // $request->all() returns HTTP input, NOT database records
+        foreach ($request->all() as $key => $value) {
+            // Process form input
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_config_get(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ConfigService
+{
+    public function loadSettings()
+    {
+        // config()->get() returns config values, NOT database records
+        $settings = config()->get('app.settings', []);
+        foreach ($settings as $key => $value) {
+            // Process config
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ConfigService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_collect_all(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DataService
+{
+    public function processArray(array $items)
+    {
+        // collect()->all() creates collection from array, NOT from database
+        foreach (collect($items)->all() as $item) {
+            // Process item
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DataService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_detects_static_model_all(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function processUsers()
+    {
+        // User::all() IS a database call and SHOULD be flagged
+        foreach (User::all() as $user) {
+            // Process user
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
     public function test_grammar_singular_vs_plural(): void
     {
         // Test singular

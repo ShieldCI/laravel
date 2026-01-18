@@ -163,6 +163,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         'only', 'except', 'makevisible', 'makehidden',
         'append', 'setappends', 'getappends',
         'fill', 'forcefill', 'qualify', 'qualifycolumn',
+        'relationloaded', // Defensive N+1 check method
         // Common accessors/mutators patterns
         'getformattedattribute', 'format', 'formatted',
         // Collection/array methods
@@ -192,6 +193,14 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      * @var array<string, array<string>>
      */
     private array $eagerLoadedRelationships = [];
+
+    /**
+     * Track relationships checked with relationLoaded() per loop variable.
+     * Key format: "loopVariable:relationship"
+     *
+     * @var array<string, bool>
+     */
+    private array $relationLoadedChecks = [];
 
     public function __construct() {}
 
@@ -291,6 +300,20 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             $loopVariable = $currentLoop['variable'];
             $loopType = $currentLoop['type'];
 
+            // Track relationLoaded() calls as defensive patterns
+            if ($node instanceof Expr\MethodCall &&
+                $node->var instanceof Expr\Variable &&
+                is_string($node->var->name) &&
+                $node->var->name === $loopVariable &&
+                $node->name instanceof Node\Identifier &&
+                $node->name->toString() === 'relationLoaded' &&
+                ! empty($node->args) &&
+                $node->args[0]->value instanceof Node\Scalar\String_) {
+
+                $relationship = $node->args[0]->value->value;
+                $this->relationLoadedChecks[$loopVariable.':'.$relationship] = true;
+            }
+
             // Look for property access like $post->user, $post->comments, or $post->user->team
             if ($node instanceof Expr\PropertyFetch) {
                 // Build full relationship chain (e.g., ['user', 'team'] for $post->user->team)
@@ -304,8 +327,12 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
                     // Check if the last property looks like a relationship
                     if ($this->looksLikeRelationship($lastProperty)) {
-                        // Only flag if NOT eager loaded
-                        if (! $this->isEagerLoaded($loopVariable, $relationshipPath)) {
+                        // Get the first relationship in the chain (e.g., 'user' from 'user.team')
+                        $firstRelationship = $chain[0];
+
+                        // Only flag if NOT eager loaded AND NOT checked with relationLoaded()
+                        if (! $this->isEagerLoaded($loopVariable, $relationshipPath) &&
+                            ! $this->isRelationLoadedChecked($loopVariable, $firstRelationship)) {
                             $this->issues[] = [
                                 'relationship' => $relationshipPath,
                                 'line' => $node->getStartLine(),
@@ -328,8 +355,9 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
                     // Check if this looks like a relationship method
                     if ($this->looksLikeRelationshipMethod($methodName)) {
-                        // Only flag if NOT eager loaded
-                        if (! $this->isEagerLoaded($loopVariable, $methodName)) {
+                        // Only flag if NOT eager loaded AND NOT checked with relationLoaded()
+                        if (! $this->isEagerLoaded($loopVariable, $methodName) &&
+                            ! $this->isRelationLoadedChecked($loopVariable, $methodName)) {
                             $this->issues[] = [
                                 'relationship' => $methodName,
                                 'line' => $node->getStartLine(),
@@ -347,13 +375,35 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
     public function leaveNode(Node $node)
     {
-        // Track loop exit - pop from stack
+        // Track loop exit - pop from stack and clear relationLoaded checks
         if ($node instanceof Stmt\Foreach_ || $node instanceof Stmt\For_ ||
             $node instanceof Stmt\While_ || $node instanceof Stmt\Do_) {
+
+            // Clear relationLoaded checks for the loop variable being exited
+            if ($node instanceof Stmt\Foreach_ &&
+                $node->valueVar instanceof Expr\Variable &&
+                is_string($node->valueVar->name)) {
+                $loopVar = $node->valueVar->name;
+                $this->clearRelationLoadedChecks($loopVar);
+            }
+
             array_pop($this->loopStack);
         }
 
         return null;
+    }
+
+    /**
+     * Clear relationLoaded checks for a specific loop variable.
+     */
+    private function clearRelationLoadedChecks(string $varName): void
+    {
+        $prefix = $varName.':';
+        foreach (array_keys($this->relationLoadedChecks) as $key) {
+            if (str_starts_with($key, $prefix)) {
+                unset($this->relationLoadedChecks[$key]);
+            }
+        }
     }
 
     /**
@@ -481,6 +531,17 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         }
 
         return in_array($relationship, $this->eagerLoadedRelationships[$varName], true);
+    }
+
+    /**
+     * Check if a relationship was checked with relationLoaded() for a variable.
+     *
+     * This indicates the developer is aware of the potential N+1 issue
+     * and has implemented defensive checking.
+     */
+    private function isRelationLoadedChecked(string $varName, string $relationship): bool
+    {
+        return isset($this->relationLoadedChecks[$varName.':'.$relationship]);
     }
 
     /**

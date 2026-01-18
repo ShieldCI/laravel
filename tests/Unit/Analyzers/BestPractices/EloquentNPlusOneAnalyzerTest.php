@@ -682,4 +682,231 @@ PHP;
         // Should detect multiple nested relationship issues
         $this->assertGreaterThanOrEqual(2, count($issues));
     }
+
+    public function test_passes_with_relation_loaded_check_in_if_condition(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            if ($post->relationLoaded('user')) {
+                echo $post->user->name;
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - developer checked with relationLoaded()
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_relation_loaded_in_ternary(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            $userName = $post->relationLoaded('user') ? $post->user->name : 'Unknown';
+            echo $userName;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - developer checked with relationLoaded()
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_relation_loaded_early_return(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            if (!$post->relationLoaded('user')) {
+                continue;
+            }
+            echo $post->user->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - developer checked with relationLoaded() before access
+        $this->assertPassed($result);
+    }
+
+    public function test_relation_loaded_does_not_protect_unrelated_relationships(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            if ($post->relationLoaded('user')) {
+                echo $post->user->name;
+            }
+            // Comments is NOT checked with relationLoaded()
+            echo $post->comments->count();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - comments relationship is not protected
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('comments', $result);
+    }
+
+    public function test_relation_loaded_protects_nested_relationships(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            if ($post->relationLoaded('user')) {
+                // Accessing nested relationships is also protected
+                echo $post->user->team->name;
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - the first relationship in chain (user) was checked
+        $this->assertPassed($result);
+    }
+
+    public function test_relation_loaded_check_does_not_leak_between_loops(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+        $comments = Comment::all();
+
+        foreach ($posts as $post) {
+            if ($post->relationLoaded('author')) {
+                echo $post->author->name;
+            }
+        }
+
+        // New loop - relationLoaded check from previous loop should not apply
+        foreach ($comments as $comment) {
+            echo $comment->author->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - the second loop's author access is not protected
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('author', $result);
+    }
 }

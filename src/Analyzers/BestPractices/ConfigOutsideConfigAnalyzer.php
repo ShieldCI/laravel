@@ -334,9 +334,9 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
         // Matches: dev.example.com, api.dev.example.com, api-dev.example.com
         // Avoids false positives like: devon.example.com, devops.example.com
         foreach (self::ENV_MARKERS as $marker) {
-            if (str_starts_with($host, $marker . '.')
-                || str_contains($host, '.' . $marker . '.')
-                || str_contains($host, '-' . $marker . '.')) {
+            if (str_starts_with($host, $marker.'.')
+                || str_contains($host, '.'.$marker.'.')
+                || str_contains($host, '-'.$marker.'.')) {
                 return true;
             }
         }

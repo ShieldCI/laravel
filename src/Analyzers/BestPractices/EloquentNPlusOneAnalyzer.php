@@ -119,10 +119,59 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
     /** @var array<string> Common model properties that are not relationships */
     private const EXCLUDED_PROPERTIES = [
-        'id', 'created_at', 'updated_at', 'deleted_at', 'name', 'email',
-        'password', 'remember_token', 'email_verified_at', 'title', 'content',
-        'description', 'status', 'type', 'value', 'data', 'meta', 'slug',
-        'count', 'total', 'amount', 'price', 'quantity', 'active', 'enabled',
+        // Primary keys and identifiers
+        'id', 'uuid', 'key', 'code', 'token', 'hash', 'reference',
+        // Timestamps
+        'created_at', 'updated_at', 'deleted_at', 'published_at', 'expires_at',
+        'verified_at', 'email_verified_at', 'started_at', 'ended_at', 'sent_at',
+        // Authentication
+        'password', 'remember_token', 'api_token', 'secret',
+        // Common string fields
+        'name', 'title', 'label', 'slug', 'email', 'username', 'nickname',
+        'description', 'content', 'body', 'text', 'summary', 'excerpt', 'message',
+        // URLs and paths
+        'url', 'path', 'link', 'href', 'src', 'route',
+        // Media
+        'image', 'avatar', 'photo', 'picture', 'icon', 'thumbnail', 'logo', 'file',
+        // Contact info
+        'phone', 'address', 'street', 'city', 'state', 'country', 'zip', 'postal_code',
+        // Localization
+        'locale', 'timezone', 'currency', 'lang', 'language',
+        // Numeric values
+        'count', 'total', 'amount', 'price', 'quantity', 'balance', 'score', 'rating',
+        'order', 'position', 'sort', 'rank', 'level', 'priority', 'weight', 'size',
+        // Status and flags (values, not prefixed booleans)
+        'status', 'state', 'type', 'kind', 'category', 'role', 'group',
+        'active', 'enabled', 'visible', 'published', 'approved', 'verified',
+        // JSON/array fields
+        'data', 'meta', 'metadata', 'settings', 'options', 'config', 'attributes',
+        'properties', 'payload', 'extra', 'info', 'details', 'preferences',
+        // Miscellaneous
+        'value', 'result', 'output', 'input', 'response', 'request',
+        'color', 'format', 'version', 'note', 'notes', 'comment', 'reason',
+    ];
+
+    /** @var array<string> Common methods that are not relationship accessors */
+    private const EXCLUDED_METHODS = [
+        // Eloquent model methods
+        'save', 'delete', 'update', 'refresh', 'replicate', 'touch',
+        'toarray', 'tojson', 'tobase', 'jsonserialize',
+        'getkey', 'getkeyname', 'getkeytype', 'getqualifiedkeyname',
+        'getattribute', 'setattribute', 'getattributes', 'getoriginal',
+        'getdirty', 'getchanges', 'getrelations', 'getrelation',
+        'isdirty', 'isclean', 'waschanged', 'getraworiginal',
+        'only', 'except', 'makevisible', 'makehidden',
+        'append', 'setappends', 'getappends',
+        'fill', 'forcefill', 'qualify', 'qualifycolumn',
+        // Common accessors/mutators patterns
+        'getformattedattribute', 'format', 'formatted',
+        // Collection/array methods
+        'first', 'last', 'get', 'all', 'pluck', 'map', 'filter', 'each',
+        'count', 'sum', 'avg', 'min', 'max', 'isempty', 'isnotempty',
+        // Validation and checks
+        'validate', 'isvalid', 'exists',
+        // String representation
+        'tostring', '__tostring', 'render', 'display',
     ];
 
     /**
@@ -277,7 +326,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     $methodName = $node->name->toString();
 
                     // Check if this looks like a relationship method
-                    if ($this->looksLikeRelationship($methodName)) {
+                    if ($this->looksLikeRelationshipMethod($methodName)) {
                         // Only flag if NOT eager loaded
                         if (! $this->isEagerLoaded($loopVariable, $methodName)) {
                             $this->issues[] = [
@@ -427,18 +476,97 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Check if property/method name looks like an Eloquent relationship.
+     * Check if property name looks like an Eloquent relationship.
      */
     private function looksLikeRelationship(string $name): bool
     {
+        $lowerName = strtolower($name);
+
         // Exclude common non-relationship properties
-        if (in_array(strtolower($name), self::EXCLUDED_PROPERTIES, true)) {
+        if (in_array($lowerName, self::EXCLUDED_PROPERTIES, true)) {
             return false;
         }
 
-        // Relationships often use singular or plural nouns
-        // This is a heuristic - not perfect but catches common cases
+        // Exclude naming convention patterns that indicate non-relationships
+
+        // Foreign key pattern: *_id (user_id, post_id, etc.)
+        if (str_ends_with($lowerName, '_id')) {
+            return false;
+        }
+
+        // Timestamp pattern: *_at (published_at, verified_at, etc.)
+        if (str_ends_with($lowerName, '_at')) {
+            return false;
+        }
+
+        // Boolean prefix patterns: is_*, has_*, can_*, should_*, was_*, will_*
+        if (preg_match('/^(is|has|can|should|was|will)_/', $lowerName)) {
+            return false;
+        }
+
+        // Count/total suffix patterns: *_count, *_total, *_sum, *_avg
+        if (preg_match('/_(count|total|sum|avg|min|max)$/', $lowerName)) {
+            return false;
+        }
+
+        // Raw/original prefix patterns: raw_*, original_*
+        if (preg_match('/^(raw|original)_/', $lowerName)) {
+            return false;
+        }
+
+        // Cached/computed prefix patterns: cached_*, computed_*
+        if (preg_match('/^(cached|computed|calculated)_/', $lowerName)) {
+            return false;
+        }
+
+        // Single character names are unlikely to be relationships
+        if (strlen($name) === 1) {
+            return false;
+        }
+
+        // Names starting with underscore are typically internal
+        if (str_starts_with($name, '_')) {
+            return false;
+        }
+
+        // Relationships are typically nouns - this is a heuristic
         return true;
+    }
+
+    /**
+     * Check if method name looks like a relationship accessor method.
+     */
+    private function looksLikeRelationshipMethod(string $name): bool
+    {
+        $lowerName = strtolower($name);
+
+        // Exclude known non-relationship methods
+        if (in_array($lowerName, self::EXCLUDED_METHODS, true)) {
+            return false;
+        }
+
+        // Exclude getter/setter patterns: get*, set*
+        if (preg_match('/^(get|set)[A-Z]/', $name)) {
+            return false;
+        }
+
+        // Exclude accessor attribute pattern: *Attribute (Laravel accessor convention)
+        if (str_ends_with($name, 'Attribute')) {
+            return false;
+        }
+
+        // Exclude scope methods: scope*
+        if (str_starts_with($lowerName, 'scope')) {
+            return false;
+        }
+
+        // Exclude boot/booted methods
+        if (str_starts_with($lowerName, 'boot')) {
+            return false;
+        }
+
+        // Apply same property heuristics
+        return $this->looksLikeRelationship($name);
     }
 
     /**

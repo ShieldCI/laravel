@@ -943,4 +943,210 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('author', $result);
     }
+
+    public function test_detects_query_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $orders = Order::where('user_id', $user->id)->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Order::where', $result);
+    }
+
+    public function test_detects_find_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $userIds = [1, 2, 3, 4, 5];
+
+        foreach ($userIds as $userId) {
+            $user = User::find($userId);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('User::find', $result);
+    }
+
+    public function test_detects_first_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class OrderController
+{
+    public function index()
+    {
+        $items = Item::all();
+
+        foreach ($items as $item) {
+            $product = Product::where('sku', $item->sku)->first();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/OrderController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Product::where', $result);
+    }
+
+    public function test_detects_multiple_queries_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class ReportController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $orders = Order::where('user_id', $user->id)->get();
+            $payments = Payment::where('user_id', $user->id)->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/ReportController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertGreaterThanOrEqual(2, count($issues));
+    }
+
+    public function test_passes_when_query_is_outside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+        $allOrders = Order::all(); // Query outside loop is fine
+
+        foreach ($users as $user) {
+            echo $user->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_count_aggregate_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class StatsController
+{
+    public function index()
+    {
+        $categories = Category::all();
+
+        foreach ($categories as $category) {
+            $productCount = Product::where('category_id', $category->id)->count();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/StatsController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Product::where', $result);
+    }
 }

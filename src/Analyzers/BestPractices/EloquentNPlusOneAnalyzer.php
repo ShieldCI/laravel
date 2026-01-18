@@ -76,6 +76,22 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
                         ]
                     );
                 }
+
+                // Process query-inside-loop issues
+                foreach ($visitor->getQueryIssues() as $issue) {
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: "N+1 query: executing '{$issue['query']}' inside loop",
+                        filePath: $file,
+                        lineNumber: $issue['line'],
+                        severity: Severity::High,
+                        recommendation: $this->getQueryRecommendation($issue['query'], $issue['loop_type']),
+                        metadata: [
+                            'query' => $issue['query'],
+                            'loop_type' => $issue['loop_type'],
+                            'file' => $file,
+                        ]
+                    );
+                }
             } catch (\Throwable $e) {
                 // Skip files that can't be parsed
                 continue;
@@ -95,11 +111,19 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Get recommendation for N+1 issue.
+     * Get recommendation for relationship N+1 issue.
      */
     private function getRecommendation(string $relationship, string $loopType): string
     {
         return "Accessing the '{$relationship}' relationship inside a {$loopType} will trigger a separate database query for each iteration, causing an N+1 query problem. ";
+    }
+
+    /**
+     * Get recommendation for query-inside-loop N+1 issue.
+     */
+    private function getQueryRecommendation(string $query, string $loopType): string
+    {
+        return "Executing '{$query}' inside a {$loopType} triggers a separate database query for each iteration. Consider fetching all required data before the loop using whereIn() or eager loading, then filter in-memory.";
     }
 }
 
@@ -179,6 +203,11 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      * @var array<int, array{relationship: string, line: int, loop_type: string, variable: string}>
      */
     private array $issues = [];
+
+    /**
+     * @var array<int, array{query: string, line: int, loop_type: string}>
+     */
+    private array $queryIssues = [];
 
     /**
      * Stack of loop contexts (for nested loop support).
@@ -365,6 +394,48 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                                 'variable' => $loopVariable,
                             ];
                         }
+                    }
+                }
+            }
+        }
+
+        // Detect queries inside loops (classic N+1 pattern)
+        if (! empty($this->loopStack)) {
+            $currentLoop = $this->getCurrentLoop();
+            $loopType = $currentLoop !== null ? $currentLoop['type'] : 'loop';
+
+            // Check for static method calls that execute queries: Model::where()->get(), Model::find(), etc.
+            if ($node instanceof Expr\StaticCall && $node->class instanceof Node\Name) {
+                $className = $node->class->toString();
+
+                // Skip DB facade - handled separately
+                if ($className !== 'DB' && $node->name instanceof Node\Identifier) {
+                    $methodName = $node->name->toString();
+
+                    // Direct query execution methods
+                    if ($this->isQueryExecutionMethod($methodName)) {
+                        $this->queryIssues[] = [
+                            'query' => "{$className}::{$methodName}()",
+                            'line' => $node->getStartLine(),
+                            'loop_type' => $loopType,
+                        ];
+                    }
+                }
+            }
+
+            // Check for method chains ending in query execution: Model::where()->get()
+            if ($node instanceof Expr\MethodCall && $node->name instanceof Node\Identifier) {
+                $methodName = $node->name->toString();
+
+                if ($this->isQueryExecutionMethod($methodName)) {
+                    // Walk up the chain to find if it starts with a static call (Model::)
+                    $queryDescription = $this->getQueryChainDescription($node);
+                    if ($queryDescription !== null) {
+                        $this->queryIssues[] = [
+                            'query' => $queryDescription,
+                            'line' => $node->getStartLine(),
+                            'loop_type' => $loopType,
+                        ];
                     }
                 }
             }
@@ -693,6 +764,61 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     }
 
     /**
+     * Check if a method name executes a database query.
+     */
+    private function isQueryExecutionMethod(string $methodName): bool
+    {
+        $executionMethods = [
+            // Retrieval methods
+            'get', 'first', 'find', 'findorfail', 'findormany', 'findornew',
+            'firstor', 'firstorfail', 'firstornew', 'firstorcreate', 'firstwhere',
+            'sole', 'all', 'value', 'pluck', 'cursor', 'lazy', 'lazybychunksof',
+            // Aggregates
+            'count', 'sum', 'avg', 'average', 'min', 'max', 'exists', 'doesntexist',
+            // Modification methods that also query
+            'updateorcreate', 'upsert',
+            // Chunk methods (still query per chunk)
+            'chunk', 'chunkbyid', 'each', 'eachbyid',
+        ];
+
+        return in_array(strtolower($methodName), $executionMethods, true);
+    }
+
+    /**
+     * Get a description of a query chain starting from a static call.
+     *
+     * Walks up the method chain to find if it starts with Model::query() or Model::where() etc.
+     */
+    private function getQueryChainDescription(Expr\MethodCall $node): ?string
+    {
+        $current = $node->var;
+
+        // Walk up the chain
+        while ($current instanceof Expr\MethodCall) {
+            $current = $current->var;
+        }
+
+        // Check if chain starts with a static call (Model::where, Model::query, etc.)
+        if ($current instanceof Expr\StaticCall && $current->class instanceof Node\Name) {
+            $className = $current->class->toString();
+
+            // Skip DB facade
+            if ($className === 'DB') {
+                return null;
+            }
+
+            if ($current->name instanceof Node\Identifier) {
+                $startMethod = $current->name->toString();
+                $endMethod = $node->name instanceof Node\Identifier ? $node->name->toString() : 'unknown';
+
+                return "{$className}::{$startMethod}()->...{$endMethod}()";
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Get collected issues.
      *
      * @return array<int, array{relationship: string, line: int, loop_type: string, variable: string}>
@@ -707,6 +833,28 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             // Include variable name to prevent false deduplication across different variables
             // Don't include line to deduplicate same relationship accessed multiple times
             $key = $issue['variable'].'_'.$issue['relationship'];
+            if (! isset($seen[$key])) {
+                $unique[] = $issue;
+                $seen[$key] = true;
+            }
+        }
+
+        return $unique;
+    }
+
+    /**
+     * Get collected query issues (queries executed inside loops).
+     *
+     * @return array<int, array{query: string, line: int, loop_type: string}>
+     */
+    public function getQueryIssues(): array
+    {
+        // Deduplicate by query description and line
+        $unique = [];
+        $seen = [];
+
+        foreach ($this->queryIssues as $issue) {
+            $key = $issue['query'].'_'.$issue['line'];
             if (! isset($seen[$key])) {
                 $unique[] = $issue;
                 $seen[$key] = true;

@@ -221,7 +221,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             if ($node->var instanceof Expr\Variable &&
                 is_string($node->var->name) &&
                 $node->name instanceof Node\Identifier &&
-                $node->name->toString() === 'load') {
+                in_array($node->name->toString(), ['load', 'loadMissing'], true)) {
 
                 $varName = $node->var->name;
                 $relationships = $this->extractRelationshipsFromEagerLoadCall($node);
@@ -475,7 +475,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         }
 
         $methodName = $expr->name->toString();
-        if ($methodName !== 'with' && $methodName !== 'load') {
+        if (! in_array($methodName, ['with', 'load', 'loadMissing'], true)) {
             return [];
         }
 

@@ -335,6 +335,40 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_passes_when_load_missing_used(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+        $posts->loadMissing('user');
+
+        foreach ($posts as $post) {
+            echo $post->user->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_handles_parse_errors_gracefully(): void
     {
         $code = <<<'PHP'

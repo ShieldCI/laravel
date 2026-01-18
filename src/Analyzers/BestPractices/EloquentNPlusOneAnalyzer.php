@@ -291,22 +291,23 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             $loopVariable = $currentLoop['variable'];
             $loopType = $currentLoop['type'];
 
-            // Look for property access like $post->user or $post->comments
+            // Look for property access like $post->user, $post->comments, or $post->user->team
             if ($node instanceof Expr\PropertyFetch) {
-                // Check if accessing property on loop variable
-                if ($node->var instanceof Expr\Variable &&
-                    is_string($node->var->name) &&
-                    $node->var->name === $loopVariable &&
-                    $node->name instanceof Node\Identifier) {
+                // Build full relationship chain (e.g., ['user', 'team'] for $post->user->team)
+                $chain = $this->buildRelationshipChain($node, $loopVariable);
 
-                    $propertyName = $node->name->toString();
+                if ($chain !== null && count($chain) > 0) {
+                    // Build dot notation path: 'user.team'
+                    $relationshipPath = implode('.', $chain);
+                    /** @var string $lastProperty */
+                    $lastProperty = end($chain);
 
-                    // Check if this looks like a relationship (not typical model properties)
-                    if ($this->looksLikeRelationship($propertyName)) {
+                    // Check if the last property looks like a relationship
+                    if ($this->looksLikeRelationship($lastProperty)) {
                         // Only flag if NOT eager loaded
-                        if (! $this->isEagerLoaded($loopVariable, $propertyName)) {
+                        if (! $this->isEagerLoaded($loopVariable, $relationshipPath)) {
                             $this->issues[] = [
-                                'relationship' => $propertyName,
+                                'relationship' => $relationshipPath,
                                 'line' => $node->getStartLine(),
                                 'loop_type' => $loopType,
                                 'variable' => $loopVariable,
@@ -439,28 +440,35 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     /**
      * Parse relationship argument (string or array).
      *
+     * Expands dot notation so 'user.team' becomes ['user', 'user.team'].
+     *
      * @return array<string>
      */
     private function parseRelationshipArgument(Node $arg): array
     {
+        $rawRelationships = [];
+
         // Handle array of relationships: with(['user', 'comments'])
         if ($arg instanceof Expr\Array_) {
-            $relationships = [];
             foreach ($arg->items as $item) {
                 if ($item !== null && $item->value instanceof Node\Scalar\String_) {
-                    $relationships[] = $item->value->value;
+                    $rawRelationships[] = $item->value->value;
                 }
             }
-
-            return $relationships;
         }
 
         // Handle single relationship: with('user')
         if ($arg instanceof Node\Scalar\String_) {
-            return [$arg->value];
+            $rawRelationships[] = $arg->value;
         }
 
-        return [];
+        // Expand dot notation relationships
+        $expanded = [];
+        foreach ($rawRelationships as $relationship) {
+            $expanded = array_merge($expanded, $this->expandDotNotation($relationship));
+        }
+
+        return array_unique($expanded);
     }
 
     /**
@@ -473,6 +481,60 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         }
 
         return in_array($relationship, $this->eagerLoadedRelationships[$varName], true);
+    }
+
+    /**
+     * Build relationship chain from nested PropertyFetch nodes.
+     *
+     * Example: $post->user->team returns ['user', 'team']
+     *
+     * @return array<string>|null Array of property names in order, or null if not starting with loop variable
+     */
+    private function buildRelationshipChain(Expr\PropertyFetch $node, string $loopVariable): ?array
+    {
+        $chain = [];
+        /** @var Node $current */
+        $current = $node;
+
+        // Walk up the PropertyFetch chain
+        while ($current instanceof Expr\PropertyFetch) {
+            if ($current->name instanceof Node\Identifier) {
+                array_unshift($chain, $current->name->toString());
+            } else {
+                return null; // Dynamic property access, can't analyze
+            }
+            $current = $current->var;
+        }
+
+        // Check if chain starts with loop variable
+        if ($current instanceof Expr\Variable &&
+            is_string($current->name) &&
+            $current->name === $loopVariable) {
+            return $chain;
+        }
+
+        return null;
+    }
+
+    /**
+     * Expand dot notation relationship into all intermediate paths.
+     *
+     * Example: 'user.team.company' returns ['user', 'user.team', 'user.team.company']
+     *
+     * @return array<string>
+     */
+    private function expandDotNotation(string $relationship): array
+    {
+        $parts = explode('.', $relationship);
+        $expanded = [];
+        $path = '';
+
+        foreach ($parts as $part) {
+            $path = $path === '' ? $part : $path.'.'.$part;
+            $expanded[] = $path;
+        }
+
+        return $expanded;
     }
 
     /**

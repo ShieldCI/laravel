@@ -438,4 +438,248 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    public function test_detects_nested_relationship_n_plus_one(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::with('user')->get();
+
+        foreach ($posts as $post) {
+            // user is eager loaded, but user->team is not
+            echo $post->user->team->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('user.team', $result);
+    }
+
+    public function test_passes_with_dot_notation_eager_loading(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::with('user.team')->get();
+
+        foreach ($posts as $post) {
+            echo $post->user->team->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_partial_eager_loading_missing_nested(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        // Only 'user' is eager loaded, not 'user.profile'
+        $posts = Post::with('user')->get();
+
+        foreach ($posts as $post) {
+            echo $post->user->profile->bio; // N+1 on profile
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('user.profile', $result);
+    }
+
+    public function test_handles_deep_nested_relationships(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            // Deep nesting: 4 levels
+            echo $post->user->team->department->company->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        // Should detect the deepest nested relationship that looks like a relationship
+        $this->assertHasIssueContaining('user.team.department.company', $result);
+    }
+
+    public function test_passes_with_deep_dot_notation_eager_loading(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::with('user.team.department')->get();
+
+        foreach ($posts as $post) {
+            echo $post->user->team->department->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_nested_chain_ending_with_property_is_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::with('user')->get();
+
+        foreach ($posts as $post) {
+            // 'name' is a property, not a relationship
+            echo $post->user->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because 'user' is eager loaded and 'name' is a property
+        $this->assertPassed($result);
+    }
+
+    public function test_multiple_nested_relationships_detected(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            echo $post->user->team->name;       // N+1 on user.team
+            echo $post->category->parent->name; // N+1 on category.parent
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        // Should detect multiple nested relationship issues
+        $this->assertGreaterThanOrEqual(2, count($issues));
+    }
 }

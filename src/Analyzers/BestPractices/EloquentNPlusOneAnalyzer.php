@@ -550,12 +550,20 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             return [];
         }
 
-        // Extract relationships from the argument
+        // Extract relationships from all arguments (Laravel supports variadic: with('user', 'comments'))
         if (empty($expr->args)) {
             return [];
         }
 
-        return $this->parseRelationshipArgument($expr->args[0]->value);
+        $relationships = [];
+        foreach ($expr->args as $arg) {
+            $relationships = array_merge(
+                $relationships,
+                $this->parseRelationshipArgument($arg->value)
+            );
+        }
+
+        return array_unique($relationships);
     }
 
     /**

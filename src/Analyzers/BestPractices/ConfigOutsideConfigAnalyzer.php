@@ -170,8 +170,8 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
     /** @var int Maximum characters to display in URL messages */
     private const URL_DISPLAY_LENGTH = 50;
 
-    /** @var array<string> Domain markers indicating environment-specific URLs */
-    private const ENV_DOMAIN_MARKERS = ['dev.', 'staging.', 'test.', 'local.', '-dev.', '-staging.', '-test.', '-local.'];
+    /** @var array<string> Environment marker names (matched with boundary-aware logic) */
+    private const ENV_MARKERS = ['dev', 'staging', 'test', 'local', 'qa'];
 
     /** @var array<string> Path markers indicating environment-specific URLs */
     private const ENV_PATH_MARKERS = ['/dev/', '/staging/', '/test/', '/local/', '/sandbox/'];
@@ -330,9 +330,13 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
             return true;
         }
 
-        // Check for environment markers in domain (e.g., dev.api.example.com, api-staging.example.com)
-        foreach (self::ENV_DOMAIN_MARKERS as $marker) {
-            if (str_contains($host, $marker)) {
+        // Check for environment markers in domain with boundary-aware matching
+        // Matches: dev.example.com, api.dev.example.com, api-dev.example.com
+        // Avoids false positives like: devon.example.com, devops.example.com
+        foreach (self::ENV_MARKERS as $marker) {
+            if (str_starts_with($host, $marker . '.')
+                || str_contains($host, '.' . $marker . '.')
+                || str_contains($host, '-' . $marker . '.')) {
                 return true;
             }
         }

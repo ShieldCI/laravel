@@ -187,7 +187,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         'only', 'except', 'makevisible', 'makehidden',
         'append', 'setappends', 'getappends',
         'fill', 'forcefill', 'qualify', 'qualifycolumn',
-        'relationloaded', // Defensive N+1 check method
+        'relationloaded', // Checks if relation is loaded (not a relationship itself)
         // Common accessors/mutators patterns
         'getformattedattribute', 'format', 'formatted',
         // Collection/array methods

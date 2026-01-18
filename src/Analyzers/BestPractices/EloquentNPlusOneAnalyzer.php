@@ -258,10 +258,10 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                 if (! empty($relationships)) {
                     // Merge with existing eager loaded relationships
                     if (isset($this->eagerLoadedRelationships[$varName])) {
-                        $this->eagerLoadedRelationships[$varName] = array_merge(
+                        $this->eagerLoadedRelationships[$varName] = array_values(array_unique(array_merge(
                             $this->eagerLoadedRelationships[$varName],
                             $relationships
-                        );
+                        )));
                     } else {
                         $this->eagerLoadedRelationships[$varName] = $relationships;
                     }

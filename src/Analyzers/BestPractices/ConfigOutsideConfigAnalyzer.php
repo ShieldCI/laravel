@@ -33,6 +33,9 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
     /** @var array<string> User-configured excluded domains */
     private array $excludedDomains = [];
 
+    /** @var bool Whether to use strict URL detection (flag all non-excluded URLs) */
+    private bool $strictUrlDetection = false;
+
     public function __construct(
         private ParserInterface $parser,
         private Config $config
@@ -71,7 +74,7 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $visitor = new ConfigHardcodeVisitor($this->excludedDomains);
+                $visitor = new ConfigHardcodeVisitor($this->excludedDomains, $this->strictUrlDetection);
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
@@ -134,7 +137,7 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Load user-configured excluded domains.
+     * Load user-configured excluded domains and strict mode setting.
      */
     private function loadConfiguration(): void
     {
@@ -148,6 +151,9 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
         $this->excludedDomains = array_values(array_unique(
             array_filter(array_map([$this, 'normalizeDomain'], $userExcludedDomains))
         ));
+
+        // Load strict URL detection mode (default: false - heuristics-based)
+        $this->strictUrlDetection = (bool) ($analyzerConfig['strict_url_detection'] ?? false);
     }
 }
 
@@ -163,6 +169,15 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
 
     /** @var int Maximum characters to display in URL messages */
     private const URL_DISPLAY_LENGTH = 50;
+
+    /** @var array<string> Domain markers indicating environment-specific URLs */
+    private const ENV_DOMAIN_MARKERS = ['dev.', 'staging.', 'test.', 'local.', '-dev.', '-staging.', '-test.', '-local.'];
+
+    /** @var array<string> Path markers indicating environment-specific URLs */
+    private const ENV_PATH_MARKERS = ['/dev/', '/staging/', '/test/', '/local/', '/sandbox/'];
+
+    /** @var array<int> Standard HTTP ports (non-standard ports suggest dev/test environments) */
+    private const STANDARD_PORTS = [80, 443];
 
     /** @var array<string> Default domains to exclude from URL detection */
     public const DEFAULT_EXCLUDED_DOMAINS = [
@@ -207,13 +222,20 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
     /** @var array<string> Merged excluded domains */
     private array $excludedDomains;
 
-    /** @param array<string> $additionalExcludedDomains Extra domains to exclude (merged with defaults) */
-    public function __construct(array $additionalExcludedDomains = [])
+    /** @var bool Whether to use strict URL detection mode */
+    private bool $strictMode;
+
+    /**
+     * @param  array<string>  $additionalExcludedDomains  Extra domains to exclude (merged with defaults)
+     * @param  bool  $strictMode  When true, flags all non-excluded URLs; when false (default), only flags URLs with environment markers
+     */
+    public function __construct(array $additionalExcludedDomains = [], bool $strictMode = false)
     {
         $this->excludedDomains = array_merge(
             self::DEFAULT_EXCLUDED_DOMAINS,
             $additionalExcludedDomains
         );
+        $this->strictMode = $strictMode;
     }
 
     public function enterNode(Node $node): ?Node
@@ -278,7 +300,7 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
             }
         }
 
-        // Detect localhost URLs (should be configured)
+        // Detect localhost URLs (should always be configured)
         if (preg_match('/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/', $value)) {
             return true;
         }
@@ -288,8 +310,46 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
             return true;
         }
 
-        // Any other http/https URL should be in config
-        return true;
+        // In strict mode, flag all remaining URLs
+        if ($this->strictMode) {
+            return true;
+        }
+
+        // In non-strict mode (default), only flag URLs with environment-specific markers
+        return $this->hasEnvironmentMarkers($value, $host);
+    }
+
+    /**
+     * Check if a URL has environment-specific markers (non-strict mode heuristics).
+     */
+    private function hasEnvironmentMarkers(string $url, string $host): bool
+    {
+        // Check for non-standard port (suggests dev/test environment)
+        $port = parse_url($url, PHP_URL_PORT);
+        if ($port !== null && ! in_array($port, self::STANDARD_PORTS, true)) {
+            return true;
+        }
+
+        // Check for environment markers in domain (e.g., dev.api.example.com, api-staging.example.com)
+        foreach (self::ENV_DOMAIN_MARKERS as $marker) {
+            if (str_contains($host, $marker)) {
+                return true;
+            }
+        }
+
+        // Check for environment markers in path (e.g., /api/staging/users)
+        $path = parse_url($url, PHP_URL_PATH);
+        if (is_string($path)) {
+            $lowerPath = strtolower($path);
+            foreach (self::ENV_PATH_MARKERS as $marker) {
+                if (str_contains($lowerPath, $marker)) {
+                    return true;
+                }
+            }
+        }
+
+        // No environment markers found - likely a stable third-party API
+        return false;
     }
 
     /** @var array<string> Common CSS/UI keywords that indicate non-secrets */

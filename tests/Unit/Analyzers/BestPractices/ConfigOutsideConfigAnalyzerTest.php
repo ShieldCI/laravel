@@ -92,9 +92,9 @@ PHP;
         $this->assertHasIssueContaining('API key', $result);
     }
 
-    public function test_detects_hardcoded_urls(): void
+    public function test_detects_hardcoded_urls_with_env_markers(): void
     {
-        // URL must not contain example.com, laravel.com, github.com, or stackoverflow.com
+        // URL with environment marker in domain (dev.) - should be flagged in default mode
         $code = <<<'PHP'
 <?php
 
@@ -104,7 +104,7 @@ class WebhookService
 {
     public function getUrl()
     {
-        return 'https://api.production-server.com/webhook';
+        return 'https://dev.api.myapp.com/webhook';
     }
 }
 PHP;
@@ -436,6 +436,7 @@ PHP;
 
     public function test_detects_multiple_issues_in_one_file(): void
     {
+        // URL with non-standard port (environment marker) and API key
         $code = <<<'PHP'
 <?php
 
@@ -443,7 +444,7 @@ namespace App\Services;
 
 class PaymentService
 {
-    private $apiUrl = 'https://api.production.com/charge';
+    private $apiUrl = 'https://api.myapp.com:8080/charge';
     private $apiKey = 'sk_live_4eC39HqLyjWDarjtT1zdp7dc1234567890ABCDEFGH';
 }
 PHP;
@@ -914,7 +915,7 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_non_excluded_domains_still_flagged_with_custom_config(): void
+    public function test_non_excluded_domains_still_flagged_in_strict_mode(): void
     {
         $code = <<<'PHP'
 <?php
@@ -923,16 +924,17 @@ namespace App\Services;
 
 class ApiService
 {
-    // Not in custom exclusions
+    // Not in exclusions - flagged in strict mode even without env markers
     private $url = 'https://api.another-service.com/endpoint';
 }
 PHP;
 
         $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
 
-        // Only exclude stripe.com
+        // Enable strict mode to flag all non-excluded URLs
         $analyzer = $this->createAnalyzer([
             'excluded_domains' => ['stripe.com'],
+            'strict_url_detection' => true,
         ]);
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
@@ -967,5 +969,290 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    // === Heuristics-based URL Detection Tests ===
+
+    public function test_third_party_api_urls_not_flagged_in_default_mode(): void
+    {
+        // Third-party APIs without environment markers should NOT be flagged in default mode
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ThirdPartyService
+{
+    private $stripeUrl = 'https://api.stripe.com/v1/charges';
+    private $slackUrl = 'https://slack.com/api/chat.postMessage';
+    private $twilioUrl = 'https://api.twilio.com/2010-04-01/Accounts';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ThirdPartyService.php' => $code]);
+
+        // Default mode (strict_url_detection = false)
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_urls_with_dev_domain_marker_are_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    private $url = 'https://dev.myapp.com/api/users';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('URL', $result);
+    }
+
+    public function test_urls_with_staging_domain_marker_are_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    private $url = 'https://api-staging.myapp.com/webhook';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('URL', $result);
+    }
+
+    public function test_urls_with_test_path_marker_are_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    private $url = 'https://api.myapp.com/test/v1/users';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('URL', $result);
+    }
+
+    public function test_urls_with_non_standard_port_are_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    private $url = 'https://api.myapp.com:8080/users';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('URL', $result);
+    }
+
+    public function test_urls_with_port_3000_are_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    private $url = 'https://myapi.com:3000/endpoint';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('URL', $result);
+    }
+
+    public function test_standard_port_443_not_flagged_without_env_markers(): void
+    {
+        // URL with explicit port 443 (standard HTTPS) should NOT be flagged
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    private $url = 'https://api.someservice.com:443/endpoint';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_strict_mode_flags_all_urls(): void
+    {
+        // In strict mode, even clean third-party URLs should be flagged
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    private $url = 'https://api.cleanservice.com/v1/endpoint';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([
+            'strict_url_detection' => true,
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('URL', $result);
+    }
+
+    public function test_strict_mode_still_excludes_configured_domains(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    private $url = 'https://api.stripe.com/v1/charges';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([
+            'strict_url_detection' => true,
+            'excluded_domains' => ['stripe.com'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_urls_with_sandbox_path_marker_are_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class PaymentService
+{
+    private $url = 'https://api.paypal.com/sandbox/v1/payments';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/PaymentService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('URL', $result);
+    }
+
+    public function test_urls_with_local_domain_marker_are_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    private $url = 'https://local.myapp.com/api';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('URL', $result);
     }
 }

@@ -571,16 +571,31 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      *
      * Expands dot notation so 'user.team' becomes ['user', 'user.team'].
      *
+     * Handles both simple arrays and closure-keyed arrays:
+     * - with(['user', 'comments']) - relationship names as values
+     * - with(['user' => fn($q) => $q->select('id'), 'comments']) - relationship names as keys
+     *
      * @return array<string>
      */
     private function parseRelationshipArgument(Node $arg): array
     {
         $rawRelationships = [];
 
-        // Handle array of relationships: with(['user', 'comments'])
+        // Handle array of relationships: with(['user', 'comments']) or with(['user' => fn() => ...])
         if ($arg instanceof Expr\Array_) {
             foreach ($arg->items as $item) {
-                if ($item !== null && $item->value instanceof Node\Scalar\String_) {
+                if ($item === null) {
+                    continue;
+                }
+
+                // Check if relationship name is in the key (closure-keyed arrays)
+                // e.g., ['user' => fn($q) => $q->select('id')]
+                if ($item->key instanceof Node\Scalar\String_) {
+                    $rawRelationships[] = $item->key->value;
+                }
+                // Check if relationship name is in the value (simple arrays)
+                // e.g., ['user', 'comments']
+                elseif ($item->value instanceof Node\Scalar\String_) {
                     $rawRelationships[] = $item->value->value;
                 }
             }

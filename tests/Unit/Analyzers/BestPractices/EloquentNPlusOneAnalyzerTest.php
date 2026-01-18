@@ -1149,4 +1149,82 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('Product::where', $result);
     }
+
+    public function test_passes_with_closure_keyed_eager_loading(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::with([
+            'user' => fn ($q) => $q->select('id', 'name'),
+            'comments.author',
+        ])->get();
+
+        foreach ($posts as $post) {
+            echo $post->user->name;
+            echo $post->comments->first()->author->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_mixed_closure_and_string_eager_loading(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::with([
+            'user' => function ($query) {
+                $query->select('id', 'name', 'email');
+            },
+            'tags',
+            'category' => fn ($q) => $q->withCount('products'),
+        ])->get();
+
+        foreach ($posts as $post) {
+            echo $post->user->email;
+            echo $post->tags->pluck('name');
+            echo $post->category->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

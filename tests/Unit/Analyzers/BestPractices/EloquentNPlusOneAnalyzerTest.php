@@ -1759,4 +1759,326 @@ PHP;
         // Should fail - this is a legitimate N+1 query
         $this->assertFailed($result);
     }
+
+    public function test_for_loop_flags_query_using_counter_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $ids = [1, 2, 3, 4, 5];
+
+        for ($i = 0; $i < count($ids); $i++) {
+            // Query uses $i in array access - true N+1 pattern
+            $user = User::find($ids[$i]);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should flag - uses $i (counter variable) in query
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('User::find', $result);
+    }
+
+    public function test_for_loop_ignores_query_not_using_counter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        for ($i = 0; $i < 10; $i++) {
+            // Same query every iteration - doesn't use $i
+            $admins = User::where('role', 'admin')->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should NOT flag - query doesn't depend on $i
+        $this->assertPassed($result);
+    }
+
+    public function test_while_loop_flags_query_using_condition_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $page = 1;
+        $hasMore = true;
+
+        while ($hasMore && $page < 100) {
+            // Query uses $page - true N+1 pattern
+            $records = Record::where('page', $page)->get();
+            $page++;
+            $hasMore = count($records) > 0;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should flag - uses $page (condition variable) in query
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Record::where', $result);
+    }
+
+    public function test_while_loop_ignores_query_not_using_condition_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $hasMore = true;
+
+        while ($hasMore) {
+            // Same query every iteration - doesn't use $hasMore
+            $config = Config::get('key');
+            $hasMore = someExternalCheck();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should NOT flag - Config::get is not a query, and doesn't use $hasMore
+        $this->assertPassed($result);
+    }
+
+    public function test_do_while_flags_query_using_condition_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $cursor = 0;
+
+        do {
+            // Query uses $cursor - true N+1 pattern
+            $records = Record::where('id', '>', $cursor)->first();
+            $cursor = $records ? $records->id : null;
+        } while ($cursor !== null);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should flag - uses $cursor (condition variable) in query
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Record::where', $result);
+    }
+
+    public function test_do_while_ignores_query_not_using_condition_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $shouldContinue = true;
+
+        do {
+            // Same query every iteration - doesn't use $shouldContinue
+            $settings = Setting::where('key', 'default')->first();
+            $shouldContinue = someCheck();
+        } while ($shouldContinue);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should NOT flag - query doesn't depend on $shouldContinue
+        $this->assertPassed($result);
+    }
+
+    public function test_for_loop_with_no_init_does_not_flag(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $i = 0;
+        // For loop with no init expression
+        for (; $i < 10; $i++) {
+            $admins = User::where('role', 'admin')->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should NOT flag - can't track loop variable when init is empty
+        $this->assertPassed($result);
+    }
+
+    public function test_while_loop_with_method_call_condition_ignores_unrelated_query(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $iterator = new Iterator();
+
+        while ($iterator->hasNext()) {
+            // Query doesn't use iterator
+            $users = User::where('active', true)->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should NOT flag - query doesn't depend on $iterator
+        $this->assertPassed($result);
+    }
+
+    public function test_while_loop_with_method_call_condition_flags_related_query(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $iterator = new Iterator();
+
+        while ($iterator->hasNext()) {
+            // Query uses iterator
+            $record = Record::find($iterator->current());
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should flag - query uses $iterator
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Record::find', $result);
+    }
 }

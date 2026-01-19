@@ -228,7 +228,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     /**
      * Stack of loop contexts (for nested loop support).
      *
-     * @var array<int, array{variable: string|null, type: string}>
+     * @var array<int, array{variables: array<string>, type: string}>
      */
     private array $loopStack = [];
 
@@ -305,7 +305,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             }
 
             $this->loopStack[] = [
-                'variable' => $loopVariable,
+                'variables' => $loopVariable !== null ? [$loopVariable] : [],
                 'type' => self::LOOP_TYPE_FOREACH,
             ];
 
@@ -313,8 +313,9 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         }
 
         if ($node instanceof Stmt\For_) {
+            $loopVar = $this->extractForLoopVariable($node);
             $this->loopStack[] = [
-                'variable' => null,
+                'variables' => $loopVar !== null ? [$loopVar] : [],
                 'type' => self::LOOP_TYPE_FOR,
             ];
 
@@ -322,8 +323,9 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         }
 
         if ($node instanceof Stmt\While_) {
+            $condVars = $this->extractConditionVariables($node->cond);
             $this->loopStack[] = [
-                'variable' => null,
+                'variables' => $condVars,
                 'type' => self::LOOP_TYPE_WHILE,
             ];
 
@@ -331,18 +333,19 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         }
 
         if ($node instanceof Stmt\Do_) {
+            $condVars = $this->extractConditionVariables($node->cond);
             $this->loopStack[] = [
-                'variable' => null,
+                'variables' => $condVars,
                 'type' => self::LOOP_TYPE_DO_WHILE,
             ];
 
             return null;
         }
 
-        // Detect relationship access inside loops
+        // Detect relationship access inside loops (only foreach loops track relationship access)
         $currentLoop = $this->getCurrentLoop();
-        if ($currentLoop !== null && $currentLoop['variable'] !== null) {
-            $loopVariable = $currentLoop['variable'];
+        if ($currentLoop !== null && ! empty($currentLoop['variables']) && $currentLoop['type'] === self::LOOP_TYPE_FOREACH) {
+            $loopVariable = $currentLoop['variables'][0];
             $loopType = $currentLoop['type'];
 
             // Track relationLoaded() calls as defensive patterns
@@ -419,7 +422,6 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         if (! empty($this->loopStack)) {
             $currentLoop = $this->getCurrentLoop();
             $loopType = $currentLoop !== null ? $currentLoop['type'] : 'loop';
-            $loopVariable = $currentLoop !== null ? $currentLoop['variable'] : null;
 
             // Check for static method calls that execute queries: Model::where()->get(), Model::find(), etc.
             if ($node instanceof Expr\StaticCall && $node->class instanceof Node\Name) {
@@ -437,7 +439,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     // Direct query execution methods
                     if ($this->isQueryExecutionMethod($methodName)) {
                         // Only flag if query depends on loop variable (true N+1 pattern)
-                        if ($loopVariable === null || $this->chainReferencesVariable($node, $loopVariable)) {
+                        if ($this->queryDependsOnLoop($node, $currentLoop)) {
                             $this->queryIssues[] = [
                                 'query' => "{$className}::{$methodName}()",
                                 'line' => $node->getStartLine(),
@@ -457,7 +459,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     $queryDescription = $this->getQueryChainDescription($node);
                     if ($queryDescription !== null) {
                         // Only flag if query depends on loop variable (true N+1 pattern)
-                        if ($loopVariable === null || $this->chainReferencesVariable($node, $loopVariable)) {
+                        if ($this->queryDependsOnLoop($node, $currentLoop)) {
                             $this->queryIssues[] = [
                                 'query' => $queryDescription,
                                 'line' => $node->getStartLine(),
@@ -506,9 +508,100 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     }
 
     /**
+     * Extract loop variable from for loop init expression.
+     *
+     * e.g., for ($i = 0; ...) returns 'i'
+     */
+    private function extractForLoopVariable(Stmt\For_ $node): ?string
+    {
+        if (empty($node->init)) {
+            return null;
+        }
+
+        // Look for: $i = 0 or $i = ...
+        foreach ($node->init as $init) {
+            if ($init instanceof Expr\Assign &&
+                $init->var instanceof Expr\Variable &&
+                is_string($init->var->name)) {
+                return $init->var->name;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Extract variables from while/do-while condition.
+     *
+     * e.g., while ($page < $total) returns ['page', 'total']
+     *
+     * @return array<string>
+     */
+    private function extractConditionVariables(Node $condition): array
+    {
+        $variables = [];
+        $this->collectVariables($condition, $variables);
+
+        return array_unique($variables);
+    }
+
+    /**
+     * Recursively collect variable names from an AST node.
+     *
+     * @param  array<string>  $variables
+     */
+    private function collectVariables(Node $node, array &$variables): void
+    {
+        if ($node instanceof Expr\Variable && is_string($node->name)) {
+            $variables[] = $node->name;
+        }
+
+        foreach ($node->getSubNodeNames() as $name) {
+            $subNode = $node->{$name};
+            if ($subNode instanceof Node) {
+                $this->collectVariables($subNode, $variables);
+            } elseif (is_array($subNode)) {
+                foreach ($subNode as $item) {
+                    if ($item instanceof Node) {
+                        $this->collectVariables($item, $variables);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Check if a query chain depends on loop iteration.
+     *
+     * @param  array{variables: array<string>, type: string}|null  $loop
+     */
+    private function queryDependsOnLoop(Node $node, ?array $loop): bool
+    {
+        if ($loop === null) {
+            return false;
+        }
+
+        $loopVariables = $loop['variables'];
+
+        // If no loop variables tracked, can't determine dependency - don't flag
+        if (empty($loopVariables)) {
+            return false;
+        }
+
+        // Check if query references any loop variable
+        foreach ($loopVariables as $varName) {
+            if ($this->chainReferencesVariable($node, $varName)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Get the current loop context (innermost loop).
      *
-     * @return array{variable: string|null, type: string}|null
+     * @return array{variables: array<string>, type: string}|null
      */
     private function getCurrentLoop(): ?array
     {

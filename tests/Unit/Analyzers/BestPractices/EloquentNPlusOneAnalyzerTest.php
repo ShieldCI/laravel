@@ -1227,4 +1227,460 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    public function test_does_not_flag_cache_facade_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $cached = Cache::get('user_' . $user->id);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - Cache::get() is not a database query
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_config_facade_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $items = Item::all();
+
+        foreach ($items as $item) {
+            $setting = Config::get('app.timezone');
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - Config::get() is not a database query
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_session_facade_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $data = Session::get('user_data_' . $user->id);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - Session::get() is not a database query
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_query_not_dependent_on_loop_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            // This query doesn't use $user at all - same query repeated
+            $admins = Admin::where('active', true)->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - query doesn't depend on loop variable (wasteful but not N+1)
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_chunk_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            Order::where('user_id', $user->id)->chunk(100, function($orders) {
+                // Process chunk
+            });
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - chunk() is intentional batching
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_cursor_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            foreach (Order::where('user_id', $user->id)->cursor() as $order) {
+                // Process order
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - cursor() is memory-efficient streaming
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_lazy_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $orders = Order::where('user_id', $user->id)->lazy();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - lazy() is memory-efficient streaming
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_query_dependent_on_loop_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $orders = Order::where('user_id', $user->id)->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should FAIL - classic N+1, query depends on $user
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Order::where', $result);
+    }
+
+    public function test_flags_query_with_loop_variable_in_closure(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $orders = Order::where(fn($q) => $q->where('user_id', $user->id))->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should FAIL - closure captures loop variable
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Order::where', $result);
+    }
+
+    public function test_flags_query_with_loop_variable_in_arrow_function(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $orders = Order::whereHas('items', fn($q) => $q->where('buyer_id', $user->id))->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should FAIL - arrow function references loop variable
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Order::whereHas', $result);
+    }
+
+    public function test_does_not_flag_multiple_non_query_facades(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $cached = Cache::get('user_' . $user->id);
+            $setting = Config::get('users.default_role');
+            $session = Session::get('user_pref_' . $user->id);
+            $logged = Log::info('Processing user ' . $user->id);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - none of these are database queries
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_direct_find_with_loop_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $userIds = [1, 2, 3, 4, 5];
+
+        foreach ($userIds as $userId) {
+            $user = User::find($userId);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should FAIL - find() with loop variable is N+1
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('User::find', $result);
+    }
+
+    public function test_does_not_flag_find_without_loop_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $items = Item::all();
+        $adminId = 1;
+
+        foreach ($items as $item) {
+            // Query doesn't depend on $item, uses constant $adminId
+            $admin = User::find($adminId);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - query doesn't depend on loop variable
+        $this->assertPassed($result);
+    }
 }

@@ -199,6 +199,22 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         'tostring', '__tostring', 'render', 'display',
     ];
 
+    /** @var array<string> Facades/classes that have query-like methods but are NOT database queries */
+    private const NON_QUERY_CLASSES = [
+        // Laravel facades
+        'cache', 'config', 'session', 'storage', 'cookie', 'auth',
+        'log', 'mail', 'event', 'queue', 'broadcast', 'notification',
+        'gate', 'validator', 'view', 'response', 'request', 'redirect',
+        'url', 'file', 'hash', 'crypt', 'artisan', 'bus', 'http',
+        // Common non-Eloquent classes
+        'arr', 'str', 'collection', 'carbon', 'datetime',
+    ];
+
+    /** @var array<string> Methods that are batch operations (solutions, not N+1 problems) */
+    private const BATCH_OPERATION_METHODS = [
+        'chunk', 'chunkbyid', 'each', 'eachbyid', 'cursor', 'lazy', 'lazybychunksof',
+    ];
+
     /**
      * @var array<int, array{relationship: string, line: int, loop_type: string, variable: string}>
      */
@@ -403,6 +419,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         if (! empty($this->loopStack)) {
             $currentLoop = $this->getCurrentLoop();
             $loopType = $currentLoop !== null ? $currentLoop['type'] : 'loop';
+            $loopVariable = $currentLoop !== null ? $currentLoop['variable'] : null;
 
             // Check for static method calls that execute queries: Model::where()->get(), Model::find(), etc.
             if ($node instanceof Expr\StaticCall && $node->class instanceof Node\Name) {
@@ -410,15 +427,23 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
                 // Skip DB facade - handled separately
                 if ($className !== 'DB' && $node->name instanceof Node\Identifier) {
+                    // Skip non-query facades (Cache, Config, Session, etc.)
+                    if (in_array(strtolower($className), self::NON_QUERY_CLASSES, true)) {
+                        return null;
+                    }
+
                     $methodName = $node->name->toString();
 
                     // Direct query execution methods
                     if ($this->isQueryExecutionMethod($methodName)) {
-                        $this->queryIssues[] = [
-                            'query' => "{$className}::{$methodName}()",
-                            'line' => $node->getStartLine(),
-                            'loop_type' => $loopType,
-                        ];
+                        // Only flag if query depends on loop variable (true N+1 pattern)
+                        if ($loopVariable === null || $this->chainReferencesVariable($node, $loopVariable)) {
+                            $this->queryIssues[] = [
+                                'query' => "{$className}::{$methodName}()",
+                                'line' => $node->getStartLine(),
+                                'loop_type' => $loopType,
+                            ];
+                        }
                     }
                 }
             }
@@ -431,11 +456,14 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     // Walk up the chain to find if it starts with a static call (Model::)
                     $queryDescription = $this->getQueryChainDescription($node);
                     if ($queryDescription !== null) {
-                        $this->queryIssues[] = [
-                            'query' => $queryDescription,
-                            'line' => $node->getStartLine(),
-                            'loop_type' => $loopType,
-                        ];
+                        // Only flag if query depends on loop variable (true N+1 pattern)
+                        if ($loopVariable === null || $this->chainReferencesVariable($node, $loopVariable)) {
+                            $this->queryIssues[] = [
+                                'query' => $queryDescription,
+                                'line' => $node->getStartLine(),
+                                'loop_type' => $loopType,
+                            ];
+                        }
                     }
                 }
             }
@@ -791,20 +819,25 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      */
     private function isQueryExecutionMethod(string $methodName): bool
     {
+        $lowerMethodName = strtolower($methodName);
+
+        // Batch operations are intentional solutions to N+1, not problems
+        if (in_array($lowerMethodName, self::BATCH_OPERATION_METHODS, true)) {
+            return false;
+        }
+
         $executionMethods = [
             // Retrieval methods
             'get', 'first', 'find', 'findorfail', 'findormany', 'findornew',
             'firstor', 'firstorfail', 'firstornew', 'firstorcreate', 'firstwhere',
-            'sole', 'all', 'value', 'pluck', 'cursor', 'lazy', 'lazybychunksof',
+            'sole', 'all', 'value', 'pluck',
             // Aggregates
             'count', 'sum', 'avg', 'average', 'min', 'max', 'exists', 'doesntexist',
             // Modification methods that also query
             'updateorcreate', 'upsert',
-            // Chunk methods (still query per chunk)
-            'chunk', 'chunkbyid', 'each', 'eachbyid',
         ];
 
-        return in_array(strtolower($methodName), $executionMethods, true);
+        return in_array($lowerMethodName, $executionMethods, true);
     }
 
     /**
@@ -830,6 +863,11 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                 return null;
             }
 
+            // Skip non-query facades (Cache, Config, Session, etc.)
+            if (in_array(strtolower($className), self::NON_QUERY_CLASSES, true)) {
+                return null;
+            }
+
             if ($current->name instanceof Node\Identifier) {
                 $startMethod = $current->name->toString();
                 $endMethod = $node->name instanceof Node\Identifier ? $node->name->toString() : 'unknown';
@@ -839,6 +877,107 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         }
 
         return null;
+    }
+
+    /**
+     * Check if a method call chain references a specific variable in its arguments.
+     */
+    private function chainReferencesVariable(Node $node, string $varName): bool
+    {
+        // Walk the entire method chain checking all arguments
+        $current = $node;
+
+        while ($current instanceof Expr\MethodCall) {
+            foreach ($current->args as $arg) {
+                if ($this->expressionReferencesVariable($arg->value, $varName)) {
+                    return true;
+                }
+            }
+            $current = $current->var;
+        }
+
+        // Check static call arguments at the root
+        if ($current instanceof Expr\StaticCall) {
+            foreach ($current->args as $arg) {
+                if ($this->expressionReferencesVariable($arg->value, $varName)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Recursively check if an expression references a variable.
+     */
+    private function expressionReferencesVariable(Node $expr, string $varName): bool
+    {
+        // Direct variable reference: $user
+        if ($expr instanceof Expr\Variable && $expr->name === $varName) {
+            return true;
+        }
+
+        // Property fetch: $user->id, $user->name
+        if ($expr instanceof Expr\PropertyFetch) {
+            return $this->expressionReferencesVariable($expr->var, $varName);
+        }
+
+        // Method call: $user->getId()
+        if ($expr instanceof Expr\MethodCall) {
+            if ($this->expressionReferencesVariable($expr->var, $varName)) {
+                return true;
+            }
+            // Check method arguments too
+            foreach ($expr->args as $arg) {
+                if ($this->expressionReferencesVariable($arg->value, $varName)) {
+                    return true;
+                }
+            }
+        }
+
+        // Array access: $user['id']
+        if ($expr instanceof Expr\ArrayDimFetch && $expr->var !== null) {
+            return $this->expressionReferencesVariable($expr->var, $varName);
+        }
+
+        // Ternary: $user ? $user->id : null
+        if ($expr instanceof Expr\Ternary) {
+            return $this->expressionReferencesVariable($expr->cond, $varName) ||
+                   ($expr->if !== null && $this->expressionReferencesVariable($expr->if, $varName)) ||
+                   $this->expressionReferencesVariable($expr->else, $varName);
+        }
+
+        // Binary operations: $user->id === 1
+        if ($expr instanceof Expr\BinaryOp) {
+            return $this->expressionReferencesVariable($expr->left, $varName) ||
+                   $this->expressionReferencesVariable($expr->right, $varName);
+        }
+
+        // Array items: [$user->id, $user->name]
+        if ($expr instanceof Expr\Array_) {
+            foreach ($expr->items as $item) {
+                if ($item !== null && $this->expressionReferencesVariable($item->value, $varName)) {
+                    return true;
+                }
+            }
+        }
+
+        // Closure use: function() use ($user) { ... }
+        if ($expr instanceof Expr\Closure) {
+            foreach ($expr->uses as $use) {
+                if ($use->var->name === $varName) {
+                    return true;
+                }
+            }
+        }
+
+        // Arrow function: fn() => $user->id
+        if ($expr instanceof Expr\ArrowFunction) {
+            return $this->expressionReferencesVariable($expr->expr, $varName);
+        }
+
+        return false;
     }
 
     /**

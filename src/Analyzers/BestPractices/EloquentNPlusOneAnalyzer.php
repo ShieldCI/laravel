@@ -423,7 +423,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
             // Check for static method calls that execute queries: Model::where()->get(), Model::find(), etc.
             if ($node instanceof Expr\StaticCall && $node->class instanceof Node\Name) {
-                $className = $node->class->toString();
+                $className = $node->class->getLast();
 
                 // Skip DB facade - handled separately
                 if ($className !== 'DB' && $node->name instanceof Node\Identifier) {
@@ -856,7 +856,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
         // Check if chain starts with a static call (Model::where, Model::query, etc.)
         if ($current instanceof Expr\StaticCall && $current->class instanceof Node\Name) {
-            $className = $current->class->toString();
+            $className = $current->class->getLast();
 
             // Skip DB facade
             if ($className === 'DB') {

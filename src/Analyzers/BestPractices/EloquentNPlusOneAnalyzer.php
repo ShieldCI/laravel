@@ -936,9 +936,13 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             }
         }
 
-        // Array access: $user['id']
-        if ($expr instanceof Expr\ArrayDimFetch && $expr->var !== null) {
-            return $this->expressionReferencesVariable($expr->var, $varName);
+        // Array access: $user['id'] or $array[$user->id]
+        if ($expr instanceof Expr\ArrayDimFetch) {
+            if ($this->expressionReferencesVariable($expr->var, $varName)) {
+                return true;
+            }
+
+            return $expr->dim !== null && $this->expressionReferencesVariable($expr->dim, $varName);
         }
 
         // Ternary: $user ? $user->id : null

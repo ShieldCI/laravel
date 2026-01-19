@@ -967,10 +967,13 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             }
         }
 
-        // Closure use: function() use ($user) { ... }
+        // Closure: function() use ($user) { ... }
         if ($expr instanceof Expr\Closure) {
-            foreach ($expr->uses as $use) {
-                if ($use->var->name === $varName) {
+            // Check if the variable is actually used in the closure body,
+            // not just captured in use(). Capture alone doesn't mean the query
+            // depends on the variable.
+            foreach ($expr->stmts as $stmt) {
+                if ($this->nodeContainsVariableReference($stmt, $varName)) {
                     return true;
                 }
             }
@@ -979,6 +982,36 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         // Arrow function: fn() => $user->id
         if ($expr instanceof Expr\ArrowFunction) {
             return $this->expressionReferencesVariable($expr->expr, $varName);
+        }
+
+        return false;
+    }
+
+    /**
+     * Recursively check if any node in the subtree references a variable.
+     */
+    private function nodeContainsVariableReference(Node $node, string $varName): bool
+    {
+        // Direct variable reference
+        if ($node instanceof Expr\Variable && $node->name === $varName) {
+            return true;
+        }
+
+        // Recursively check all sub-nodes
+        foreach ($node->getSubNodeNames() as $subNodeName) {
+            $subNode = $node->{$subNodeName};
+
+            if ($subNode instanceof Node) {
+                if ($this->nodeContainsVariableReference($subNode, $varName)) {
+                    return true;
+                }
+            } elseif (is_array($subNode)) {
+                foreach ($subNode as $item) {
+                    if ($item instanceof Node && $this->nodeContainsVariableReference($item, $varName)) {
+                        return true;
+                    }
+                }
+            }
         }
 
         return false;

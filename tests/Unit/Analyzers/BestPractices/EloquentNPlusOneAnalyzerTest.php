@@ -1683,4 +1683,80 @@ PHP;
         // Should pass - query doesn't depend on loop variable
         $this->assertPassed($result);
     }
+
+    public function test_does_not_flag_query_when_closure_captures_but_does_not_use_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            // Closure captures $user but doesn't use it - query doesn't depend on $user
+            // This is not a true N+1 pattern (same query every iteration, not loop-dependent)
+            $posts = Post::where('active', true)->get(function($q) use ($user) {
+                $q->where('published', true); // No $user reference
+            });
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - query doesn't depend on loop variable (just captured, not used)
+        // This fixes false positives where closure captures variable but doesn't use it
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_query_when_closure_uses_captured_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            // Closure captures AND uses $user - query depends on $user, legitimate N+1
+            $posts = Post::where(function($q) use ($user) {
+                $q->where('user_id', $user->id); // Actually uses $user
+            })->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - this is a legitimate N+1 query
+        $this->assertFailed($result);
+    }
 }

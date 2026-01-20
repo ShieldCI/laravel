@@ -634,14 +634,9 @@ class ComplexityVisitor extends NodeVisitorAbstract
             $this->complexity++;
         }
 
-        // PHP 8 match expression
+        // PHP 8 match expression - each arm is a branch, complexity = arms - 1
         if ($node instanceof Node\Expr\Match_) {
-            $this->complexity++;
-        }
-
-        // Each match arm with conditions adds complexity
-        if ($node instanceof Node\MatchArm && $node->conds !== null) {
-            $this->complexity += count($node->conds);
+            $this->complexity += max(0, count($node->arms) - 1);
         }
 
         return null;

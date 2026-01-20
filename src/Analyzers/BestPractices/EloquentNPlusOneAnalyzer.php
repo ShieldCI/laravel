@@ -206,7 +206,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         'log', 'mail', 'event', 'queue', 'broadcast', 'notification',
         'gate', 'validator', 'view', 'response', 'request', 'redirect',
         'url', 'file', 'hash', 'crypt', 'artisan', 'bus', 'http', 'redis',
-        'client', 'guzzle', 'soap', 'curl',
+        'guzzle', 'soap', 'curl',
         // Common non-Eloquent classes
         'arr', 'str', 'collection', 'carbon', 'datetime',
     ];

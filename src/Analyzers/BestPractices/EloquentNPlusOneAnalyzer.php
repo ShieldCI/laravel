@@ -1007,7 +1007,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     private function expressionReferencesVariable(Node $expr, string $varName): bool
     {
         // Direct variable reference: $user
-        if ($expr instanceof Expr\Variable && $expr->name === $varName) {
+        if ($expr instanceof Expr\Variable && is_string($expr->name) && $expr->name === $varName) {
             return true;
         }
 
@@ -1086,7 +1086,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     private function nodeContainsVariableReference(Node $node, string $varName): bool
     {
         // Direct variable reference
-        if ($node instanceof Expr\Variable && $node->name === $varName) {
+        if ($node instanceof Expr\Variable && is_string($node->name) && $node->name === $varName) {
             return true;
         }
 

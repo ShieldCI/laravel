@@ -252,7 +252,6 @@ class FatModelVisitor extends NodeVisitorAbstract
 
         // Authenticatable (User model base)
         if ($resolvedClass === 'Authenticatable'
-            || $resolvedClass === 'User'
             || str_ends_with($resolvedClass, '\\Authenticatable')
             || $resolvedClass === 'Illuminate\\Foundation\\Auth\\User') {
             return true;

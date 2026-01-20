@@ -1637,4 +1637,36 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('business methods', $result);
     }
+
+    public function test_ignores_non_model_user_class(): void
+    {
+        // Class extending a non-model User class should NOT be treated as a model
+        $methods = '';
+        for ($i = 1; $i <= 20; $i++) {
+            $methods .= "\n    public function method{$i}() { return 'value'; }\n";
+        }
+
+        $code = <<<PHP
+<?php
+
+namespace App\Domain;
+
+use App\Domain\User; // Not an Eloquent model
+
+class Invoice extends User
+{
+{$methods}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Domain/Invoice.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result); // Should NOT be flagged as fat model
+    }
 }

@@ -229,7 +229,15 @@ class FatModelVisitor extends NodeVisitorAbstract
             return true;
         }
 
+        // Any class ending with "Model" is likely a custom base model
+        // This catches namespace-local base classes like TenantModel, AbstractModel, CustomModel
+        // when used without a use statement: `class User extends TenantModel {}`
+        if (str_ends_with($resolvedClass, 'Model')) {
+            return true;
+        }
+
         // Custom base models (common patterns in Laravel apps)
+        // Note: These patterns are now subsumed by the above check but kept for clarity
         if (str_ends_with($resolvedClass, 'BaseModel')
             || str_contains($resolvedClass, '\\Models\\Base')
             || preg_match('/Base[A-Z]\w*Model/', $resolvedClass)) {

@@ -1669,4 +1669,40 @@ PHP;
 
         $this->assertPassed($result); // Should NOT be flagged as fat model
     }
+
+    public function test_detects_namespace_local_custom_base_model(): void
+    {
+        // Class extending a namespace-local custom base model without a use statement
+        // e.g., `class User extends TenantModel {}` where TenantModel is in the same namespace
+        $methods = '';
+        for ($i = 1; $i <= 20; $i++) {
+            $methods .= "\n    public function method{$i}() { return 'value'; }\n";
+        }
+
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+// No use statement for TenantModel - it's in the same namespace
+// This tests the heuristic that any class ending with "Model" is treated as a model base
+
+class User extends TenantModel
+{
+{$methods}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/User.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be detected as a model and flagged for too many business methods
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('business methods', $result);
+    }
 }

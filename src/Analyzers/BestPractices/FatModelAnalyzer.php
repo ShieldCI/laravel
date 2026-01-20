@@ -472,6 +472,9 @@ class FatModelVisitor extends NodeVisitorAbstract
         if ($method->returnType !== null) {
             $typeNames = $this->extractTypeNames($method->returnType);
             $relationshipTypes = [
+                // Base relation type (common generic type hint)
+                'Relation',
+                // Specific relation types
                 'HasOne', 'HasMany', 'BelongsTo', 'BelongsToMany',
                 'MorphTo', 'MorphOne', 'MorphMany', 'MorphToMany',
                 'HasOneThrough', 'HasManyThrough', 'MorphedByMany',

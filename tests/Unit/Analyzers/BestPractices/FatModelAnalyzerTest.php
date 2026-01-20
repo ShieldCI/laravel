@@ -1569,4 +1569,72 @@ PHP;
 
         $this->assertPassed($result); // 12 business + 3 scout methods = 15, but scout methods excluded = 12
     }
+
+    public function test_detects_namespace_relative_parent_class(): void
+    {
+        // Model using namespace-relative path like Foundation\Auth\User
+        // where Foundation is imported via `use Illuminate\Foundation`
+        $methods = '';
+        for ($i = 1; $i <= 20; $i++) {
+            $methods .= "\n    public function method{$i}() { return 'value'; }\n";
+        }
+
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+use Illuminate\Foundation;
+
+class User extends Foundation\Auth\User
+{
+{$methods}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/User.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('business methods', $result);
+    }
+
+    public function test_detects_namespace_relative_model_parent(): void
+    {
+        // Model using namespace-relative path like Database\Eloquent\Model
+        // where Database is imported via `use Illuminate\Database`
+        $methods = '';
+        for ($i = 1; $i <= 20; $i++) {
+            $methods .= "\n    public function method{$i}() { return 'value'; }\n";
+        }
+
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database;
+
+class Product extends Database\Eloquent\Model
+{
+{$methods}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Product.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('business methods', $result);
+    }
 }

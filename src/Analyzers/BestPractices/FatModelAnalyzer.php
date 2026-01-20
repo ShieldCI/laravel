@@ -263,6 +263,11 @@ class FatModelVisitor extends NodeVisitorAbstract
 
     /**
      * Resolve a class name through use statements.
+     *
+     * Handles:
+     * - Fully qualified names: \Illuminate\Database\Eloquent\Model
+     * - Simple aliases: Model (when `use ... as Model` or `use ...\Model`)
+     * - Namespace-relative paths: Foundation\Auth\User (when `use Illuminate\Foundation`)
      */
     private function resolveClassName(string $className): string
     {
@@ -271,9 +276,24 @@ class FatModelVisitor extends NodeVisitorAbstract
             return ltrim($className, '\\');
         }
 
-        // Check if it's an alias in use statements
+        // Check if it's a direct alias in use statements
         if (isset($this->useStatements[$className])) {
             return $this->useStatements[$className];
+        }
+
+        // Handle namespace-relative paths like Foundation\Auth\User
+        // where Foundation might be imported via `use Illuminate\Foundation`
+        if (str_contains($className, '\\')) {
+            $parts = explode('\\', $className);
+            $firstPart = $parts[0];
+
+            // Check if the first segment is imported
+            if (isset($this->useStatements[$firstPart])) {
+                // Replace first segment with the imported namespace
+                $parts[0] = $this->useStatements[$firstPart];
+
+                return implode('\\', $parts);
+            }
         }
 
         // Return as-is (might be short name like 'Model')

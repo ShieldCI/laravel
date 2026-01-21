@@ -908,4 +908,256 @@ BLADE;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('Unescaped blade output', $result);
     }
+
+    public function test_detects_javascript_protocol_in_href_attribute(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <a href="javascript:alert('XSS')">Click me</a>
+    <a href="javascript:{{ $userInput }}">Dangerous</a>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['links.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('javascript: protocol', $result);
+    }
+
+    public function test_detects_data_protocol_in_src_attribute(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <img src="data:text/html,<script>alert('XSS')</script>">
+    <iframe src="data:{{ request('content') }}"></iframe>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['images.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('data: protocol', $result);
+    }
+
+    public function test_detects_user_input_in_event_handler_attributes(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <button onclick="{{ $userScript }}">Click</button>
+    <img onerror="alert({{ request('xss') }})">
+    <body onload="{!! $dangerous !!}">
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['events.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('event handler attribute', $result);
+    }
+
+    public function test_detects_user_input_in_href_without_validation(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <a href="{{ $userUrl }}">Link</a>
+    <a href="{{ request('redirect') }}">Redirect</a>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['hrefs.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('href attribute', $result);
+    }
+
+    public function test_detects_user_input_in_src_attribute(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <img src="{{ $imageUrl }}">
+    <script src="{{ request('script') }}"></script>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['sources.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('src attribute', $result);
+    }
+
+    public function test_detects_unescaped_output_in_data_attributes(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <button data-user="{!! $userId !!}">Submit</button>
+    <div data-config="{!! request('config') !!}"></div>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['data-attrs.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('data-* attribute', $result);
+    }
+
+    public function test_passes_with_safe_data_attributes(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <button data-user="{{ $userId }}">Submit</button>
+    <div data-config="{{ $config }}"></div>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['safe-data.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_validated_urls(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <a href="{{ url('/safe/path') }}">Internal Link</a>
+    <a href="{{ route('profile') }}">Route Link</a>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['safe-urls.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    // ==========================================
+    // Attribute-Level Context Tests (False Positive Prevention)
+    // ==========================================
+
+    public function test_does_not_flag_href_when_user_input_is_in_link_text(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <a href="/safe/path">{{ request('name') }}</a>
+    <a href="/another/safe/path">Hello {{ $user->name }}</a>
+    <a href="/profile">Welcome, {{ $_GET['user'] }}</a>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['safe-links.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because user input is in link text, not href attribute
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_src_when_user_input_is_in_alt_text(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <img src="/images/avatar.png" alt="{{ request('username') }}">
+    <img src="/images/logo.png" title="{{ $_GET['title'] }}">
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['safe-images.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because user input is in alt/title, not src attribute
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_user_input_in_href_with_safe_surrounding_text(): void
+    {
+        $bladeCode = <<<'BLADE'
+<a href="{{ request('url') }}">Safe Text</a>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['mixed.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because user input IS in the href attribute
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('href attribute', $result);
+    }
+
+    public function test_detects_user_input_in_src_with_safe_surrounding_attributes(): void
+    {
+        $bladeCode = <<<'BLADE'
+<img src="{{ request('image_url') }}" alt="Safe alt text" class="avatar">
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['mixed-img.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because user input IS in the src attribute
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('src attribute', $result);
+    }
 }

@@ -25,6 +25,13 @@ use Throwable;
  * 1. Static code analysis (always runs) - finds code-level vulnerabilities
  * 2. HTTP header verification (production only) - validates CSP headers
  *
+ * Static analysis includes:
+ * - Unescaped Blade output ({!! $var !!})
+ * - JavaScript context injection
+ * - HTML attribute context (href, src, event handlers, data-*)
+ * - Direct echo of superglobals
+ * - Request data without escaping
+ *
  * Provides defense-in-depth protection against XSS attacks.
  */
 class XssAnalyzer extends AbstractFileAnalyzer
@@ -205,6 +212,10 @@ class XssAnalyzer extends AbstractFileAnalyzer
                     );
                 }
 
+                // Check for HTML attribute context XSS vulnerabilities
+                $attributeIssues = $this->checkHtmlAttributeContext($line, $file, $lineNumber);
+                $issues = array_merge($issues, $attributeIssues);
+
                 // Check for dangerous JavaScript output when inside script tags
                 $isBladeOutput = preg_match('/\{\{.*?\}\}|\{!!.*?!!\}/', $line);
                 $isRawBlade = preg_match('/\{!!.*?!!\}/', $line);
@@ -284,6 +295,138 @@ class XssAnalyzer extends AbstractFileAnalyzer
         }
 
         return false;
+    }
+
+    /**
+     * Extract the value of an HTML attribute from a line.
+     *
+     * @param  string  $attributeName  The attribute name (e.g., 'href', 'src')
+     * @param  string  $line  The line of code to search
+     * @return string|null The attribute value, or null if not found
+     */
+    private function extractAttributeValue(string $attributeName, string $line): ?string
+    {
+        // Match attribute="value" with double quotes
+        $patternDouble = '/'.preg_quote($attributeName, '/').'\s*=\s*"([^"]*)"/i';
+        if (preg_match($patternDouble, $line, $matches)) {
+            return $matches[1];
+        }
+
+        // Match attribute='value' with single quotes
+        $patternSingle = '/'.preg_quote($attributeName, '/')."\s*=\s*'([^']*)'/i";
+        if (preg_match($patternSingle, $line, $matches)) {
+            return $matches[1];
+        }
+
+        return null;
+    }
+
+    /**
+     * Check for XSS vulnerabilities in HTML attribute contexts.
+     *
+     * Detects dangerous patterns in HTML attributes:
+     * - javascript: and data: protocols in href/src
+     * - User input in event handler attributes (onclick, onerror, etc.)
+     * - User input in data-* attributes
+     * - Unescaped output in URL attributes
+     *
+     * @return array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>
+     */
+    private function checkHtmlAttributeContext(string $line, string $file, int $lineNumber): array
+    {
+        $issues = [];
+
+        // Check for javascript: protocol (Critical - immediate XSS risk)
+        // Flag ANY usage of javascript: protocol as it's inherently dangerous
+        if (preg_match('/(?:href|src|action|formaction)\s*=\s*["\']?\s*javascript:/i', $line)) {
+            $hasUserInput = $this->mightContainUserInput($line);
+            $issues[] = $this->createIssueWithSnippet(
+                message: $hasUserInput
+                    ? 'Critical XSS: javascript: protocol with user input in HTML attribute'
+                    : 'High: javascript: protocol in HTML attribute (security risk)',
+                filePath: $file,
+                lineNumber: $lineNumber + 1,
+                severity: $hasUserInput ? Severity::Critical : Severity::High,
+                recommendation: 'Never use javascript: URLs. Use data attributes and event listeners instead for better security'
+            );
+        }
+
+        // Check for data: protocol with user input (Critical - can execute JavaScript)
+        if (preg_match('/(?:href|src)\s*=\s*["\']?\s*data:/i', $line) && $this->mightContainUserInput($line)) {
+            $issues[] = $this->createIssueWithSnippet(
+                message: 'Critical XSS: data: protocol with user input in HTML attribute',
+                filePath: $file,
+                lineNumber: $lineNumber + 1,
+                severity: Severity::Critical,
+                recommendation: 'Avoid data: URLs with user input. If necessary, validate and whitelist allowed MIME types'
+            );
+        }
+
+        // Check for event handler attributes with user input or blade output (Critical)
+        $eventHandlers = [
+            'onclick', 'ondblclick', 'onmousedown', 'onmouseup', 'onmouseover', 'onmousemove', 'onmouseout',
+            'onkeydown', 'onkeypress', 'onkeyup', 'onload', 'onunload', 'onerror', 'onabort',
+            'onblur', 'onchange', 'onfocus', 'onreset', 'onselect', 'onsubmit',
+        ];
+
+        foreach ($eventHandlers as $handler) {
+            // Check for event handlers with Blade output or user input
+            if (preg_match('/'.$handler.'\s*=\s*["\'][^"\']*(\{\{|\{!!|\$_|request\()/i', $line)) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: "Critical XSS: User input in {$handler} event handler attribute",
+                    filePath: $file,
+                    lineNumber: $lineNumber + 1,
+                    severity: Severity::Critical,
+                    recommendation: 'Never insert user input into event handlers. Use data attributes and attach event listeners in JavaScript'
+                );
+                break; // Only report once per line
+            }
+        }
+
+        // Check for user input in href attribute (High - potential XSS if not validated)
+        // Use attribute-level context to avoid false positives when user input is elsewhere on line
+        $hrefValue = $this->extractAttributeValue('href', $line);
+        if ($hrefValue !== null && preg_match('/(\{\{|\{!!)/', $hrefValue) && $this->mightContainUserInput($hrefValue)) {
+            // Skip if it's using javascript: or data: (already caught above)
+            if (! preg_match('/^\s*(?:javascript|data):/i', $hrefValue)) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: 'High: User input in href attribute without URL validation',
+                    filePath: $file,
+                    lineNumber: $lineNumber + 1,
+                    severity: Severity::High,
+                    recommendation: 'Validate URLs to ensure they use safe protocols (http/https). Use url() helper or validate against whitelist'
+                );
+            }
+        }
+
+        // Check for user input in src attribute (High - can load malicious resources)
+        // Use attribute-level context to avoid false positives when user input is elsewhere on line
+        $srcValue = $this->extractAttributeValue('src', $line);
+        if ($srcValue !== null && preg_match('/(\{\{|\{!!)/', $srcValue) && $this->mightContainUserInput($srcValue)) {
+            // Skip if it's using javascript: or data: (already caught above)
+            if (! preg_match('/^\s*(?:javascript|data):/i', $srcValue)) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: 'High: User input in src attribute without validation',
+                    filePath: $file,
+                    lineNumber: $lineNumber + 1,
+                    severity: Severity::High,
+                    recommendation: 'Validate resource URLs. Ensure they use safe protocols and come from trusted sources'
+                );
+            }
+        }
+
+        // Check for user input in data-* attributes (Medium - can be exploited in some contexts)
+        if (preg_match('/data-[a-z0-9_-]+\s*=\s*["\'][^"\']*(\{!!)/i', $line)) {
+            $issues[] = $this->createIssueWithSnippet(
+                message: 'Medium: Unescaped user input in data-* attribute',
+                filePath: $file,
+                lineNumber: $lineNumber + 1,
+                severity: Severity::Medium,
+                recommendation: 'Use {{ $var }} instead of {!! $var !!} for data attributes, or sanitize the value'
+            );
+        }
+
+        return $issues;
     }
 
     /**

@@ -7,6 +7,7 @@ namespace ShieldCI\Analyzers\BestPractices;
 use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -125,18 +126,15 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                // Extract use statements and namespace for proper class resolution
-                $useStatements = $this->extractUseStatements($ast);
-                $namespace = $this->extractNamespace($ast);
-
                 $visitor = new FrameworkOverrideVisitor(
                     $this->neverExtend,
                     $this->rarelyExtend,
-                    $this->okToExtend,
-                    $useStatements,
-                    $namespace
+                    $this->okToExtend
                 );
+
                 $traverser = new NodeTraverser;
+                // NameResolver resolves all class names to fully qualified names
+                $traverser->addVisitor(new NameResolver);
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
 
@@ -186,70 +184,13 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
 
         return true;
     }
-
-    /**
-     * Extract use statements from AST to build alias mapping.
-     *
-     * @param  array<Node>  $ast
-     * @return array<string, string> Map of alias => fully qualified name
-     */
-    private function extractUseStatements(array $ast): array
-    {
-        $useStatements = [];
-
-        /** @var array<Node\Stmt\Use_> $uses */
-        $uses = $this->parser->findNodes($ast, Node\Stmt\Use_::class);
-
-        foreach ($uses as $use) {
-            foreach ($use->uses as $useUse) {
-                $fullyQualifiedName = $useUse->name->toString();
-                $alias = $useUse->alias !== null
-                    ? $useUse->alias->toString()
-                    : $useUse->name->getLast();
-
-                $useStatements[$alias] = $fullyQualifiedName;
-            }
-        }
-
-        /** @var array<Node\Stmt\GroupUse> $groupUses */
-        $groupUses = $this->parser->findNodes($ast, Node\Stmt\GroupUse::class);
-
-        foreach ($groupUses as $groupUse) {
-            $prefix = $groupUse->prefix->toString();
-
-            foreach ($groupUse->uses as $useUse) {
-                $fullyQualifiedName = $prefix.'\\'.$useUse->name->toString();
-                $alias = $useUse->alias !== null
-                    ? $useUse->alias->toString()
-                    : $useUse->name->getLast();
-
-                $useStatements[$alias] = $fullyQualifiedName;
-            }
-        }
-
-        return $useStatements;
-    }
-
-    /**
-     * Extract the namespace from the AST.
-     *
-     * @param  array<Node>  $ast
-     */
-    private function extractNamespace(array $ast): ?string
-    {
-        /** @var array<Node\Stmt\Namespace_> $namespaces */
-        $namespaces = $this->parser->findNodes($ast, Node\Stmt\Namespace_::class);
-
-        if (! empty($namespaces) && $namespaces[0]->name !== null) {
-            return $namespaces[0]->name->toString();
-        }
-
-        return null;
-    }
 }
 
 /**
  * Visitor to detect framework class overrides.
+ *
+ * Note: This visitor expects NameResolver to run first, so all class names
+ * (including $node->extends) are already fully qualified.
  */
 class FrameworkOverrideVisitor extends NodeVisitorAbstract
 {
@@ -260,34 +201,27 @@ class FrameworkOverrideVisitor extends NodeVisitorAbstract
      * @param  array<int, string>  $neverExtend
      * @param  array<int, string>  $rarelyExtend
      * @param  array<int, string>  $okToExtend
-     * @param  array<string, string>  $useStatements  Map of alias => fully qualified name
      */
     public function __construct(
         private array $neverExtend,
         private array $rarelyExtend,
-        private array $okToExtend,
-        private array $useStatements = [],
-        private ?string $namespace = null
+        private array $okToExtend
     ) {}
 
     public function enterNode(Node $node): ?Node
     {
         if ($node instanceof Node\Stmt\Class_) {
             if ($node->extends !== null) {
-                // Check if it's a fully qualified name (starts with \ in source code)
-                $isFullyQualified = $node->extends instanceof Node\Name\FullyQualified;
+                // NameResolver has already resolved extends to fully qualified name
                 $parentClass = $node->extends->toString();
 
-                // Resolve the parent class name through use statements
-                $resolvedClass = $this->resolveClassName($parentClass, $isFullyQualified);
-
                 // Skip if extending an explicitly allowed class
-                if ($this->isOkToExtend($resolvedClass)) {
+                if ($this->isOkToExtend($parentClass)) {
                     return null;
                 }
 
                 // Check if extending a problematic framework class
-                $matchedClass = $this->getMatchedFrameworkClass($resolvedClass);
+                $matchedClass = $this->getMatchedFrameworkClass($parentClass);
                 if ($matchedClass !== null) {
                     $className = $node->name?->toString() ?? 'Unknown';
                     $severity = $this->getSeverity($matchedClass);
@@ -311,76 +245,21 @@ class FrameworkOverrideVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Resolve a class name through use statements.
-     *
-     * Handles:
-     * - Fully qualified names: \Illuminate\Http\Request -> Illuminate\Http\Request
-     * - Simple aliases: Request (when `use Illuminate\Http\Request`)
-     * - Namespace-relative paths: Http\Request (when in App namespace)
-     *
-     * @param  bool  $isFullyQualified  Whether the original name was fully qualified (started with \)
-     */
-    private function resolveClassName(string $className, bool $isFullyQualified = false): string
-    {
-        // If it's already fully qualified (from AST node type), return as-is
-        // PHP Parser's FullyQualified node toString() already removes the leading \
-        if ($isFullyQualified) {
-            return $className;
-        }
-
-        // If it's already fully qualified (starts with \), return without leading \
-        if (str_starts_with($className, '\\')) {
-            return ltrim($className, '\\');
-        }
-
-        // Check if it's a direct alias in use statements
-        if (isset($this->useStatements[$className])) {
-            return $this->useStatements[$className];
-        }
-
-        // Handle namespace-relative paths like Http\Request
-        // where Http might be imported via `use Illuminate\Http`
-        if (str_contains($className, '\\')) {
-            $parts = explode('\\', $className);
-            $firstPart = $parts[0];
-
-            // Check if the first segment is imported
-            if (isset($this->useStatements[$firstPart])) {
-                // Replace first segment with the imported namespace
-                $parts[0] = $this->useStatements[$firstPart];
-
-                return implode('\\', $parts);
-            }
-
-            // If not imported, it might be relative to current namespace
-            if ($this->namespace !== null) {
-                return $this->namespace.'\\'.$className;
-            }
-        }
-
-        // Return as-is (unresolved short name - could be namespace-relative or global)
-        // For unresolved short names, we cannot determine if they're framework classes
-        return $className;
-    }
-
-    /**
      * Check if a class name matches any framework class (NEVER or RARELY extend).
      * Returns the matched framework class or null.
-     *
-     * Only matches when the resolved class name is confirmed to be a framework class.
      */
-    private function getMatchedFrameworkClass(string $resolvedClassName): ?string
+    private function getMatchedFrameworkClass(string $className): ?string
     {
         // Check NEVER_EXTEND list
         foreach ($this->neverExtend as $coreClass) {
-            if ($this->matchesClass($resolvedClassName, $coreClass)) {
+            if ($this->matchesClass($className, $coreClass)) {
                 return $coreClass;
             }
         }
 
         // Check RARELY_EXTEND list
         foreach ($this->rarelyExtend as $coreClass) {
-            if ($this->matchesClass($resolvedClassName, $coreClass)) {
+            if ($this->matchesClass($className, $coreClass)) {
                 return $coreClass;
             }
         }
@@ -389,42 +268,28 @@ class FrameworkOverrideVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Check if resolvedClassName matches coreClass.
-     *
-     * Since we now resolve class names before calling this method,
-     * we only match fully qualified names to avoid false positives.
+     * Check if className matches coreClass.
+     * Both names should be fully qualified after NameResolver.
      */
-    private function matchesClass(string $resolvedClassName, string $coreClass): bool
+    private function matchesClass(string $className, string $coreClass): bool
     {
-        // Direct match (fully qualified name)
-        if ($resolvedClassName === $coreClass) {
-            return true;
-        }
-
-        // Match with leading backslash (shouldn't happen after resolution, but safe to check)
-        if ($resolvedClassName === '\\'.$coreClass) {
-            return true;
-        }
-
-        return false;
+        return $className === $coreClass;
     }
 
     /**
      * Check if a class is explicitly allowed to extend.
-     *
-     * @param  string  $resolvedClassName  The fully resolved class name
      */
-    private function isOkToExtend(string $resolvedClassName): bool
+    private function isOkToExtend(string $className): bool
     {
         foreach ($this->okToExtend as $okClass) {
-            if ($this->matchesClass($resolvedClassName, $okClass)) {
+            if ($this->matchesClass($className, $okClass)) {
                 return true;
             }
 
             // Handle wildcard patterns (e.g., "Illuminate\Http\Middleware\*")
             if (str_ends_with($okClass, '\\*')) {
                 $namespace = substr($okClass, 0, -2);
-                if (str_starts_with($resolvedClassName, $namespace.'\\')) {
+                if (str_starts_with($className, $namespace.'\\')) {
                     return true;
                 }
             }

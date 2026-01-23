@@ -938,7 +938,8 @@ PHP;
 
         $analyzer = $this->createAnalyzer([
             'framework-override' => [
-                'never_extend' => ['MyCustomBaseClass'],
+                // Must use fully qualified class name for custom never_extend lists
+                'never_extend' => ['App\\Services\\MyCustomBaseClass'],
                 'rarely_extend' => [],
                 'ok_to_extend' => [],
             ],

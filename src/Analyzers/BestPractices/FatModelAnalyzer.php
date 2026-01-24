@@ -7,6 +7,7 @@ namespace ShieldCI\Analyzers\BestPractices;
 use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -84,11 +85,9 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                // Extract use statements for alias resolution
-                $useStatements = $this->extractUseStatements($ast);
-
-                $visitor = new FatModelVisitor($this->methodThreshold, $this->locThreshold, $this->complexityThreshold, $useStatements);
+                $visitor = new FatModelVisitor($this->methodThreshold, $this->locThreshold, $this->complexityThreshold);
                 $traverser = new NodeTraverser;
+                $traverser->addVisitor(new NameResolver);
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
 
@@ -122,49 +121,6 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
             $issues
         );
     }
-
-    /**
-     * Extract use statements from AST to build alias mapping.
-     *
-     * @param  array<Node>  $ast
-     * @return array<string, string> Map of alias => fully qualified name
-     */
-    private function extractUseStatements(array $ast): array
-    {
-        $useStatements = [];
-
-        /** @var array<Node\Stmt\Use_> $uses */
-        $uses = $this->parser->findNodes($ast, Node\Stmt\Use_::class);
-
-        foreach ($uses as $use) {
-            foreach ($use->uses as $useUse) {
-                $fullyQualifiedName = $useUse->name->toString();
-                $alias = $useUse->alias !== null
-                    ? $useUse->alias->toString()
-                    : $useUse->name->getLast();
-
-                $useStatements[$alias] = $fullyQualifiedName;
-            }
-        }
-
-        /** @var array<Node\Stmt\GroupUse> $groupUses */
-        $groupUses = $this->parser->findNodes($ast, Node\Stmt\GroupUse::class);
-
-        foreach ($groupUses as $groupUse) {
-            $prefix = $groupUse->prefix->toString();
-
-            foreach ($groupUse->uses as $useUse) {
-                $fullyQualifiedName = $prefix.'\\'.$useUse->name->toString();
-                $alias = $useUse->alias !== null
-                    ? $useUse->alias->toString()
-                    : $useUse->name->getLast();
-
-                $useStatements[$alias] = $fullyQualifiedName;
-            }
-        }
-
-        return $useStatements;
-    }
 }
 
 /**
@@ -179,14 +135,10 @@ class FatModelVisitor extends NodeVisitorAbstract
 
     private int $classStartLine = 0;
 
-    /**
-     * @param  array<string, string>  $useStatements  Map of alias => fully qualified name
-     */
     public function __construct(
         private readonly int $methodThreshold,
         private readonly int $locThreshold,
-        private readonly int $complexityThreshold,
-        private readonly array $useStatements = []
+        private readonly int $complexityThreshold
     ) {}
 
     public function enterNode(Node $node): ?Node
@@ -217,94 +169,47 @@ class FatModelVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        $parentClass = $class->extends->toString();
-
-        // Resolve alias through use statements
-        $resolvedClass = $this->resolveClassName($parentClass);
+        // Get the fully qualified name from NameResolver
+        // - FullyQualified nodes: use toString() directly
+        // - Unresolved names: check namespacedName attribute (namespace-relative)
+        if ($class->extends instanceof Node\Name\FullyQualified) {
+            $parentClass = $class->extends->toString();
+        } else {
+            $namespacedName = $class->extends->getAttribute('namespacedName');
+            $parentClass = $namespacedName instanceof Node\Name
+                ? $namespacedName->toString()
+                : $class->extends->toString();
+        }
 
         // Standard Eloquent Model
-        if ($resolvedClass === 'Model'
-            || str_ends_with($resolvedClass, '\\Model')
-            || $resolvedClass === 'Illuminate\\Database\\Eloquent\\Model') {
+        if ($parentClass === 'Illuminate\\Database\\Eloquent\\Model') {
             return true;
         }
 
         // Any class ending with "Model" is likely a custom base model
-        // This catches namespace-local base classes like TenantModel, AbstractModel, CustomModel
-        // when used without a use statement: `class User extends TenantModel {}`
-        if (str_ends_with($resolvedClass, 'Model')) {
-            return true;
-        }
-
-        // Custom base models (common patterns in Laravel apps)
-        // Note: These patterns are now subsumed by the above check but kept for clarity
-        if (str_ends_with($resolvedClass, 'BaseModel')
-            || str_contains($resolvedClass, '\\Models\\Base')
-            || preg_match('/Base[A-Z]\w*Model/', $resolvedClass)) {
+        if (str_ends_with($parentClass, 'Model')) {
             return true;
         }
 
         // Pivot models
-        if ($resolvedClass === 'Pivot'
-            || str_ends_with($resolvedClass, '\\Pivot')
-            || $resolvedClass === 'Illuminate\\Database\\Eloquent\\Relations\\Pivot') {
+        if ($parentClass === 'Illuminate\\Database\\Eloquent\\Relations\\Pivot'
+            || str_ends_with($parentClass, '\\Pivot')) {
             return true;
         }
 
         // MorphPivot models
-        if ($resolvedClass === 'MorphPivot'
-            || str_ends_with($resolvedClass, '\\MorphPivot')
-            || $resolvedClass === 'Illuminate\\Database\\Eloquent\\Relations\\MorphPivot') {
+        if ($parentClass === 'Illuminate\\Database\\Eloquent\\Relations\\MorphPivot'
+            || str_ends_with($parentClass, '\\MorphPivot')) {
             return true;
         }
 
         // Authenticatable (User model base)
-        if ($resolvedClass === 'Authenticatable'
-            || str_ends_with($resolvedClass, '\\Authenticatable')
-            || $resolvedClass === 'Illuminate\\Foundation\\Auth\\User') {
+        if ($parentClass === 'Illuminate\\Foundation\\Auth\\User'
+            || str_ends_with($parentClass, '\\Authenticatable')) {
             return true;
         }
 
         return false;
-    }
-
-    /**
-     * Resolve a class name through use statements.
-     *
-     * Handles:
-     * - Fully qualified names: \Illuminate\Database\Eloquent\Model
-     * - Simple aliases: Model (when `use ... as Model` or `use ...\Model`)
-     * - Namespace-relative paths: Foundation\Auth\User (when `use Illuminate\Foundation`)
-     */
-    private function resolveClassName(string $className): string
-    {
-        // If it's already fully qualified (starts with \), return without leading \
-        if (str_starts_with($className, '\\')) {
-            return ltrim($className, '\\');
-        }
-
-        // Check if it's a direct alias in use statements
-        if (isset($this->useStatements[$className])) {
-            return $this->useStatements[$className];
-        }
-
-        // Handle namespace-relative paths like Foundation\Auth\User
-        // where Foundation might be imported via `use Illuminate\Foundation`
-        if (str_contains($className, '\\')) {
-            $parts = explode('\\', $className);
-            $firstPart = $parts[0];
-
-            // Check if the first segment is imported
-            if (isset($this->useStatements[$firstPart])) {
-                // Replace first segment with the imported namespace
-                $parts[0] = $this->useStatements[$firstPart];
-
-                return implode('\\', $parts);
-            }
-        }
-
-        // Return as-is (might be short name like 'Model')
-        return $className;
     }
 
     private function analyzeModel(Node\Stmt\Class_ $class): void

@@ -74,13 +74,13 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
     ];
 
     /** @var array<int, string> */
-    private array $neverExtend;
+    private array $neverExtend = self::NEVER_EXTEND;
 
     /** @var array<int, string> */
-    private array $rarelyExtend;
+    private array $rarelyExtend = self::RARELY_EXTEND;
 
     /** @var array<int, string> */
-    private array $okToExtend;
+    private array $okToExtend = self::OK_TO_EXTEND;
 
     public function __construct(
         private ParserInterface $parser,

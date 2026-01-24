@@ -211,7 +211,7 @@ class FrameworkOverrideVisitor extends NodeVisitorAbstract
         if ($node instanceof Node\Stmt\Class_) {
             if ($node->extends !== null) {
                 // NameResolver has already resolved extends to fully qualified name
-                $parentClass = $node->extends->toString();
+                $parentClass = ltrim($node->extends->toString(), '\\');
 
                 // Skip if extending an explicitly allowed class
                 if ($this->isOkToExtend($parentClass)) {

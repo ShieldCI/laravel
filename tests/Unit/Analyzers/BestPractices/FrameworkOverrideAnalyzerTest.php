@@ -450,8 +450,12 @@ PHP;
         $this->assertEquals('medium', $issues[0]->severity->value);
     }
 
-    public function test_detects_facade_extension(): void
+    public function test_passes_with_facade_extension(): void
     {
+        // Custom facades extending Illuminate\Support\Facades\Facade is a
+        // legitimate, documented Laravel pattern. All built-in facades
+        // (Auth, Cache, DB, etc.) extend Facade, and the docs explicitly
+        // show how to create custom facades this way.
         $code = <<<'PHP'
 <?php
 
@@ -476,10 +480,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $issues = $result->getIssues();
-        $this->assertEquals('medium', $issues[0]->severity->value);
-        $this->assertStringContainsString('dependency injection', $issues[0]->recommendation);
+        $this->assertPassed($result);
     }
 
     public function test_passes_with_service_provider_extension(): void

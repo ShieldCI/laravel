@@ -54,9 +54,6 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
         // HTTP Responses
         'Illuminate\\Http\\RedirectResponse',
         'Illuminate\\Http\\JsonResponse',
-
-        // Support
-        'Illuminate\\Support\\Facades\\Facade',
     ];
 
     // Classes that are OK to extend (explicitly documented as safe)
@@ -71,6 +68,7 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
         'Illuminate\\Foundation\\Http\\Middleware\\*',
         'Illuminate\\Routing\\Controller',
         'Illuminate\\Support\\ServiceProvider',
+        'Illuminate\\Support\\Facades\\Facade',
     ];
 
     /** @var array<int, string> */
@@ -339,9 +337,6 @@ class FrameworkOverrideVisitor extends NodeVisitorAbstract
                 'or return custom response types from your controllers.',
 
             'Illuminate\\Database\\Connection' => 'Extending Connection is extremely risky. Use database events or query macros instead.',
-
-            'Illuminate\\Support\\Facades\\Facade' => 'Create your own facade by extending Facade is discouraged. '.
-                'Use dependency injection or create a helper function instead.',
 
             'Illuminate\\Validation\\Validator' => 'Instead of extending Validator, use custom validation rules via Validator::extend() in a service provider.',
         ];

@@ -260,12 +260,6 @@ class HardcodedPathsVisitor extends NodeVisitorAbstract
         'realpath',
         'dirname',
         'basename',
-
-        // Include/require
-        'include',
-        'include_once',
-        'require',
-        'require_once',
     ];
 
     /**

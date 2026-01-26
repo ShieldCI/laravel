@@ -409,8 +409,8 @@ class HardcodedPathsVisitor extends NodeVisitorAbstract
      * @var array<int, string>
      */
     private const STRONG_CONTEXT_PATTERNS = [
-        '/^\\/public\\//i',
-        '/^\\/app\\//i',
+        '/^\/public\//i',
+        '/^\/app\//i',
     ];
 
     /**

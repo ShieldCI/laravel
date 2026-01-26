@@ -1407,4 +1407,105 @@ PHP;
         $this->assertCount(1, $issues);
         $this->assertStringContainsString('public_path', $issues[0]->recommendation);
     }
+
+    // =========================================================================
+    // URL-Producing Methods Tests
+    // =========================================================================
+
+    public function test_does_not_flag_storage_url_calls(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Storage;
+
+class FileController
+{
+    public function getUrl()
+    {
+        // Storage::url() produces URLs, not filesystem paths
+        $url = Storage::url('/public/images/logo.png');
+        $avatarUrl = \Illuminate\Support\Facades\Storage::url('/public/avatars/user.jpg');
+
+        return $url;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Controllers/FileController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_storage_temporary_url_calls(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Storage;
+
+class FileController
+{
+    public function getTemporaryUrl()
+    {
+        // Storage::temporaryUrl() produces URLs, not filesystem paths
+        $url = Storage::temporaryUrl('/public/documents/report.pdf', now()->addMinutes(5));
+
+        return $url;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Controllers/FileController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_url_helper_chained_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UrlController
+{
+    public function getUrls()
+    {
+        // url()->to() and similar methods produce URLs
+        $url = url()->to('/public/images/banner.jpg');
+        $secureUrl = url()->secure('/public/assets/app.js');
+        $routeUrl = url()->route('dashboard');
+
+        return compact('url', 'secureUrl', 'routeUrl');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Controllers/UrlController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

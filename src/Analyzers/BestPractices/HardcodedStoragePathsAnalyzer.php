@@ -315,6 +315,31 @@ class HardcodedPathsVisitor extends NodeVisitorAbstract
     ];
 
     /**
+     * Storage facade methods that produce URLs (not filesystem operations).
+     *
+     * @var array<int, string>
+     */
+    private const URL_PRODUCING_STORAGE_METHODS = [
+        'url',
+        'temporaryurl',
+    ];
+
+    /**
+     * Method names that produce URLs when called on URL-related objects.
+     *
+     * @var array<int, string>
+     */
+    private const URL_PRODUCING_METHODS = [
+        'to',
+        'route',
+        'action',
+        'asset',
+        'secure',
+        'signedroute',
+        'temporarysignedroute',
+    ];
+
+    /**
      * Laravel File/Storage facade class names.
      *
      * @var array<int, string>
@@ -537,14 +562,43 @@ class HardcodedPathsVisitor extends NodeVisitorAbstract
                 break;
             }
 
+            // Check for url()->to(), url()->route(), etc.
+            if ($parent instanceof Node\Expr\MethodCall) {
+                if ($parent->name instanceof Node\Identifier) {
+                    $methodName = strtolower($parent->name->toString());
+
+                    // Check if calling URL-producing method on url() helper result
+                    if (in_array($methodName, self::URL_PRODUCING_METHODS, true)) {
+                        if ($parent->var instanceof Node\Expr\FuncCall) {
+                            if ($parent->var->name instanceof Node\Name) {
+                                $funcName = strtolower($parent->var->name->toString());
+                                if ($funcName === 'url') {
+                                    return self::CONTEXT_TYPE_ASSET;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Continue traversing for method chains
+                $parent = $parent->getAttribute('parent');
+
+                continue;
+            }
+
             // Check for static facade calls
             if ($parent instanceof Node\Expr\StaticCall) {
                 if ($parent->class instanceof Node\Name && $parent->name instanceof Node\Identifier) {
                     $className = $parent->class->toString();
                     $methodName = strtolower($parent->name->toString());
 
-                    // Storage/File facades -> filesystem context
+                    // Storage/File facades - check method before assuming filesystem
                     if (in_array($className, self::FILESYSTEM_FACADE_CLASSES, true)) {
+                        // Storage::url() and Storage::temporaryUrl() produce URLs, not filesystem ops
+                        if (in_array($methodName, self::URL_PRODUCING_STORAGE_METHODS, true)) {
+                            return self::CONTEXT_TYPE_ASSET;
+                        }
+
                         return self::CONTEXT_TYPE_FILESYSTEM;
                     }
 

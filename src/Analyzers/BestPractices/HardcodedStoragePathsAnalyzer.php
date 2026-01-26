@@ -181,6 +181,22 @@ class HardcodedPathsVisitor extends NodeVisitorAbstract
     private array $issues = [];
 
     /**
+     * Context strength levels for filesystem detection.
+     */
+    private const CONTEXT_NONE = 0;    // Not a filesystem context
+
+    private const CONTEXT_WEAK = 1;    // Heuristic-based (variable name hints)
+
+    private const CONTEXT_STRONG = 2;  // Definite (known functions/facades)
+
+    /**
+     * Context types for recommendation selection.
+     */
+    private const CONTEXT_TYPE_FILESYSTEM = 'filesystem';
+
+    private const CONTEXT_TYPE_ASSET = 'asset';
+
+    /**
      * PHP functions that operate on the filesystem.
      *
      * @var array<int, string>
@@ -305,6 +321,80 @@ class HardcodedPathsVisitor extends NodeVisitorAbstract
     ];
 
     /**
+     * Laravel File/Storage facade class names.
+     *
+     * @var array<int, string>
+     */
+    private const FILESYSTEM_FACADE_CLASSES = [
+        'Storage',
+        'File',
+        'Illuminate\\Support\\Facades\\Storage',
+        'Illuminate\\Support\\Facades\\File',
+    ];
+
+    /**
+     * UploadedFile class names.
+     *
+     * @var array<int, string>
+     */
+    private const UPLOAD_FILE_CLASSES = [
+        'UploadedFile',
+        'Illuminate\\Http\\UploadedFile',
+        'Symfony\\Component\\HttpFoundation\\File\\UploadedFile',
+    ];
+
+    /**
+     * Service container names that resolve to filesystem.
+     *
+     * @var array<int, string>
+     */
+    private const FILESYSTEM_SERVICE_NAMES = [
+        'files',
+        'filesystem',
+        'Illuminate\\Filesystem\\Filesystem',
+        'Illuminate\\Contracts\\Filesystem\\Filesystem',
+    ];
+
+    /**
+     * Response methods that operate on files.
+     *
+     * @var array<int, string>
+     */
+    private const RESPONSE_FILE_METHODS = [
+        'download',
+        'file',
+        'streamDownload',
+    ];
+
+    /**
+     * Laravel helpers that generate URLs/assets (not filesystem paths).
+     *
+     * @var array<int, string>
+     */
+    private const ASSET_HELPER_FUNCTIONS = [
+        'asset',
+        'secure_asset',
+        'mix',
+        'url',
+        'secure_url',
+        'route',
+        'action',
+        'to_route',
+        'redirect',
+    ];
+
+    /**
+     * Patterns that require STRONG context (could be web routes).
+     * Only flag when used in definite filesystem context.
+     *
+     * @var array<int, string>
+     */
+    private const STRONG_CONTEXT_PATTERNS = [
+        '/^\\/public\\//i',
+        '/^\\/app\\//i',
+    ];
+
+    /**
      * @param  array<string, string>  $alwaysFlagPatterns  Patterns to always flag regardless of context
      * @param  array<string, string>  $contextRequiredPatterns  Patterns that only flag in filesystem context
      * @param  array<int, string>  $allowedPaths
@@ -371,15 +461,24 @@ class HardcodedPathsVisitor extends NodeVisitorAbstract
         }
 
         // Check "context required" patterns (could be web routes)
-        // Only flag if used in filesystem context
+        // Only flag if used in filesystem context with appropriate strength
         foreach ($this->contextRequiredPatterns as $pattern => $helper) {
             if (preg_match($pattern, $value)) {
-                if ($this->isInFilesystemContext($node)) {
+                $contextStrength = $this->getFilesystemContextStrength($node);
+
+                // For patterns that could easily be web routes (like /public/, /app/),
+                // require STRONG context. For others, WEAK context is sufficient.
+                $requiredStrength = $this->patternRequiresStrongContext($pattern)
+                    ? self::CONTEXT_STRONG
+                    : self::CONTEXT_WEAK;
+
+                if ($contextStrength >= $requiredStrength) {
+                    $recommendation = $this->getContextAwareRecommendation($pattern, $helper, $node);
                     $this->issues[] = [
                         'message' => sprintf('Hardcoded storage path found: "%s"', substr($value, 0, 50)),
                         'line' => $line,
                         'severity' => Severity::Medium,
-                        'recommendation' => sprintf('Use Laravel path helper: %s. This ensures portability across environments and enables different storage drivers', $helper),
+                        'recommendation' => $recommendation,
                         'code' => null,
                     ];
                 }
@@ -390,62 +489,87 @@ class HardcodedPathsVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Check if the given node is used in a filesystem context.
-     *
-     * This traverses parent nodes to determine if the string is being
-     * passed to a filesystem function/method.
+     * Check if a pattern requires STRONG filesystem context to flag.
      */
-    private function isInFilesystemContext(Node $node): bool
+    private function patternRequiresStrongContext(string $pattern): bool
+    {
+        foreach (self::STRONG_CONTEXT_PATTERNS as $strongPattern) {
+            if ($strongPattern === $pattern) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Get context-aware recommendation based on usage context.
+     */
+    private function getContextAwareRecommendation(string $pattern, string $defaultHelper, Node $node): string
+    {
+        $contextType = $this->getContextType($node);
+
+        // For /public/ paths, recommend based on context
+        if (preg_match('/public/i', $pattern)) {
+            return match ($contextType) {
+                self::CONTEXT_TYPE_ASSET => "Use asset('...') for URLs in templates instead of hardcoded paths",
+                self::CONTEXT_TYPE_FILESYSTEM => sprintf('Use Laravel path helper: %s. This ensures portability across environments', $defaultHelper),
+                default => sprintf('Use Laravel path helper: %s. This ensures portability across environments and enables different storage drivers', $defaultHelper),
+            };
+        }
+
+        return sprintf('Use Laravel path helper: %s. This ensures portability across environments and enables different storage drivers', $defaultHelper);
+    }
+
+    /**
+     * Determine the context type (filesystem or asset) for a node.
+     */
+    private function getContextType(Node $node): ?string
     {
         $parent = $node->getAttribute('parent');
 
         while ($parent !== null) {
-            // Check FuncCall (file_get_contents, fopen, etc.)
+            // Check for asset/URL functions
             if ($parent instanceof Node\Expr\FuncCall) {
                 if ($parent->name instanceof Node\Name) {
                     $funcName = strtolower($parent->name->toString());
+                    if (in_array($funcName, self::ASSET_HELPER_FUNCTIONS, true)) {
+                        return self::CONTEXT_TYPE_ASSET;
+                    }
                     if (in_array($funcName, self::FILESYSTEM_FUNCTIONS, true)) {
-                        return $this->isArgumentOf($node, $parent);
+                        return self::CONTEXT_TYPE_FILESYSTEM;
                     }
                 }
-                // Stop at function call boundaries for non-filesystem functions
                 break;
             }
 
-            // Check StaticCall (File::get, Storage::path, etc.)
+            // Check for static facade calls
             if ($parent instanceof Node\Expr\StaticCall) {
                 if ($parent->class instanceof Node\Name && $parent->name instanceof Node\Identifier) {
                     $className = $parent->class->toString();
                     $methodName = strtolower($parent->name->toString());
 
-                    // Check if it's a Storage/File facade method
-                    if (in_array($className, ['File', 'Storage', 'Illuminate\\Support\\Facades\\File', 'Illuminate\\Support\\Facades\\Storage'], true)) {
-                        if (in_array($methodName, self::FILESYSTEM_STATIC_METHODS, true)) {
-                            return $this->isArgumentOf($node, $parent);
+                    // Storage/File facades -> filesystem context
+                    if (in_array($className, self::FILESYSTEM_FACADE_CLASSES, true)) {
+                        return self::CONTEXT_TYPE_FILESYSTEM;
+                    }
+
+                    // Vite::asset() -> asset context
+                    if (in_array($className, ['Vite', 'Illuminate\\Support\\Facades\\Vite'], true)) {
+                        if ($methodName === 'asset') {
+                            return self::CONTEXT_TYPE_ASSET;
                         }
                     }
+
+                    // URL facade -> asset context
+                    if (in_array($className, ['URL', 'Illuminate\\Support\\Facades\\URL'], true)) {
+                        return self::CONTEXT_TYPE_ASSET;
+                    }
                 }
-                // Stop at static call boundaries
                 break;
             }
 
-            // Check MethodCall ($filesystem->get, $file->put, etc.)
-            // Only consider as filesystem context if the variable name suggests filesystem
-            if ($parent instanceof Node\Expr\MethodCall) {
-                if ($parent->name instanceof Node\Identifier) {
-                    $methodName = strtolower($parent->name->toString());
-                    if (in_array($methodName, self::FILESYSTEM_INSTANCE_METHODS, true)) {
-                        // Check if the object variable name suggests filesystem
-                        if ($this->isFilesystemVariable($parent->var)) {
-                            return $this->isArgumentOf($node, $parent);
-                        }
-                    }
-                }
-                // Stop at method call boundaries
-                break;
-            }
-
-            // Continue traversing for concat operations, array items, etc.
+            // Continue through concat, array, arg nodes
             if ($parent instanceof Node\Expr\BinaryOp\Concat
                 || $parent instanceof Node\Expr\ArrayItem
                 || $parent instanceof Node\Arg) {
@@ -454,8 +578,187 @@ class HardcodedPathsVisitor extends NodeVisitorAbstract
                 continue;
             }
 
-            // Stop at other expressions
             break;
+        }
+
+        return null;
+    }
+
+    /**
+     * Get the filesystem context strength for a node.
+     *
+     * Returns CONTEXT_STRONG for definite filesystem operations (known functions/facades),
+     * CONTEXT_WEAK for heuristic-based detection (variable name hints),
+     * CONTEXT_NONE if not in filesystem context.
+     */
+    private function getFilesystemContextStrength(Node $node): int
+    {
+        $parent = $node->getAttribute('parent');
+
+        while ($parent !== null) {
+            // STRONG: Direct PHP filesystem functions
+            if ($parent instanceof Node\Expr\FuncCall) {
+                if ($parent->name instanceof Node\Name) {
+                    $funcName = strtolower($parent->name->toString());
+                    if (in_array($funcName, self::FILESYSTEM_FUNCTIONS, true)) {
+                        return $this->isArgumentOf($node, $parent)
+                            ? self::CONTEXT_STRONG
+                            : self::CONTEXT_NONE;
+                    }
+                }
+                break;
+            }
+
+            // STRONG: Storage/File facade static calls
+            if ($parent instanceof Node\Expr\StaticCall) {
+                if ($parent->class instanceof Node\Name && $parent->name instanceof Node\Identifier) {
+                    $className = $parent->class->toString();
+                    $methodName = strtolower($parent->name->toString());
+
+                    if (in_array($className, self::FILESYSTEM_FACADE_CLASSES, true)) {
+                        if (in_array($methodName, self::FILESYSTEM_STATIC_METHODS, true)) {
+                            return $this->isArgumentOf($node, $parent)
+                                ? self::CONTEXT_STRONG
+                                : self::CONTEXT_NONE;
+                        }
+                    }
+
+                    // STRONG: UploadedFile static methods
+                    if (in_array($className, self::UPLOAD_FILE_CLASSES, true)) {
+                        return $this->isArgumentOf($node, $parent)
+                            ? self::CONTEXT_STRONG
+                            : self::CONTEXT_NONE;
+                    }
+                }
+                break;
+            }
+
+            // Method calls - check for strong or weak context
+            if ($parent instanceof Node\Expr\MethodCall) {
+                if ($parent->name instanceof Node\Identifier) {
+                    $methodName = strtolower($parent->name->toString());
+
+                    // STRONG: Chained on Storage::disk() or File::*
+                    if ($parent->var instanceof Node\Expr\StaticCall) {
+                        $staticCall = $parent->var;
+                        if ($staticCall->class instanceof Node\Name) {
+                            $className = $staticCall->class->toString();
+                            if (in_array($className, self::FILESYSTEM_FACADE_CLASSES, true)) {
+                                if (in_array($methodName, self::FILESYSTEM_INSTANCE_METHODS, true)) {
+                                    return $this->isArgumentOf($node, $parent)
+                                        ? self::CONTEXT_STRONG
+                                        : self::CONTEXT_NONE;
+                                }
+                            }
+                        }
+                    }
+
+                    // STRONG: app('files')->method() or resolve('filesystem')->method()
+                    if ($parent->var instanceof Node\Expr\FuncCall) {
+                        if ($this->isFilesystemServiceResolution($parent->var)) {
+                            if (in_array($methodName, self::FILESYSTEM_INSTANCE_METHODS, true)) {
+                                return $this->isArgumentOf($node, $parent)
+                                    ? self::CONTEXT_STRONG
+                                    : self::CONTEXT_NONE;
+                            }
+                        }
+                    }
+
+                    // STRONG: response()->download() / $response->download()
+                    if ($this->isResponseFileMethod($parent)) {
+                        return $this->isArgumentOf($node, $parent)
+                            ? self::CONTEXT_STRONG
+                            : self::CONTEXT_NONE;
+                    }
+
+                    // WEAK: Variable name heuristics ($filesystem->get, $file->put)
+                    if (in_array($methodName, self::FILESYSTEM_INSTANCE_METHODS, true)) {
+                        if ($this->isFilesystemVariable($parent->var)) {
+                            return $this->isArgumentOf($node, $parent)
+                                ? self::CONTEXT_WEAK
+                                : self::CONTEXT_NONE;
+                        }
+                    }
+                }
+                break;
+            }
+
+            // Continue through concat, array, arg nodes
+            if ($parent instanceof Node\Expr\BinaryOp\Concat
+                || $parent instanceof Node\Expr\ArrayItem
+                || $parent instanceof Node\Arg) {
+                $parent = $parent->getAttribute('parent');
+
+                continue;
+            }
+
+            break;
+        }
+
+        return self::CONTEXT_NONE;
+    }
+
+    /**
+     * Check if a function call is resolving a filesystem service from the container.
+     *
+     * Matches: app('files'), app('filesystem'), resolve('files'), etc.
+     */
+    private function isFilesystemServiceResolution(Node\Expr\FuncCall $funcCall): bool
+    {
+        if (! $funcCall->name instanceof Node\Name) {
+            return false;
+        }
+
+        $funcName = strtolower($funcCall->name->toString());
+        if ($funcName !== 'app' && $funcName !== 'resolve') {
+            return false;
+        }
+
+        if (empty($funcCall->args) || ! $funcCall->args[0] instanceof Node\Arg) {
+            return false;
+        }
+
+        $firstArg = $funcCall->args[0]->value;
+        if ($firstArg instanceof Node\Scalar\String_) {
+            return in_array($firstArg->value, self::FILESYSTEM_SERVICE_NAMES, true);
+        }
+
+        if ($firstArg instanceof Node\Expr\ClassConstFetch) {
+            if ($firstArg->class instanceof Node\Name) {
+                $className = $firstArg->class->toString();
+
+                return str_contains($className, 'Filesystem');
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a method call is a response file method (download, file, streamDownload).
+     */
+    private function isResponseFileMethod(Node\Expr\MethodCall $methodCall): bool
+    {
+        if (! $methodCall->name instanceof Node\Identifier) {
+            return false;
+        }
+
+        $methodName = strtolower($methodCall->name->toString());
+        if (! in_array($methodName, self::RESPONSE_FILE_METHODS, true)) {
+            return false;
+        }
+
+        // Check response() helper: response()->download(...)
+        if ($methodCall->var instanceof Node\Expr\FuncCall) {
+            if ($methodCall->var->name instanceof Node\Name) {
+                return strtolower($methodCall->var->name->toString()) === 'response';
+            }
+        }
+
+        // Check $response variable: $response->download(...)
+        if ($methodCall->var instanceof Node\Expr\Variable) {
+            return is_string($methodCall->var->name) &&
+                   strtolower($methodCall->var->name) === 'response';
         }
 
         return false;

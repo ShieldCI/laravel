@@ -1012,6 +1012,7 @@ PHP;
 
     public function test_detects_paths_in_instance_methods(): void
     {
+        // Test that /storage/ paths are flagged with WEAK context (variable name hints)
         $code = <<<'PHP'
 <?php
 
@@ -1028,7 +1029,7 @@ class FilesystemService
 
     public function writeFile($content)
     {
-        $this->filesystem->put('/public/data/output.txt', $content);
+        $this->filesystem->put('/storage/logs/output.txt', $content);
     }
 }
 PHP;
@@ -1044,5 +1045,366 @@ PHP;
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertGreaterThanOrEqual(2, count($issues));
+    }
+
+    // =========================================================================
+    // Context Strength Tests (Strong vs Weak Context)
+    // =========================================================================
+
+    public function test_public_path_not_flagged_with_weak_context(): void
+    {
+        // /public/ path with variable-hinted filesystem should NOT flag
+        // because /public/ requires STRONG context (could be web route)
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class PublicPathService
+{
+    public function __construct(private $filesystem) {}
+
+    public function readFile()
+    {
+        return $this->filesystem->get('/public/config/settings.json');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/PublicPathService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass (not flag) - weak context is insufficient for /public/
+        $this->assertPassed($result);
+    }
+
+    public function test_public_path_flagged_with_strong_context(): void
+    {
+        // /public/ path with Storage facade SHOULD flag (strong context)
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Storage;
+
+class PublicPathService
+{
+    public function readFile()
+    {
+        return Storage::get('/public/config/settings.json');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/PublicPathService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail (flag) - strong context
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('public', $result);
+    }
+
+    public function test_storage_path_flagged_with_weak_context(): void
+    {
+        // /storage/ path with variable-hinted filesystem SHOULD flag
+        // because /storage/ only requires WEAK context
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class StoragePathService
+{
+    public function __construct(private $filesystem) {}
+
+    public function readFile()
+    {
+        return $this->filesystem->get('/storage/app/file.txt');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/StoragePathService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail (flag) - weak context sufficient for /storage/
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('storage', $result);
+    }
+
+    public function test_app_path_not_flagged_with_weak_context(): void
+    {
+        // /app/ path with variable-hinted filesystem should NOT flag
+        // because /app/ requires STRONG context (could be web route)
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class AppPathService
+{
+    public function __construct(private $filesystem) {}
+
+    public function readFile()
+    {
+        return $this->filesystem->get('/app/Models/User.php');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/AppPathService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass (not flag) - weak context is insufficient for /app/
+        $this->assertPassed($result);
+    }
+
+    // =========================================================================
+    // New Filesystem Context Patterns Tests
+    // =========================================================================
+
+    public function test_detects_path_in_storage_disk_chained_call(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Storage;
+
+class DiskService
+{
+    public function saveFile($content)
+    {
+        Storage::disk('s3')->put('/storage/app/uploads/file.txt', $content);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DiskService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('storage', $result);
+    }
+
+    public function test_detects_path_in_app_files_call(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class FilesService
+{
+    public function readFile()
+    {
+        return app('files')->get('/storage/app/config.json');
+    }
+
+    public function resolveFilesystem()
+    {
+        return resolve('filesystem')->exists('/storage/logs/debug.log');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/FilesService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertGreaterThanOrEqual(2, count($issues));
+    }
+
+    public function test_detects_path_in_response_download(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DownloadService
+{
+    public function downloadFile()
+    {
+        return response()->download('/storage/app/files/document.pdf');
+    }
+
+    public function streamFile($response)
+    {
+        return $response->file('/storage/app/images/photo.jpg');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DownloadService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertGreaterThanOrEqual(2, count($issues));
+    }
+
+    public function test_detects_hardcoded_path_in_interpolated_string(): void
+    {
+        // Use relative path which is "always flag" pattern
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class InterpolatedService
+{
+    public function getPath($userId)
+    {
+        return "../storage/app/{$userId}/file.txt";
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/InterpolatedService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('storage', $result);
+    }
+
+    public function test_detects_hardcoded_path_in_concatenated_string(): void
+    {
+        // Use relative path which is "always flag" pattern
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ConcatService
+{
+    public function getPath($userId)
+    {
+        return "../storage/app/" . $userId . "/file.txt";
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ConcatService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('storage', $result);
+    }
+
+    // =========================================================================
+    // Context-Aware Recommendations Tests
+    // =========================================================================
+
+    public function test_recommends_public_path_for_filesystem_context(): void
+    {
+        // file_get_contents('/public/images/logo.png') should recommend public_path
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ImageService
+{
+    public function getImage()
+    {
+        return file_get_contents('/public/images/logo.png');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ImageService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('public_path', $issues[0]->recommendation);
+    }
+
+    public function test_public_path_in_file_facade_detected(): void
+    {
+        // File facade with /public/ path should be flagged (strong context)
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\File;
+
+class PublicFileService
+{
+    public function getPublicFile()
+    {
+        return File::get('/public/css/styles.css');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/PublicFileService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('public_path', $issues[0]->recommendation);
     }
 }

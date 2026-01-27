@@ -95,6 +95,8 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         'DateTime',
         'DateTimeImmutable',
         'Factory',
+        'Str',
+        'Validator',
     ];
 
     private int $maxPhpBlockLines;
@@ -397,7 +399,23 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
     private function isNonEloquentStaticCall(string $line, int $matchPosition): bool
     {
         $beforeMatch = substr($line, 0, $matchPosition);
+        $trimmed = rtrim($beforeMatch);
 
+        // Dynamic class resolution - uncertain, so don't flag
+        // e.g., ($foo ? Arr : Model)::where(), $class::where()
+        if (str_ends_with($trimmed, ')') || preg_match('/\$\w+$/', $trimmed)) {
+            return true;
+        }
+
+        // Extract class name from FQCN: \Illuminate\Support\Collection -> Collection
+        // Handles: Collection, \Collection, Some\Namespace\Collection
+        if (preg_match('/\\\\?(?:[A-Za-z_][A-Za-z0-9_]*\\\\)*([A-Za-z_][A-Za-z0-9_]*)$/', $trimmed, $matches)) {
+            $className = $matches[1];
+
+            return in_array($className, self::NON_ELOQUENT_CLASSES, true);
+        }
+
+        // Fallback to original behavior
         foreach (self::NON_ELOQUENT_CLASSES as $class) {
             if (str_ends_with($beforeMatch, $class)) {
                 return true;

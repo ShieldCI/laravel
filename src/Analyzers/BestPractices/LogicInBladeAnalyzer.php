@@ -56,6 +56,36 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         'cookie()',
     ];
 
+    /** @var array<string> Extended list of non-database save method variable names */
+    private const NON_DB_SAVE_VARIABLES = [
+        'file',
+        'upload',
+        'image',
+        'photo',
+        'document',
+        'attachment',
+        'pdf',
+        'excel',
+        'csv',
+        'export',
+        'cache',
+        'temp',
+        'storage',
+    ];
+
+    /** @var array<string> Additional collection methods that indicate business logic */
+    private const COLLECTION_MANIPULATION_METHODS = [
+        'pluck',
+        'unique',
+        'chunk',
+        'groupBy',
+        'keyBy',
+        'reverse',
+        'shuffle',
+        'values',
+        'keys',
+    ];
+
     private int $maxPhpBlockLines;
 
     /** @var array<int, true> Track reported lines to avoid duplicates */
@@ -303,27 +333,79 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         }
 
         foreach (self::DB_QUERY_PATTERNS as $pattern) {
-            if (preg_match($pattern, $line)) {
+            if (preg_match($pattern, $line, $matches, PREG_OFFSET_CAPTURE)) {
+                // Check if the match is inside a string or comment
+                if ($this->isInsideStringOrComment($line, $matches[0][1])) {
+                    continue;
+                }
+
                 return true;
             }
         }
 
-        // Check for model save (but exclude file uploads)
-        if (preg_match('/\$\w+->save\s*\(/', $line)) {
-            // Exclude common file upload patterns
-            if (preg_match('/\$(file|upload|image|photo|document|attachment)->save/', $line)) {
+        // Check for model save (but exclude file uploads and other non-DB patterns)
+        if (preg_match('/\$(\w+)->save\s*\(/', $line, $matches, PREG_OFFSET_CAPTURE)) {
+            // Check if the match is inside a string or comment
+            if ($this->isInsideStringOrComment($line, $matches[0][1])) {
+                return false;
+            }
+
+            // Exclude common non-database save patterns
+            $variableName = $matches[1][0];
+            if (in_array($variableName, self::NON_DB_SAVE_VARIABLES, true)) {
                 return false;
             }
 
             return true; // Likely a model save
         }
 
-        // Check for relationship queries
-        if (preg_match('/\$\w+->(\w+)\(\)->get\(/', $line)) {
-            return true; // Likely $user->posts()->get()
+        // Check for relationship queries with various terminal methods
+        if (preg_match('/\$\w+->(\w+)\(\)->(get|first|find|count|exists|pluck|sum|avg|min|max)\s*\(/', $line, $matches, PREG_OFFSET_CAPTURE)) {
+            // Check if the match is inside a string or comment
+            if ($this->isInsideStringOrComment($line, $matches[0][1])) {
+                return false;
+            }
+
+            return true; // Likely $user->posts()->get(), $user->posts()->first(), etc.
         }
 
         return false;
+    }
+
+    /**
+     * Check if a match position is inside a string literal or comment.
+     */
+    private function isInsideStringOrComment(string $line, int $matchPosition): bool
+    {
+        $beforeMatch = substr($line, 0, $matchPosition);
+
+        // Check for single-line comment before match position
+        $singleCommentPos = strpos($beforeMatch, '//');
+        if ($singleCommentPos !== false) {
+            return true;
+        }
+
+        // Check if we're inside a string literal by counting quotes
+        $inSingleQuote = false;
+        $inDoubleQuote = false;
+
+        for ($i = 0; $i < $matchPosition; $i++) {
+            $char = $line[$i];
+            $prevChar = $i > 0 ? $line[$i - 1] : '';
+
+            // Skip escaped quotes
+            if ($prevChar === '\\') {
+                continue;
+            }
+
+            if ($char === "'" && ! $inDoubleQuote) {
+                $inSingleQuote = ! $inSingleQuote;
+            } elseif ($char === '"' && ! $inSingleQuote) {
+                $inDoubleQuote = ! $inDoubleQuote;
+            }
+        }
+
+        return $inSingleQuote || $inDoubleQuote;
     }
 
     private function hasApiCall(string $line): bool
@@ -336,7 +418,12 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         ];
 
         foreach ($patterns as $pattern) {
-            if (preg_match($pattern, $line)) {
+            if (preg_match($pattern, $line, $matches, PREG_OFFSET_CAPTURE)) {
+                // Check if the match is inside a string or comment
+                if ($this->isInsideStringOrComment($line, $matches[0][1])) {
+                    continue;
+                }
+
                 return true;
             }
         }
@@ -361,9 +448,15 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
             return false; // {{ Config::get() }} is acceptable
         }
 
-        // Skip simple single operations (these are often acceptable)
-        if (preg_match('/\{\{\s*\$\w+\s*[\+\-\*\/]\s*\$\w+\s*\}\}/', $line)) {
-            return false; // {{ $price * $quantity }} is acceptable
+        // Skip null coalescing operators ({{ $value ?? 0 }})
+        if (preg_match('/\{\{\s*\$\w+(?:->\w+)?\s*\?\?\s*(?:\d+|[\'"][^\'"]*[\'"]|null)\s*\}\}/', $line)) {
+            return false;
+        }
+
+        // Skip simple single operations including object properties (these are often acceptable)
+        // Matches: {{ $price * $quantity }}, {{ $item->price * $qty }}, {{ $a + $b->value }}
+        if (preg_match('/\{\{\s*\$\w+(?:->\w+)?\s*[\+\-\*\/]\s*\$\w+(?:->\w+)?\s*\}\}/', $line)) {
+            return false; // {{ $price * $quantity }} or {{ $item->price * $qty }} is acceptable
         }
 
         // Detect complex calculations (multiple operations)
@@ -416,9 +509,20 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
             return true; // Sorting in foreach
         }
 
-        // Check for array_* functions (data manipulation)
+        // Check for additional collection methods in foreach
+        $collectionMethods = implode('|', self::COLLECTION_MANIPULATION_METHODS);
+        if (preg_match('/@foreach\s*\(.*->('.$collectionMethods.')\(/', $line)) {
+            return true; // Collection manipulation in foreach
+        }
+
+        // Handle collect() helper with collection methods
+        if (preg_match('/@foreach\s*\(\s*collect\s*\(.*\)->(filter|map|transform|sortBy|'.$collectionMethods.')\(/', $line)) {
+            return true; // collect($items)->filter() in foreach
+        }
+
+        // Check for array_* functions (data manipulation) using word boundary regex
         foreach (self::BUSINESS_LOGIC_FUNCTIONS as $func) {
-            if (str_contains($line, $func)) {
+            if (preg_match('/\b'.preg_quote($func, '/').'\s*\(/', $line)) {
                 return true;
             }
         }

@@ -241,7 +241,7 @@ PHP;
         $this->assertHasIssueContaining('complex business logic', $result);
     }
 
-    public function test_detects_foreach_loops(): void
+    public function test_detects_foreach_loops_with_calculations(): void
     {
         $code = <<<'PHP'
 <?php
@@ -250,10 +250,11 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('/items', function () {
     $items = [1, 2, 3];
+    $total = 0;
     foreach ($items as $item) {
-        echo $item;
+        $total += $item;
     }
-    return 'done';
+    return $total;
 });
 PHP;
 
@@ -269,7 +270,7 @@ PHP;
         $this->assertHasIssueContaining('complex business logic', $result);
     }
 
-    public function test_detects_for_loops(): void
+    public function test_detects_for_loops_with_calculations(): void
     {
         $code = <<<'PHP'
 <?php
@@ -277,10 +278,11 @@ PHP;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/count', function () {
+    $sum = 0;
     for ($i = 0; $i < 10; $i++) {
-        echo $i;
+        $sum = $sum + $i;
     }
-    return 'done';
+    return $sum;
 });
 PHP;
 
@@ -296,7 +298,7 @@ PHP;
         $this->assertHasIssueContaining('complex business logic', $result);
     }
 
-    public function test_detects_while_loops(): void
+    public function test_detects_while_loops_with_calculations(): void
     {
         $code = <<<'PHP'
 <?php
@@ -305,11 +307,12 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('/process', function () {
     $i = 0;
+    $product = 1;
     while ($i < 10) {
-        echo $i;
+        $product = $product * 2;
         $i++;
     }
-    return 'done';
+    return $product;
 });
 PHP;
 
@@ -416,10 +419,9 @@ use App\Models\User;
 
 Route::get('/complex', function () {
     $users = User::where('active', true)->get();
+    $total = 0;
     foreach ($users as $user) {
-        if ($user->age > 18) {
-            echo $user->name;
-        }
+        $total += $user->balance;
     }
     $a = 1;
     $b = 2;
@@ -482,10 +484,11 @@ PHP;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/process', function () {
+    $total = 0;
     foreach ([1, 2, 3] as $item) {
-        echo $item;
+        $total += $item;
     }
-    return 'done';
+    return $total;
 });
 PHP;
 
@@ -855,5 +858,135 @@ PHP;
         $this->assertArrayHasKey('problems', $issues[0]->metadata);
         $this->assertArrayHasKey('has_db_queries', $issues[0]->metadata);
         $this->assertTrue($issues[0]->metadata['has_db_queries']);
+    }
+
+    public function test_does_not_flag_collection_where_as_query(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::get('/filter', function () {
+    return collect(['a', 'b'])->where('key', 'value')->first();
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should PASS - Collection methods, not DB queries
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_carbon_create_as_query(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use Carbon\Carbon;
+
+Route::get('/date', function () {
+    $date = Carbon::create(2024, 1, 1);
+    return response()->json(['date' => $date->toDateString()]);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should PASS - Date creation, not DB query
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_simple_validation_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::post('/tags', function () {
+    foreach (request('tags', []) as $tag) { if (strlen($tag) > 50) abort(422); }
+    return 'ok';
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should PASS - Simple validation loop without calculations
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_loop_with_calculations(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::get('/total', function () {
+    $items = request('items', []);
+    $total = 0;
+    foreach ($items as $item) {
+        $total += $item['price'] * $item['quantity'];
+    }
+    return response()->json(['total' => $total]);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should FAIL - Loop contains business logic (arithmetic)
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('complex business logic', $result);
+    }
+
+    public function test_does_not_flag_validator_make_as_query(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Validator;
+
+Route::post('/submit', function () {
+    return Validator::make(request()->all(), ['email' => 'required']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should PASS - Validator is not a DB query
+        $this->assertPassed($result);
     }
 }

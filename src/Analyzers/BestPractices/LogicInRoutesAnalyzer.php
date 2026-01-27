@@ -279,10 +279,18 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                             // Additional check: is this being called on something that looks like a Model?
                             if ($node->class instanceof Node\Name) {
                                 $className = $node->class->toString();
-                                // Common model class patterns
+                                // Known utility classes that are NOT Eloquent models
+                                $utilityClasses = [
+                                    'Carbon', 'Collection', 'Validator', 'Cache', 'Log',
+                                    'Session', 'Cookie', 'Request', 'Response', 'View',
+                                    'Config', 'Str', 'Arr', 'File', 'Storage', 'Hash',
+                                    'Crypt', 'Mail', 'Queue', 'Event', 'Bus', 'Gate',
+                                    'Notification', 'Password', 'URL', 'Redirect', 'Route',
+                                ];
+                                // Common model class patterns: PascalCase single word, NOT a utility
                                 if (
                                     str_ends_with($className, 'Model') ||
-                                    preg_match('/^[A-Z][a-zA-Z]+$/', $className) // CamelCase single word
+                                    (preg_match('/^[A-Z][a-zA-Z]+$/', $className) && ! in_array($className, $utilityClasses, true))
                                 ) {
                                     $this->hasQuery = true;
                                 }
@@ -295,11 +303,13 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 if ($node instanceof Node\Expr\MethodCall) {
                     if ($node->name instanceof Node\Identifier) {
                         $method = $node->name->toString();
-                        // Methods that are almost certainly query builder methods
+                        // SQL-specific methods (not found on Collections)
                         $queryBuilderMethods = [
-                            'select', 'where', 'orWhere', 'whereIn', 'whereNotIn',
-                            'join', 'leftJoin', 'orderBy', 'groupBy', 'having',
-                            'limit', 'offset', 'take', 'skip',
+                            'orWhere', 'whereIn', 'whereNotIn', 'whereBetween', 'whereNull',
+                            'join', 'leftJoin', 'rightJoin', 'crossJoin',
+                            'having', 'havingRaw', 'groupBy',
+                            'union', 'unionAll',
+                            'lockForUpdate', 'sharedLock',
                         ];
                         if (in_array($method, $queryBuilderMethods, true)) {
                             $this->hasQuery = true;
@@ -338,16 +348,14 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     return null;
                 }
 
-                // Check for loops (always complex)
+                // Track loops (complex only if they contain calculations)
                 if ($node instanceof Node\Stmt\Foreach_
                     || $node instanceof Node\Stmt\For_
                     || $node instanceof Node\Stmt\While_
                     || $node instanceof Node\Stmt\Do_
                 ) {
-                    $this->hasComplexLogic = true;
                     $this->hasLoops = true;
-
-                    return null;
+                    // Don't return null - continue traversing to find arithmetic inside
                 }
 
                 // Track nested conditionals (nested if = complex)
@@ -361,10 +369,19 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
                 // Check for complex calculations (only in loops or nested logic)
                 if ($this->hasLoops || $this->ifDepth > 1) {
+                    // Binary arithmetic operators
                     if ($node instanceof Node\Expr\BinaryOp\Plus
                         || $node instanceof Node\Expr\BinaryOp\Minus
                         || $node instanceof Node\Expr\BinaryOp\Mul
                         || $node instanceof Node\Expr\BinaryOp\Div
+                    ) {
+                        $this->hasComplexLogic = true;
+                    }
+                    // Compound assignment operators (+=, -=, *=, /=)
+                    if ($node instanceof Node\Expr\AssignOp\Plus
+                        || $node instanceof Node\Expr\AssignOp\Minus
+                        || $node instanceof Node\Expr\AssignOp\Mul
+                        || $node instanceof Node\Expr\AssignOp\Div
                     ) {
                         $this->hasComplexLogic = true;
                     }

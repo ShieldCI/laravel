@@ -86,6 +86,17 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         'keys',
     ];
 
+    /** @var array<string> Non-Eloquent classes with DB-like method names */
+    private const NON_ELOQUENT_CLASSES = [
+        'Collection',
+        'Arr',
+        'Carbon',
+        'CarbonImmutable',
+        'DateTime',
+        'DateTimeImmutable',
+        'Factory',
+    ];
+
     private int $maxPhpBlockLines;
 
     /** @var array<int, true> Track reported lines to avoid duplicates */
@@ -339,6 +350,11 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
+                // Skip non-Eloquent static calls (Collection::where, Arr::first, Carbon::create, etc.)
+                if ($this->isNonEloquentStaticCall($line, $matches[0][1])) {
+                    continue;
+                }
+
                 return true;
             }
         }
@@ -367,6 +383,25 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
             }
 
             return true; // Likely $user->posts()->get(), $user->posts()->first(), etc.
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a static method call is from a non-Eloquent class.
+     *
+     * Classes like Collection, Arr, Carbon have methods (where, first, all, create)
+     * that look like Eloquent queries but are not database operations.
+     */
+    private function isNonEloquentStaticCall(string $line, int $matchPosition): bool
+    {
+        $beforeMatch = substr($line, 0, $matchPosition);
+
+        foreach (self::NON_ELOQUENT_CLASSES as $class) {
+            if (str_ends_with($beforeMatch, $class)) {
+                return true;
+            }
         }
 
         return false;

@@ -1421,4 +1421,241 @@ BLADE;
 
         $this->assertPassed($result);
     }
+
+    // =========================================================================
+    // FALSE POSITIVE TESTS - Non-Eloquent Static Calls
+    // =========================================================================
+
+    public function test_does_not_flag_collection_where(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $filtered = Collection::where('status', 'active');
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/collection.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_arr_where(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $filtered = Arr::where($items, fn($item) => $item > 5);
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/arr.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_arr_first(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $first = Arr::first($items, fn($item) => $item > 5);
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/arr-first.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_carbon_create(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $date = Carbon::create(2024, 1, 1);
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/carbon.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_carbon_immutable_create(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $date = CarbonImmutable::create(2024, 1, 1);
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/carbon-immutable.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_datetime_create(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $date = DateTime::create();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/datetime.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_factory_create(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $instance = Factory::create();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/factory.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_flags_eloquent_model_where(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $users = User::where('active', true)->get();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/user.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Database query', $result);
+    }
+
+    public function test_still_flags_eloquent_model_create(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $order = Order::create(['status' => 'pending']);
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/order.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Database query', $result);
+    }
+
+    public function test_still_flags_eloquent_model_all(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @foreach(Product::all() as $product)
+        <p>{{ $product->name }}</p>
+    @endforeach
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/product.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    public function test_still_flags_eloquent_model_first(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $post = Post::first();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/post.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
 }

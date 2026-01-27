@@ -1658,4 +1658,329 @@ BLADE;
 
         $this->assertFailed($result);
     }
+
+    // =========================================================================
+    // FALSE POSITIVE TESTS - Unknown Classes Without Terminal Methods
+    // =========================================================================
+
+    public function test_does_not_flag_unknown_class_where_without_terminal(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $result = CustomQueryBuilder::where('x', 'y');
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/custom.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_repository_where(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $users = UserRepository::where('active', true);
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/repo.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_query_builder_find_without_terminal(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $item = SomeService::find($id);
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/service.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_model_fqcn_where(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $users = \App\Models\User::where('active', true);
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/fqcn.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Database query', $result);
+    }
+
+    public function test_flags_model_fqcn_find(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $user = \App\Models\User::find(1);
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/fqcn-find.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    public function test_flags_short_class_where_with_terminal(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $users = User::where('active', true)->get();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/terminal.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Database query', $result);
+    }
+
+    public function test_flags_short_class_where_with_first_terminal(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $user = User::where('active', true)->first();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/terminal-first.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    // =========================================================================
+    // FALSE POSITIVE TESTS - Collection Variable Detection
+    // =========================================================================
+
+    public function test_does_not_flag_collection_items_count(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $total = $collection->items()->count();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/collection-items.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_items_variable_method(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $first = $items->filter()->first();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/items-filter.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_data_variable_get(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $result = $data->transform()->get();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/data-transform.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_results_variable_first(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $first = $results->filter()->first();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/results-filter.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_flags_user_posts_get(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $posts = $user->posts()->get();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/user-posts.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    public function test_still_flags_post_comments_count(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $count = $post->comments()->count();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/post-comments.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    public function test_does_not_flag_my_collection_variable(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $first = $myCollection->map()->first();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/my-collection.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_user_list_variable(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $first = $userList->filter()->first();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/user-list.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

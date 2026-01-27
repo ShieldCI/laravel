@@ -26,19 +26,75 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
 {
     public const DEFAULT_MAX_PHP_BLOCK_LINES = 10;
 
-    /** @var array<string> */
-    private const DB_QUERY_PATTERNS = [
-        '/\bDB::/',                    // DB facade
-        '/::where\s*\(/',              // Eloquent where
-        '/::find\s*\(/',               // Eloquent find
-        '/::all\s*\(/',                // Eloquent all
-        '/::first\s*\(/',              // Eloquent first
-        '/::create\s*\(/',             // Eloquent create
-        '/::update\s*\(/',             // Eloquent update
-        '/::delete\s*\(/',             // Eloquent delete
-        '/::insert\s*\(/',             // Eloquent insert
-        '/::upsert\s*\(/',             // Eloquent upsert
-        '/->query\s*\(/',              // Query builder
+    /** @var array<string> Patterns that are definitely database operations */
+    private const DEFINITE_DB_PATTERNS = [
+        '/\bDB::/',                    // DB facade - always database
+        '/->query\s*\(/',              // Query builder - always database
+    ];
+
+    /**
+     * @var array<string> Self-terminal patterns - the static call IS the final operation.
+     *
+     * These patterns don't need a chained terminal method because they ARE terminal.
+     * Example: User::all(), User::find(1), User::first()
+     * Skipped if class is in NON_ELOQUENT_CLASSES (e.g., Arr::first, Factory::create).
+     */
+    private const SELF_TERMINAL_DB_PATTERNS = [
+        '/::find\s*\(/',               // Model::find(1) - terminal
+        '/::all\s*\(/',                // Model::all() - terminal
+        '/::first\s*\(/',              // Model::first() - terminal (but also Arr::first)
+        '/::create\s*\(/',             // Model::create([]) - terminal (but also Factory/Carbon)
+        '/::update\s*\(/',             // Model::update([]) - terminal
+        '/::delete\s*\(/',             // Model::delete() - terminal
+        '/::insert\s*\(/',             // Model::insert([]) - terminal
+        '/::upsert\s*\(/',             // Model::upsert([]) - terminal
+    ];
+
+    /**
+     * @var array<string> Chain patterns - require terminal method OR FQCN to confirm DB query.
+     *
+     * These patterns start a query chain but don't execute it.
+     * Example: User::where('x', 'y') - needs ->get(), ->first(), etc. to execute
+     * Without terminal, we can't be sure if it's a DB query or a custom class.
+     */
+    private const CHAIN_DB_PATTERNS = [
+        '/::where\s*\(/',              // Could be Eloquent chain or Collection/Arr/custom class
+    ];
+
+    /** @var array<string> Terminal methods that confirm a DB query chain */
+    private const TERMINAL_DB_METHODS = [
+        '->get(',
+        '->first(',
+        '->find(',
+        '->count(',
+        '->exists(',
+        '->pluck(',
+        '->sum(',
+        '->avg(',
+        '->min(',
+        '->max(',
+        '->paginate(',
+        '->toSql(',
+        '->dd(',
+    ];
+
+    /** @var array<string> Namespace indicators for Model classes */
+    private const MODEL_NAMESPACE_INDICATORS = [
+        '\\Models\\',
+        '\\Model\\',
+    ];
+
+    /** @var array<string> Variable name patterns that suggest collections, not models */
+    private const COLLECTION_VARIABLE_PATTERNS = [
+        'collection',
+        'items',
+        'list',
+        'array',
+        'data',
+        'results',
+        'rows',
+        'records',
+        'entries',
     ];
 
     /** @var array<string> */
@@ -97,6 +153,41 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         'Factory',
         'Str',
         'Validator',
+    ];
+
+    /** @var array<string> Class name suffixes that indicate non-model classes */
+    private const NON_MODEL_CLASS_SUFFIXES = [
+        'Service',
+        'Repository',
+        'Builder',
+        'Helper',
+        'Manager',
+        'Handler',
+        'Provider',
+        'Facade',
+        'Controller',
+        'Middleware',
+        'Policy',
+        'Event',
+        'Listener',
+        'Job',
+        'Mail',
+        'Notification',
+        'Command',
+        'Request',
+        'Resource',
+        'Rule',
+        'Exception',
+        'Trait',
+        'Interface',
+        'Contract',
+        'Test',
+        'Seeder',
+        'Migration',
+        'Observer',
+        'Scope',
+        'Cast',
+        'Enum',
     ];
 
     private int $maxPhpBlockLines;
@@ -345,19 +436,61 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        foreach (self::DB_QUERY_PATTERNS as $pattern) {
+        // Check definite DB patterns first (always flag)
+        foreach (self::DEFINITE_DB_PATTERNS as $pattern) {
+            if (preg_match($pattern, $line, $matches, PREG_OFFSET_CAPTURE)) {
+                if ($this->isInsideStringOrComment($line, $matches[0][1])) {
+                    continue;
+                }
+
+                return true;
+            }
+        }
+
+        // Check self-terminal patterns (::all(), ::find(), ::first(), ::create(), etc.)
+        // These ARE terminal operations - they don't need a chained method
+        foreach (self::SELF_TERMINAL_DB_PATTERNS as $pattern) {
+            if (preg_match($pattern, $line, $matches, PREG_OFFSET_CAPTURE)) {
+                if ($this->isInsideStringOrComment($line, $matches[0][1])) {
+                    continue;
+                }
+
+                // Skip known non-Eloquent static calls (Arr::first, Carbon::create, Factory::create, etc.)
+                if ($this->isNonEloquentStaticCall($line, $matches[0][1])) {
+                    continue;
+                }
+
+                // Self-terminal patterns are flagged unless whitelisted
+                return true;
+            }
+        }
+
+        // Check chain patterns (::where() etc.) - require terminal method OR FQCN
+        foreach (self::CHAIN_DB_PATTERNS as $pattern) {
             if (preg_match($pattern, $line, $matches, PREG_OFFSET_CAPTURE)) {
                 // Check if the match is inside a string or comment
                 if ($this->isInsideStringOrComment($line, $matches[0][1])) {
                     continue;
                 }
 
-                // Skip non-Eloquent static calls (Collection::where, Arr::first, Carbon::create, etc.)
+                // Skip known non-Eloquent static calls (Collection::where, Arr::where)
                 if ($this->isNonEloquentStaticCall($line, $matches[0][1])) {
                     continue;
                 }
 
-                return true;
+                // Check if FQCN contains Models namespace - definitely a model
+                if ($this->isFromModelsNamespace($line, $matches[0][1])) {
+                    return true;
+                }
+
+                // For short class names, require terminal method to confirm it's a DB query
+                if ($this->hasTerminalMethod($line)) {
+                    return true;
+                }
+
+                // Uncertain case: short class name without terminal method
+                // Don't flag to avoid false positives (e.g., SomeQueryBuilder::where('x', 'y'))
+                continue;
             }
         }
 
@@ -378,13 +511,51 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         }
 
         // Check for relationship queries with various terminal methods
-        if (preg_match('/\$\w+->(\w+)\(\)->(get|first|find|count|exists|pluck|sum|avg|min|max)\s*\(/', $line, $matches, PREG_OFFSET_CAPTURE)) {
+        if (preg_match('/\$(\w+)->(\w+)\(\)->(get|first|find|count|exists|pluck|sum|avg|min|max)\s*\(/', $line, $matches, PREG_OFFSET_CAPTURE)) {
             // Check if the match is inside a string or comment
             if ($this->isInsideStringOrComment($line, $matches[0][1])) {
                 return false;
             }
 
+            // Check if variable name suggests a collection, not a model
+            $variableName = strtolower($matches[1][0]);
+            foreach (self::COLLECTION_VARIABLE_PATTERNS as $collectionPattern) {
+                if (str_contains($variableName, $collectionPattern)) {
+                    return false; // Likely a collection, not a model relationship
+                }
+            }
+
             return true; // Likely $user->posts()->get(), $user->posts()->first(), etc.
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if the class in a static call comes from a Models namespace.
+     */
+    private function isFromModelsNamespace(string $line, int $matchPosition): bool
+    {
+        $beforeMatch = substr($line, 0, $matchPosition);
+
+        foreach (self::MODEL_NAMESPACE_INDICATORS as $indicator) {
+            if (str_contains($beforeMatch, $indicator)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if the line contains a terminal method that confirms a DB query.
+     */
+    private function hasTerminalMethod(string $line): bool
+    {
+        foreach (self::TERMINAL_DB_METHODS as $terminal) {
+            if (str_contains($line, $terminal)) {
+                return true;
+            }
         }
 
         return false;
@@ -412,7 +583,19 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         if (preg_match('/\\\\?(?:[A-Za-z_][A-Za-z0-9_]*\\\\)*([A-Za-z_][A-Za-z0-9_]*)$/', $trimmed, $matches)) {
             $className = $matches[1];
 
-            return in_array($className, self::NON_ELOQUENT_CLASSES, true);
+            // Check exact class name match
+            if (in_array($className, self::NON_ELOQUENT_CLASSES, true)) {
+                return true;
+            }
+
+            // Check for non-model class suffixes (Service, Repository, Builder, etc.)
+            foreach (self::NON_MODEL_CLASS_SUFFIXES as $suffix) {
+                if (str_ends_with($className, $suffix)) {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         // Fallback to original behavior

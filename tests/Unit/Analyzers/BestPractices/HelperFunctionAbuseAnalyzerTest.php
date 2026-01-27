@@ -1272,4 +1272,41 @@ PHP;
         $issues = $result->getIssues();
         $this->assertEquals(3, $issues[0]->metadata['count']);
     }
+
+    public function test_directory_whitelist_does_not_overmatch(): void
+    {
+        // Create file in directory that contains "tests" as substring but isn't the tests directory
+        $code = <<<'PHP'
+<?php
+
+namespace App\Contests;
+
+class GameController
+{
+    public function play()
+    {
+        auth()->user();
+        request()->all();
+        cache()->put('key', 'value');
+        logger()->info('test');
+        event(new Event());
+        session()->put('a', 'b');
+        // 6 helpers - should fail (not in actual tests directory)
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/contests/GameController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should NOT be whitelisted - "contests" contains "test" but isn't tests directory
+        $this->assertFailed($result);
+    }
 }

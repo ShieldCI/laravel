@@ -40,6 +40,9 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  *
  * Note: Utility helpers (collect, tap, value, optional, now, today, etc.)
  * are intentionally excluded as they don't hide dependencies.
+ *
+ * Note: Helper calls inside closures and arrow functions are counted,
+ * as they still represent hidden dependencies within the class.
  */
 class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
 {
@@ -244,8 +247,8 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
         $helperString = implode(', ', $helperList);
 
         return "Class '{$class}' uses {$count} helper function calls: {$helperString}. "
-            . "While Laravel helpers are convenient, excessive use hides dependencies and makes unit testing difficult. "
-            . "Consider injecting dependencies via constructor (e.g., Config, Request, Session contracts) instead of using global helpers.";
+            .'While Laravel helpers are convenient, excessive use hides dependencies and makes unit testing difficult. '
+            .'Consider injecting dependencies via constructor (e.g., Config, Request, Session contracts) instead of using global helpers.';
     }
 
     /**
@@ -253,12 +256,13 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
      */
     private function isWhitelistedDirectory(string $file): bool
     {
-        foreach ($this->whitelistDirs as $dir) {
-            $normalizedDir = str_replace('\\', '/', $dir);
-            $normalizedFile = str_replace('\\', '/', $file);
+        $normalizedFile = str_replace('\\', '/', $file);
 
-            if (str_contains($normalizedFile, "/{$normalizedDir}/") ||
-                str_contains($normalizedFile, "{$normalizedDir}/")) {
+        foreach ($this->whitelistDirs as $dir) {
+            $normalizedDir = trim(str_replace('\\', '/', $dir), '/');
+
+            // Match complete path segments: /tests/ or starts with tests/ or ends with /tests
+            if (preg_match('#(?:^|/)'.preg_quote($normalizedDir, '#').'(?:/|$)#', $normalizedFile)) {
                 return true;
             }
         }

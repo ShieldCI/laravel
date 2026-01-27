@@ -498,6 +498,113 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_does_not_attribute_anonymous_class_helpers_to_outer_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class OuterService
+{
+    public function foo()
+    {
+        config('app.name');  // 1 helper in outer class
+
+        return new class {
+            public function bar()
+            {
+                request();   // In anonymous class, NOT outer
+                session();   // In anonymous class, NOT outer
+                cache();     // In anonymous class, NOT outer
+                config();    // In anonymous class, NOT outer
+                auth();      // In anonymous class, NOT outer
+                view();      // In anonymous class, NOT outer
+            }
+        };
+    }
+
+    public function baz()
+    {
+        return config('app.debug');  // 2nd helper in outer class
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/OuterService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Outer class has only 2 helpers (below threshold of 5) - should pass
+        // Anonymous class has 6 helpers but anonymous classes are skipped
+        $this->assertPassed($result);
+    }
+
+    public function test_nested_anonymous_classes_do_not_affect_outer_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class OrderService
+{
+    public function createHandler()
+    {
+        // Only 3 helpers in outer class (below threshold)
+        auth()->user();
+        config('app.name');
+        logger()->info('test');
+
+        return new class {
+            public function handle()
+            {
+                // 6 helpers in anonymous class - should NOT count toward OrderService
+                cache('orders');
+                session('key');
+                request()->all();
+                response()->json([]);
+                event(new Event());
+                dispatch(new Job());
+            }
+
+            public function nested()
+            {
+                return new class {
+                    public function deepHandle()
+                    {
+                        // Deeply nested anonymous class
+                        auth()->check();
+                        config('nested');
+                        route('home');
+                    }
+                };
+            }
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/OrderService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // OrderService has only 3 helpers (below threshold) - should pass
+        $this->assertPassed($result);
+    }
+
     public function test_helper_used_multiple_times(): void
     {
         $code = <<<'PHP'

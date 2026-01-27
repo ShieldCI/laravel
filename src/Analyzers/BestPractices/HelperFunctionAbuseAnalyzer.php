@@ -263,6 +263,9 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
 
 /**
  * Visitor to track helper function usage.
+ *
+ * Uses a class stack pattern to properly handle nested classes (including anonymous classes).
+ * Helper calls inside anonymous classes are attributed to the anonymous class, not the outer class.
  */
 class HelperFunctionVisitor extends NodeVisitorAbstract
 {
@@ -272,21 +275,12 @@ class HelperFunctionVisitor extends NodeVisitorAbstract
     private array $issues = [];
 
     /**
-     * Current class name.
-     */
-    private ?string $currentClass = null;
-
-    /**
-     * Current class start line.
-     */
-    private int $currentClassLine = 0;
-
-    /**
-     * Helper function calls in current class.
+     * Stack to track nested class contexts.
+     * Each entry contains: class name (null for anonymous), start line, and helper counts.
      *
-     * @var array<string, int>
+     * @var array<int, array{class: string|null, line: int, helpers: array<string, int>}>
      */
-    private array $currentHelpers = [];
+    private array $classStack = [];
 
     /**
      * @param  array<string>  $helperFunctions
@@ -300,31 +294,32 @@ class HelperFunctionVisitor extends NodeVisitorAbstract
 
     public function enterNode(Node $node)
     {
-        // Track class entry
+        // Track class entry (including anonymous classes)
         if ($node instanceof Stmt\Class_) {
-            // Skip anonymous classes
-            if ($node->name === null) {
-                return null;
-            }
+            $className = $node->name?->toString();  // null for anonymous
 
-            $this->currentClass = $node->name->toString();
-            $this->currentClassLine = $node->getStartLine();
-            $this->currentHelpers = [];
+            $this->classStack[] = [
+                'class' => $className,
+                'line' => $node->getStartLine(),
+                'helpers' => [],
+            ];
 
             return null;
         }
 
         // Track trait entry
         if ($node instanceof Stmt\Trait_) {
-            $this->currentClass = $node->name?->toString();
-            $this->currentClassLine = $node->getStartLine();
-            $this->currentHelpers = [];
+            $this->classStack[] = [
+                'class' => $node->name?->toString(),
+                'line' => $node->getStartLine(),
+                'helpers' => [],
+            ];
 
             return null;
         }
 
-        // Only track inside classes or traits
-        if ($this->currentClass === null) {
+        // Only track helpers inside classes or traits
+        if (empty($this->classStack)) {
             return null;
         }
 
@@ -333,12 +328,13 @@ class HelperFunctionVisitor extends NodeVisitorAbstract
             if ($node->name instanceof Node\Name) {
                 $functionName = $node->name->toString();
 
-                // Check if it's a tracked helper
+                // Check if it's a tracked helper - attribute to innermost class
                 if (in_array($functionName, $this->helperFunctions, true)) {
-                    if (! isset($this->currentHelpers[$functionName])) {
-                        $this->currentHelpers[$functionName] = 0;
+                    $index = array_key_last($this->classStack);
+                    if (! isset($this->classStack[$index]['helpers'][$functionName])) {
+                        $this->classStack[$index]['helpers'][$functionName] = 0;
                     }
-                    $this->currentHelpers[$functionName]++;
+                    $this->classStack[$index]['helpers'][$functionName]++;
                 }
             }
         }
@@ -350,56 +346,44 @@ class HelperFunctionVisitor extends NodeVisitorAbstract
     {
         // Check helper count on class or trait exit
         if ($node instanceof Stmt\Class_ || $node instanceof Stmt\Trait_) {
-            // Skip anonymous classes
-            if ($node instanceof Stmt\Class_ && $node->name === null) {
+            if (empty($this->classStack)) {
+                return null;
+            }
+
+            $context = array_pop($this->classStack);
+
+            // Skip anonymous classes (class === null)
+            if ($context['class'] === null) {
                 return null;
             }
 
             // Skip whitelisted classes (e.g., ServiceProviders, Commands, Tests)
-            if ($this->isWhitelistedClass()) {
-                $this->resetState();
-
+            if ($this->isWhitelistedClass($context['class'])) {
                 return null;
             }
 
-            $helperCount = array_sum($this->currentHelpers);
+            $helperCount = array_sum($context['helpers']);
 
             if ($helperCount > $this->threshold) {
                 $this->issues[] = [
-                    'class' => $this->currentClass ?? 'Unknown',
-                    'helpers' => $this->currentHelpers,
+                    'class' => $context['class'],
+                    'helpers' => $context['helpers'],
                     'count' => $helperCount,
-                    'line' => $this->currentClassLine,
+                    'line' => $context['line'],
                 ];
             }
-
-            $this->resetState();
         }
 
         return null;
     }
 
     /**
-     * Reset tracking state after processing a class/trait.
+     * Check if given class matches a whitelisted pattern.
      */
-    private function resetState(): void
+    private function isWhitelistedClass(string $className): bool
     {
-        $this->currentClass = null;
-        $this->currentClassLine = 0;
-        $this->currentHelpers = [];
-    }
-
-    /**
-     * Check if current class matches a whitelisted pattern.
-     */
-    private function isWhitelistedClass(): bool
-    {
-        if ($this->currentClass === null) {
-            return false;
-        }
-
         foreach ($this->whitelistClasses as $pattern) {
-            if ($this->matchesPattern($this->currentClass, $pattern)) {
+            if ($this->matchesPattern($className, $pattern)) {
                 return true;
             }
         }

@@ -25,12 +25,58 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  * - Threshold violations
  * - Recommends proper dependency injection
  * - Controllers and services primarily affected
+ *
+ * Whitelisted contexts (where helper usage is acceptable):
+ * - Service Providers: Need helpers for bootstrapping
+ * - Console Commands: Often need dynamic resolution
+ * - Tests: Flexibility for testing
+ * - Seeders: Need service resolution for data generation
+ * - Migrations: Don't support constructor DI
+ *
+ * Helper categories:
+ * - DEPENDENCY_HIDING_HELPERS: Counted (hide real dependencies)
+ * - DEBUG_HELPERS: Not counted (handled by DebugModeAnalyzer)
+ * - LOW_PRIORITY_HELPERS: Not counted (simple utilities, rarely abused)
+ *
+ * Note: Utility helpers (collect, tap, value, optional, now, today, etc.)
+ * are intentionally excluded as they don't hide dependencies.
  */
 class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
 {
     public const DEFAULT_THRESHOLD = 5;
 
-    /** @var array<string> */
+    /**
+     * Helpers that HIDE dependencies (counted by default).
+     * These create implicit dependencies that make testing difficult.
+     *
+     * @var array<string>
+     */
+    public const DEPENDENCY_HIDING_HELPERS = [
+        'app', 'auth', 'cache', 'config', 'cookie', 'event', 'logger', 'old',
+        'redirect', 'request', 'response', 'route', 'session', 'storage_path',
+        'url', 'view', 'abort', 'abort_if', 'abort_unless', 'dispatch',
+        'info', 'policy', 'resolve', 'validator', 'report',
+    ];
+
+    /**
+     * Debug helpers - handled by DebugModeAnalyzer.
+     *
+     * @var array<string>
+     */
+    public const DEBUG_HELPERS = ['dd', 'dump'];
+
+    /**
+     * Simple crypto/utility helpers - rarely abused.
+     *
+     * @var array<string>
+     */
+    public const LOW_PRIORITY_HELPERS = ['bcrypt'];
+
+    /**
+     * All helpers combined (for backward compatibility).
+     *
+     * @var array<string>
+     */
     public const DEFAULT_HELPER_FUNCTIONS = [
         'app', 'auth', 'cache', 'config', 'cookie', 'event', 'logger', 'old',
         'redirect', 'request', 'response', 'route', 'session', 'storage_path',
@@ -40,10 +86,33 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
         'validator', 'value', 'report',
     ];
 
+    /** @var array<string> Default directories to whitelist */
+    private const DEFAULT_WHITELIST_DIRS = [
+        'tests',
+        'database/migrations',
+        'database/seeders',
+        'database/factories',
+    ];
+
+    /** @var array<string> Default class patterns to whitelist */
+    private const DEFAULT_WHITELIST_CLASSES = [
+        '*ServiceProvider',
+        '*Command',
+        '*Seeder',
+        '*Test',
+        '*TestCase',
+    ];
+
     private int $threshold;
 
     /** @var array<string> */
     private array $helperFunctions;
+
+    /** @var array<string> */
+    private array $whitelistDirs;
+
+    /** @var array<string> */
+    private array $whitelistClasses;
 
     public function __construct(
         private ParserInterface $parser,
@@ -71,23 +140,37 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
         $this->threshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;
+
+        // Load whitelist configuration
+        $configDirs = $analyzerConfig['whitelist_dirs'] ?? self::DEFAULT_WHITELIST_DIRS;
+        $this->whitelistDirs = is_array($configDirs) ? $configDirs : self::DEFAULT_WHITELIST_DIRS;
+
+        $configClasses = $analyzerConfig['whitelist_classes'] ?? self::DEFAULT_WHITELIST_CLASSES;
+        $this->whitelistClasses = is_array($configClasses) ? $configClasses : self::DEFAULT_WHITELIST_CLASSES;
+
+        // Build helper list - backward compatible with custom helper_functions config
         $helperFuncs = $analyzerConfig['helper_functions'] ?? null;
         $this->helperFunctions = (is_array($helperFuncs) && ! empty($helperFuncs))
             ? $helperFuncs
-            : self::DEFAULT_HELPER_FUNCTIONS;
+            : self::DEPENDENCY_HIDING_HELPERS;
 
         $issues = [];
         $threshold = $this->threshold;
         $helpers = $this->helperFunctions;
 
         foreach ($this->getPhpFiles() as $file) {
+            // Skip whitelisted directories
+            if ($this->isWhitelistedDirectory($file)) {
+                continue;
+            }
+
             $ast = $this->parser->parseFile($file);
 
             if (empty($ast)) {
                 continue;
             }
 
-            $visitor = new HelperFunctionVisitor($helpers, $threshold);
+            $visitor = new HelperFunctionVisitor($helpers, $threshold, $this->whitelistClasses);
             $traverser = new NodeTraverser;
             $traverser->addVisitor($visitor);
             $traverser->traverse($ast);
@@ -158,6 +241,24 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
 
         return "Class '{$class}' uses {$count} helper function calls: {$helperString}. While Laravel helpers are convenient, excessive use hides dependencies and makes unit testing difficult. ";
     }
+
+    /**
+     * Check if file is in a whitelisted directory.
+     */
+    private function isWhitelistedDirectory(string $file): bool
+    {
+        foreach ($this->whitelistDirs as $dir) {
+            $normalizedDir = str_replace('\\', '/', $dir);
+            $normalizedFile = str_replace('\\', '/', $file);
+
+            if (str_contains($normalizedFile, "/{$normalizedDir}/") ||
+                str_contains($normalizedFile, "{$normalizedDir}/")) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }
 
 /**
@@ -189,10 +290,12 @@ class HelperFunctionVisitor extends NodeVisitorAbstract
 
     /**
      * @param  array<string>  $helperFunctions
+     * @param  array<string>  $whitelistClasses
      */
     public function __construct(
         private array $helperFunctions,
-        private int $threshold
+        private int $threshold,
+        private array $whitelistClasses = []
     ) {}
 
     public function enterNode(Node $node)
@@ -252,6 +355,13 @@ class HelperFunctionVisitor extends NodeVisitorAbstract
                 return null;
             }
 
+            // Skip whitelisted classes (e.g., ServiceProviders, Commands, Tests)
+            if ($this->isWhitelistedClass()) {
+                $this->resetState();
+
+                return null;
+            }
+
             $helperCount = array_sum($this->currentHelpers);
 
             if ($helperCount > $this->threshold) {
@@ -263,13 +373,52 @@ class HelperFunctionVisitor extends NodeVisitorAbstract
                 ];
             }
 
-            // Reset state
-            $this->currentClass = null;
-            $this->currentClassLine = 0;
-            $this->currentHelpers = [];
+            $this->resetState();
         }
 
         return null;
+    }
+
+    /**
+     * Reset tracking state after processing a class/trait.
+     */
+    private function resetState(): void
+    {
+        $this->currentClass = null;
+        $this->currentClassLine = 0;
+        $this->currentHelpers = [];
+    }
+
+    /**
+     * Check if current class matches a whitelisted pattern.
+     */
+    private function isWhitelistedClass(): bool
+    {
+        if ($this->currentClass === null) {
+            return false;
+        }
+
+        foreach ($this->whitelistClasses as $pattern) {
+            if ($this->matchesPattern($this->currentClass, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if class name matches pattern (supports wildcards).
+     */
+    private function matchesPattern(string $className, string $pattern): bool
+    {
+        // Convert wildcard pattern to regex
+        $pattern = str_replace('*', 'WILDCARD_PLACEHOLDER', $pattern);
+        $pattern = preg_quote($pattern, '/');
+        $pattern = str_replace('WILDCARD_PLACEHOLDER', '.*', $pattern);
+        $regex = '/^'.$pattern.'$/i';
+
+        return (bool) preg_match($regex, $className);
     }
 
     /**

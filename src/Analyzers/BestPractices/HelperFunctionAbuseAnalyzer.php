@@ -139,7 +139,10 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
         $analyzerConfig = $this->config->get('shieldci.analyzers.best-practices.helper-function-abuse', []);
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
-        $this->threshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;
+        $configThreshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;
+        $this->threshold = is_int($configThreshold) && $configThreshold >= 1
+            ? $configThreshold
+            : self::DEFAULT_THRESHOLD;
 
         // Load whitelist configuration
         $configDirs = $analyzerConfig['whitelist_dirs'] ?? self::DEFAULT_WHITELIST_DIRS;

@@ -237,12 +237,15 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
     private function getRecommendation(string $class, array $helpers, int $count): string
     {
         $helperList = [];
+        arsort($helpers);
         foreach ($helpers as $helper => $usageCount) {
             $helperList[] = "{$helper}() ({$usageCount}x)";
         }
         $helperString = implode(', ', $helperList);
 
-        return "Class '{$class}' uses {$count} helper function calls: {$helperString}. While Laravel helpers are convenient, excessive use hides dependencies and makes unit testing difficult. ";
+        return "Class '{$class}' uses {$count} helper function calls: {$helperString}. "
+            . "While Laravel helpers are convenient, excessive use hides dependencies and makes unit testing difficult. "
+            . "Consider injecting dependencies via constructor (e.g., Config, Request, Session contracts) instead of using global helpers.";
     }
 
     /**

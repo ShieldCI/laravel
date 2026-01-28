@@ -114,8 +114,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string, metadata: array<string, mixed>}> */
     private array $issues = [];
 
-    /** @var array<int, true> Track which lines already have issues to avoid duplicates */
-    private array $reportedLines = [];
+    /** @var array<int, true> Track which positions already have issues to avoid duplicates */
+    private array $reportedPositions = [];
 
     public function __construct(
         private int $maxClosureLines
@@ -180,9 +180,10 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
     private function analyzeClosure(Node\Expr\Closure $closure): void
     {
         $line = $closure->getStartLine();
+        $position = $closure->getStartFilePos();
 
-        // Skip if we've already reported an issue for this line
-        if (isset($this->reportedLines[$line])) {
+        // Skip if we've already reported an issue for this position
+        if (isset($this->reportedPositions[$position])) {
             return;
         }
 
@@ -215,7 +216,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
         // If any problems found, create a consolidated issue
         if (! empty($problems)) {
-            $this->reportedLines[$line] = true;
+            $this->reportedPositions[$position] = true;
 
             $problemList = implode(', ', $problems);
             $code = $this->determineIssueCode($problems);

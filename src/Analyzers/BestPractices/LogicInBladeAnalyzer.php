@@ -74,8 +74,6 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         '->min(',
         '->max(',
         '->paginate(',
-        '->toSql(',
-        '->dd(',
     ];
 
     /** @var array<string> Namespace indicators for Model classes */

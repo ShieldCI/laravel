@@ -111,6 +111,51 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
  */
 class LogicInRoutesVisitor extends NodeVisitorAbstract
 {
+    /** @var list<string> Functions that indicate business logic */
+    private const BUSINESS_LOGIC_FUNCTIONS = [
+        'dispatch', 'dispatch_sync', 'dispatch_now',  // Jobs
+        'event',                                       // Events
+        'report', 'rescue',                           // Error handling
+        'broadcast',                                   // Broadcasting
+        'app', 'resolve',                             // Service container
+        'retry',                                       // Retry logic
+    ];
+
+    /** @var list<string> Facades that indicate business logic */
+    private const BUSINESS_LOGIC_FACADES = [
+        'Mail',
+        'Notification',
+        'Queue',
+        'Event',
+        'Bus',
+        'Broadcast',
+        'Illuminate\\Support\\Facades\\Mail',
+        'Illuminate\\Support\\Facades\\Notification',
+        'Illuminate\\Support\\Facades\\Queue',
+        'Illuminate\\Support\\Facades\\Event',
+        'Illuminate\\Support\\Facades\\Bus',
+        'Illuminate\\Support\\Facades\\Broadcast',
+    ];
+
+    /** @var list<string> Service container methods */
+    private const SERVICE_CONTAINER_METHODS = ['make', 'makeWith', 'call', 'get'];
+
+    /** @var list<string> Known query methods on Eloquent models */
+    private const QUERY_METHODS = [
+        'where', 'find', 'all', 'first', 'create', 'query',
+        'findOrFail', 'firstOrFail', 'get', 'pluck', 'count',
+        'exists', 'doesntExist', 'with', 'without',
+    ];
+
+    /** @var list<string> Utility classes that are NOT business logic */
+    private const UTILITY_CLASSES = [
+        'Carbon', 'Collection', 'Validator', 'Cache', 'Log',
+        'Session', 'Cookie', 'Request', 'Response', 'View',
+        'Config', 'Str', 'Arr', 'File', 'Storage', 'Hash',
+        'Crypt', 'Route', 'URL', 'Redirect', 'DB', 'App',
+        'Auth', 'Gate', 'Password', 'RateLimiter', 'Schema',
+    ];
+
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string, metadata: array<string, mixed>}> */
     private array $issues = [];
 
@@ -370,7 +415,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
         $traverser = new NodeTraverser;
         $traverser->addVisitor($visitor);
-        $traverser->traverse($closure->stmts ?? []);
+        $traverser->traverse([$closure]);
 
         return $hasQuery;
     }
@@ -381,18 +426,85 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         $ifDepth = 0;
         $hasLoops = false;
 
-        $visitor = new class($hasComplexLogic, $ifDepth, $hasLoops) extends NodeVisitorAbstract
+        $visitor = new class($hasComplexLogic, $ifDepth, $hasLoops, self::BUSINESS_LOGIC_FUNCTIONS, self::BUSINESS_LOGIC_FACADES, self::SERVICE_CONTAINER_METHODS, self::QUERY_METHODS, self::UTILITY_CLASSES) extends NodeVisitorAbstract
         {
+            /**
+             * @param  list<string>  $businessLogicFunctions
+             * @param  list<string>  $businessLogicFacades
+             * @param  list<string>  $serviceContainerMethods
+             * @param  list<string>  $queryMethods
+             * @param  list<string>  $utilityClasses
+             */
             public function __construct(
                 private bool &$hasComplexLogic,
                 private int &$ifDepth,
-                private bool &$hasLoops
+                private bool &$hasLoops,
+                private array $businessLogicFunctions,
+                private array $businessLogicFacades,
+                private array $serviceContainerMethods,
+                private array $queryMethods,
+                private array $utilityClasses
             ) {}
 
             public function enterNode(Node $node): ?Node
             {
                 if ($this->hasComplexLogic) {
                     return null;
+                }
+
+                // 1. Check for business logic function calls
+                if ($node instanceof Node\Expr\FuncCall && $node->name instanceof Node\Name) {
+                    $funcName = $node->name->toString();
+                    if (in_array($funcName, $this->businessLogicFunctions, true)) {
+                        $this->hasComplexLogic = true;
+
+                        return null;
+                    }
+                }
+
+                // 2. Check for business logic facade calls and service container
+                if ($node instanceof Node\Expr\StaticCall && $node->class instanceof Node\Name) {
+                    $className = $this->resolveClassName($node->class);
+
+                    // Business facades (Mail, Notification, Queue, Event, Bus, Broadcast)
+                    if (in_array($className, $this->businessLogicFacades, true)) {
+                        $this->hasComplexLogic = true;
+
+                        return null;
+                    }
+
+                    // Service container calls: App::make(), App::call(), etc.
+                    if (($className === 'App' || $className === 'Illuminate\\Support\\Facades\\App')
+                        && $node->name instanceof Node\Identifier
+                        && in_array($node->name->toString(), $this->serviceContainerMethods, true)) {
+                        $this->hasComplexLogic = true;
+
+                        return null;
+                    }
+
+                    // Non-query model/service methods (e.g., User::sendWelcomeEmail())
+                    if ($node->name instanceof Node\Identifier) {
+                        $method = $node->name->toString();
+
+                        // If it's a PascalCase class, not utility, and not a query method
+                        if (preg_match('/^[A-Z][a-zA-Z0-9]*$/', $className) === 1
+                            && ! in_array($className, $this->utilityClasses, true)
+                            && ! in_array($method, $this->queryMethods, true)) {
+                            $this->hasComplexLogic = true;
+
+                            return null;
+                        }
+                    }
+                }
+
+                // 3. Check for heavy method chains (3+ calls)
+                if ($node instanceof Node\Expr\MethodCall) {
+                    $chainLength = $this->countMethodChain($node);
+                    if ($chainLength >= 3) {
+                        $this->hasComplexLogic = true;
+
+                        return null;
+                    }
                 }
 
                 // Track loops (complex only if they contain calculations)
@@ -445,6 +557,34 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 }
 
                 return null;
+            }
+
+            /**
+             * Resolve class name from a Node\Name, handling FQN and aliases.
+             */
+            private function resolveClassName(Node\Name $name): string
+            {
+                $resolvedName = $name->getAttribute('resolvedName');
+                $className = $resolvedName instanceof Node\Name\FullyQualified
+                    ? $resolvedName->toString()
+                    : $name->toString();
+
+                return ltrim($className, '\\');
+            }
+
+            /**
+             * Count the length of a method call chain.
+             */
+            private function countMethodChain(Node\Expr\MethodCall $node): int
+            {
+                $count = 1;
+                $current = $node->var;
+                while ($current instanceof Node\Expr\MethodCall) {
+                    $count++;
+                    $current = $current->var;
+                }
+
+                return $count;
             }
         };
 

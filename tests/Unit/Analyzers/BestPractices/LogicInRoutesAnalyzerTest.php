@@ -987,4 +987,80 @@ PHP;
         // Should PASS - Validator is not a DB query
         $this->assertPassed($result);
     }
+
+    public function test_detects_route_with_fully_qualified_name(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use App\Models\User;
+
+\Illuminate\Support\Facades\Route::get('/users', function () {
+    return User::all();
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect database query even with FQN Route facade
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('database queries', $result);
+    }
+
+    public function test_detects_route_with_alias(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route as R;
+use App\Models\Product;
+
+R::get('/products', function () {
+    return Product::where('active', true)->get();
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect database query even with aliased Route facade
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('database queries', $result);
+    }
+
+    public function test_detects_route_without_use_statement(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use App\Models\Order;
+
+Route::post('/orders', function () {
+    return Order::create(['name' => 'Test']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should still work with unresolved short name (global alias)
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('database queries', $result);
+    }
 }

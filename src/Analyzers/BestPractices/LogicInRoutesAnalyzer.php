@@ -7,6 +7,7 @@ namespace ShieldCI\Analyzers\BestPractices;
 use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -73,6 +74,7 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
 
                 $visitor = new LogicInRoutesVisitor($this->maxClosureLines);
                 $traverser = new NodeTraverser;
+                $traverser->addVisitor(new NameResolver);
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
 
@@ -123,12 +125,34 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
     {
         // Detect Route::* method calls
         if ($node instanceof Node\Expr\StaticCall) {
-            if ($node->class instanceof Node\Name && $node->class->toString() === 'Route') {
+            if ($node->class instanceof Node\Name && $this->isRouteFacade($node->class)) {
                 $this->analyzeRouteCall($node);
             }
         }
 
         return null;
+    }
+
+    /**
+     * Check if the class name is the Route facade.
+     *
+     * Handles both short names (Route) and fully qualified names
+     * (Illuminate\Support\Facades\Route) after NameResolver processing.
+     */
+    private function isRouteFacade(Node\Name $name): bool
+    {
+        // After NameResolver, get the resolved name
+        $resolvedName = $name->getAttribute('resolvedName');
+        $className = $resolvedName instanceof Node\Name\FullyQualified
+            ? $resolvedName->toString()
+            : $name->toString();
+
+        // Normalize (remove leading backslash)
+        $className = ltrim($className, '\\');
+
+        // Check for Route facade (FQN or short name)
+        return $className === 'Illuminate\\Support\\Facades\\Route'
+            || $className === 'Route';
     }
 
     /**

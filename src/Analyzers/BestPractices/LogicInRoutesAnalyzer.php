@@ -8,6 +8,7 @@ use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitor\NameResolver;
+use PhpParser\NodeVisitor\ParentConnectingVisitor;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -595,30 +596,9 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             }
         };
 
-        // Add parent node tracking
-        $parentTracker = new class extends NodeVisitorAbstract
-        {
-            public function enterNode(Node $node): ?Node
-            {
-                foreach ($node->getSubNodeNames() as $name) {
-                    $subNode = $node->$name;
-                    if ($subNode instanceof Node) {
-                        $subNode->setAttribute('parent', $node);
-                    } elseif (is_array($subNode)) {
-                        foreach ($subNode as $child) {
-                            if ($child instanceof Node) {
-                                $child->setAttribute('parent', $node);
-                            }
-                        }
-                    }
-                }
-
-                return null;
-            }
-        };
-
+        // ParentConnectingVisitor MUST be added first to enable parent node tracking
         $traverser = new NodeTraverser;
-        $traverser->addVisitor($parentTracker);
+        $traverser->addVisitor(new ParentConnectingVisitor);
         $traverser->addVisitor($visitor);
         $traverser->traverse([$closure]);
 

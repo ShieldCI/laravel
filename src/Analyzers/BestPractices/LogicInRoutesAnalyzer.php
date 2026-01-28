@@ -182,6 +182,24 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         'Auth', 'Gate', 'Password', 'RateLimiter', 'Schema',
     ];
 
+    /** @var list<string> Laravel helper functions that support safe fluent chaining */
+    private const SAFE_FLUENT_HELPER_FUNCTIONS = [
+        'view',
+        'response',
+        'redirect',
+        'back',
+        'to_route',
+        'request',
+        'collect',
+        'cookie',
+        'url',
+        'asset',
+        'route',
+        'action',
+        'now',
+        'today',
+    ];
+
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string, metadata: array<string, mixed>}> */
     private array $issues = [];
 
@@ -243,13 +261,13 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
         // Check each argument for closures
         foreach ($node->args as $arg) {
-            if ($arg->value instanceof Node\Expr\Closure) {
+            if ($arg->value instanceof Node\Expr\Closure || $arg->value instanceof Node\Expr\ArrowFunction) {
                 $this->analyzeClosure($arg->value);
             }
         }
     }
 
-    private function analyzeClosure(Node\Expr\Closure $closure): void
+    private function analyzeClosure(Node\Expr\Closure|Node\Expr\ArrowFunction $closure): void
     {
         $line = $closure->getStartLine();
         $position = $closure->getStartFilePos();
@@ -392,7 +410,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
      *
      * @return array{has_writes: bool, has_raw_queries: bool, has_complex_reads: bool, has_simple_reads: bool, chain_length: int}
      */
-    private function analyzeDbQueries(Node\Expr\Closure $closure): array
+    private function analyzeDbQueries(Node\Expr\Closure|Node\Expr\ArrowFunction $closure): array
     {
         $result = [
             'has_writes' => false,
@@ -607,13 +625,13 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         return $result;
     }
 
-    private function hasComplexBusinessLogic(Node\Expr\Closure $closure): bool
+    private function hasComplexBusinessLogic(Node\Expr\Closure|Node\Expr\ArrowFunction $closure): bool
     {
         $hasComplexLogic = false;
         $ifDepth = 0;
         $hasLoops = false;
 
-        $visitor = new class($hasComplexLogic, $ifDepth, $hasLoops, self::BUSINESS_LOGIC_FUNCTIONS, self::BUSINESS_LOGIC_FACADES, self::SERVICE_CONTAINER_METHODS, self::QUERY_METHODS, self::UTILITY_CLASSES) extends NodeVisitorAbstract
+        $visitor = new class($hasComplexLogic, $ifDepth, $hasLoops, self::BUSINESS_LOGIC_FUNCTIONS, self::BUSINESS_LOGIC_FACADES, self::SERVICE_CONTAINER_METHODS, self::QUERY_METHODS, self::UTILITY_CLASSES, self::SAFE_FLUENT_HELPER_FUNCTIONS) extends NodeVisitorAbstract
         {
             /**
              * @param  list<string>  $businessLogicFunctions
@@ -621,6 +639,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              * @param  list<string>  $serviceContainerMethods
              * @param  list<string>  $queryMethods
              * @param  list<string>  $utilityClasses
+             * @param  list<string>  $safeFluentHelperFunctions
              */
             public function __construct(
                 private bool &$hasComplexLogic,
@@ -630,7 +649,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 private array $businessLogicFacades,
                 private array $serviceContainerMethods,
                 private array $queryMethods,
-                private array $utilityClasses
+                private array $utilityClasses,
+                private array $safeFluentHelperFunctions
             ) {}
 
             public function enterNode(Node $node): ?Node
@@ -688,9 +708,12 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 if ($node instanceof Node\Expr\MethodCall) {
                     $chainLength = $this->countMethodChain($node);
                     if ($chainLength >= 3) {
-                        $this->hasComplexLogic = true;
+                        // Skip if chain starts from safe fluent API helper
+                        if (! $this->isChainFromSafeFluentRoot($node)) {
+                            $this->hasComplexLogic = true;
 
-                        return null;
+                            return null;
+                        }
                     }
                 }
 
@@ -773,11 +796,38 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
                 return $count;
             }
+
+            /**
+             * Get the root expression of a method chain.
+             */
+            private function getChainRoot(Node\Expr\MethodCall $node): Node\Expr
+            {
+                $current = $node->var;
+                while ($current instanceof Node\Expr\MethodCall) {
+                    $current = $current->var;
+                }
+
+                return $current;
+            }
+
+            /**
+             * Check if a method chain starts from a safe fluent API helper function.
+             */
+            private function isChainFromSafeFluentRoot(Node\Expr\MethodCall $node): bool
+            {
+                $root = $this->getChainRoot($node);
+
+                if ($root instanceof Node\Expr\FuncCall && $root->name instanceof Node\Name) {
+                    return in_array($root->name->toString(), $this->safeFluentHelperFunctions, true);
+                }
+
+                return false;
+            }
         };
 
         $traverser = new NodeTraverser;
         $traverser->addVisitor($visitor);
-        $traverser->traverse($closure->stmts ?? []);
+        $traverser->traverse([$closure]);
 
         return $hasComplexLogic;
     }

@@ -1854,4 +1854,149 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('complex database queries', $result);
     }
+
+    public function test_allows_view_fluent_chain(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::get('/home', function () {
+    return view('home')->with('title', 'Welcome')->with('subtitle', 'Hello');
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // view() fluent chains should pass - standard Laravel pattern
+        $this->assertPassed($result);
+    }
+
+    public function test_allows_response_json_with_headers(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::get('/api/data', function () {
+    return response()->json(['ok' => true])->header('X-Custom', 'value');
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // response() fluent chains should pass - standard Laravel pattern
+        $this->assertPassed($result);
+    }
+
+    public function test_allows_redirect_fluent_chain(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::get('/go', function () {
+    return redirect()->route('dashboard')->with('status', 'success');
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // redirect() fluent chains should pass - standard Laravel pattern
+        $this->assertPassed($result);
+    }
+
+    public function test_allows_back_fluent_chain(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::post('/form', function () {
+    return back()->withInput()->withErrors(['email' => 'Invalid']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // back() fluent chains should pass - standard Laravel pattern
+        $this->assertPassed($result);
+    }
+
+    public function test_allows_collect_fluent_chain(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::get('/items', function () {
+    return collect([1, 2, 3])->map(fn($x) => $x * 2)->filter(fn($x) => $x > 2)->values();
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // collect() fluent chains should pass - standard Laravel pattern
+        $this->assertPassed($result);
+    }
+
+    public function test_still_flags_non_safe_method_chains(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::post('/process', function ($service) {
+    return $service->validate()->process()->save();
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Non-safe method chains should still be flagged
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('complex business logic', $result);
+    }
 }

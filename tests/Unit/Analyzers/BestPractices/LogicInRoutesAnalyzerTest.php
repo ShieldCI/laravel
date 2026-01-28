@@ -336,9 +336,7 @@ PHP;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/check', function () {
-    if (auth()->check()) {
-        return 'Authenticated';
-    }
+    if (auth()->check()) { return 'Authenticated'; }
     return 'Guest';
 });
 PHP;

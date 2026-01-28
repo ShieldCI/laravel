@@ -181,7 +181,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         }
 
         // Count lines in closure
-        $lineCount = $closure->getEndLine() - $closure->getStartLine();
+        $lineCount = $closure->getEndLine() - $closure->getStartLine() + 1;
         if ($lineCount > $this->maxClosureLines) {
             $problems[] = sprintf('%d lines (max: %d)', $lineCount, $this->maxClosureLines);
             if ($maxSeverity->level() < Severity::Medium->level()) {

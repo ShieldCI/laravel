@@ -286,7 +286,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
                 // Check for DB facade calls
                 if ($node instanceof Node\Expr\StaticCall) {
-                    if ($node->class instanceof Node\Name && $node->class->toString() === 'DB') {
+                    if ($node->class instanceof Node\Name && $this->isDbFacade($node->class)) {
                         $this->hasQuery = true;
 
                         return null;
@@ -342,6 +342,28 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 }
 
                 return null;
+            }
+
+            /**
+             * Check if the class name is the DB facade.
+             *
+             * Handles both short names (DB) and fully qualified names
+             * (Illuminate\Support\Facades\DB) after NameResolver processing.
+             */
+            private function isDbFacade(Node\Name $name): bool
+            {
+                // After NameResolver, get the resolved name
+                $resolvedName = $name->getAttribute('resolvedName');
+                $className = $resolvedName instanceof Node\Name\FullyQualified
+                    ? $resolvedName->toString()
+                    : $name->toString();
+
+                // Normalize (remove leading backslash)
+                $className = ltrim($className, '\\');
+
+                // Check for DB facade (FQN or short name)
+                return $className === 'Illuminate\\Support\\Facades\\DB'
+                    || $className === 'DB';
             }
         };
 

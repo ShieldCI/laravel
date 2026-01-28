@@ -1983,4 +1983,223 @@ BLADE;
 
         $this->assertPassed($result);
     }
+
+    // =========================================================================
+    // AMBIGUOUS SUFFIX TESTS - Resource, Manager, Builder
+    // =========================================================================
+
+    public function test_flags_ambiguous_suffix_with_terminal_method_get(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $resources = OrderResource::where('status', 'active')->get();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/resource.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Database query', $result);
+    }
+
+    public function test_flags_ambiguous_suffix_with_terminal_method_first(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $manager = UserManager::where('role', 'admin')->first();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/manager.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Database query', $result);
+    }
+
+    public function test_flags_ambiguous_suffix_with_terminal_method_count(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $count = QueryBuilder::where('active', true)->count();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/builder.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Database query', $result);
+    }
+
+    public function test_does_not_flag_ambiguous_suffix_without_terminal_method(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $query = OrderResource::where('status', 'active');
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/resource-no-terminal.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_manager_suffix_without_terminal_method(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $query = UserManager::where('role', 'admin');
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/manager-no-terminal.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_builder_suffix_without_terminal_method(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $query = QueryBuilder::where('active', true);
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/builder-no-terminal.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_resource_suffix_with_paginate_terminal(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $items = ProductResource::where('in_stock', true)->paginate(10);
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/resource-paginate.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    public function test_flags_resource_suffix_with_pluck_terminal(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $names = CategoryResource::where('active', true)->pluck('name');
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/resource-pluck.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    public function test_still_skips_definite_non_model_suffix_even_with_terminal(): void
+    {
+        // Service is a DEFINITE non-model suffix, so should be skipped
+        // even with a terminal method present
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $result = UserService::where('active', true)->get();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/service-terminal.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_skips_repository_suffix_even_with_terminal(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $users = UserRepository::where('active', true)->get();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/repo-terminal.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

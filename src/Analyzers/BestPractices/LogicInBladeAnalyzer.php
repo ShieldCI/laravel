@@ -155,13 +155,16 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         'Validator',
     ];
 
-    /** @var array<string> Class name suffixes that indicate non-model classes */
-    private const NON_MODEL_CLASS_SUFFIXES = [
+    /**
+     * @var array<string> Class name suffixes that are NEVER Eloquent models.
+     *
+     * These suffixes indicate classes that definitively cannot be Eloquent models,
+     * so we skip them unconditionally.
+     */
+    private const DEFINITE_NON_MODEL_SUFFIXES = [
         'Service',
         'Repository',
-        'Builder',
         'Helper',
-        'Manager',
         'Handler',
         'Provider',
         'Facade',
@@ -175,7 +178,6 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         'Notification',
         'Command',
         'Request',
-        'Resource',
         'Rule',
         'Exception',
         'Trait',
@@ -188,6 +190,21 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         'Scope',
         'Cast',
         'Enum',
+        'Factory',
+        'Action',
+    ];
+
+    /**
+     * @var array<string> Class name suffixes that MIGHT be Eloquent models.
+     *
+     * These suffixes are ambiguous - they could be model names like "OrderResource"
+     * or non-model classes like "ApiResource". We only skip them if there's NO
+     * terminal method present. If a terminal method IS present, we flag it.
+     */
+    private const AMBIGUOUS_SUFFIXES = [
+        'Resource',
+        'Manager',
+        'Builder',
     ];
 
     private int $maxPhpBlockLines;
@@ -588,10 +605,23 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
                 return true;
             }
 
-            // Check for non-model class suffixes (Service, Repository, Builder, etc.)
-            foreach (self::NON_MODEL_CLASS_SUFFIXES as $suffix) {
+            // Check definite non-model suffixes (always skip)
+            foreach (self::DEFINITE_NON_MODEL_SUFFIXES as $suffix) {
                 if (str_ends_with($className, $suffix)) {
                     return true;
+                }
+            }
+
+            // Check ambiguous suffixes (only skip if NO terminal method present)
+            // e.g., OrderResource::where('x', 'y')->get() should be FLAGGED
+            // e.g., OrderResource::where('x', 'y') without terminal should NOT be flagged
+            foreach (self::AMBIGUOUS_SUFFIXES as $suffix) {
+                if (str_ends_with($className, $suffix)) {
+                    if ($this->hasTerminalMethod($line)) {
+                        return false; // Has terminal method = likely DB query, DO flag
+                    }
+
+                    return true; // No terminal = uncertain, skip to avoid false positive
                 }
             }
 

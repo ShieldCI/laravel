@@ -129,7 +129,7 @@ PHP;
         $this->assertHasIssueContaining('database queries', $result);
     }
 
-    public function test_detects_eloquent_find_method(): void
+    public function test_allows_simple_find_by_default(): void
     {
         $code = <<<'PHP'
 <?php
@@ -150,11 +150,11 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('database queries', $result);
+        // Simple reads are allowed by default (equivalent to route model binding)
+        $this->assertPassed($result);
     }
 
-    public function test_detects_eloquent_create_method(): void
+    public function test_flags_create_as_high_severity(): void
     {
         $code = <<<'PHP'
 <?php
@@ -179,7 +179,9 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('database queries', $result);
+        $this->assertHasIssueContaining('database write operations', $result);
+        $issues = $result->getIssues();
+        $this->assertEquals('high', $issues[0]->severity->value);
     }
 
     public function test_detects_query_builder_methods(): void
@@ -448,7 +450,7 @@ PHP;
         $this->assertStringContainsString('lines', $issues[0]->message);
     }
 
-    public function test_severity_critical_for_database_queries(): void
+    public function test_allows_simple_all_by_default(): void
     {
         $code = <<<'PHP'
 <?php
@@ -469,9 +471,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $issues = $result->getIssues();
-        $this->assertEquals('critical', $issues[0]->severity->value);
+        // Simple reads are allowed by default
+        $this->assertPassed($result);
     }
 
     public function test_severity_high_for_complex_business_logic(): void
@@ -534,7 +535,7 @@ PHP;
         $this->assertEquals('medium', $issues[0]->severity->value);
     }
 
-    public function test_issue_code_for_database_queries(): void
+    public function test_issue_code_for_raw_database_queries(): void
     {
         $code = <<<'PHP'
 <?php
@@ -557,7 +558,7 @@ PHP;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertEquals('route-has-db-queries', $issues[0]->code);
+        $this->assertEquals('route-has-raw-queries', $issues[0]->code);
     }
 
     public function test_issue_code_for_business_logic(): void
@@ -716,8 +717,8 @@ Route::get('/good', function () {
     return view('good');
 });
 
-Route::get('/bad', function () {
-    return User::where('active', true)->get();
+Route::post('/bad', function () {
+    return User::create(['name' => 'Test']);
 });
 PHP;
 
@@ -773,7 +774,7 @@ PHP;
         $this->assertFailed($result);
     }
 
-    public function test_provides_controller_recommendation_for_db_queries(): void
+    public function test_provides_controller_recommendation_for_db_writes(): void
     {
         $code = <<<'PHP'
 <?php
@@ -810,8 +811,8 @@ PHP;
 use Illuminate\Support\Facades\Route;
 use App\Models\User;
 
-Route::get('/users', function () {
-    return User::all();
+Route::post('/users', function () {
+    return User::create(['name' => 'Test']);
 });
 PHP;
 
@@ -837,8 +838,8 @@ PHP;
 use Illuminate\Support\Facades\Route;
 use App\Models\User;
 
-Route::get('/test', function () {
-    return User::where('active', true)->get();
+Route::post('/test', function () {
+    return User::create(['name' => 'Test']);
 });
 PHP;
 
@@ -856,6 +857,8 @@ PHP;
         $this->assertArrayHasKey('problems', $issues[0]->metadata);
         $this->assertArrayHasKey('has_db_queries', $issues[0]->metadata);
         $this->assertTrue($issues[0]->metadata['has_db_queries']);
+        $this->assertArrayHasKey('has_write_queries', $issues[0]->metadata);
+        $this->assertTrue($issues[0]->metadata['has_write_queries']);
     }
 
     public function test_does_not_flag_collection_where_as_query(): void
@@ -995,8 +998,8 @@ PHP;
 
 use App\Models\User;
 
-\Illuminate\Support\Facades\Route::get('/users', function () {
-    return User::all();
+\Illuminate\Support\Facades\Route::post('/users', function () {
+    return User::create(['name' => 'Test']);
 });
 PHP;
 
@@ -1008,9 +1011,9 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should detect database query even with FQN Route facade
+        // Should detect database write even with FQN Route facade
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('database queries', $result);
+        $this->assertHasIssueContaining('database write operations', $result);
     }
 
     public function test_detects_route_with_alias(): void
@@ -1021,8 +1024,8 @@ PHP;
 use Illuminate\Support\Facades\Route as R;
 use App\Models\Product;
 
-R::get('/products', function () {
-    return Product::where('active', true)->get();
+R::post('/products', function () {
+    return Product::create(['name' => 'Test']);
 });
 PHP;
 
@@ -1034,9 +1037,9 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should detect database query even with aliased Route facade
+        // Should detect database write even with aliased Route facade
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('database queries', $result);
+        $this->assertHasIssueContaining('database write operations', $result);
     }
 
     public function test_detects_route_without_use_statement(): void
@@ -1061,7 +1064,7 @@ PHP;
 
         // Should still work with unresolved short name (global alias)
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('database queries', $result);
+        $this->assertHasIssueContaining('database write operations', $result);
     }
 
     public function test_detects_dispatch_function_call(): void
@@ -1320,7 +1323,7 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_does_not_double_flag_query_methods(): void
+    public function test_simple_find_passes_by_default(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1341,12 +1344,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should fail for database queries, NOT business logic
-        $this->assertFailed($result);
-        $issues = $result->getIssues();
-        $this->assertCount(1, $issues);
-        $this->assertStringContainsString('database queries', $issues[0]->message);
-        $this->assertStringNotContainsString('complex business logic', $issues[0]->message);
+        // Simple reads pass by default (equivalent to route model binding)
+        $this->assertPassed($result);
     }
 
     public function test_detects_broadcast_function_call(): void
@@ -1572,5 +1571,287 @@ PHP;
         // 3 method calls should be flagged
         $this->assertFailed($result);
         $this->assertHasIssueContaining('complex business logic', $result);
+    }
+
+    public function test_flags_update_as_high_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Models\User;
+
+Route::put('/user/{id}', function ($id) {
+    User::where('id', $id)->update(['active' => true]);
+    return 'updated';
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('database write operations', $result);
+        $issues = $result->getIssues();
+        $this->assertEquals('high', $issues[0]->severity->value);
+    }
+
+    public function test_flags_delete_as_high_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Models\User;
+
+Route::delete('/user/{id}', function ($id) {
+    User::destroy($id);
+    return 'deleted';
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('database write operations', $result);
+        $issues = $result->getIssues();
+        $this->assertEquals('high', $issues[0]->severity->value);
+    }
+
+    public function test_strict_mode_flags_all_queries(): void
+    {
+        $config = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'best-practices' => [
+                        'logic-in-routes' => [
+                            'max_closure_lines' => 5,
+                            'allow_simple_reads' => false,
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $analyzer = new LogicInRoutesAnalyzer($this->parser, $config);
+
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Models\User;
+
+Route::get('/user/{id}', function ($id) {
+    return User::find($id);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // In strict mode, even simple reads are flagged
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('database queries (strict mode)', $result);
+        $issues = $result->getIssues();
+        $this->assertEquals('low', $issues[0]->severity->value);
+    }
+
+    public function test_complex_read_chain_flagged_as_medium(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Models\User;
+
+Route::get('/users', function () {
+    return User::where('active', true)->orderBy('name')->paginate(10);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Complex reads (3+ method chain) should be flagged as medium
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('complex database queries', $result);
+        $issues = $result->getIssues();
+        $this->assertEquals('medium', $issues[0]->severity->value);
+    }
+
+    public function test_db_facade_always_flagged_as_high(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\DB;
+
+Route::get('/users', function () {
+    return DB::table('users')->get();
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Raw DB queries are always flagged as high
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('raw database queries', $result);
+        $issues = $result->getIssues();
+        $this->assertEquals('high', $issues[0]->severity->value);
+    }
+
+    public function test_issue_code_for_db_writes(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Models\User;
+
+Route::post('/users', function () {
+    return User::create(['name' => 'Test']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertEquals('route-has-db-writes', $issues[0]->code);
+    }
+
+    public function test_issue_code_for_complex_queries(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Models\User;
+
+Route::get('/users', function () {
+    return User::where('active', true)->orderBy('name')->get();
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertEquals('route-has-complex-queries', $issues[0]->code);
+    }
+
+    public function test_allows_simple_first_by_default(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Models\User;
+
+Route::get('/user', function () {
+    return User::first();
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Simple reads are allowed by default
+        $this->assertPassed($result);
+    }
+
+    public function test_allows_simple_find_or_fail_by_default(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Models\User;
+
+Route::get('/user/{id}', function ($id) {
+    return User::findOrFail($id);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Simple reads are allowed by default (this is what route model binding does)
+        $this->assertPassed($result);
+    }
+
+    public function test_where_get_chain_is_complex_read(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Models\Product;
+
+Route::get('/products', function () {
+    return Product::where('active', true)->get();
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // 2-method chain (where + get) is a complex read
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('complex database queries', $result);
     }
 }

@@ -26,7 +26,11 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
 {
     public const DEFAULT_MAX_CLOSURE_LINES = 5;
 
+    public const DEFAULT_ALLOW_SIMPLE_READS = true;
+
     private int $maxClosureLines;
+
+    private bool $allowSimpleReads;
 
     public function __construct(
         private ParserInterface $parser,
@@ -54,6 +58,7 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
         $this->maxClosureLines = $analyzerConfig['max_closure_lines'] ?? self::DEFAULT_MAX_CLOSURE_LINES;
+        $this->allowSimpleReads = $analyzerConfig['allow_simple_reads'] ?? self::DEFAULT_ALLOW_SIMPLE_READS;
 
         $issues = [];
 
@@ -72,7 +77,7 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $visitor = new LogicInRoutesVisitor($this->maxClosureLines);
+                $visitor = new LogicInRoutesVisitor($this->maxClosureLines, $this->allowSimpleReads);
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor(new NameResolver);
                 $traverser->addVisitor($visitor);
@@ -140,12 +145,33 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
     /** @var list<string> Service container methods */
     private const SERVICE_CONTAINER_METHODS = ['make', 'makeWith', 'call', 'get'];
 
-    /** @var list<string> Known query methods on Eloquent models */
+    /** @var list<string> Known query methods on Eloquent models (includes both read and write) */
     private const QUERY_METHODS = [
         'where', 'find', 'all', 'first', 'create', 'query',
         'findOrFail', 'firstOrFail', 'get', 'pluck', 'count',
         'exists', 'doesntExist', 'with', 'without',
     ];
+
+    /** @var list<string> Read-only methods that are generally safe in routes */
+    private const READ_ONLY_METHODS = [
+        'find', 'findOrFail', 'findOr', 'findMany',
+        'first', 'firstOrFail', 'firstOr', 'firstWhere',
+        'get', 'all', 'pluck', 'value', 'count', 'exists',
+        'doesntExist', 'min', 'max', 'sum', 'avg',
+        'sole', 'soleOrFail',
+    ];
+
+    /** @var list<string> Write methods that indicate business logic (mutations) */
+    private const WRITE_METHODS = [
+        'create', 'insert', 'insertOrIgnore', 'insertGetId',
+        'update', 'updateOrCreate', 'updateOrInsert',
+        'delete', 'destroy', 'forceDelete', 'truncate',
+        'save', 'push', 'touch', 'increment', 'decrement',
+        'upsert', 'firstOrCreate', 'firstOrNew',
+    ];
+
+    /** @var list<string> Eloquent static query methods (entry points) */
+    private const STATIC_QUERY_METHODS = ['where', 'find', 'all', 'first', 'create', 'query'];
 
     /** @var list<string> Utility classes that are NOT business logic */
     private const UTILITY_CLASSES = [
@@ -163,7 +189,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
     private array $reportedPositions = [];
 
     public function __construct(
-        private int $maxClosureLines
+        private int $maxClosureLines,
+        private bool $allowSimpleReads = true
     ) {}
 
     public function enterNode(Node $node): ?Node
@@ -236,11 +263,25 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         $problems = [];
         $maxSeverity = Severity::Low;
 
-        // Check for database queries (highest severity)
-        if ($this->hasDbQueries($closure)) {
-            $problems[] = 'database queries';
-            $maxSeverity = Severity::Critical;
+        // Analyze database queries with granular classification
+        $queryInfo = $this->analyzeDbQueries($closure);
+
+        if ($queryInfo['has_writes']) {
+            $problems[] = 'database write operations';
+            $maxSeverity = Severity::High;
+        } elseif ($queryInfo['has_raw_queries']) {
+            $problems[] = 'raw database queries';
+            $maxSeverity = Severity::High;
+        } elseif ($queryInfo['has_complex_reads']) {
+            $problems[] = 'complex database queries';
+            if ($maxSeverity->level() < Severity::Medium->level()) {
+                $maxSeverity = Severity::Medium;
+            }
+        } elseif ($queryInfo['has_simple_reads'] && ! $this->allowSimpleReads) {
+            $problems[] = 'database queries (strict mode)';
+            $maxSeverity = Severity::Low;
         }
+        // Note: simple reads with allowSimpleReads=true are not flagged
 
         // Check for complex business logic
         if ($this->hasComplexBusinessLogic($closure)) {
@@ -264,18 +305,22 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             $this->reportedPositions[$position] = true;
 
             $problemList = implode(', ', $problems);
-            $code = $this->determineIssueCode($problems);
+            $code = $this->determineIssueCode($problems, $queryInfo);
 
             $this->issues[] = [
                 'message' => "Route closure contains {$problemList}",
                 'line' => $line,
                 'severity' => $maxSeverity,
-                'recommendation' => $this->getRecommendation($problems),
+                'recommendation' => $this->getRecommendation($problems, $queryInfo),
                 'code' => $code,
                 'metadata' => [
                     'problems' => $problems,
                     'line_count' => $lineCount,
-                    'has_db_queries' => in_array('database queries', $problems),
+                    'has_db_queries' => $queryInfo['has_writes'] || $queryInfo['has_raw_queries'] || $queryInfo['has_complex_reads'] || $queryInfo['has_simple_reads'],
+                    'has_write_queries' => $queryInfo['has_writes'],
+                    'has_raw_queries' => $queryInfo['has_raw_queries'],
+                    'has_complex_reads' => $queryInfo['has_complex_reads'],
+                    'has_simple_reads' => $queryInfo['has_simple_reads'],
                     'has_business_logic' => in_array('complex business logic', $problems),
                 ],
             ];
@@ -284,11 +329,24 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
     /**
      * @param  array<string>  $problems
+     * @param  array{has_writes: bool, has_raw_queries: bool, has_complex_reads: bool, has_simple_reads: bool, chain_length: int}  $queryInfo
      */
-    private function determineIssueCode(array $problems): string
+    private function determineIssueCode(array $problems, array $queryInfo): string
     {
         // Prioritize codes by severity
-        if (in_array('database queries', $problems)) {
+        if (in_array('database write operations', $problems)) {
+            return 'route-has-db-writes';
+        }
+
+        if (in_array('raw database queries', $problems)) {
+            return 'route-has-raw-queries';
+        }
+
+        if (in_array('complex database queries', $problems)) {
+            return 'route-has-complex-queries';
+        }
+
+        if (in_array('database queries (strict mode)', $problems)) {
             return 'route-has-db-queries';
         }
 
@@ -302,11 +360,24 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
     /**
      * @param  array<string>  $problems
+     * @param  array{has_writes: bool, has_raw_queries: bool, has_complex_reads: bool, has_simple_reads: bool, chain_length: int}  $queryInfo
      */
-    private function getRecommendation(array $problems): string
+    private function getRecommendation(array $problems, array $queryInfo): string
     {
-        if (in_array('database queries', $problems)) {
-            return 'Database queries should not be in route files. Move this logic to a controller method and use repositories or services for data access.';
+        if (in_array('database write operations', $problems)) {
+            return 'Database write operations (create, update, delete) should not be in route files. Move this logic to a controller method where you can properly handle validation, authorization, and error handling.';
+        }
+
+        if (in_array('raw database queries', $problems)) {
+            return 'Raw database queries using the DB facade should not be in route files. Move this logic to a controller method and consider using Eloquent models for type safety.';
+        }
+
+        if (in_array('complex database queries', $problems)) {
+            return 'Complex database queries with method chaining should be moved to a controller or repository. Consider using route model binding for simple lookups.';
+        }
+
+        if (in_array('database queries (strict mode)', $problems)) {
+            return 'Database queries are discouraged in route files (strict mode enabled). Consider using route model binding or moving the query to a controller.';
         }
 
         if (in_array('complex business logic', $problems)) {
@@ -316,63 +387,104 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         return 'Move route logic to a controller method or single-action controller. Route files should only define routes, not contain implementation details.';
     }
 
-    private function hasDbQueries(Node\Expr\Closure $closure): bool
+    /**
+     * Analyze database queries in the closure and classify them.
+     *
+     * @return array{has_writes: bool, has_raw_queries: bool, has_complex_reads: bool, has_simple_reads: bool, chain_length: int}
+     */
+    private function analyzeDbQueries(Node\Expr\Closure $closure): array
     {
-        $hasQuery = false;
+        $result = [
+            'has_writes' => false,
+            'has_raw_queries' => false,
+            'has_complex_reads' => false,
+            'has_simple_reads' => false,
+            'chain_length' => 0,
+        ];
 
-        $visitor = new class($hasQuery) extends NodeVisitorAbstract
+        $visitor = new class($result, self::READ_ONLY_METHODS, self::WRITE_METHODS, self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES) extends NodeVisitorAbstract
         {
-            public function __construct(private bool &$hasQuery) {}
+            /**
+             * @param  array{has_writes: bool, has_raw_queries: bool, has_complex_reads: bool, has_simple_reads: bool, chain_length: int}  $result
+             * @param  list<string>  $readOnlyMethods
+             * @param  list<string>  $writeMethods
+             * @param  list<string>  $staticQueryMethods
+             * @param  list<string>  $utilityClasses
+             */
+            public function __construct(
+                private array &$result,
+                private array $readOnlyMethods,
+                private array $writeMethods,
+                private array $staticQueryMethods,
+                private array $utilityClasses
+            ) {}
 
             public function enterNode(Node $node): ?Node
             {
-                if ($this->hasQuery) {
-                    return null;
-                }
-
-                // Check for DB facade calls
+                // Check for DB facade calls (raw queries - always flagged)
                 if ($node instanceof Node\Expr\StaticCall) {
                     if ($node->class instanceof Node\Name && $this->isDbFacade($node->class)) {
-                        $this->hasQuery = true;
+                        $this->result['has_raw_queries'] = true;
 
                         return null;
                     }
                 }
 
-                // Check for Eloquent model query methods (static calls on potential models)
+                // Check for Eloquent model static calls
                 if ($node instanceof Node\Expr\StaticCall) {
-                    if ($node->name instanceof Node\Identifier) {
+                    if ($node->name instanceof Node\Identifier && $node->class instanceof Node\Name) {
                         $method = $node->name->toString();
-                        // Only check common Eloquent static query methods
-                        $staticQueryMethods = ['where', 'find', 'all', 'first', 'create', 'query'];
-                        if (in_array($method, $staticQueryMethods, true)) {
-                            // Additional check: is this being called on something that looks like a Model?
-                            if ($node->class instanceof Node\Name) {
-                                $className = $node->class->toString();
-                                // Known utility classes that are NOT Eloquent models
-                                $utilityClasses = [
-                                    'Carbon', 'Collection', 'Validator', 'Cache', 'Log',
-                                    'Session', 'Cookie', 'Request', 'Response', 'View',
-                                    'Config', 'Str', 'Arr', 'File', 'Storage', 'Hash',
-                                    'Crypt', 'Mail', 'Queue', 'Event', 'Bus', 'Gate',
-                                    'Notification', 'Password', 'URL', 'Redirect', 'Route',
-                                ];
-                                // Common model class patterns: PascalCase single word, NOT a utility
-                                if (
-                                    str_ends_with($className, 'Model') ||
-                                    (preg_match('/^[A-Z][a-zA-Z]+$/', $className) && ! in_array($className, $utilityClasses, true))
-                                ) {
-                                    $this->hasQuery = true;
-                                }
+                        $className = $node->class->toString();
+
+                        // Skip utility classes
+                        if (in_array($className, $this->utilityClasses, true)) {
+                            return null;
+                        }
+
+                        // Check if this looks like a Model class
+                        if (! str_ends_with($className, 'Model') &&
+                            preg_match('/^[A-Z][a-zA-Z]+$/', $className) !== 1) {
+                            return null;
+                        }
+
+                        // Classify the method
+                        if (in_array($method, $this->writeMethods, true)) {
+                            $this->result['has_writes'] = true;
+
+                            return null;
+                        }
+
+                        if (in_array($method, $this->staticQueryMethods, true)) {
+                            // Determine if this is a simple or complex query by analyzing the chain
+                            $chainInfo = $this->analyzeQueryChain($node);
+
+                            if ($chainInfo['has_writes']) {
+                                $this->result['has_writes'] = true;
+                            } elseif ($chainInfo['chain_length'] >= 3) {
+                                $this->result['has_complex_reads'] = true;
+                                $this->result['chain_length'] = max($this->result['chain_length'], $chainInfo['chain_length']);
+                            } elseif ($this->isSimpleRead($method, $chainInfo)) {
+                                $this->result['has_simple_reads'] = true;
+                            } else {
+                                // 2 method chain (e.g., User::where()->get())
+                                $this->result['has_complex_reads'] = true;
                             }
                         }
                     }
                 }
 
-                // Check for query builder method chains (->where(), ->get(), etc.)
+                // Check for query builder method chains that indicate complex queries
                 if ($node instanceof Node\Expr\MethodCall) {
                     if ($node->name instanceof Node\Identifier) {
                         $method = $node->name->toString();
+
+                        // Write methods in chains
+                        if (in_array($method, $this->writeMethods, true)) {
+                            $this->result['has_writes'] = true;
+
+                            return null;
+                        }
+
                         // SQL-specific methods (not found on Collections)
                         $queryBuilderMethods = [
                             'orWhere', 'whereIn', 'whereNotIn', 'whereBetween', 'whereNull',
@@ -382,7 +494,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                             'lockForUpdate', 'sharedLock',
                         ];
                         if (in_array($method, $queryBuilderMethods, true)) {
-                            $this->hasQuery = true;
+                            $this->result['has_complex_reads'] = true;
                         }
                     }
                 }
@@ -392,32 +504,107 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
             /**
              * Check if the class name is the DB facade.
-             *
-             * Handles both short names (DB) and fully qualified names
-             * (Illuminate\Support\Facades\DB) after NameResolver processing.
              */
             private function isDbFacade(Node\Name $name): bool
             {
-                // After NameResolver, get the resolved name
                 $resolvedName = $name->getAttribute('resolvedName');
                 $className = $resolvedName instanceof Node\Name\FullyQualified
                     ? $resolvedName->toString()
                     : $name->toString();
 
-                // Normalize (remove leading backslash)
                 $className = ltrim($className, '\\');
 
-                // Check for DB facade (FQN or short name)
                 return $className === 'Illuminate\\Support\\Facades\\DB'
                     || $className === 'DB';
+            }
+
+            /**
+             * Determine if this is a simple read operation.
+             *
+             * Simple reads are single method calls like Model::find($id) or Model::all()
+             *
+             * @param  array{chain_length: int, has_writes: bool, methods: list<string>}  $chainInfo
+             */
+            private function isSimpleRead(string $method, array $chainInfo): bool
+            {
+                // Simple read: single method call that returns data directly
+                // Use a subset of readOnlyMethods that return results directly without chaining
+                $directReadMethods = array_intersect(
+                    $this->readOnlyMethods,
+                    ['find', 'findOrFail', 'findOr', 'findMany', 'all', 'first', 'firstOrFail']
+                );
+
+                return $chainInfo['chain_length'] === 1 && in_array($method, $directReadMethods, true);
+            }
+
+            /**
+             * Analyze a query chain starting from a static call.
+             *
+             * @return array{chain_length: int, has_writes: bool, methods: list<string>}
+             */
+            private function analyzeQueryChain(Node\Expr\StaticCall $node): array
+            {
+                $methods = [];
+                $hasWrites = false;
+
+                // Get the initial method
+                if ($node->name instanceof Node\Identifier) {
+                    $methods[] = $node->name->toString();
+                    if (in_array($node->name->toString(), $this->writeMethods, true)) {
+                        $hasWrites = true;
+                    }
+                }
+
+                // Check if this static call is the start of a method chain
+                // We need to find the parent that wraps this in a method call
+                $parent = $node->getAttribute('parent');
+                while ($parent instanceof Node\Expr\MethodCall) {
+                    if ($parent->name instanceof Node\Identifier) {
+                        $method = $parent->name->toString();
+                        $methods[] = $method;
+                        if (in_array($method, $this->writeMethods, true)) {
+                            $hasWrites = true;
+                        }
+                    }
+                    $parent = $parent->getAttribute('parent');
+                }
+
+                return [
+                    'chain_length' => count($methods),
+                    'has_writes' => $hasWrites,
+                    'methods' => $methods,
+                ];
+            }
+        };
+
+        // Add parent node tracking
+        $parentTracker = new class extends NodeVisitorAbstract
+        {
+            public function enterNode(Node $node): ?Node
+            {
+                foreach ($node->getSubNodeNames() as $name) {
+                    $subNode = $node->$name;
+                    if ($subNode instanceof Node) {
+                        $subNode->setAttribute('parent', $node);
+                    } elseif (is_array($subNode)) {
+                        foreach ($subNode as $child) {
+                            if ($child instanceof Node) {
+                                $child->setAttribute('parent', $node);
+                            }
+                        }
+                    }
+                }
+
+                return null;
             }
         };
 
         $traverser = new NodeTraverser;
+        $traverser->addVisitor($parentTracker);
         $traverser->addVisitor($visitor);
         $traverser->traverse([$closure]);
 
-        return $hasQuery;
+        return $result;
     }
 
     private function hasComplexBusinessLogic(Node\Expr\Closure $closure): bool

@@ -8,7 +8,6 @@ use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitor\NameResolver;
-use PhpParser\NodeVisitor\ParentConnectingVisitor;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -151,15 +150,6 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         'where', 'find', 'all', 'first', 'create', 'query',
         'findOrFail', 'firstOrFail', 'get', 'pluck', 'count',
         'exists', 'doesntExist', 'with', 'without',
-    ];
-
-    /** @var list<string> Read-only methods that are generally safe in routes */
-    private const READ_ONLY_METHODS = [
-        'find', 'findOrFail', 'findOr', 'findMany',
-        'first', 'firstOrFail', 'firstOr', 'firstWhere',
-        'get', 'all', 'pluck', 'value', 'count', 'exists',
-        'doesntExist', 'min', 'max', 'sum', 'avg',
-        'sole', 'soleOrFail',
     ];
 
     /** @var list<string> Write methods that indicate business logic (mutations) */
@@ -423,18 +413,16 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             'chain_length' => 0,
         ];
 
-        $visitor = new class($result, self::READ_ONLY_METHODS, self::WRITE_METHODS, self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES) extends NodeVisitorAbstract
+        $visitor = new class($result, self::WRITE_METHODS, self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES) extends NodeVisitorAbstract
         {
             /**
              * @param  array{has_writes: bool, has_raw_queries: bool, has_complex_reads: bool, has_simple_reads: bool, chain_length: int}  $result
-             * @param  list<string>  $readOnlyMethods
              * @param  list<string>  $writeMethods
              * @param  list<string>  $staticQueryMethods
              * @param  list<string>  $utilityClasses
              */
             public function __construct(
                 private array &$result,
-                private array $readOnlyMethods,
                 private array $writeMethods,
                 private array $staticQueryMethods,
                 private array $utilityClasses
@@ -451,53 +439,28 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     }
                 }
 
-                // Check for Eloquent model static calls
-                if ($node instanceof Node\Expr\StaticCall) {
-                    if ($node->name instanceof Node\Identifier && $node->class instanceof Node\Name) {
-                        $method = $node->name->toString();
-
-                        // Check if this is likely an Eloquent model
-                        if (! $this->isLikelyModel($node->class)) {
-                            return null;
-                        }
-
-                        // Classify the method
-                        if (in_array($method, $this->writeMethods, true)) {
-                            $this->result['has_writes'] = true;
-
-                            return null;
-                        }
-
-                        if (in_array($method, $this->staticQueryMethods, true)) {
-                            // Determine if this is a simple or complex query by analyzing the chain
-                            $chainInfo = $this->analyzeQueryChain($node);
-
-                            if ($chainInfo['has_writes']) {
-                                $this->result['has_writes'] = true;
-                            } elseif ($chainInfo['chain_length'] >= 3) {
-                                $this->result['has_complex_reads'] = true;
-                                $this->result['chain_length'] = max($this->result['chain_length'], $chainInfo['chain_length']);
-                            } elseif ($this->isSimpleRead($method, $chainInfo)) {
-                                $this->result['has_simple_reads'] = true;
-                            } else {
-                                // 2 method chain (e.g., User::where()->get())
-                                $this->result['has_complex_reads'] = true;
-                            }
-                        }
-                    }
-                }
-
-                // Check for query builder method chains that indicate complex queries
+                // Process MethodCalls - walk DOWN via ->var to analyze Eloquent chains
                 if ($node instanceof Node\Expr\MethodCall) {
+                    $chainInfo = $this->analyzeMethodCallChain($node);
+
+                    if ($chainInfo['is_eloquent_chain']) {
+                        if ($chainInfo['has_writes']) {
+                            $this->result['has_writes'] = true;
+                        } elseif ($chainInfo['chain_length'] >= 3) {
+                            $this->result['has_complex_reads'] = true;
+                            $this->result['chain_length'] = max($this->result['chain_length'], $chainInfo['chain_length']);
+                        } elseif ($chainInfo['chain_length'] === 2) {
+                            // 2 method chain (e.g., User::where()->get())
+                            $this->result['has_complex_reads'] = true;
+                        }
+                        // Note: chain_length === 1 with MethodCall means the static method
+                        // returned something that had a method called on it - this is handled
+                        // by the StaticCall branch below for simple reads
+                    }
+
+                    // Check for SQL-specific methods that indicate complex queries
                     if ($node->name instanceof Node\Identifier) {
                         $method = $node->name->toString();
-
-                        // Write methods in chains
-                        if (in_array($method, $this->writeMethods, true)) {
-                            $this->result['has_writes'] = true;
-
-                            return null;
-                        }
 
                         // SQL-specific methods (not found on Collections)
                         $queryBuilderMethods = [
@@ -509,6 +472,40 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                         ];
                         if (in_array($method, $queryBuilderMethods, true)) {
                             $this->result['has_complex_reads'] = true;
+                        }
+                    }
+
+                    return null;
+                }
+
+                // Handle direct StaticCalls on models (no method chain following)
+                // e.g., User::create([...]), User::find($id), User::all()
+                if ($node instanceof Node\Expr\StaticCall) {
+                    if ($node->name instanceof Node\Identifier && $node->class instanceof Node\Name) {
+                        $method = $node->name->toString();
+
+                        // Check if this is likely an Eloquent model
+                        if (! $this->isLikelyModel($node->class)) {
+                            return null;
+                        }
+
+                        // Direct write method (e.g., User::create([...]))
+                        if (in_array($method, $this->writeMethods, true)) {
+                            $this->result['has_writes'] = true;
+
+                            return null;
+                        }
+
+                        // Query starter methods or simple reads
+                        if (in_array($method, $this->staticQueryMethods, true)) {
+                            if ($this->isDirectSimpleRead($method)) {
+                                $this->result['has_simple_reads'] = true;
+                            } else {
+                                // Query starters like 'query', 'where' that return a builder
+                                // These indicate database query usage even without chaining
+                                // (the query builder will be used somewhere)
+                                $this->result['has_complex_reads'] = true;
+                            }
                         }
                     }
                 }
@@ -576,57 +573,60 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             }
 
             /**
-             * Determine if this is a simple read operation.
-             *
-             * Simple reads are single method calls like Model::find($id) or Model::all()
-             *
-             * @param  array{chain_length: int, has_writes: bool, methods: list<string>}  $chainInfo
+             * Check if a static method is a direct simple read (returns data without chaining).
              */
-            private function isSimpleRead(string $method, array $chainInfo): bool
+            private function isDirectSimpleRead(string $method): bool
             {
-                // Simple read: single method call that returns data directly
-                // Use a subset of readOnlyMethods that return results directly without chaining
-                $directReadMethods = array_intersect(
-                    $this->readOnlyMethods,
-                    ['find', 'findOrFail', 'findOr', 'findMany', 'all', 'first', 'firstOrFail']
-                );
+                $directReadMethods = ['find', 'findOrFail', 'findOr', 'findMany', 'all', 'first', 'firstOrFail'];
 
-                return $chainInfo['chain_length'] === 1 && in_array($method, $directReadMethods, true);
+                return in_array($method, $directReadMethods, true);
             }
 
             /**
-             * Analyze a query chain starting from a static call.
+             * Walk DOWN via ->var to analyze a method call chain.
              *
-             * @return array{chain_length: int, has_writes: bool, methods: list<string>}
+             * This approach walks from the outermost MethodCall down through
+             * the chain to find if the root is a model StaticCall.
+             *
+             * @return array{is_eloquent_chain: bool, chain_length: int, has_writes: bool, methods: list<string>}
              */
-            private function analyzeQueryChain(Node\Expr\StaticCall $node): array
+            private function analyzeMethodCallChain(Node\Expr\MethodCall $node): array
             {
                 $methods = [];
                 $hasWrites = false;
+                $current = $node;
 
-                // Get the initial method
-                if ($node->name instanceof Node\Identifier) {
-                    $methods[] = $node->name->toString();
-                    if (in_array($node->name->toString(), $this->writeMethods, true)) {
-                        $hasWrites = true;
-                    }
-                }
-
-                // Check if this static call is the start of a method chain
-                // We need to find the parent that wraps this in a method call
-                $parent = $node->getAttribute('parent');
-                while ($parent instanceof Node\Expr\MethodCall) {
-                    if ($parent->name instanceof Node\Identifier) {
-                        $method = $parent->name->toString();
-                        $methods[] = $method;
+                // Walk down through the method call chain
+                while ($current instanceof Node\Expr\MethodCall) {
+                    if ($current->name instanceof Node\Identifier) {
+                        $method = $current->name->toString();
+                        array_unshift($methods, $method); // Prepend to maintain order
                         if (in_array($method, $this->writeMethods, true)) {
                             $hasWrites = true;
                         }
                     }
-                    $parent = $parent->getAttribute('parent');
+                    $current = $current->var;
+                }
+
+                // Check if root is a StaticCall on a model
+                $isEloquentChain = false;
+                if ($current instanceof Node\Expr\StaticCall
+                    && $current->class instanceof Node\Name
+                    && $this->isLikelyModel($current->class)) {
+                    $isEloquentChain = true;
+
+                    // Include the static method in the chain count
+                    if ($current->name instanceof Node\Identifier) {
+                        $method = $current->name->toString();
+                        array_unshift($methods, $method);
+                        if (in_array($method, $this->writeMethods, true)) {
+                            $hasWrites = true;
+                        }
+                    }
                 }
 
                 return [
+                    'is_eloquent_chain' => $isEloquentChain,
                     'chain_length' => count($methods),
                     'has_writes' => $hasWrites,
                     'methods' => $methods,
@@ -634,9 +634,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             }
         };
 
-        // ParentConnectingVisitor MUST be added first to enable parent node tracking
+        // No longer need ParentConnectingVisitor - we walk down via ->var
         $traverser = new NodeTraverser;
-        $traverser->addVisitor(new ParentConnectingVisitor);
         $traverser->addVisitor($visitor);
         $traverser->traverse([$closure]);
 

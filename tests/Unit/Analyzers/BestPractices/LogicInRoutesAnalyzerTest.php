@@ -1999,4 +1999,105 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('complex business logic', $result);
     }
+
+    public function test_does_not_flag_http_facade_get(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Http;
+
+Route::get('/api-proxy', function () {
+    $response = Http::get('https://api.example.com/data');
+    return response()->json($response->json());
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Http::get() is NOT a database query - should pass
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_service_class_static_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Services\PaymentGateway;
+
+Route::post('/charge', function () {
+    return PaymentGateway::charge(1000);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // PaymentGateway is in App\Services, not App\Models - should pass
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_model_in_domain_models_namespace(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use Domain\Blog\Models\Author;
+
+Route::post('/authors', function () {
+    return Author::create(['name' => 'Test']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Domain\Blog\Models\Author contains \Models\ - should be flagged
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('database write operations', $result);
+    }
+
+    public function test_does_not_flag_unresolved_pascalcase_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::get('/test', function () {
+    return SomeUnknownClass::getData();
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Without a use statement, we can't determine namespace - assume not a model
+        $this->assertPassed($result);
+    }
 }

@@ -212,9 +212,11 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         private bool $allowSimpleReads = true
     ) {}
 
-    public function enterNode(Node $node): ?Node
+    public function leaveNode(Node $node): ?Node
     {
         // Detect Route::* method calls
+        // We use leaveNode instead of enterNode so that NameResolver has already
+        // processed all child nodes (including closure contents) by this point.
         if ($node instanceof Node\Expr\StaticCall) {
             if ($node->class instanceof Node\Name && $this->isRouteFacade($node->class)) {
                 $this->analyzeRouteCall($node);
@@ -453,16 +455,9 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 if ($node instanceof Node\Expr\StaticCall) {
                     if ($node->name instanceof Node\Identifier && $node->class instanceof Node\Name) {
                         $method = $node->name->toString();
-                        $className = $node->class->toString();
 
-                        // Skip utility classes
-                        if (in_array($className, $this->utilityClasses, true)) {
-                            return null;
-                        }
-
-                        // Check if this looks like a Model class
-                        if (! str_ends_with($className, 'Model') &&
-                            preg_match('/^[A-Z][a-zA-Z]+$/', $className) !== 1) {
+                        // Check if this is likely an Eloquent model
+                        if (! $this->isLikelyModel($node->class)) {
                             return null;
                         }
 
@@ -535,6 +530,49 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
                 return $className === 'Illuminate\\Support\\Facades\\DB'
                     || $className === 'DB';
+            }
+
+            /**
+             * Determine if a class name likely represents an Eloquent model.
+             * Uses fully qualified name from NameResolver when available.
+             *
+             * After NameResolver runs, class names are resolved to FullyQualified nodes
+             * containing the complete namespace (e.g., "Product" becomes "App\Models\Product").
+             */
+            private function isLikelyModel(Node\Name $name): bool
+            {
+                // After NameResolver, the name itself is the FQN (as FullyQualified node)
+                // or if not resolved, just the short name
+                $fqn = $name->toString();
+                $normalized = ltrim($fqn, '\\');
+
+                // Extract short class name for utility check
+                $parts = explode('\\', $normalized);
+                $shortName = end($parts) ?: $normalized;
+
+                // Quick rejection: known utility classes
+                if (in_array($shortName, $this->utilityClasses, true)) {
+                    return false;
+                }
+
+                // Check model namespace patterns (from resolved FQN)
+                if (str_starts_with($normalized, 'App\\Models\\') ||
+                    str_starts_with($normalized, 'App\\Model\\')) {
+                    return true;
+                }
+
+                // Domain-driven patterns: any namespace containing \Models\
+                if (str_contains($normalized, '\\Models\\')) {
+                    return true;
+                }
+
+                // Class name ends with Model suffix
+                if (str_ends_with($normalized, 'Model')) {
+                    return true;
+                }
+
+                // Cannot determine from namespace - assume NOT a model
+                return false;
             }
 
             /**
@@ -669,13 +707,12 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                         return null;
                     }
 
-                    // Non-query model/service methods (e.g., User::sendWelcomeEmail())
+                    // Non-query model methods (e.g., User::sendWelcomeEmail())
                     if ($node->name instanceof Node\Identifier) {
                         $method = $node->name->toString();
 
-                        // If it's a PascalCase class, not utility, and not a query method
-                        if (preg_match('/^[A-Z][a-zA-Z0-9]*$/', $className) === 1
-                            && ! in_array($className, $this->utilityClasses, true)
+                        // Only flag if it's a model with a non-query method
+                        if ($this->isLikelyModel($node->class)
                             && ! in_array($method, $this->queryMethods, true)) {
                             $this->hasComplexLogic = true;
 
@@ -760,6 +797,49 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     : $name->toString();
 
                 return ltrim($className, '\\');
+            }
+
+            /**
+             * Determine if a class name likely represents an Eloquent model.
+             * Uses fully qualified name from NameResolver when available.
+             *
+             * After NameResolver runs, class names are resolved to FullyQualified nodes
+             * containing the complete namespace (e.g., "Product" becomes "App\Models\Product").
+             */
+            private function isLikelyModel(Node\Name $name): bool
+            {
+                // After NameResolver, the name itself is the FQN (as FullyQualified node)
+                // or if not resolved, just the short name
+                $fqn = $name->toString();
+                $normalized = ltrim($fqn, '\\');
+
+                // Extract short class name for utility check
+                $parts = explode('\\', $normalized);
+                $shortName = end($parts) ?: $normalized;
+
+                // Quick rejection: known utility classes
+                if (in_array($shortName, $this->utilityClasses, true)) {
+                    return false;
+                }
+
+                // Check model namespace patterns (from resolved FQN)
+                if (str_starts_with($normalized, 'App\\Models\\') ||
+                    str_starts_with($normalized, 'App\\Model\\')) {
+                    return true;
+                }
+
+                // Domain-driven patterns: any namespace containing \Models\
+                if (str_contains($normalized, '\\Models\\')) {
+                    return true;
+                }
+
+                // Class name ends with Model suffix
+                if (str_ends_with($normalized, 'Model')) {
+                    return true;
+                }
+
+                // Cannot determine from namespace - assume NOT a model
+                return false;
             }
 
             /**

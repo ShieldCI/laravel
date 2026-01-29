@@ -162,7 +162,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
     ];
 
     /** @var list<string> Eloquent static query methods (entry points) */
-    private const STATIC_QUERY_METHODS = ['where', 'find', 'all', 'first', 'create', 'query'];
+    private const STATIC_QUERY_METHODS = ['where', 'find', 'all', 'first', 'query'];
 
     /** @var list<string> Terminal read methods that complete a query chain */
     private const TERMINAL_READ_METHODS = [

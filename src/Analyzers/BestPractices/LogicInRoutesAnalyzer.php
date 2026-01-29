@@ -136,7 +136,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
     /** @var list<string> Known query methods on Eloquent models (includes both read and write) */
     private const QUERY_METHODS = [
-        'where', 'find', 'all', 'first', 'create', 'query',
+        'where', 'find', 'all', 'first', 'query',
         'findOrFail', 'firstOrFail', 'get', 'pluck', 'count',
         'exists', 'doesntExist', 'with', 'without',
     ];

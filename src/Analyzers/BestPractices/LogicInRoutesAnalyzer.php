@@ -126,20 +126,9 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         'retry',                                       // Retry logic
     ];
 
-    /** @var list<string> Facades that indicate business logic */
+    /** @var list<string> Facades that indicate business logic (short names only - use getShortClassName for comparison) */
     private const BUSINESS_LOGIC_FACADES = [
-        'Mail',
-        'Notification',
-        'Queue',
-        'Event',
-        'Bus',
-        'Broadcast',
-        'Illuminate\\Support\\Facades\\Mail',
-        'Illuminate\\Support\\Facades\\Notification',
-        'Illuminate\\Support\\Facades\\Queue',
-        'Illuminate\\Support\\Facades\\Event',
-        'Illuminate\\Support\\Facades\\Bus',
-        'Illuminate\\Support\\Facades\\Broadcast',
+        'Mail', 'Notification', 'Queue', 'Event', 'Bus', 'Broadcast',
     ];
 
     /** @var list<string> Service container methods */
@@ -267,14 +256,15 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
      */
     public static function isLikelyModel(Node\Name $name, array $utilityClasses): bool
     {
-        // After NameResolver, the name itself is the FQN (as FullyQualified node)
-        // or if not resolved, just the short name
-        $fqn = $name->toString();
+        // After NameResolver, get the resolved name if available
+        $resolvedName = $name->getAttribute('resolvedName');
+        $fqn = $resolvedName instanceof Node\Name\FullyQualified
+            ? $resolvedName->toString()
+            : $name->toString();
         $normalized = ltrim($fqn, '\\');
 
         // Extract short class name for utility check
-        $parts = explode('\\', $normalized);
-        $shortName = end($parts) ?: $normalized;
+        $shortName = self::getShortClassName($name);
 
         // Quick rejection: known utility classes
         if (in_array($shortName, $utilityClasses, true)) {
@@ -299,6 +289,24 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
         // Cannot determine from namespace - assume NOT a model
         return false;
+    }
+
+    /**
+     * Extract short class name from a Node\Name, using resolved FQN if available.
+     *
+     * @internal
+     */
+    public static function getShortClassName(Node\Name $name): string
+    {
+        $resolvedName = $name->getAttribute('resolvedName');
+        $fqn = $resolvedName instanceof Node\Name\FullyQualified
+            ? $resolvedName->toString()
+            : $name->toString();
+        $normalized = ltrim($fqn, '\\');
+
+        $parts = explode('\\', $normalized);
+
+        return end($parts) ?: $normalized;
     }
 
     private function analyzeRouteCall(Node\Expr\StaticCall $node): void
@@ -734,17 +742,17 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
                 // 2. Check for business logic facade calls and service container
                 if ($node instanceof Node\Expr\StaticCall && $node->class instanceof Node\Name) {
-                    $className = $this->resolveClassName($node->class);
+                    $shortClassName = LogicInRoutesVisitor::getShortClassName($node->class);
 
                     // Business facades (Mail, Notification, Queue, Event, Bus, Broadcast)
-                    if (in_array($className, $this->businessLogicFacades, true)) {
+                    if (in_array($shortClassName, $this->businessLogicFacades, true)) {
                         $this->hasComplexLogic = true;
 
                         return null;
                     }
 
                     // Service container calls: App::make(), App::call(), etc.
-                    if (($className === 'App' || $className === 'Illuminate\\Support\\Facades\\App')
+                    if ($shortClassName === 'App'
                         && $node->name instanceof Node\Identifier
                         && in_array($node->name->toString(), $this->serviceContainerMethods, true)) {
                         $this->hasComplexLogic = true;
@@ -829,19 +837,6 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 }
 
                 return null;
-            }
-
-            /**
-             * Resolve class name from a Node\Name, handling FQN and aliases.
-             */
-            private function resolveClassName(Node\Name $name): string
-            {
-                $resolvedName = $name->getAttribute('resolvedName');
-                $className = $resolvedName instanceof Node\Name\FullyQualified
-                    ? $resolvedName->toString()
-                    : $name->toString();
-
-                return ltrim($className, '\\');
             }
 
             /**

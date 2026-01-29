@@ -252,6 +252,55 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         return $this->issues;
     }
 
+    /**
+     * Determine if a class name likely represents an Eloquent model.
+     *
+     * Uses fully qualified name from NameResolver when available.
+     * After NameResolver runs, class names are resolved to FullyQualified nodes
+     * containing the complete namespace (e.g., "Product" becomes "App\Models\Product").
+     *
+     * This method is public static so anonymous visitor classes can call it.
+     *
+     * @param  list<string>  $utilityClasses
+     *
+     * @internal
+     */
+    public static function isLikelyModel(Node\Name $name, array $utilityClasses): bool
+    {
+        // After NameResolver, the name itself is the FQN (as FullyQualified node)
+        // or if not resolved, just the short name
+        $fqn = $name->toString();
+        $normalized = ltrim($fqn, '\\');
+
+        // Extract short class name for utility check
+        $parts = explode('\\', $normalized);
+        $shortName = end($parts) ?: $normalized;
+
+        // Quick rejection: known utility classes
+        if (in_array($shortName, $utilityClasses, true)) {
+            return false;
+        }
+
+        // Check model namespace patterns (from resolved FQN)
+        if (str_starts_with($normalized, 'App\\Models\\') ||
+            str_starts_with($normalized, 'App\\Model\\')) {
+            return true;
+        }
+
+        // Domain-driven patterns: any namespace containing \Models\
+        if (str_contains($normalized, '\\Models\\')) {
+            return true;
+        }
+
+        // Class name ends with Model suffix
+        if (str_ends_with($normalized, 'Model')) {
+            return true;
+        }
+
+        // Cannot determine from namespace - assume NOT a model
+        return false;
+    }
+
     private function analyzeRouteCall(Node\Expr\StaticCall $node): void
     {
         if (empty($node->args)) {
@@ -560,45 +609,10 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
             /**
              * Determine if a class name likely represents an Eloquent model.
-             * Uses fully qualified name from NameResolver when available.
-             *
-             * After NameResolver runs, class names are resolved to FullyQualified nodes
-             * containing the complete namespace (e.g., "Product" becomes "App\Models\Product").
              */
             private function isLikelyModel(Node\Name $name): bool
             {
-                // After NameResolver, the name itself is the FQN (as FullyQualified node)
-                // or if not resolved, just the short name
-                $fqn = $name->toString();
-                $normalized = ltrim($fqn, '\\');
-
-                // Extract short class name for utility check
-                $parts = explode('\\', $normalized);
-                $shortName = end($parts) ?: $normalized;
-
-                // Quick rejection: known utility classes
-                if (in_array($shortName, $this->utilityClasses, true)) {
-                    return false;
-                }
-
-                // Check model namespace patterns (from resolved FQN)
-                if (str_starts_with($normalized, 'App\\Models\\') ||
-                    str_starts_with($normalized, 'App\\Model\\')) {
-                    return true;
-                }
-
-                // Domain-driven patterns: any namespace containing \Models\
-                if (str_contains($normalized, '\\Models\\')) {
-                    return true;
-                }
-
-                // Class name ends with Model suffix
-                if (str_ends_with($normalized, 'Model')) {
-                    return true;
-                }
-
-                // Cannot determine from namespace - assume NOT a model
-                return false;
+                return LogicInRoutesVisitor::isLikelyModel($name, $this->utilityClasses);
             }
 
             /**
@@ -832,45 +846,10 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
             /**
              * Determine if a class name likely represents an Eloquent model.
-             * Uses fully qualified name from NameResolver when available.
-             *
-             * After NameResolver runs, class names are resolved to FullyQualified nodes
-             * containing the complete namespace (e.g., "Product" becomes "App\Models\Product").
              */
             private function isLikelyModel(Node\Name $name): bool
             {
-                // After NameResolver, the name itself is the FQN (as FullyQualified node)
-                // or if not resolved, just the short name
-                $fqn = $name->toString();
-                $normalized = ltrim($fqn, '\\');
-
-                // Extract short class name for utility check
-                $parts = explode('\\', $normalized);
-                $shortName = end($parts) ?: $normalized;
-
-                // Quick rejection: known utility classes
-                if (in_array($shortName, $this->utilityClasses, true)) {
-                    return false;
-                }
-
-                // Check model namespace patterns (from resolved FQN)
-                if (str_starts_with($normalized, 'App\\Models\\') ||
-                    str_starts_with($normalized, 'App\\Model\\')) {
-                    return true;
-                }
-
-                // Domain-driven patterns: any namespace containing \Models\
-                if (str_contains($normalized, '\\Models\\')) {
-                    return true;
-                }
-
-                // Class name ends with Model suffix
-                if (str_ends_with($normalized, 'Model')) {
-                    return true;
-                }
-
-                // Cannot determine from namespace - assume NOT a model
-                return false;
+                return LogicInRoutesVisitor::isLikelyModel($name, $this->utilityClasses);
             }
 
             /**

@@ -164,6 +164,12 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
     /** @var list<string> Eloquent static query methods (entry points) */
     private const STATIC_QUERY_METHODS = ['where', 'find', 'all', 'first', 'create', 'query'];
 
+    /** @var list<string> Terminal read methods that complete a query chain */
+    private const TERMINAL_READ_METHODS = [
+        'first', 'firstOrFail', 'find', 'findOrFail', 'get', 'pluck',
+        'count', 'exists', 'sole', 'soleOrFail', 'value',
+    ];
+
     /** @var list<string> Utility classes that are NOT business logic */
     private const UTILITY_CLASSES = [
         'Carbon', 'Collection', 'Validator', 'Cache', 'Log',
@@ -413,19 +419,24 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             'chain_length' => 0,
         ];
 
-        $visitor = new class($result, self::WRITE_METHODS, self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES) extends NodeVisitorAbstract
+        $visitor = new class($result, self::WRITE_METHODS, self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES, self::TERMINAL_READ_METHODS) extends NodeVisitorAbstract
         {
+            /** @var array<int, true> Track StaticCalls that are roots of method chains */
+            private array $processedChainRoots = [];
+
             /**
              * @param  array{has_writes: bool, has_raw_queries: bool, has_complex_reads: bool, has_simple_reads: bool, chain_length: int}  $result
              * @param  list<string>  $writeMethods
              * @param  list<string>  $staticQueryMethods
              * @param  list<string>  $utilityClasses
+             * @param  list<string>  $terminalReadMethods
              */
             public function __construct(
                 private array &$result,
                 private array $writeMethods,
                 private array $staticQueryMethods,
-                private array $utilityClasses
+                private array $utilityClasses,
+                private array $terminalReadMethods
             ) {}
 
             public function enterNode(Node $node): ?Node
@@ -444,14 +455,26 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     $chainInfo = $this->analyzeMethodCallChain($node);
 
                     if ($chainInfo['is_eloquent_chain']) {
+                        // Mark the root StaticCall as processed so it's not double-counted
+                        if ($chainInfo['root_position'] !== null) {
+                            $this->processedChainRoots[$chainInfo['root_position']] = true;
+                        }
+
                         if ($chainInfo['has_writes']) {
                             $this->result['has_writes'] = true;
                         } elseif ($chainInfo['chain_length'] >= 3) {
                             $this->result['has_complex_reads'] = true;
                             $this->result['chain_length'] = max($this->result['chain_length'], $chainInfo['chain_length']);
                         } elseif ($chainInfo['chain_length'] === 2) {
-                            // 2 method chain (e.g., User::where()->get())
-                            $this->result['has_complex_reads'] = true;
+                            // 2 method chain - check if it ends with a terminal read
+                            // e.g., User::where('slug', $slug)->first() is a simple read
+                            // but User::where('slug', $slug)->orderBy('name') is incomplete/complex
+                            $lastMethod = end($chainInfo['methods']);
+                            if ($lastMethod !== false && in_array($lastMethod, $this->terminalReadMethods, true)) {
+                                $this->result['has_simple_reads'] = true;
+                            } else {
+                                $this->result['has_complex_reads'] = true;
+                            }
                         }
                         // Note: chain_length === 1 with MethodCall means the static method
                         // returned something that had a method called on it - this is handled
@@ -481,6 +504,12 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 // Handle direct StaticCalls on models (no method chain following)
                 // e.g., User::create([...]), User::find($id), User::all()
                 if ($node instanceof Node\Expr\StaticCall) {
+                    // Skip if this StaticCall was already processed as part of a method chain
+                    $position = $node->getStartFilePos();
+                    if (isset($this->processedChainRoots[$position])) {
+                        return null;
+                    }
+
                     if ($node->name instanceof Node\Identifier && $node->class instanceof Node\Name) {
                         $method = $node->name->toString();
 
@@ -588,13 +617,14 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              * This approach walks from the outermost MethodCall down through
              * the chain to find if the root is a model StaticCall.
              *
-             * @return array{is_eloquent_chain: bool, chain_length: int, has_writes: bool, methods: list<string>}
+             * @return array{is_eloquent_chain: bool, chain_length: int, has_writes: bool, methods: list<string>, root_position: int|null}
              */
             private function analyzeMethodCallChain(Node\Expr\MethodCall $node): array
             {
                 $methods = [];
                 $hasWrites = false;
                 $current = $node;
+                $rootPosition = null;
 
                 // Walk down through the method call chain
                 while ($current instanceof Node\Expr\MethodCall) {
@@ -614,6 +644,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     && $current->class instanceof Node\Name
                     && $this->isLikelyModel($current->class)) {
                     $isEloquentChain = true;
+                    $rootPosition = $current->getStartFilePos();
 
                     // Include the static method in the chain count
                     if ($current->name instanceof Node\Identifier) {
@@ -630,6 +661,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     'chain_length' => count($methods),
                     'has_writes' => $hasWrites,
                     'methods' => $methods,
+                    'root_position' => $rootPosition,
                 ];
             }
         };

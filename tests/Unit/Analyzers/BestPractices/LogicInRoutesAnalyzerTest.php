@@ -411,6 +411,7 @@ PHP;
 
     public function test_consolidates_multiple_problems_into_single_issue(): void
     {
+        // Use a 3-method chain to trigger complex database queries (where->orderBy->get)
         $code = <<<'PHP'
 <?php
 
@@ -418,7 +419,7 @@ use Illuminate\Support\Facades\Route;
 use App\Models\User;
 
 Route::get('/complex', function () {
-    $users = User::where('active', true)->get();
+    $users = User::where('active', true)->orderBy('name')->get();
     $total = 0;
     foreach ($users as $user) {
         $total += $user->balance;
@@ -1829,7 +1830,7 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_where_get_chain_is_complex_read(): void
+    public function test_where_get_chain_is_simple_read(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1850,7 +1851,60 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // 2-method chain (where + get) is a complex read
+        // 2-method chain ending with terminal read (where + get) is a simple read
+        $this->assertPassed($result);
+    }
+
+    public function test_allows_where_first_as_simple_read(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Models\User;
+
+Route::get('/user/{slug}', function ($slug) {
+    return User::where('slug', $slug)->first();
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // 2-method chain ending with terminal read (where + first) is simple
+        // This is equivalent to route model binding behavior
+        $this->assertPassed($result);
+    }
+
+    public function test_two_method_chain_without_terminal_is_complex(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Models\User;
+
+Route::get('/users', function () {
+    $query = User::where('active', true)->orderBy('name');
+    return $query->get();
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // 2-method chain without terminal read (where + orderBy) is complex
+        // The separate ->get() creates a 3-chain which is also complex
         $this->assertFailed($result);
         $this->assertHasIssueContaining('complex database queries', $result);
     }

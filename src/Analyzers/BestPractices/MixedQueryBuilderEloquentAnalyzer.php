@@ -164,9 +164,6 @@ class MixedQueryVisitor extends NodeVisitorAbstract
     /** @var array<string, array{type: string, line: int}> */
     private array $tableUsage = [];
 
-    /** @var array<string, string> Cache of model class -> custom table name */
-    private array $customTableNames = [];
-
     /** @var array<string> Whitelisted classes */
     private array $whitelist = [];
 
@@ -202,7 +199,6 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         if ($node instanceof Node\Stmt\Class_) {
             $this->currentClassName = $node->name?->toString();
             $this->currentClassSuppressed = $this->hasSuppressionComment($node);
-            $this->extractCustomTableName($node);
         }
 
         // Reset variable tracking at method boundaries for proper scoping
@@ -227,7 +223,7 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
                         // P2.10: Detect QB-via-model patterns (toBase, getQuery) - configurable
                         if ($this->treatToBaseAsQueryBuilder && in_array($method, ['toBase', 'getQuery'], true)) {
-                            $tableName = $this->customTableNames[$className] ?? $this->modelToTableName($className);
+                            $tableName = $this->modelToTableName($className);
                             $this->tableUsage[$tableName] = [
                                 'type' => 'query_builder',
                                 'line' => $node->getLine(),
@@ -292,7 +288,7 @@ class MixedQueryVisitor extends NodeVisitorAbstract
                         if ($node->var->class instanceof Node\Name) {
                             $className = $node->var->class->toString();
                             if ($this->looksLikeModel($className)) {
-                                $tableName = $this->customTableNames[$className] ?? $this->modelToTableName($className);
+                                $tableName = $this->modelToTableName($className);
 
                                 // Check if table already tracked as eloquent
                                 if (isset($this->tableUsage[$tableName]) && $this->tableUsage[$tableName]['type'] === 'eloquent') {
@@ -417,8 +413,7 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
     private function trackEloquentCall(string $modelName, int $line): void
     {
-        // Check if model has custom table name
-        $tableName = $this->customTableNames[$modelName] ?? $this->modelToTableName($modelName);
+        $tableName = $this->modelToTableName($modelName);
 
         if (! isset($this->tableUsage[$tableName])) {
             $this->tableUsage[$tableName] = [
@@ -501,63 +496,6 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         // Check for general @shieldci-ignore without specific analyzer
         if (preg_match('/@shieldci-ignore\s*$/m', $commentText)) {
             return true;
-        }
-
-        return false;
-    }
-
-    /**
-     * Extract custom table name from Model class if defined.
-     */
-    private function extractCustomTableName(Node\Stmt\Class_ $classNode): void
-    {
-        if (! $this->currentClassName) {
-            return;
-        }
-
-        // Check if class extends Model
-        if (! $this->extendsModel($classNode)) {
-            return;
-        }
-
-        // Look for protected $table property
-        foreach ($classNode->stmts as $stmt) {
-            if ($stmt instanceof Node\Stmt\Property) {
-                foreach ($stmt->props as $prop) {
-                    if ($prop->name->toString() === 'table') {
-                        // Extract the table name value
-                        if ($prop->default instanceof Node\Scalar\String_) {
-                            $this->customTableNames[$this->currentClassName] = $prop->default->value;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /**
-     * Check if a class extends Model (directly or indirectly).
-     */
-    private function extendsModel(Node\Stmt\Class_ $classNode): bool
-    {
-        if (! $classNode->extends) {
-            return false;
-        }
-
-        $parentClass = $classNode->extends->toString();
-
-        // Check common Model parent classes
-        $modelParents = [
-            'Model',
-            'Eloquent',
-            'Illuminate\Database\Eloquent\Model',
-            '\Illuminate\Database\Eloquent\Model',
-        ];
-
-        foreach ($modelParents as $modelParent) {
-            if (str_ends_with($parentClass, $modelParent)) {
-                return true;
-            }
         }
 
         return false;

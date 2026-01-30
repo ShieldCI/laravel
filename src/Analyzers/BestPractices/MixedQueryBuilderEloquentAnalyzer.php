@@ -7,6 +7,7 @@ namespace ShieldCI\Analyzers\BestPractices;
 use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -124,6 +125,7 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
                     $this->mixingThreshold
                 );
                 $traverser = new NodeTraverser;
+                $traverser->addVisitor(new NameResolver);
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
 
@@ -207,8 +209,9 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         }
 
         // Detect DB::table() calls
+        // After NameResolver, DB may be resolved to Illuminate\Support\Facades\DB
         if ($node instanceof Node\Expr\StaticCall) {
-            if ($node->class instanceof Node\Name && $node->class->toString() === 'DB') {
+            if ($node->class instanceof Node\Name && $this->isDbFacade($node->class)) {
                 if ($node->name instanceof Node\Identifier && $node->name->toString() === 'table') {
                     $this->trackDbTableCall($node);
                 }
@@ -216,8 +219,8 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
             // Detect Model::where/find/etc calls
             if ($node->class instanceof Node\Name) {
-                $className = $node->class->toString();
-                if ($this->looksLikeModel($className)) {
+                if ($this->looksLikeModel($node->class)) {
+                    $className = $node->class->toString();
                     if ($node->name instanceof Node\Identifier) {
                         $method = $node->name->toString();
 
@@ -279,32 +282,8 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
         // P2.8: Detect relationship query patterns ($user->posts()->where())
         if ($node instanceof Node\Expr\MethodCall) {
-            // P2.10: Detect toBase() or getQuery() on model method calls (User::query()->toBase()) - configurable
-            if ($this->treatToBaseAsQueryBuilder && $node->name instanceof Node\Identifier) {
-                $method = $node->name->toString();
-                if (in_array($method, ['toBase', 'getQuery'], true)) {
-                    // Check if this is called on a static call to a model
-                    if ($node->var instanceof Node\Expr\StaticCall) {
-                        if ($node->var->class instanceof Node\Name) {
-                            $className = $node->var->class->toString();
-                            if ($this->looksLikeModel($className)) {
-                                $tableName = $this->modelToTableName($className);
-
-                                // Check if table already tracked as eloquent
-                                if (isset($this->tableUsage[$tableName]) && $this->tableUsage[$tableName]['type'] === 'eloquent') {
-                                    // Mark as mixed
-                                    $this->tableUsage[$tableName]['type'] = 'mixed';
-                                } else {
-                                    $this->tableUsage[$tableName] = [
-                                        'type' => 'query_builder',
-                                        'line' => $node->getLine(),
-                                    ];
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            // Note: toBase()/getQuery() detection moved to leaveNode() so that
+            // NameResolver has processed all child nodes first
 
             // P3.11: Check if method is called on a tracked variable ($query->get())
             if ($node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
@@ -332,10 +311,9 @@ class MixedQueryVisitor extends NodeVisitorAbstract
                 // Check if RHS is a static call to a model
                 if ($node->expr instanceof Node\Expr\StaticCall) {
                     if ($node->expr->class instanceof Node\Name) {
-                        $className = $node->expr->class->toString();
-                        if ($this->looksLikeModel($className)) {
+                        if ($this->looksLikeModel($node->expr->class)) {
                             // Track this variable as being associated with this model
-                            $this->variableTracking[$node->var->name] = $className;
+                            $this->variableTracking[$node->var->name] = $node->expr->class->toString();
                         }
                     }
                 }
@@ -365,6 +343,36 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
     public function leaveNode(Node $node): ?Node
     {
+        // P2.10: Detect toBase() or getQuery() on model method calls (User::query()->toBase())
+        // We use leaveNode so that NameResolver has already processed all child nodes
+        if ($node instanceof Node\Expr\MethodCall) {
+            if ($this->treatToBaseAsQueryBuilder && $node->name instanceof Node\Identifier) {
+                $method = $node->name->toString();
+                if (in_array($method, ['toBase', 'getQuery'], true)) {
+                    // Check if this is called on a static call to a model
+                    if ($node->var instanceof Node\Expr\StaticCall) {
+                        if ($node->var->class instanceof Node\Name) {
+                            if ($this->looksLikeModel($node->var->class)) {
+                                $className = $node->var->class->toString();
+                                $tableName = $this->modelToTableName($className);
+
+                                // Check if table already tracked as eloquent
+                                if (isset($this->tableUsage[$tableName]) && $this->tableUsage[$tableName]['type'] === 'eloquent') {
+                                    // Mark as mixed
+                                    $this->tableUsage[$tableName]['type'] = 'mixed';
+                                } else {
+                                    $this->tableUsage[$tableName] = [
+                                        'type' => 'query_builder',
+                                        'line' => $node->getLine(),
+                                    ];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // When leaving a class, check for mixed usage
         if ($node instanceof Node\Stmt\Class_) {
             // Skip check if class is suppressed or whitelisted
@@ -501,40 +509,73 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         return false;
     }
 
-    private function looksLikeModel(string $className): bool
+    /**
+     * Check if a class name represents the DB facade.
+     *
+     * After NameResolver runs, DB may be resolved to Illuminate\Support\Facades\DB.
+     */
+    private function isDbFacade(Node\Name $name): bool
     {
-        // Simple heuristic: capitalized single word or namespaced class
-        // that looks like a model name
-        $parts = explode('\\', $className);
-        $lastPart = end($parts);
+        $fqn = $name->toString();
+        $normalized = ltrim($fqn, '\\');
 
-        // Model names are typically capitalized
-        if (! ctype_upper($lastPart[0] ?? '')) {
-            return false;
-        }
+        // Check for short name (when no use statement) or fully qualified name
+        return $normalized === 'DB'
+            || $normalized === 'Illuminate\\Support\\Facades\\DB';
+    }
 
-        // Exclude common non-model classes (facades, utilities, framework classes)
+    /**
+     * Determine if a class name likely represents an Eloquent model.
+     *
+     * Uses positive matching (checks if it IS a model) instead of negative matching
+     * (excluding non-models). This reduces false positives for Controllers, Services, etc.
+     */
+    private function looksLikeModel(Node\Name $name): bool
+    {
+        // After NameResolver runs, the name is already fully qualified
+        // NameResolver replaces Name nodes with FullyQualified nodes directly
+        $fqn = $name->toString();
+        $normalized = ltrim($fqn, '\\');
+
+        // Extract short class name
+        $parts = explode('\\', $normalized);
+        $shortName = end($parts);
+
+        // Quick rejection: known non-model classes (facades, utilities)
         $excludedClasses = [
-            // Laravel Facades
             'DB', 'Cache', 'Log', 'Event', 'Mail', 'Queue',
             'Route', 'Artisan', 'Config', 'Session', 'Request',
             'Response', 'Validator', 'Hash', 'Auth', 'Gate',
             'Storage', 'File', 'View', 'Redirect', 'URL',
-            // Common utility classes
             'Factory', 'Builder', 'Collection', 'Carbon', 'Str', 'Arr',
-            // Database/Migration classes
             'Schema', 'Blueprint', 'Migration', 'Seeder', 'Console',
-            // Additional Laravel classes
             'Bus', 'Notification', 'Broadcast', 'Password', 'RateLimiter',
             'Http', 'Process', 'Pipeline', 'Container', 'App',
-            // Architecture patterns (often suffixed)
-            'Facade', 'ServiceProvider', 'Manager', 'Repository',
-            'Service', 'Helper', 'Util', 'Utils', 'Helpers',
-            // Testing
-            'TestCase', 'Feature', 'Unit',
         ];
 
-        return ! in_array($lastPart, $excludedClasses, true);
+        if (in_array($shortName, $excludedClasses, true)) {
+            return false;
+        }
+
+        // POSITIVE CHECK 1: Model namespace patterns
+        if (str_starts_with($normalized, 'App\\Models\\') ||
+            str_starts_with($normalized, 'App\\Model\\')) {
+            return true;
+        }
+
+        // POSITIVE CHECK 2: Domain-driven patterns (e.g., Domain\Users\Models\User)
+        if (str_contains($normalized, '\\Models\\')) {
+            return true;
+        }
+
+        // POSITIVE CHECK 3: Class name ends with "Model" suffix
+        if (str_ends_with($shortName, 'Model')) {
+            return true;
+        }
+
+        // Cannot determine from namespace - assume NOT a model
+        // This is the key change: default to false instead of true
+        return false;
     }
 
     private function modelToTableName(string $modelName): string

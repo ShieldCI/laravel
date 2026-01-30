@@ -62,6 +62,11 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
         $phpFiles = $this->getPhpFiles();
 
         foreach ($phpFiles as $file) {
+            // Skip test and development files
+            if ($this->isTestFile($file) || $this->isDevelopmentFile($file)) {
+                continue;
+            }
+
             try {
                 $ast = $this->parser->parseFile($file);
                 if (empty($ast)) {
@@ -97,6 +102,28 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
             $issues
         );
     }
+
+    /**
+     * Check if file is a test file.
+     */
+    private function isTestFile(string $file): bool
+    {
+        return str_contains($file, '/tests/') ||
+               str_contains($file, '/Tests/') ||
+               str_ends_with($file, 'Test.php');
+    }
+
+    /**
+     * Check if file is a development helper file.
+     */
+    private function isDevelopmentFile(string $file): bool
+    {
+        return str_contains($file, '/database/seeders/') ||
+               str_contains($file, '/database/factories/') ||
+               str_contains($file, '/database/migrations/') ||
+               str_ends_with($file, 'Seeder.php') ||
+               str_ends_with($file, 'Factory.php');
+    }
 }
 
 /**
@@ -104,6 +131,13 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
  */
 class TransactionVisitor extends NodeVisitorAbstract
 {
+    /**
+     * Facades that have methods looking like DB writes but aren't database operations.
+     */
+    private const NON_DB_FACADES = [
+        'Cache', 'Redis', 'RateLimiter', 'Session', 'Storage', 'Queue',
+    ];
+
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
 
@@ -119,6 +153,7 @@ class TransactionVisitor extends NodeVisitorAbstract
 
     private int $methodStartLine = 0;
 
+    /** @var list<int> */
     private array $writeOperationLines = [];
 
     private int $transactionDepth = 0;
@@ -126,6 +161,13 @@ class TransactionVisitor extends NodeVisitorAbstract
     private int $tryBlockDepth = 0;
 
     private bool $hasBeginTransactionInCurrentTry = false;
+
+    /**
+     * Track file positions of closures passed directly to DB::transaction().
+     *
+     * @var array<int, true>
+     */
+    private array $transactionClosurePositions = [];
 
     public function __construct(
         private int $threshold
@@ -149,6 +191,7 @@ class TransactionVisitor extends NodeVisitorAbstract
             $this->transactionDepth = 0;
             $this->tryBlockDepth = 0;
             $this->hasBeginTransactionInCurrentTry = false;
+            $this->transactionClosurePositions = [];
         }
 
         // Track try-catch blocks
@@ -163,16 +206,25 @@ class TransactionVisitor extends NodeVisitorAbstract
 
                 // If it's beginTransaction, mark that we're in a manual transaction
                 // (it's typically called before a try block)
-                if ($node->name instanceof Node\Identifier && $node->name->toString() === 'beginTransaction') {
-                    $this->hasBeginTransactionInCurrentTry = true;
+                if ($node->name instanceof Node\Identifier) {
+                    $methodName = $node->name->toString();
+                    if ($methodName === 'beginTransaction') {
+                        $this->hasBeginTransactionInCurrentTry = true;
+                    } elseif ($methodName === 'transaction' && ! empty($node->args)) {
+                        // Track the closure passed to DB::transaction()
+                        $firstArg = $node->args[0]->value;
+                        if ($firstArg instanceof Node\Expr\Closure || $firstArg instanceof Node\Expr\ArrowFunction) {
+                            $this->transactionClosurePositions[$firstArg->getStartFilePos()] = true;
+                        }
+                    }
                 }
             }
         }
 
-        // Track entering transaction closure
+        // Track entering transaction closure (only closures actually passed to DB::transaction)
         if ($node instanceof Node\Expr\Closure || $node instanceof Node\Expr\ArrowFunction) {
-            // Check if parent context is a transaction call
-            if ($this->isInTransactionContext($node)) {
+            $pos = $node->getStartFilePos();
+            if (isset($this->transactionClosurePositions[$pos])) {
                 $this->transactionDepth++;
             }
         }
@@ -193,9 +245,10 @@ class TransactionVisitor extends NodeVisitorAbstract
 
     public function leaveNode(Node $node): ?Node
     {
-        // Track leaving transaction closure
+        // Track leaving transaction closure (only decrement for closures actually in transaction)
         if ($node instanceof Node\Expr\Closure || $node instanceof Node\Expr\ArrowFunction) {
-            if ($this->transactionDepth > 0) {
+            $pos = $node->getStartFilePos();
+            if (isset($this->transactionClosurePositions[$pos]) && $this->transactionDepth > 0) {
                 $this->transactionDepth--;
             }
         }
@@ -265,18 +318,67 @@ class TransactionVisitor extends NodeVisitorAbstract
         return false;
     }
 
-    private function isInTransactionContext(Node $node): bool
+    /**
+     * Extract short class name from a Node\Name, using resolved FQN if available.
+     */
+    private function getShortClassName(Node\Name $name): string
     {
-        // For now, we'll assume closures immediately following DB::transaction are transaction closures
-        // A more robust implementation would track parent nodes, but this is a reasonable heuristic
-        // This gets set to true when we track DB::transaction calls
-        return $this->hasTransaction && $this->transactionDepth === 0;
+        $resolvedName = $name->getAttribute('resolvedName');
+        $fqn = $resolvedName instanceof Node\Name\FullyQualified
+            ? $resolvedName->toString()
+            : $name->toString();
+        $normalized = ltrim($fqn, '\\');
+
+        $parts = explode('\\', $normalized);
+
+        return end($parts) ?: $normalized;
+    }
+
+    /**
+     * Check if a static call is on a non-database facade.
+     */
+    private function isNonDbFacadeCall(Node\Expr\StaticCall $node): bool
+    {
+        if ($node->class instanceof Node\Name) {
+            $shortName = $this->getShortClassName($node->class);
+
+            return in_array($shortName, self::NON_DB_FACADES, true);
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a method call chain originates from a non-database facade.
+     */
+    private function isNonDbFacadeChain(Node\Expr\MethodCall $node): bool
+    {
+        $current = $node->var;
+
+        // Walk up the chain to find the root
+        while ($current instanceof Node\Expr\MethodCall) {
+            $current = $current->var;
+        }
+
+        // Check if root is a static call on a non-DB facade
+        if ($current instanceof Node\Expr\StaticCall && $current->class instanceof Node\Name) {
+            $shortName = $this->getShortClassName($current->class);
+
+            return in_array($shortName, self::NON_DB_FACADES, true);
+        }
+
+        return false;
     }
 
     private function isWriteOperation(Node $node): bool
     {
         // Static method calls
         if ($node instanceof Node\Expr\StaticCall) {
+            // Skip non-database facades (Cache, Redis, etc.)
+            if ($this->isNonDbFacadeCall($node)) {
+                return false;
+            }
+
             if ($node->name instanceof Node\Identifier) {
                 $method = $node->name->toString();
 
@@ -308,6 +410,11 @@ class TransactionVisitor extends NodeVisitorAbstract
         // Method calls: $model->save(), $model->delete(), etc.
         // Also includes query builder chained calls like DB::table()->update()
         if ($node instanceof Node\Expr\MethodCall) {
+            // Skip method calls on non-database facade chains
+            if ($this->isNonDbFacadeChain($node)) {
+                return false;
+            }
+
             if ($node->name instanceof Node\Identifier) {
                 $method = $node->name->toString();
                 $writeMethods = [
@@ -319,13 +426,8 @@ class TransactionVisitor extends NodeVisitorAbstract
                 if (in_array($method, $writeMethods, true)) {
                     return true;
                 }
-            }
-        }
 
-        // Relationship sync/attach/detach
-        if ($node instanceof Node\Expr\MethodCall) {
-            if ($node->name instanceof Node\Identifier) {
-                $method = $node->name->toString();
+                // Relationship sync/attach/detach
                 $relationMethods = ['sync', 'attach', 'detach', 'toggle', 'syncWithoutDetaching'];
                 if (in_array($method, $relationMethods, true)) {
                     return true;

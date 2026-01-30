@@ -717,4 +717,408 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('write operations without transaction protection', $result);
     }
+
+    public function test_ignores_cache_increment_operations(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache;
+
+class CounterService
+{
+    public function incrementCounters()
+    {
+        Cache::increment('visitors');
+        Cache::increment('page_views');
+        Cache::decrement('remaining');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/CounterService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_redis_operations(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Redis;
+
+class RedisService
+{
+    public function updateCounters()
+    {
+        Redis::incr('counter');
+        Redis::decr('other');
+        Redis::set('key', 'value');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/RedisService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_excludes_test_files(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace Tests\Unit;
+
+use App\Models\User;
+use App\Models\Profile;
+
+class UserTest
+{
+    public function test_create_user()
+    {
+        // Multiple writes in test file should be ignored
+        $user = User::create(['name' => 'Test']);
+        Profile::create(['user_id' => $user->id]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['tests/Unit/UserTest.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_excludes_seeder_files(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\User;
+use App\Models\Role;
+
+class DatabaseSeeder
+{
+    public function run()
+    {
+        // Multiple writes in seeder should be ignored
+        User::create(['name' => 'Admin']);
+        Role::create(['name' => 'admin']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['database/seeders/DatabaseSeeder.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_excludes_migration_files(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Support\Facades\DB;
+
+return new class extends Migration
+{
+    public function up()
+    {
+        // Multiple writes in migration should be ignored
+        DB::insert('INSERT INTO settings (key, value) VALUES (?, ?)', ['foo', 'bar']);
+        DB::insert('INSERT INTO settings (key, value) VALUES (?, ?)', ['baz', 'qux']);
+    }
+};
+PHP;
+
+        $tempDir = $this->createTempDirectory(['database/migrations/2024_01_01_000000_create_settings.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_excludes_factory_files(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace Database\Factories;
+
+use App\Models\User;
+use App\Models\Profile;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+class UserFactory extends Factory
+{
+    public function configure()
+    {
+        return $this->afterCreating(function (User $user) {
+            // Multiple writes in factory should be ignored
+            Profile::create(['user_id' => $user->id, 'bio' => 'Test']);
+            $user->roles()->attach([1, 2]);
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['database/factories/UserFactory.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_only_direct_transaction_closure_is_protected(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+use App\Models\Profile;
+use Illuminate\Support\Facades\DB;
+
+class UserService
+{
+    public function createUserWithProfile(array $data)
+    {
+        // This closure is NOT passed to DB::transaction, so writes here are unprotected
+        $callback = function () use ($data) {
+            User::create($data['user']);
+            Profile::create(['user_id' => 1]);
+        };
+
+        // This empty transaction doesn't protect the callback above
+        DB::transaction(function () {
+            // Empty
+        });
+
+        $callback();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because the writes are in an unrelated closure, not the transaction closure
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('write operations without transaction protection', $result);
+    }
+
+    public function test_mixed_cache_and_db_operations(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+use Illuminate\Support\Facades\Cache;
+
+class UserService
+{
+    public function updateUserWithCache(array $data)
+    {
+        // Only ONE actual DB write
+        $user = User::create($data);
+
+        // These are Cache operations, NOT DB writes
+        Cache::increment('user_count');
+        Cache::put('last_user', $user->id);
+
+        return $user;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because only 1 DB write exists (Cache operations don't count)
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_session_operations(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Session;
+
+class SessionService
+{
+    public function updateSession()
+    {
+        Session::put('key1', 'value1');
+        Session::put('key2', 'value2');
+        Session::save();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/SessionService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_storage_operations(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Storage;
+
+class FileService
+{
+    public function storeFiles()
+    {
+        Storage::put('file1.txt', 'content');
+        Storage::delete('file2.txt');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/FileService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_queue_operations(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Queue;
+
+class QueueService
+{
+    public function dispatchJobs()
+    {
+        Queue::push('App\Jobs\Job1');
+        Queue::delete('job-id');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/QueueService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_db_writes_mixed_with_ignored_facades(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+use App\Models\Profile;
+use Illuminate\Support\Facades\Cache;
+
+class UserService
+{
+    public function createUserWithCaching(array $data)
+    {
+        // TWO actual DB writes - should be flagged
+        $user = User::create($data['user']);
+        Profile::create(['user_id' => $user->id]);
+
+        // These don't count as DB writes
+        Cache::increment('user_count');
+
+        return $user;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because there are 2 DB writes without transaction
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('2 write operations', $result);
+    }
 }

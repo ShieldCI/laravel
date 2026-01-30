@@ -149,8 +149,6 @@ class TransactionVisitor extends NodeVisitorAbstract
 
     private int $writeOperationsInTransaction = 0;
 
-    private bool $hasTransaction = false;
-
     private int $methodStartLine = 0;
 
     /** @var list<int> */
@@ -184,7 +182,6 @@ class TransactionVisitor extends NodeVisitorAbstract
             $this->methodStartLine = $node->getStartLine();
             $this->writeOperations = 0;
             $this->writeOperationsInTransaction = 0;
-            $this->hasTransaction = false;
             $this->writeOperationLines = [];
             $this->transactionDepth = 0;
             $this->manualTransactionDepth = 0;
@@ -194,8 +191,6 @@ class TransactionVisitor extends NodeVisitorAbstract
         // Check for DB::transaction or DB::beginTransaction
         if ($node instanceof Node\Expr\StaticCall) {
             if ($this->isTransactionCall($node)) {
-                $this->hasTransaction = true;
-
                 // If it's beginTransaction, mark that we're in a manual transaction
                 // (it's typically called before a try block)
                 if ($node->name instanceof Node\Identifier) {
@@ -213,10 +208,7 @@ class TransactionVisitor extends NodeVisitorAbstract
             }
 
             // Check for transaction end (commit/rollBack)
-            // If we see commit/rollBack, it proves transactions are being used
-            // (even if beginTransaction is in another method/class)
             if ($this->isTransactionEndCall($node)) {
-                $this->hasTransaction = true;
                 if ($this->manualTransactionDepth > 0) {
                     $this->manualTransactionDepth--;
                 }
@@ -263,29 +255,29 @@ class TransactionVisitor extends NodeVisitorAbstract
             // Calculate unprotected writes (writes outside transaction scope)
             $unprotectedWrites = $this->writeOperations - $this->writeOperationsInTransaction;
 
-            // Report issue if:
-            // 1. Total writes >= threshold AND no transaction exists, OR
-            // 2. Transaction exists but unprotected writes >= threshold
+            // If all writes are protected, no issue
+            if ($unprotectedWrites === 0) {
+                return null;
+            }
+
+            // If total writes >= threshold, ALL should be protected
             if ($this->writeOperations >= $this->threshold) {
-                if (! $this->hasTransaction || $unprotectedWrites >= $this->threshold) {
-                    $this->issues[] = [
-                        'message' => sprintf(
-                            'Method "%s::%s()" has %d write operations without transaction protection',
-                            $this->currentClassName ?? 'Unknown',
-                            $this->currentMethodName ?? 'unknown',
-                            $unprotectedWrites > 0 ? $unprotectedWrites : $this->writeOperations
-                        ),
-                        'line' => $this->methodStartLine,
-                        'severity' => Severity::High,
-                        'recommendation' => sprintf(
-                            'Wrap multiple write operations in DB::transaction() to ensure data integrity. '.
-                            'If any operation fails, all changes will be rolled back. '.
-                            'Write operations found at lines: %s',
-                            implode(', ', $this->writeOperationLines)
-                        ),
-                        'code' => null,
-                    ];
-                }
+                $this->issues[] = [
+                    'message' => sprintf(
+                        'Method "%s::%s()" has %d database write operation(s) outside transaction protection',
+                        $this->currentClassName ?? 'Unknown',
+                        $this->currentMethodName ?? 'unknown',
+                        $unprotectedWrites
+                    ),
+                    'line' => $this->methodStartLine,
+                    'severity' => Severity::High,
+                    'recommendation' => sprintf(
+                        'Wrap all related write operations in DB::transaction() to ensure atomicity. '.
+                        'Write operations found at lines: %s',
+                        implode(', ', $this->writeOperationLines)
+                    ),
+                    'code' => null,
+                ];
             }
         }
 

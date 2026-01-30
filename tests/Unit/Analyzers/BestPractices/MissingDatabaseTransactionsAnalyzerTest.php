@@ -163,7 +163,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('write operations without transaction protection', $result);
+        $this->assertHasIssueContaining('database write operation(s) outside transaction protection', $result);
     }
 
     public function test_detects_multiple_model_saves(): void
@@ -201,7 +201,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('write operations', $result);
+        $this->assertHasIssueContaining('database write operation', $result);
     }
 
     public function test_detects_static_updates_without_transaction(): void
@@ -264,7 +264,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('2 write operations', $result);
+        $this->assertHasIssueContaining('2 database write operation(s)', $result);
     }
 
     public function test_detects_relationship_operations_without_transaction(): void
@@ -346,7 +346,7 @@ PHP;
         $issues = $result->getIssues();
         $this->assertGreaterThan(0, count($issues));
         $this->assertStringContainsString('DB::transaction()', $issues[0]->recommendation);
-        $this->assertStringContainsString('data integrity', $issues[0]->recommendation);
+        $this->assertStringContainsString('atomicity', $issues[0]->recommendation);
     }
 
     public function test_detects_writes_outside_transaction_scope(): void
@@ -388,7 +388,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('write operations without transaction protection', $result);
+        $this->assertHasIssueContaining('database write operation(s) outside transaction protection', $result);
     }
 
     public function test_detects_db_facade_writes(): void
@@ -419,7 +419,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('write operations', $result);
+        $this->assertHasIssueContaining('database write operation', $result);
     }
 
     public function test_detects_increment_decrement_operations(): void
@@ -715,7 +715,7 @@ PHP;
 
         // Should fail because 2 writes are unprotected (even though 1 is protected)
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('write operations without transaction protection', $result);
+        $this->assertHasIssueContaining('database write operation(s) outside transaction protection', $result);
     }
 
     public function test_ignores_cache_increment_operations(): void
@@ -950,7 +950,7 @@ PHP;
 
         // Should fail because the writes are in an unrelated closure, not the transaction closure
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('write operations without transaction protection', $result);
+        $this->assertHasIssueContaining('database write operation(s) outside transaction protection', $result);
     }
 
     public function test_mixed_cache_and_db_operations(): void
@@ -1119,7 +1119,7 @@ PHP;
 
         // Should fail because there are 2 DB writes without transaction
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('2 write operations', $result);
+        $this->assertHasIssueContaining('2 database write operation(s)', $result);
     }
 
     public function test_passes_with_begin_transaction_without_try_catch(): void
@@ -1195,7 +1195,7 @@ PHP;
 
         // Should fail because Order::create and Product::create are outside transaction
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('write operations without transaction protection', $result);
+        $this->assertHasIssueContaining('database write operation(s) outside transaction protection', $result);
     }
 
     public function test_detects_writes_after_rollback(): void
@@ -1234,7 +1234,7 @@ PHP;
 
         // Should fail because writes after rollBack are unprotected
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('write operations without transaction protection', $result);
+        $this->assertHasIssueContaining('database write operation(s) outside transaction protection', $result);
     }
 
     public function test_handles_multiple_transaction_blocks(): void
@@ -1357,11 +1357,14 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // The catch block write (Log::create) is technically outside transaction protection
-        // because rollBack() has been called. However, because of AST traversal limitations,
-        // the analyzer conservatively marks it as protected. This is an acceptable trade-off
-        // since the catch block only executes when User::create fails.
-        $this->assertPassed($result);
+        // The catch block write (Log::create) is outside transaction protection
+        // because rollBack() has been called. This should be flagged since:
+        // - Total writes = 2 (meets threshold)
+        // - Log::create after rollBack is unprotected
+        // Note: If this is intentional error logging, consider using a separate
+        // try-catch for the Log::create or excluding it via baseline.
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('1 database write operation(s)', $result);
     }
 
     public function test_passes_with_nested_transaction_closures(): void
@@ -1495,5 +1498,42 @@ PHP;
 
         // All writes should be protected by manual transactions
         $this->assertPassed($result);
+    }
+
+    public function test_detects_single_unprotected_write_with_partial_transaction(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+use App\Models\Order;
+use Illuminate\Support\Facades\DB;
+
+class OrderService
+{
+    public function createOrder(array $data)
+    {
+        DB::transaction(function () use ($data) {
+            User::create($data['user']);  // protected
+        });
+
+        Order::create($data['order']);  // unprotected - should be flagged!
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because 1 write is outside transaction when total >= threshold
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('1 database write operation', $result);
     }
 }

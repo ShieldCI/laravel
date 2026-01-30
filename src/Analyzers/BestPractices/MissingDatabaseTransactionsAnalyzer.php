@@ -158,7 +158,7 @@ class TransactionVisitor extends NodeVisitorAbstract
 
     private int $transactionDepth = 0;
 
-    private bool $inManualTransaction = false;
+    private int $manualTransactionDepth = 0;
 
     /**
      * Track file positions of closures passed directly to DB::transaction().
@@ -187,7 +187,7 @@ class TransactionVisitor extends NodeVisitorAbstract
             $this->hasTransaction = false;
             $this->writeOperationLines = [];
             $this->transactionDepth = 0;
-            $this->inManualTransaction = false;
+            $this->manualTransactionDepth = 0;
             $this->transactionClosurePositions = [];
         }
 
@@ -201,7 +201,7 @@ class TransactionVisitor extends NodeVisitorAbstract
                 if ($node->name instanceof Node\Identifier) {
                     $methodName = $node->name->toString();
                     if ($methodName === 'beginTransaction') {
-                        $this->inManualTransaction = true;
+                        $this->manualTransactionDepth++;
                     } elseif ($methodName === 'transaction' && ! empty($node->args)) {
                         // Track the closure passed to DB::transaction()
                         $firstArg = $node->args[0]->value;
@@ -217,7 +217,9 @@ class TransactionVisitor extends NodeVisitorAbstract
             // (even if beginTransaction is in another method/class)
             if ($this->isTransactionEndCall($node)) {
                 $this->hasTransaction = true;
-                $this->inManualTransaction = false;
+                if ($this->manualTransactionDepth > 0) {
+                    $this->manualTransactionDepth--;
+                }
             }
         }
 
@@ -238,7 +240,7 @@ class TransactionVisitor extends NodeVisitorAbstract
             // Writes are protected if:
             // 1. Inside a DB::transaction() closure, OR
             // 2. After DB::beginTransaction() was called (with or without try-catch)
-            if ($this->transactionDepth > 0 || $this->inManualTransaction) {
+            if ($this->transactionDepth > 0 || $this->manualTransactionDepth > 0) {
                 $this->writeOperationsInTransaction++;
             }
         }

@@ -1453,4 +1453,47 @@ PHP;
         // All writes are protected by nested DB::transaction() closures
         $this->assertPassed($result);
     }
+
+    public function test_passes_with_nested_manual_transactions(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+use App\Models\Profile;
+use App\Models\Log;
+use Illuminate\Support\Facades\DB;
+
+class UserService
+{
+    public function createUserWithProfile(array $data)
+    {
+        DB::beginTransaction();
+        $user = User::create($data['user']);
+
+        DB::beginTransaction();  // Nested transaction
+        Profile::create(['user_id' => $user->id]);
+        DB::commit();  // Close nested
+
+        Log::create(['action' => 'done']);  // Still protected by outer
+        DB::commit();  // Close outer
+
+        return $user;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // All writes should be protected by manual transactions
+        $this->assertPassed($result);
+    }
 }

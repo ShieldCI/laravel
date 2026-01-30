@@ -158,8 +158,6 @@ class TransactionVisitor extends NodeVisitorAbstract
 
     private int $transactionDepth = 0;
 
-    private int $tryBlockDepth = 0;
-
     private bool $inManualTransaction = false;
 
     /**
@@ -189,14 +187,8 @@ class TransactionVisitor extends NodeVisitorAbstract
             $this->hasTransaction = false;
             $this->writeOperationLines = [];
             $this->transactionDepth = 0;
-            $this->tryBlockDepth = 0;
             $this->inManualTransaction = false;
             $this->transactionClosurePositions = [];
-        }
-
-        // Track try-catch blocks
-        if ($node instanceof Node\Stmt\TryCatch) {
-            $this->tryBlockDepth++;
         }
 
         // Check for DB::transaction or DB::beginTransaction
@@ -221,7 +213,10 @@ class TransactionVisitor extends NodeVisitorAbstract
             }
 
             // Check for transaction end (commit/rollBack)
+            // If we see commit/rollBack, it proves transactions are being used
+            // (even if beginTransaction is in another method/class)
             if ($this->isTransactionEndCall($node)) {
+                $this->hasTransaction = true;
                 $this->inManualTransaction = false;
             }
         }
@@ -259,13 +254,6 @@ class TransactionVisitor extends NodeVisitorAbstract
             if (isset($this->transactionClosurePositions[$pos]) && $this->transactionDepth > 0) {
                 $this->transactionDepth--;
             }
-        }
-
-        // Track leaving try-catch block
-        if ($node instanceof Node\Stmt\TryCatch) {
-            $this->tryBlockDepth--;
-            // Note: inManualTransaction is reset when commit/rollBack is called,
-            // not when leaving try-catch, since beginTransaction is typically called BEFORE the try block
         }
 
         // When leaving a method, check if we need transactions

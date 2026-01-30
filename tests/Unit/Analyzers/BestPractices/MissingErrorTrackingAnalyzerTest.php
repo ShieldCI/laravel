@@ -32,7 +32,7 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
             ],
         ]);
 
-        return new MissingErrorTrackingAnalyzer($configRepo);
+        return new MissingErrorTrackingAnalyzer($this->parser, $configRepo);
     }
 
     public function test_passes_with_sentry_installed(): void
@@ -278,6 +278,222 @@ class Handler extends ExceptionHandler
             // Send to custom error tracking service
             app('error-tracker')->report($e);
         });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+            'app/Exceptions/Handler.php' => $handlerContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_sentry_sdk_in_handler(): void
+    {
+        $composerJson = json_encode([
+            'require' => [
+                'php' => '^8.1',
+                'laravel/framework' => '^10.0',
+            ],
+        ]);
+
+        $handlerContent = <<<'PHP'
+<?php
+
+namespace App\Exceptions;
+
+use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
+use Throwable;
+
+class Handler extends ExceptionHandler
+{
+    public function report(Throwable $e): void
+    {
+        if ($this->shouldReport($e)) {
+            \Sentry\captureException($e);
+        }
+        parent::report($e);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+            'app/Exceptions/Handler.php' => $handlerContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_nested_report_method_containing_sdk_patterns(): void
+    {
+        $composerJson = json_encode([
+            'require' => [
+                'php' => '^8.1',
+                'laravel/framework' => '^10.0',
+            ],
+        ]);
+
+        // This was previously failing due to the broken regex
+        $handlerContent = <<<'PHP'
+<?php
+
+namespace App\Exceptions;
+
+use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
+use Throwable;
+
+class Handler extends ExceptionHandler
+{
+    public function report(Throwable $e): void
+    {
+        if ($e instanceof CustomException) {
+            try {
+                $this->customErrorTracker->captureException($e);
+            } catch (\Exception $inner) {
+                logger()->error('Failed to report', ['error' => $inner->getMessage()]);
+            }
+        }
+        parent::report($e);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+            'app/Exceptions/Handler.php' => $handlerContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_with_trivial_report_override(): void
+    {
+        $composerJson = json_encode([
+            'require' => [
+                'php' => '^8.1',
+                'laravel/framework' => '^10.0',
+            ],
+        ]);
+
+        // Trivial override that just calls parent - no actual error tracking
+        $handlerContent = <<<'PHP'
+<?php
+
+namespace App\Exceptions;
+
+use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
+use Throwable;
+
+class Handler extends ExceptionHandler
+{
+    public function report(Throwable $e): void
+    {
+        parent::report($e);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+            'app/Exceptions/Handler.php' => $handlerContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('No error tracking service detected', $result);
+    }
+
+    public function test_passes_with_bugsnag_sdk_in_handler(): void
+    {
+        $composerJson = json_encode([
+            'require' => [
+                'php' => '^8.1',
+                'laravel/framework' => '^10.0',
+            ],
+        ]);
+
+        $handlerContent = <<<'PHP'
+<?php
+
+namespace App\Exceptions;
+
+use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
+use Throwable;
+
+class Handler extends ExceptionHandler
+{
+    public function report(Throwable $e): void
+    {
+        Bugsnag::notifyException($e);
+        parent::report($e);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+            'app/Exceptions/Handler.php' => $handlerContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_cloudwatch_in_handler(): void
+    {
+        $composerJson = json_encode([
+            'require' => [
+                'php' => '^8.1',
+                'laravel/framework' => '^10.0',
+            ],
+        ]);
+
+        $handlerContent = <<<'PHP'
+<?php
+
+namespace App\Exceptions;
+
+use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
+use Throwable;
+
+class Handler extends ExceptionHandler
+{
+    public function report(Throwable $e): void
+    {
+        // Send to CloudWatch
+        $this->cloudWatchLogger->logException($e);
+        parent::report($e);
     }
 }
 PHP;

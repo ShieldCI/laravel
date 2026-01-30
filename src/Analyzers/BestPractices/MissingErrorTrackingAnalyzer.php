@@ -6,6 +6,7 @@ namespace ShieldCI\Analyzers\BestPractices;
 
 use Illuminate\Contracts\Config\Repository as Config;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
+use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -51,6 +52,7 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
     private array $knownPackages = [];
 
     public function __construct(
+        private ParserInterface $parser,
         private Config $config
     ) {}
 
@@ -251,20 +253,14 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
     {
         // Check Exception Handler for custom error reporting (Laravel <=10)
         $handlerPath = $this->basePath.'/app/Exceptions/Handler.php';
-        if (file_exists($handlerPath)) {
-            $handlerContent = FileParser::readFile($handlerPath);
-            if ($handlerContent !== null && $this->hasCustomErrorReporting($handlerContent)) {
-                return true;
-            }
+        if (file_exists($handlerPath) && $this->hasCustomErrorReporting($handlerPath)) {
+            return true;
         }
 
         // Check bootstrap/app.php for exception handling (Laravel 11+)
         $bootstrapAppPath = $this->basePath.'/bootstrap/app.php';
-        if (file_exists($bootstrapAppPath)) {
-            $bootstrapContent = FileParser::readFile($bootstrapAppPath);
-            if ($bootstrapContent !== null && $this->hasCustomErrorReporting($bootstrapContent)) {
-                return true;
-            }
+        if (file_exists($bootstrapAppPath) && $this->hasCustomErrorReporting($bootstrapAppPath)) {
+            return true;
         }
 
         // Check logging configuration for CloudWatch or other services
@@ -280,38 +276,52 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if Handler.php has custom error reporting logic.
+     * Check if file has custom error reporting logic using AST and pattern detection.
      */
-    private function hasCustomErrorReporting(string $content): bool
+    private function hasCustomErrorReporting(string $filePath): bool
     {
-        // Look for common custom error tracking patterns
-        $patterns = [
-            'CloudWatch',
-            'cloudwatch',
-            'Datadog',
-            'datadog',
-            'NewRelic',
-            'new_relic',
-            'reportable\(',
-        ];
-
-        foreach ($patterns as $pattern) {
-            if (preg_match('/'.$pattern.'/i', $content)) {
+        // 1. Use AST to find reportable() method calls (most reliable indicator)
+        $ast = $this->parser->parseFile($filePath);
+        if (! empty($ast)) {
+            $reportableCalls = $this->parser->findMethodCalls($ast, 'reportable');
+            if (! empty($reportableCalls)) {
                 return true;
             }
         }
 
-        // Check for significantly customized report() method (>10 lines of logic)
-        if (preg_match('/public function report.*?\{(.*?)\}/s', $content, $matches)) {
-            $reportMethod = $matches[1];
-            // Count non-empty, non-comment lines
-            $lines = array_filter(
-                explode("\n", $reportMethod),
-                fn ($line) => trim($line) !== '' && ! str_starts_with(trim($line), '//')
-            );
+        // 2. Check file content for SDK/service patterns
+        $content = FileParser::readFile($filePath);
+        if ($content !== null && $this->hasErrorTrackingPatterns($content)) {
+            return true;
+        }
 
-            // If report() has more than 10 lines, likely custom implementation
-            if (count($lines) > 10) {
+        return false;
+    }
+
+    /**
+     * Check for error tracking SDK patterns in content.
+     */
+    private function hasErrorTrackingPatterns(string $content): bool
+    {
+        $patterns = [
+            // Cloud services
+            'CloudWatch',
+            'Datadog',
+            'NewRelic',
+            'new_relic',
+
+            // Error tracking SDKs
+            'Sentry\\',              // Sentry\captureException
+            'captureException',      // Common SDK method
+            'captureMessage',        // Common SDK method
+            'Bugsnag::',             // Bugsnag SDK
+            'Rollbar::',             // Rollbar SDK
+            'Honeybadger::',         // Honeybadger SDK
+            'notifyException',       // Common method name
+        ];
+
+        foreach ($patterns as $pattern) {
+            if (stripos($content, $pattern) !== false) {
                 return true;
             }
         }

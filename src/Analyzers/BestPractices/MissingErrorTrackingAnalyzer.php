@@ -327,9 +327,11 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
             'app("sentry")',         // Double-quoted variant
             "app('bugsnag')",        // Bugsnag container resolution
             'app("bugsnag")',        // Double-quoted variant
+            "app('rollbar')",        // Rollbar container resolution
+            'app("rollbar")',        // Double-quoted variant
 
             // Sentry Laravel Integration
-            'Integration::capture',  // Sentry\Laravel\Integration::captureUnhandledException
+            'Sentry\\Laravel\\Integration::capture',  // Sentry\Laravel\Integration::captureUnhandledException
         ];
 
         foreach ($patterns as $pattern) {

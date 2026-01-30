@@ -26,6 +26,9 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * Minimum number of writes that require full transactional atomicity.
+     */
     public const DEFAULT_THRESHOLD = 2;
 
     private int $threshold;
@@ -152,7 +155,7 @@ class TransactionVisitor extends NodeVisitorAbstract
     private int $methodStartLine = 0;
 
     /** @var list<int> */
-    private array $writeOperationLines = [];
+    private array $unprotectedWriteLines = [];
 
     private int $transactionDepth = 0;
 
@@ -182,7 +185,7 @@ class TransactionVisitor extends NodeVisitorAbstract
             $this->methodStartLine = $node->getStartLine();
             $this->writeOperations = 0;
             $this->writeOperationsInTransaction = 0;
-            $this->writeOperationLines = [];
+            $this->unprotectedWriteLines = [];
             $this->transactionDepth = 0;
             $this->manualTransactionDepth = 0;
             $this->transactionClosurePositions = [];
@@ -226,7 +229,6 @@ class TransactionVisitor extends NodeVisitorAbstract
         // Detect write operations
         if ($this->isWriteOperation($node)) {
             $this->writeOperations++;
-            $this->writeOperationLines[] = $node->getLine();
 
             // Track if write is inside a transaction
             // Writes are protected if:
@@ -234,6 +236,8 @@ class TransactionVisitor extends NodeVisitorAbstract
             // 2. After DB::beginTransaction() was called (with or without try-catch)
             if ($this->transactionDepth > 0 || $this->manualTransactionDepth > 0) {
                 $this->writeOperationsInTransaction++;
+            } else {
+                $this->unprotectedWriteLines[] = $node->getLine();
             }
         }
 
@@ -273,8 +277,8 @@ class TransactionVisitor extends NodeVisitorAbstract
                     'severity' => Severity::High,
                     'recommendation' => sprintf(
                         'Wrap all related write operations in DB::transaction() to ensure atomicity. '.
-                        'Write operations found at lines: %s',
-                        implode(', ', $this->writeOperationLines)
+                        'Unprotected write operations at lines: %s',
+                        implode(', ', $this->unprotectedWriteLines)
                     ),
                     'code' => null,
                 ];

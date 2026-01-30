@@ -691,11 +691,11 @@ class UserService
 {
     public function createUserWithProfile(array $data)
     {
-        // These two writes are OUTSIDE transaction
+        // These two writes are OUTSIDE transaction (lines 16 and 17)
         $user = User::create($data['user']);
         Profile::create(['user_id' => $user->id]);
 
-        // This write is protected
+        // This write is protected (line 21)
         DB::transaction(function () use ($user) {
             Log::create(['action' => 'user_created', 'user_id' => $user->id]);
         });
@@ -716,6 +716,17 @@ PHP;
         // Should fail because 2 writes are unprotected (even though 1 is protected)
         $this->assertFailed($result);
         $this->assertHasIssueContaining('database write operation(s) outside transaction protection', $result);
+
+        // Verify recommendation shows only unprotected lines
+        $issues = $result->getIssues();
+        $recommendation = $issues[0]->recommendation;
+
+        // Lines 15 and 16 are unprotected (User::create and Profile::create)
+        $this->assertStringContainsString('15', $recommendation);
+        $this->assertStringContainsString('16', $recommendation);
+
+        // Line 20 is protected (Log::create inside transaction) - should NOT appear
+        $this->assertStringNotContainsString('20', $recommendation);
     }
 
     public function test_ignores_cache_increment_operations(): void

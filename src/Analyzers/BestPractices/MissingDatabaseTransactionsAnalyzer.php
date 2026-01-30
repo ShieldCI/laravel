@@ -235,7 +235,10 @@ class TransactionVisitor extends NodeVisitorAbstract
             $this->writeOperationLines[] = $node->getLine();
 
             // Track if write is inside a transaction
-            if ($this->transactionDepth > 0 || ($this->tryBlockDepth > 0 && $this->hasBeginTransactionInCurrentTry)) {
+            // Writes are protected if:
+            // 1. Inside a DB::transaction() closure, OR
+            // 2. After DB::beginTransaction() was called (with or without try-catch)
+            if ($this->transactionDepth > 0 || $this->hasBeginTransactionInCurrentTry) {
                 $this->writeOperationsInTransaction++;
             }
         }

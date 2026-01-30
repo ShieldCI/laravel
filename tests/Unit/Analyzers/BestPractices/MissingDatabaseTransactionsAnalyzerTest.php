@@ -1121,4 +1121,40 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('2 write operations', $result);
     }
+
+    public function test_passes_with_begin_transaction_without_try_catch(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+use App\Models\Profile;
+use Illuminate\Support\Facades\DB;
+
+class UserService
+{
+    public function createUserWithProfile(array $data)
+    {
+        DB::beginTransaction();
+        $user = User::create($data['user']);
+        Profile::create(['user_id' => $user->id]);
+        DB::commit();
+        return $user;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - writes are between beginTransaction and commit
+        $this->assertPassed($result);
+    }
 }

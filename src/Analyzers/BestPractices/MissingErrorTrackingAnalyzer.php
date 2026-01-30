@@ -109,21 +109,15 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
     private function loadConfiguration(): void
     {
         // Default known error tracking packages
+        // Only includes dedicated production error tracking services
+        // Excludes: facade/ignition, spatie/laravel-ray, spatie/flare-client-php (dev-only tools)
+        // Excludes: aws/aws-sdk-php (too broad - used for S3, SES, SQS without error tracking)
         $defaultPackages = [
-            // Dedicated error tracking services
             'sentry/sentry-laravel',
             'bugsnag/bugsnag-laravel',
             'rollbar/rollbar-laravel',
             'airbrake/phpbrake',
             'honeybadger-io/honeybadger-laravel',
-
-            // Additional monitoring services
-            'facade/ignition',
-            'spatie/laravel-ray',
-            'spatie/flare-client-php',
-
-            // APM with error tracking
-            'aws/aws-sdk-php',
         ];
 
         // Load from config

@@ -252,4 +252,47 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
 
         $this->assertFailed($result);
     }
+
+    public function test_passes_with_reportable_in_handler(): void
+    {
+        $composerJson = json_encode([
+            'require' => [
+                'php' => '^8.1',
+                'laravel/framework' => '^10.0',
+            ],
+        ]);
+
+        $handlerContent = <<<'PHP'
+<?php
+
+namespace App\Exceptions;
+
+use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
+use Throwable;
+
+class Handler extends ExceptionHandler
+{
+    public function register(): void
+    {
+        $this->reportable(function (Throwable $e) {
+            // Send to custom error tracking service
+            app('error-tracker')->report($e);
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+            'app/Exceptions/Handler.php' => $handlerContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

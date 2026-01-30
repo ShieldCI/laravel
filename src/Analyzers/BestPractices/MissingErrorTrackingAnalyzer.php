@@ -292,8 +292,7 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
             'datadog',
             'NewRelic',
             'new_relic',
-            'custom.*error.*track',
-            'external.*error.*service',
+            'reportable\(',
         ];
 
         foreach ($patterns as $pattern) {

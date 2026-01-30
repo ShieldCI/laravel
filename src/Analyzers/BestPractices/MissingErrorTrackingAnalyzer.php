@@ -321,6 +321,15 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
             'Rollbar::',             // Rollbar SDK
             'Honeybadger::',         // Honeybadger SDK
             'notifyException',       // Common method name
+
+            // Container-based integrations
+            "app('sentry')",         // Laravel container resolution
+            'app("sentry")',         // Double-quoted variant
+            "app('bugsnag')",        // Bugsnag container resolution
+            'app("bugsnag")',        // Double-quoted variant
+
+            // Sentry Laravel Integration
+            'Integration::capture',  // Sentry\Laravel\Integration::captureUnhandledException
         ];
 
         foreach ($patterns as $pattern) {
@@ -364,7 +373,7 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
      */
     private function stripPhpComments(string $content): string
     {
-        $tokens = @token_get_all($content);
+        $tokens = token_get_all($content);
         $result = '';
 
         foreach ($tokens as $token) {

@@ -17,11 +17,22 @@ class MixedQueryBuilderEloquentAnalyzerTest extends AnalyzerTestCase
     protected function createAnalyzer(array $config = []): AnalyzerInterface
     {
         // Build best-practices config with defaults
+        $analyzerConfig = [
+            'whitelist' => $config['whitelist'] ?? [],
+        ];
+
+        // Add optional config options if provided
+        if (array_key_exists('treat_tobase_as_query_builder', $config)) {
+            $analyzerConfig['treat_tobase_as_query_builder'] = $config['treat_tobase_as_query_builder'];
+        }
+
+        if (array_key_exists('mixing_threshold', $config)) {
+            $analyzerConfig['mixing_threshold'] = $config['mixing_threshold'];
+        }
+
         $bestPracticesConfig = [
             'enabled' => true,
-            'mixed-query-builder-eloquent' => [
-                'whitelist' => $config['whitelist'] ?? [],
-            ],
+            'mixed-query-builder-eloquent' => $analyzerConfig,
         ];
 
         $configRepo = new Repository([
@@ -526,8 +537,11 @@ PHP;
         $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
     }
 
-    public function test_detects_relationship_queries(): void
+    public function test_relationship_queries_not_flagged_without_type_inference(): void
     {
+        // Note: This test verifies that relationship queries like $user->posts()->where()
+        // are NOT flagged because without proper type inference, we cannot reliably
+        // determine what model the relationship resolves to. This reduces false positives.
         $code = <<<'PHP'
 <?php
 
@@ -558,7 +572,9 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        // Passes because we can't reliably infer that $user->posts() relates to 'posts' table
+        // without runtime type information. This avoids false positives.
+        $this->assertPassed($result);
     }
 
     public function test_respects_whitelist_configuration(): void
@@ -706,5 +722,214 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_factory_or_builder_classes(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class FactoryService
+{
+    public function createUser()
+    {
+        // Factory::create() should not be flagged as model usage
+        return Factory::create('user');
+    }
+
+    public function buildQuery()
+    {
+        // Builder::where() should not be flagged as model usage
+        return Builder::where('active', true)->get();
+    }
+
+    public function getCollection()
+    {
+        // Collection::where() should not be flagged as model usage
+        return Collection::where('active', true)->get();
+    }
+
+    public function getUserData()
+    {
+        return DB::table('users')->get();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/FactoryService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - Factory, Builder, Collection are not models
+        $this->assertPassed($result);
+    }
+
+    public function test_tobase_not_flagged_when_configured(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+
+class UserRepository
+{
+    public function findActive()
+    {
+        return User::where('active', true)->get();
+    }
+
+    public function getCountWithToBase()
+    {
+        // toBase() is used intentionally for performance
+        return User::query()->toBase()->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/UserRepository.php' => $code]);
+
+        // Configure to NOT treat toBase as Query Builder usage
+        $analyzer = $this->createAnalyzer([
+            'treat_tobase_as_query_builder' => false,
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because toBase is not flagged when configured
+        $this->assertPassed($result);
+    }
+
+    public function test_custom_mixing_threshold(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Order;
+use Illuminate\Support\Facades\DB;
+
+class OrderService
+{
+    public function getOrders()
+    {
+        return Order::all();
+    }
+
+    public function getCustomerStats()
+    {
+        return DB::table('customer_stats')->get();
+    }
+
+    public function getOrderItems()
+    {
+        return DB::table('order_items')->get();
+    }
+
+    public function getPayments()
+    {
+        return DB::table('payments')->get();
+    }
+
+    public function getShipments()
+    {
+        return DB::table('shipments')->get();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+
+        // With default threshold of 2, this would fail (4 QB tables > 2)
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+        $this->assertFailed($result);
+
+        // With higher threshold, it should pass
+        $analyzer2 = $this->createAnalyzer([
+            'mixing_threshold' => 5,
+        ]);
+        $analyzer2->setBasePath($tempDir);
+        $analyzer2->setPaths(['.']);
+
+        $result2 = $analyzer2->analyze();
+        $this->assertPassed($result2);
+    }
+
+    public function test_variable_tracking_resets_per_method(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use App\Models\Product;
+use Illuminate\Support\Facades\DB;
+
+class MultiModelRepository
+{
+    public function getUserQuery()
+    {
+        // Variable $query tracks User model here
+        $query = User::where('active', true);
+        return $query->get();
+    }
+
+    public function getProductQuery()
+    {
+        // This $query should NOT inherit User tracking from previous method
+        // It's a different scope
+        $query = Product::where('available', true);
+        return $query->get();
+    }
+
+    public function getRawUserData()
+    {
+        return DB::table('users')->get();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/MultiModelRepository.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // The issue should only be about users table (Eloquent User + DB::table('users'))
+        // Not about product because variable tracking resets per method
+        $this->assertFailed($result);
+
+        // Should have exactly 1 issue about the 'users' table mixing
+        $issues = $result->getIssues();
+        $mixedIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'both Eloquent and Query Builder for table')) {
+                $mixedIssue = $issue;
+                break;
+            }
+        }
+
+        $this->assertNotNull($mixedIssue, 'Should detect mixed usage on users table');
+        $this->assertStringContainsString('users', $mixedIssue->message);
     }
 }

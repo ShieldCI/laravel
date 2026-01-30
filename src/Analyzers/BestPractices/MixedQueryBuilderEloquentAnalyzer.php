@@ -29,6 +29,12 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
     /** @var array<string> Whitelisted classes allowed to mix Query Builder and Eloquent */
     private array $whitelist = [];
 
+    /** @var bool Whether to treat toBase()/getQuery() as Query Builder usage */
+    private bool $treatToBaseAsQueryBuilder = true;
+
+    /** @var int Threshold for flagging significant mixing (count of Query Builder tables) */
+    private int $mixingThreshold = 2;
+
     public function __construct(
         private ParserInterface $parser,
         private Config $config
@@ -76,6 +82,18 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
 
         // Merge config with defaults, ensuring no duplicates
         $this->whitelist = array_values(array_unique(array_merge($defaultWhitelist, $configWhitelist)));
+
+        // Load toBase/getQuery configuration
+        $treatToBaseConfig = $this->config->get('shieldci.analyzers.best-practices.mixed-query-builder-eloquent.treat_tobase_as_query_builder');
+        if (is_bool($treatToBaseConfig)) {
+            $this->treatToBaseAsQueryBuilder = $treatToBaseConfig;
+        }
+
+        // Load mixing threshold configuration
+        $thresholdConfig = $this->config->get('shieldci.analyzers.best-practices.mixed-query-builder-eloquent.mixing_threshold');
+        if (is_int($thresholdConfig) && $thresholdConfig >= 0) {
+            $this->mixingThreshold = $thresholdConfig;
+        }
     }
 
     protected function runAnalysis(): ResultInterface
@@ -100,7 +118,11 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $visitor = new MixedQueryVisitor($this->whitelist);
+                $visitor = new MixedQueryVisitor(
+                    $this->whitelist,
+                    $this->treatToBaseAsQueryBuilder,
+                    $this->mixingThreshold
+                );
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
@@ -148,6 +170,12 @@ class MixedQueryVisitor extends NodeVisitorAbstract
     /** @var array<string> Whitelisted classes */
     private array $whitelist = [];
 
+    /** @var bool Whether to treat toBase()/getQuery() as Query Builder usage */
+    private bool $treatToBaseAsQueryBuilder;
+
+    /** @var int Threshold for flagging significant mixing */
+    private int $mixingThreshold;
+
     /** @var array<string, string> Track variable assignments to models/QB ($varName => modelClass) */
     private array $variableTracking = [];
 
@@ -158,9 +186,14 @@ class MixedQueryVisitor extends NodeVisitorAbstract
     /**
      * @param  array<string>  $whitelist
      */
-    public function __construct(array $whitelist = [])
-    {
+    public function __construct(
+        array $whitelist = [],
+        bool $treatToBaseAsQueryBuilder = true,
+        int $mixingThreshold = 2
+    ) {
         $this->whitelist = $whitelist;
+        $this->treatToBaseAsQueryBuilder = $treatToBaseAsQueryBuilder;
+        $this->mixingThreshold = $mixingThreshold;
     }
 
     public function enterNode(Node $node): ?Node
@@ -170,6 +203,11 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             $this->currentClassName = $node->name?->toString();
             $this->currentClassSuppressed = $this->hasSuppressionComment($node);
             $this->extractCustomTableName($node);
+        }
+
+        // Reset variable tracking at method boundaries for proper scoping
+        if ($node instanceof Node\Stmt\ClassMethod) {
+            $this->variableTracking = [];
         }
 
         // Detect DB::table() calls
@@ -187,8 +225,8 @@ class MixedQueryVisitor extends NodeVisitorAbstract
                     if ($node->name instanceof Node\Identifier) {
                         $method = $node->name->toString();
 
-                        // P2.10: Detect QB-via-model patterns (toBase, getQuery)
-                        if (in_array($method, ['toBase', 'getQuery'], true)) {
+                        // P2.10: Detect QB-via-model patterns (toBase, getQuery) - configurable
+                        if ($this->treatToBaseAsQueryBuilder && in_array($method, ['toBase', 'getQuery'], true)) {
                             $tableName = $this->customTableNames[$className] ?? $this->modelToTableName($className);
                             $this->tableUsage[$tableName] = [
                                 'type' => 'query_builder',
@@ -245,8 +283,8 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
         // P2.8: Detect relationship query patterns ($user->posts()->where())
         if ($node instanceof Node\Expr\MethodCall) {
-            // P2.10: Detect toBase() or getQuery() on model method calls (User::query()->toBase())
-            if ($node->name instanceof Node\Identifier) {
+            // P2.10: Detect toBase() or getQuery() on model method calls (User::query()->toBase()) - configurable
+            if ($this->treatToBaseAsQueryBuilder && $node->name instanceof Node\Identifier) {
                 $method = $node->name->toString();
                 if (in_array($method, ['toBase', 'getQuery'], true)) {
                     // Check if this is called on a static call to a model
@@ -287,31 +325,9 @@ class MixedQueryVisitor extends NodeVisitorAbstract
                 }
             }
 
-            // Check if this is a method call on another method call (relationship pattern)
-            if ($node->var instanceof Node\Expr\MethodCall) {
-                // This could be a relationship query like $user->posts()->where()
-                if ($node->name instanceof Node\Identifier) {
-                    $method = $node->name->toString();
-                    $eloquentMethods = [
-                        'where', 'orWhere', 'whereIn', 'whereNotIn', 'whereBetween',
-                        'whereNull', 'whereNotNull', 'whereDate', 'whereHas',
-                        'find', 'findOrFail', 'first', 'firstOrFail', 'get', 'all',
-                        'count', 'sum', 'avg', 'exists', 'latest', 'oldest',
-                        'create', 'update', 'delete', 'with', 'withCount',
-                    ];
-
-                    if (in_array($method, $eloquentMethods, true)) {
-                        // Try to infer model from relationship method name
-                        $relationshipMethod = $this->getRelationshipMethodName($node->var);
-                        if ($relationshipMethod) {
-                            // Attempt basic pluralization reverse (posts -> post)
-                            $modelName = $this->singularize($relationshipMethod);
-                            $tableName = $this->modelToTableName(ucfirst($modelName));
-                            $this->trackEloquentCall($modelName, $node->getLine());
-                        }
-                    }
-                }
-            }
+            // Note: Relationship chain detection ($user->posts()->where()) removed due to
+            // high false positive rate. Without proper type inference, we cannot reliably
+            // determine if a method call chain represents a relationship query.
         }
 
         // P3.11: Track variable assignments ($query = User::where(...))
@@ -448,7 +464,7 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         }
 
         // Also check if class has significant use of both (even on different tables)
-        if (count($eloquentTables) > 0 && count($queryBuilderTables) > 2) {
+        if (count($eloquentTables) > 0 && count($queryBuilderTables) > $this->mixingThreshold) {
             $firstQbLine = min($queryBuilderTables);
             $this->issues[] = [
                 'message' => sprintf(
@@ -559,69 +575,28 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // Exclude common non-model classes
+        // Exclude common non-model classes (facades, utilities, framework classes)
         $excludedClasses = [
+            // Laravel Facades
             'DB', 'Cache', 'Log', 'Event', 'Mail', 'Queue',
             'Route', 'Artisan', 'Config', 'Session', 'Request',
             'Response', 'Validator', 'Hash', 'Auth', 'Gate',
             'Storage', 'File', 'View', 'Redirect', 'URL',
+            // Common utility classes
+            'Factory', 'Builder', 'Collection', 'Carbon', 'Str', 'Arr',
+            // Database/Migration classes
+            'Schema', 'Blueprint', 'Migration', 'Seeder', 'Console',
+            // Additional Laravel classes
+            'Bus', 'Notification', 'Broadcast', 'Password', 'RateLimiter',
+            'Http', 'Process', 'Pipeline', 'Container', 'App',
+            // Architecture patterns (often suffixed)
+            'Facade', 'ServiceProvider', 'Manager', 'Repository',
+            'Service', 'Helper', 'Util', 'Utils', 'Helpers',
+            // Testing
+            'TestCase', 'Feature', 'Unit',
         ];
 
         return ! in_array($lastPart, $excludedClasses, true);
-    }
-
-    /**
-     * Get relationship method name from method call chain.
-     */
-    private function getRelationshipMethodName(Node\Expr\MethodCall $methodCall): ?string
-    {
-        if ($methodCall->name instanceof Node\Identifier) {
-            return $methodCall->name->toString();
-        }
-
-        return null;
-    }
-
-    /**
-     * Convert plural to singular (basic heuristic).
-     */
-    private function singularize(string $plural): string
-    {
-        // Handle irregular plurals
-        $irregulars = [
-            'people' => 'person',
-            'children' => 'child',
-            'men' => 'man',
-            'women' => 'woman',
-            'teeth' => 'tooth',
-            'feet' => 'foot',
-            'mice' => 'mouse',
-            'geese' => 'goose',
-        ];
-
-        $lower = strtolower($plural);
-        if (isset($irregulars[$lower])) {
-            return $irregulars[$lower];
-        }
-
-        // Reverse common pluralization rules
-        if (str_ends_with($lower, 'ies')) {
-            return substr($lower, 0, -3).'y';
-        }
-
-        if (str_ends_with($lower, 'ses')) {
-            return substr($lower, 0, -2);
-        }
-
-        if (str_ends_with($lower, 'ves')) {
-            return substr($lower, 0, -3).'f';
-        }
-
-        if (str_ends_with($lower, 's') && ! str_ends_with($lower, 'ss')) {
-            return substr($lower, 0, -1);
-        }
-
-        return $lower;
     }
 
     private function modelToTableName(string $modelName): string

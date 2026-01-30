@@ -1157,4 +1157,168 @@ PHP;
         // Should pass - writes are between beginTransaction and commit
         $this->assertPassed($result);
     }
+
+    public function test_detects_writes_after_commit(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+use App\Models\Order;
+use App\Models\Product;
+use Illuminate\Support\Facades\DB;
+
+class OrderService
+{
+    public function processOrder(array $data)
+    {
+        DB::beginTransaction();
+        User::create($data['user']);  // Protected ✓
+        DB::commit();
+
+        // These writes are AFTER commit - NOT protected!
+        Order::create($data['order']);
+        Product::create($data['product']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because Order::create and Product::create are outside transaction
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('write operations without transaction protection', $result);
+    }
+
+    public function test_detects_writes_after_rollback(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+use App\Models\Order;
+use Illuminate\Support\Facades\DB;
+
+class OrderService
+{
+    public function processOrder(array $data)
+    {
+        DB::beginTransaction();
+        User::create($data['user']);  // Protected (but rolled back)
+        DB::rollBack();
+
+        // These writes are AFTER rollBack - NOT protected!
+        Order::create($data['order']);
+        User::create($data['fallback']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because writes after rollBack are unprotected
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('write operations without transaction protection', $result);
+    }
+
+    public function test_handles_multiple_transaction_blocks(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+use App\Models\Order;
+use Illuminate\Support\Facades\DB;
+
+class OrderService
+{
+    public function processOrder(array $data)
+    {
+        // First transaction block
+        DB::beginTransaction();
+        User::create($data['user']);
+        DB::commit();
+
+        // Second transaction block
+        DB::beginTransaction();
+        Order::create($data['order']);
+        DB::commit();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - both writes are protected by their respective transactions
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_unprotected_write_between_transaction_blocks(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+use App\Models\Order;
+use App\Models\Log;
+use Illuminate\Support\Facades\DB;
+
+class OrderService
+{
+    public function processOrder(array $data)
+    {
+        // First transaction block
+        DB::beginTransaction();
+        User::create($data['user']);
+        DB::commit();
+
+        // Unprotected write between transactions!
+        Log::create(['action' => 'user_created']);
+        Order::create($data['order']);
+
+        // Second transaction block (but Log::create above is NOT protected)
+        DB::beginTransaction();
+        Order::update(['status' => 'processed']);
+        DB::commit();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - Log::create and Order::create are unprotected between transactions
+        $this->assertFailed($result);
+    }
 }

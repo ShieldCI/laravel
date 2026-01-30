@@ -160,7 +160,7 @@ class TransactionVisitor extends NodeVisitorAbstract
 
     private int $tryBlockDepth = 0;
 
-    private bool $hasBeginTransactionInCurrentTry = false;
+    private bool $inManualTransaction = false;
 
     /**
      * Track file positions of closures passed directly to DB::transaction().
@@ -190,7 +190,7 @@ class TransactionVisitor extends NodeVisitorAbstract
             $this->writeOperationLines = [];
             $this->transactionDepth = 0;
             $this->tryBlockDepth = 0;
-            $this->hasBeginTransactionInCurrentTry = false;
+            $this->inManualTransaction = false;
             $this->transactionClosurePositions = [];
         }
 
@@ -209,7 +209,7 @@ class TransactionVisitor extends NodeVisitorAbstract
                 if ($node->name instanceof Node\Identifier) {
                     $methodName = $node->name->toString();
                     if ($methodName === 'beginTransaction') {
-                        $this->hasBeginTransactionInCurrentTry = true;
+                        $this->inManualTransaction = true;
                     } elseif ($methodName === 'transaction' && ! empty($node->args)) {
                         // Track the closure passed to DB::transaction()
                         $firstArg = $node->args[0]->value;
@@ -218,6 +218,11 @@ class TransactionVisitor extends NodeVisitorAbstract
                         }
                     }
                 }
+            }
+
+            // Check for transaction end (commit/rollBack)
+            if ($this->isTransactionEndCall($node)) {
+                $this->inManualTransaction = false;
             }
         }
 
@@ -238,7 +243,7 @@ class TransactionVisitor extends NodeVisitorAbstract
             // Writes are protected if:
             // 1. Inside a DB::transaction() closure, OR
             // 2. After DB::beginTransaction() was called (with or without try-catch)
-            if ($this->transactionDepth > 0 || $this->hasBeginTransactionInCurrentTry) {
+            if ($this->transactionDepth > 0 || $this->inManualTransaction) {
                 $this->writeOperationsInTransaction++;
             }
         }
@@ -259,8 +264,8 @@ class TransactionVisitor extends NodeVisitorAbstract
         // Track leaving try-catch block
         if ($node instanceof Node\Stmt\TryCatch) {
             $this->tryBlockDepth--;
-            // Note: Don't reset hasBeginTransactionInCurrentTry here
-            // because beginTransaction is typically called BEFORE the try block
+            // Note: inManualTransaction is reset when commit/rollBack is called,
+            // not when leaving try-catch, since beginTransaction is typically called BEFORE the try block
         }
 
         // When leaving a method, check if we need transactions
@@ -314,6 +319,25 @@ class TransactionVisitor extends NodeVisitorAbstract
                     $method = $node->name->toString();
 
                     return in_array($method, ['transaction', 'beginTransaction'], true);
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if the call is a transaction end (commit or rollBack).
+     */
+    private function isTransactionEndCall(Node\Expr\StaticCall $node): bool
+    {
+        if ($node->class instanceof Node\Name) {
+            $className = $node->class->toString();
+            if ($className === 'DB') {
+                if ($node->name instanceof Node\Identifier) {
+                    $method = $node->name->toString();
+
+                    return in_array($method, ['commit', 'rollBack'], true);
                 }
             }
         }

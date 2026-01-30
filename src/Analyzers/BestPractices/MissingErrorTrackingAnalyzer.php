@@ -303,6 +303,9 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
      */
     private function hasErrorTrackingPatterns(string $content): bool
     {
+        // Strip comments to avoid matching patterns in comments
+        $codeOnly = $this->stripPhpComments($content);
+
         $patterns = [
             // Cloud services
             'CloudWatch',
@@ -321,7 +324,7 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
         ];
 
         foreach ($patterns as $pattern) {
-            if (stripos($content, $pattern) !== false) {
+            if (stripos($codeOnly, $pattern) !== false) {
                 return true;
             }
         }
@@ -334,6 +337,9 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
      */
     private function hasCustomLoggingSetup(string $content): bool
     {
+        // Strip comments to avoid matching patterns in comments
+        $codeOnly = $this->stripPhpComments($content);
+
         $patterns = [
             'cloudwatch',
             'datadog',
@@ -344,11 +350,35 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
         ];
 
         foreach ($patterns as $pattern) {
-            if (preg_match('/'.$pattern.'/i', $content)) {
+            if (preg_match('/'.$pattern.'/i', $codeOnly)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * Strip PHP comments from content using tokenizer.
+     * This ensures pattern matching doesn't match commented-out code.
+     */
+    private function stripPhpComments(string $content): string
+    {
+        $tokens = @token_get_all($content);
+        $result = '';
+
+        foreach ($tokens as $token) {
+            if (is_array($token)) {
+                // Skip comment tokens
+                if ($token[0] === T_COMMENT || $token[0] === T_DOC_COMMENT) {
+                    continue;
+                }
+                $result .= $token[1];
+            } else {
+                $result .= $token;
+            }
+        }
+
+        return $result;
     }
 }

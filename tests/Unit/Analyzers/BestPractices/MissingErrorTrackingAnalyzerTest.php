@@ -511,4 +511,183 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    public function test_ignores_cloudwatch_in_comments(): void
+    {
+        $composerJson = json_encode([
+            'require' => [
+                'php' => '^8.1',
+                'laravel/framework' => '^10.0',
+            ],
+        ]);
+
+        // CloudWatch mentioned only in comment - should NOT count as error tracking
+        $handlerContent = <<<'PHP'
+<?php
+
+namespace App\Exceptions;
+
+use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
+use Throwable;
+
+class Handler extends ExceptionHandler
+{
+    public function report(Throwable $e): void
+    {
+        // TODO: add CloudWatch logging later
+        parent::report($e);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+            'app/Exceptions/Handler.php' => $handlerContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('No error tracking service detected', $result);
+    }
+
+    public function test_ignores_sdk_patterns_in_comments(): void
+    {
+        $composerJson = json_encode([
+            'require' => [
+                'php' => '^8.1',
+                'laravel/framework' => '^10.0',
+            ],
+        ]);
+
+        // SDK pattern in comment only - should NOT count as error tracking
+        $handlerContent = <<<'PHP'
+<?php
+
+namespace App\Exceptions;
+
+use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
+use Throwable;
+
+class Handler extends ExceptionHandler
+{
+    public function report(Throwable $e): void
+    {
+        // Sentry\captureException($e); - disabled for now
+        parent::report($e);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+            'app/Exceptions/Handler.php' => $handlerContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('No error tracking service detected', $result);
+    }
+
+    public function test_ignores_cloudwatch_in_logging_config_comments(): void
+    {
+        $composerJson = json_encode([
+            'require' => [
+                'php' => '^8.1',
+                'laravel/framework' => '^10.0',
+            ],
+        ]);
+
+        // CloudWatch in config comment only - should NOT count as error tracking
+        $loggingConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => env('LOG_CHANNEL', 'stack'),
+
+    'channels' => [
+        'stack' => [
+            'driver' => 'stack',
+            'channels' => ['single'],
+        ],
+        'single' => [
+            'driver' => 'single',
+            'path' => storage_path('logs/laravel.log'),
+        ],
+        // TODO: Configure cloudwatch channel for production
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+            'config/logging.php' => $loggingConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('No error tracking service detected', $result);
+    }
+
+    public function test_ignores_patterns_in_docblocks(): void
+    {
+        $composerJson = json_encode([
+            'require' => [
+                'php' => '^8.1',
+                'laravel/framework' => '^10.0',
+            ],
+        ]);
+
+        // Pattern in docblock - should NOT count as error tracking
+        $handlerContent = <<<'PHP'
+<?php
+
+namespace App\Exceptions;
+
+use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
+use Throwable;
+
+/**
+ * Application exception handler.
+ *
+ * For production, consider using Sentry\captureException or Bugsnag::notifyException
+ * to track errors. CloudWatch integration is also available.
+ */
+class Handler extends ExceptionHandler
+{
+    public function report(Throwable $e): void
+    {
+        parent::report($e);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            '.env' => 'APP_ENV=production',
+            'app/Exceptions/Handler.php' => $handlerContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('No error tracking service detected', $result);
+    }
 }

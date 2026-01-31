@@ -11,6 +11,12 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class MixedQueryBuilderEloquentAnalyzerTest extends AnalyzerTestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+        MixedQueryBuilderEloquentAnalyzer::clearRegistryCache();
+    }
+
     /**
      * @param  array<string, mixed>  $config
      */

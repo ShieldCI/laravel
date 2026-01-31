@@ -43,6 +43,9 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
     /** @var array<string> Directories to scan for models */
     private array $modelPaths = ['app/Models'];
 
+    /** @var array<string, array<string, string|null>> Static cache: cacheKey => tableRegistry */
+    private static array $tableRegistryCache = [];
+
     public function __construct(
         private ParserInterface $parser,
         private Config $config
@@ -56,6 +59,14 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
     public function setWhitelist(array $whitelist): void
     {
         $this->whitelist = $whitelist;
+    }
+
+    /**
+     * Clear the static table registry cache (for testing).
+     */
+    public static function clearRegistryCache(): void
+    {
+        self::$tableRegistryCache = [];
     }
 
     protected function metadata(): AnalyzerMetadata
@@ -122,23 +133,47 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Build table registry by scanning model directories.
+     *
+     * Uses a static cache keyed by basePath + modelPaths to avoid
+     * rescanning the filesystem on every analysis run.
      */
     private function buildTableRegistry(): void
     {
+        $cacheKey = md5($this->basePath.':'.implode(',', $this->modelPaths));
+
+        if (isset(self::$tableRegistryCache[$cacheKey])) {
+            // Merge cached registry (config mappings already loaded take precedence)
+            $this->tableRegistry = array_merge(
+                self::$tableRegistryCache[$cacheKey],
+                $this->tableRegistry
+            );
+
+            return;
+        }
+
+        // Store scanned results separately for caching
+        /** @var array<string, string|null> $scannedRegistry */
+        $scannedRegistry = [];
+
         foreach ($this->modelPaths as $modelPath) {
             $fullPath = $this->basePath.'/'.$modelPath;
             if (! is_dir($fullPath)) {
                 continue;
             }
 
-            $this->scanModelDirectory($fullPath);
+            $this->scanModelDirectory($fullPath, $scannedRegistry);
         }
+
+        self::$tableRegistryCache[$cacheKey] = $scannedRegistry;
+        $this->tableRegistry = array_merge($scannedRegistry, $this->tableRegistry);
     }
 
     /**
      * Recursively scan a directory for model files.
+     *
+     * @param  array<string, string|null>|null  $registry  Optional registry to populate (for caching)
      */
-    private function scanModelDirectory(string $directory): void
+    private function scanModelDirectory(string $directory, ?array &$registry = null): void
     {
         $items = scandir($directory);
         if ($items === false) {
@@ -153,17 +188,19 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
             $path = $directory.'/'.$item;
 
             if (is_dir($path)) {
-                $this->scanModelDirectory($path);
+                $this->scanModelDirectory($path, $registry);
             } elseif (str_ends_with($item, '.php')) {
-                $this->extractTableFromModel($path);
+                $this->extractTableFromModel($path, $registry);
             }
         }
     }
 
     /**
      * Extract table name from a model file.
+     *
+     * @param  array<string, string|null>|null  $registry  Optional registry to populate (for caching)
      */
-    private function extractTableFromModel(string $file): void
+    private function extractTableFromModel(string $file, ?array &$registry = null): void
     {
         try {
             $ast = $this->parser->parseFile($file);
@@ -180,9 +217,17 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
             $fqcn = $visitor->getClassName();
             $table = $visitor->getTableName();
 
-            // Only add if FQCN found and not already overridden by config
-            if ($fqcn !== null && ! isset($this->tableRegistry[$fqcn])) {
-                $this->tableRegistry[$fqcn] = $table; // null if no $table property
+            // Determine target registry (scanned cache or instance registry)
+            if ($registry !== null) {
+                // Populating cache - always add
+                if ($fqcn !== null) {
+                    $registry[$fqcn] = $table; // null if no $table property
+                }
+            } else {
+                // Legacy path (direct to instance registry) - only add if not already overridden by config
+                if ($fqcn !== null && ! array_key_exists($fqcn, $this->tableRegistry)) {
+                    $this->tableRegistry[$fqcn] = $table; // null if no $table property
+                }
             }
         } catch (\Throwable) {
             // Skip files with parse errors

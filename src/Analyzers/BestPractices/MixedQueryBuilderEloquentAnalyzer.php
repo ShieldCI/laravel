@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\BestPractices;
 
 use Illuminate\Contracts\Config\Repository as Config;
+use Illuminate\Support\Str;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitor\NameResolver;
@@ -35,6 +36,12 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
 
     /** @var int Threshold for flagging significant mixing (count of Query Builder tables) */
     private int $mixingThreshold = 2;
+
+    /** @var array<string, string|null> Model FQCN => table name (null means infer with Str::plural) */
+    private array $tableRegistry = [];
+
+    /** @var array<string> Directories to scan for models */
+    private array $modelPaths = ['app/Models'];
 
     public function __construct(
         private ParserInterface $parser,
@@ -95,12 +102,100 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
         if (is_int($thresholdConfig) && $thresholdConfig >= 0) {
             $this->mixingThreshold = $thresholdConfig;
         }
+
+        // Load model paths for scanning
+        $modelPathsConfig = $this->config->get('shieldci.analyzers.best-practices.mixed-query-builder-eloquent.model_paths');
+        if (is_array($modelPathsConfig) && count($modelPathsConfig) > 0) {
+            $this->modelPaths = $modelPathsConfig;
+        }
+
+        // Load explicit table mappings (highest priority - overrides scanning)
+        $tableMappings = $this->config->get('shieldci.analyzers.best-practices.mixed-query-builder-eloquent.table_mappings', []);
+        if (is_array($tableMappings)) {
+            foreach ($tableMappings as $modelClass => $tableName) {
+                if (is_string($modelClass) && is_string($tableName)) {
+                    $this->tableRegistry[ltrim($modelClass, '\\')] = $tableName;
+                }
+            }
+        }
+    }
+
+    /**
+     * Build table registry by scanning model directories.
+     */
+    private function buildTableRegistry(): void
+    {
+        foreach ($this->modelPaths as $modelPath) {
+            $fullPath = $this->basePath.'/'.$modelPath;
+            if (! is_dir($fullPath)) {
+                continue;
+            }
+
+            $this->scanModelDirectory($fullPath);
+        }
+    }
+
+    /**
+     * Recursively scan a directory for model files.
+     */
+    private function scanModelDirectory(string $directory): void
+    {
+        $items = scandir($directory);
+        if ($items === false) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $path = $directory.'/'.$item;
+
+            if (is_dir($path)) {
+                $this->scanModelDirectory($path);
+            } elseif (str_ends_with($item, '.php')) {
+                $this->extractTableFromModel($path);
+            }
+        }
+    }
+
+    /**
+     * Extract table name from a model file.
+     */
+    private function extractTableFromModel(string $file): void
+    {
+        try {
+            $ast = $this->parser->parseFile($file);
+            if (empty($ast)) {
+                return;
+            }
+
+            $traverser = new NodeTraverser;
+            $traverser->addVisitor(new NameResolver);
+            $visitor = new TableExtractorVisitor;
+            $traverser->addVisitor($visitor);
+            $traverser->traverse($ast);
+
+            $fqcn = $visitor->getClassName();
+            $table = $visitor->getTableName();
+
+            // Only add if FQCN found and not already overridden by config
+            if ($fqcn !== null && ! isset($this->tableRegistry[$fqcn])) {
+                $this->tableRegistry[$fqcn] = $table; // null if no $table property
+            }
+        } catch (\Throwable) {
+            // Skip files with parse errors
+        }
     }
 
     protected function runAnalysis(): ResultInterface
     {
         // Load configuration
         $this->loadConfiguration();
+
+        // Build table registry by scanning models
+        $this->buildTableRegistry();
 
         $issues = [];
 
@@ -122,7 +217,8 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
                 $visitor = new MixedQueryVisitor(
                     $this->whitelist,
                     $this->treatToBaseAsQueryBuilder,
-                    $this->mixingThreshold
+                    $this->mixingThreshold,
+                    $this->tableRegistry
                 );
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor(new NameResolver);
@@ -175,6 +271,9 @@ class MixedQueryVisitor extends NodeVisitorAbstract
     /** @var int Threshold for flagging significant mixing */
     private int $mixingThreshold;
 
+    /** @var array<string, string|null> Model FQCN => table name (null means infer with Str::plural) */
+    private array $tableRegistry = [];
+
     /** @var array<string, string> Track variable assignments to models/QB ($varName => modelClass) */
     private array $variableTracking = [];
 
@@ -184,15 +283,18 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
     /**
      * @param  array<string>  $whitelist
+     * @param  array<string, string|null>  $tableRegistry
      */
     public function __construct(
         array $whitelist = [],
         bool $treatToBaseAsQueryBuilder = true,
-        int $mixingThreshold = 2
+        int $mixingThreshold = 2,
+        array $tableRegistry = []
     ) {
         $this->whitelist = $whitelist;
         $this->treatToBaseAsQueryBuilder = $treatToBaseAsQueryBuilder;
         $this->mixingThreshold = $mixingThreshold;
+        $this->tableRegistry = $tableRegistry;
     }
 
     public function enterNode(Node $node): ?Node
@@ -557,6 +659,12 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             return false;
         }
 
+        // POSITIVE CHECK 0: Class exists in table registry (scanned or configured)
+        // Use array_key_exists because null values (models without $table property) are valid
+        if (array_key_exists($normalized, $this->tableRegistry)) {
+            return true;
+        }
+
         // POSITIVE CHECK 1: Model namespace patterns
         if (str_starts_with($normalized, 'App\\Models\\') ||
             str_starts_with($normalized, 'App\\Model\\')) {
@@ -578,60 +686,80 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         return false;
     }
 
+    /**
+     * Convert model class name to table name.
+     *
+     * Uses table registry first (from scanned models and config overrides),
+     * then falls back to Laravel's Str::plural() for accurate inference.
+     */
     private function modelToTableName(string $modelName): string
     {
-        $parts = explode('\\', $modelName);
+        $normalized = ltrim($modelName, '\\');
+
+        // 1. Check registry first (includes config overrides + scanned models)
+        if (isset($this->tableRegistry[$normalized])) {
+            $table = $this->tableRegistry[$normalized];
+            if ($table !== null) {
+                return $table;
+            }
+        }
+
+        // 2. Fallback: Use Str::plural() for Laravel-accurate inference
+        $parts = explode('\\', $normalized);
         $className = end($parts);
 
-        // Convert PascalCase to snake_case
-        $snakeCase = strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $className) ?? $className);
+        return Str::plural(Str::snake($className));
+    }
+}
 
-        // Handle irregular plurals (common Laravel model names)
-        $irregulars = [
-            'person' => 'people',
-            'child' => 'children',
-            'man' => 'men',
-            'woman' => 'women',
-            'tooth' => 'teeth',
-            'foot' => 'feet',
-            'mouse' => 'mice',
-            'goose' => 'geese',
-        ];
+/**
+ * Visitor to extract $table property from model files.
+ */
+class TableExtractorVisitor extends NodeVisitorAbstract
+{
+    private ?string $className = null;
 
-        if (isset($irregulars[$snakeCase])) {
-            return $irregulars[$snakeCase];
+    private ?string $namespace = null;
+
+    private ?string $tableName = null;
+
+    public function enterNode(Node $node): ?Node
+    {
+        if ($node instanceof Node\Stmt\Namespace_) {
+            $this->namespace = $node->name?->toString();
         }
 
-        // Words that don't change in plural form
-        $uncountable = ['equipment', 'information', 'rice', 'money', 'species', 'series', 'fish', 'sheep', 'deer'];
-        if (in_array($snakeCase, $uncountable, true)) {
-            return $snakeCase;
+        if ($node instanceof Node\Stmt\Class_) {
+            $this->className = $node->name?->toString();
         }
 
-        // Handle words ending in 'y' (but not vowel + y)
-        if (str_ends_with($snakeCase, 'y') && ! preg_match('/[aeiou]y$/', $snakeCase)) {
-            return substr($snakeCase, 0, -1).'ies';
+        // Look for: protected $table = 'table_name';
+        if ($node instanceof Node\Stmt\Property) {
+            foreach ($node->props as $prop) {
+                if ($prop->name->toString() === 'table') {
+                    if ($prop->default instanceof Node\Scalar\String_) {
+                        $this->tableName = $prop->default->value;
+                    }
+                }
+            }
         }
 
-        // Handle words ending in 's', 'ss', 'sh', 'ch', 'x', 'z', 'o'
-        if (preg_match('/(s|ss|sh|ch|x|z)$/', $snakeCase)) {
-            return $snakeCase.'es';
+        return null;
+    }
+
+    public function getClassName(): ?string
+    {
+        if (! $this->className) {
+            return null;
         }
 
-        if (str_ends_with($snakeCase, 'o') && ! preg_match('/[aeiou]o$/', $snakeCase)) {
-            return $snakeCase.'es';
-        }
+        return $this->namespace
+            ? $this->namespace.'\\'.$this->className
+            : $this->className;
+    }
 
-        // Handle words ending in 'f' or 'fe'
-        if (str_ends_with($snakeCase, 'f')) {
-            return substr($snakeCase, 0, -1).'ves';
-        }
-
-        if (str_ends_with($snakeCase, 'fe')) {
-            return substr($snakeCase, 0, -2).'ves';
-        }
-
-        // Default: add 's'
-        return $snakeCase.'s';
+    public function getTableName(): ?string
+    {
+        return $this->tableName;
     }
 }

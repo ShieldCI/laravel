@@ -30,6 +30,14 @@ class MixedQueryBuilderEloquentAnalyzerTest extends AnalyzerTestCase
             $analyzerConfig['mixing_threshold'] = $config['mixing_threshold'];
         }
 
+        if (array_key_exists('model_paths', $config)) {
+            $analyzerConfig['model_paths'] = $config['model_paths'];
+        }
+
+        if (array_key_exists('table_mappings', $config)) {
+            $analyzerConfig['table_mappings'] = $config['table_mappings'];
+        }
+
         $bestPracticesConfig = [
             'enabled' => true,
             'mixed-query-builder-eloquent' => $analyzerConfig,
@@ -931,5 +939,392 @@ PHP;
 
         $this->assertNotNull($mixedIssue, 'Should detect mixed usage on users table');
         $this->assertStringContainsString('users', $mixedIssue->message);
+    }
+
+    public function test_scans_model_with_custom_table_property(): void
+    {
+        // Model with custom $table property
+        $modelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Person extends Model
+{
+    protected $table = 'people';
+}
+PHP;
+
+        // Repository using Person model + DB::table('people')
+        $repositoryCode = <<<'PHP'
+<?php
+
+namespace Repositories;
+
+use Models\Person;
+use Illuminate\Support\Facades\DB;
+
+class PersonRepository
+{
+    public function findAll()
+    {
+        return Person::all();
+    }
+
+    public function getCount()
+    {
+        // Uses 'people' table - should match scanned model
+        return DB::table('people')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/Person.php' => $modelCode,
+            'Repositories/PersonRepository.php' => $repositoryCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect mixing because Person model has $table = 'people'
+        // and DB::table('people') is used
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
+        $this->assertHasIssueContaining('people', $result);
+    }
+
+    public function test_str_plural_fallback_for_model_without_table_property(): void
+    {
+        // Model without custom $table property
+        $modelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Category extends Model
+{
+    // No $table property - should use Str::plural() => 'categories'
+}
+PHP;
+
+        $repositoryCode = <<<'PHP'
+<?php
+
+namespace Repositories;
+
+use Models\Category;
+use Illuminate\Support\Facades\DB;
+
+class CategoryRepository
+{
+    public function findAll()
+    {
+        return Category::all();
+    }
+
+    public function getCount()
+    {
+        // Uses 'categories' table - matches Str::plural('category')
+        return DB::table('categories')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/Category.php' => $modelCode,
+            'Repositories/CategoryRepository.php' => $repositoryCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect mixing - Str::plural('category') = 'categories'
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
+    }
+
+    public function test_config_table_mapping_overrides_scanning(): void
+    {
+        // Model with $table = 'scanned_table'
+        $modelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Widget extends Model
+{
+    protected $table = 'scanned_table';
+}
+PHP;
+
+        $repositoryCode = <<<'PHP'
+<?php
+
+namespace Repositories;
+
+use Models\Widget;
+use Illuminate\Support\Facades\DB;
+
+class WidgetRepository
+{
+    public function findAll()
+    {
+        return Widget::all();
+    }
+
+    public function getCount()
+    {
+        // Uses 'config_override_table' - matches config override
+        return DB::table('config_override_table')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/Widget.php' => $modelCode,
+            'Repositories/WidgetRepository.php' => $repositoryCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+            'table_mappings' => [
+                'Models\\Widget' => 'config_override_table',
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        // Config mapping overrides scanned $table property
+        // Widget maps to 'config_override_table', DB::table('config_override_table') matches
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
+    }
+
+    public function test_nested_model_directories_scanned(): void
+    {
+        // Model in nested directory
+        $modelCode = <<<'PHP'
+<?php
+
+namespace Models\Admin;
+
+use Illuminate\Database\Eloquent\Model;
+
+class AdminUser extends Model
+{
+    protected $table = 'admin_users';
+}
+PHP;
+
+        $repositoryCode = <<<'PHP'
+<?php
+
+namespace Repositories;
+
+use Models\Admin\AdminUser;
+use Illuminate\Support\Facades\DB;
+
+class AdminRepository
+{
+    public function findAll()
+    {
+        return AdminUser::all();
+    }
+
+    public function getCount()
+    {
+        return DB::table('admin_users')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/Admin/AdminUser.php' => $modelCode,
+            'Repositories/AdminRepository.php' => $repositoryCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect mixing - nested model directory is scanned
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
+        $this->assertHasIssueContaining('admin_users', $result);
+    }
+
+    public function test_multiple_models_in_registry(): void
+    {
+        $userModel = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class User extends Model
+{
+    // Default: users table via Str::plural
+}
+PHP;
+
+        $personModel = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Person extends Model
+{
+    protected $table = 'people';
+}
+PHP;
+
+        $repositoryCode = <<<'PHP'
+<?php
+
+namespace Repositories;
+
+use Models\User;
+use Models\Person;
+use Illuminate\Support\Facades\DB;
+
+class MixedRepository
+{
+    public function findUsers()
+    {
+        return User::all();
+    }
+
+    public function findPeople()
+    {
+        return Person::all();
+    }
+
+    public function getUserCount()
+    {
+        return DB::table('users')->count();
+    }
+
+    public function getPeopleCount()
+    {
+        return DB::table('people')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/User.php' => $userModel,
+            'Models/Person.php' => $personModel,
+            'Repositories/MixedRepository.php' => $repositoryCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect mixing on both tables
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        // Check for issues mentioning both tables
+        $usersIssue = false;
+        $peopleIssue = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'users')) {
+                $usersIssue = true;
+            }
+            if (str_contains($issue->message, 'people')) {
+                $peopleIssue = true;
+            }
+        }
+
+        $this->assertTrue($usersIssue, 'Should detect mixed usage on users table');
+        $this->assertTrue($peopleIssue, 'Should detect mixed usage on people table');
+    }
+
+    public function test_no_mixing_when_tables_differ(): void
+    {
+        // Model with custom table
+        $modelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Item extends Model
+{
+    protected $table = 'inventory_items';
+}
+PHP;
+
+        $repositoryCode = <<<'PHP'
+<?php
+
+namespace Repositories;
+
+use Models\Item;
+use Illuminate\Support\Facades\DB;
+
+class ItemRepository
+{
+    public function findAll()
+    {
+        // Uses Item model -> 'inventory_items' table
+        return Item::all();
+    }
+
+    public function getOtherData()
+    {
+        // Uses different table - no mixing
+        return DB::table('other_table')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/Item.php' => $modelCode,
+            'Repositories/ItemRepository.php' => $repositoryCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - different tables used
+        $this->assertPassed($result);
     }
 }

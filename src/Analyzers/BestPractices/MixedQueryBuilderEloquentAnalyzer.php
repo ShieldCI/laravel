@@ -451,23 +451,22 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             if ($this->treatToBaseAsQueryBuilder && $node->name instanceof Node\Identifier) {
                 $method = $node->name->toString();
                 if (in_array($method, ['toBase', 'getQuery'], true)) {
-                    // Check if this is called on a static call to a model
-                    if ($node->var instanceof Node\Expr\StaticCall) {
-                        if ($node->var->class instanceof Node\Name) {
-                            if ($this->looksLikeModel($node->var->class)) {
-                                $className = $node->var->class->toString();
-                                $tableName = $this->modelToTableName($className);
+                    // Walk up method chain to find the root static call (e.g., User::query()->where()->toBase())
+                    $rootStaticCall = $this->findRootStaticCall($node->var);
+                    if ($rootStaticCall !== null && $rootStaticCall->class instanceof Node\Name) {
+                        if ($this->looksLikeModel($rootStaticCall->class)) {
+                            $className = $rootStaticCall->class->toString();
+                            $tableName = $this->modelToTableName($className);
 
-                                // Check if table already tracked as eloquent
-                                if (isset($this->tableUsage[$tableName]) && $this->tableUsage[$tableName]['type'] === 'eloquent') {
-                                    // Mark as mixed
-                                    $this->tableUsage[$tableName]['type'] = 'mixed';
-                                } else {
-                                    $this->tableUsage[$tableName] = [
-                                        'type' => 'query_builder',
-                                        'line' => $node->getLine(),
-                                    ];
-                                }
+                            // Check if table already tracked as eloquent
+                            if (isset($this->tableUsage[$tableName]) && $this->tableUsage[$tableName]['type'] === 'eloquent') {
+                                // Mark as mixed
+                                $this->tableUsage[$tableName]['type'] = 'mixed';
+                            } else {
+                                $this->tableUsage[$tableName] = [
+                                    'type' => 'query_builder',
+                                    'line' => $node->getLine(),
+                                ];
                             }
                         }
                     }
@@ -508,6 +507,7 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         $arg = $node->args[0];
         if ($arg->value instanceof Node\Scalar\String_) {
             $tableName = $arg->value->value;
+            $tableName = explode(' ', $tableName)[0];
             // Check if table already tracked as eloquent
             if (isset($this->tableUsage[$tableName]) && $this->tableUsage[$tableName]['type'] === 'eloquent') {
                 // Mark as mixed by changing type
@@ -687,6 +687,20 @@ class MixedQueryVisitor extends NodeVisitorAbstract
     }
 
     /**
+     * Walk up method call chain to find the root static call.
+     *
+     * For User::query()->where()->toBase(), this finds the User::query() StaticCall.
+     */
+    private function findRootStaticCall(Node\Expr $expr): ?Node\Expr\StaticCall
+    {
+        while ($expr instanceof Node\Expr\MethodCall) {
+            $expr = $expr->var;
+        }
+
+        return $expr instanceof Node\Expr\StaticCall ? $expr : null;
+    }
+
+    /**
      * Convert model class name to table name.
      *
      * Uses table registry first (from scanned models and config overrides),
@@ -697,7 +711,7 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         $normalized = ltrim($modelName, '\\');
 
         // 1. Check registry first (includes config overrides + scanned models)
-        if (isset($this->tableRegistry[$normalized])) {
+        if (array_key_exists($normalized, $this->tableRegistry)) {
             $table = $this->tableRegistry[$normalized];
             if ($table !== null) {
                 return $table;

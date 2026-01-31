@@ -1271,6 +1271,46 @@ PHP;
         $this->assertTrue($peopleIssue, 'Should detect mixed usage on people table');
     }
 
+    public function test_detects_chained_tobase_calls(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+
+class UserRepository
+{
+    public function findActive()
+    {
+        return User::where('active', true)->get();
+    }
+
+    public function getCountWithChainedToBase()
+    {
+        // Chained method calls before toBase()
+        return User::query()
+            ->where('active', true)
+            ->orderBy('name')
+            ->toBase()
+            ->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/UserRepository.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
+    }
+
     public function test_no_mixing_when_tables_differ(): void
     {
         // Model with custom table

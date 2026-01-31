@@ -46,6 +46,12 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
     /** @var array<string, array<string, string|null>> Static cache: cacheKey => tableRegistry */
     private static array $tableRegistryCache = [];
 
+    /** @var array<string, string|null> Child FQCN => Parent FQCN (for inheritance resolution) */
+    private array $inheritanceMap = [];
+
+    /** @var array<string, bool> Resolved models: FQCN => true if it's an Eloquent model */
+    private array $resolvedModels = [];
+
     public function __construct(
         private ParserInterface $parser,
         private Config $config
@@ -136,6 +142,9 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
      *
      * Uses a static cache keyed by basePath + modelPaths to avoid
      * rescanning the filesystem on every analysis run.
+     *
+     * This method uses multi-pass inheritance resolution to correctly
+     * identify models that extend custom base classes (e.g., User extends BaseModel extends Model).
      */
     private function buildTableRegistry(): void
     {
@@ -151,9 +160,9 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        // Store scanned results separately for caching
-        /** @var array<string, string|null> $scannedRegistry */
-        $scannedRegistry = [];
+        // Phase 1: Collect all class info (FQCN, parent, table)
+        /** @var array<string, array{parent: string|null, table: string|null}> $classInfo */
+        $classInfo = [];
 
         foreach ($this->modelPaths as $modelPath) {
             $fullPath = $this->basePath.'/'.$modelPath;
@@ -161,7 +170,26 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $this->scanModelDirectory($fullPath, $scannedRegistry);
+            $this->scanModelDirectoryPhase1($fullPath, $classInfo);
+        }
+
+        // Phase 2: Build inheritance map
+        $this->inheritanceMap = [];
+        foreach ($classInfo as $fqcn => $info) {
+            $this->inheritanceMap[$fqcn] = $info['parent'];
+        }
+
+        // Phase 3: Resolve which classes are Eloquent models
+        $this->resolveEloquentModels();
+
+        // Phase 4: Build table registry from resolved models
+        /** @var array<string, string|null> $scannedRegistry */
+        $scannedRegistry = [];
+
+        foreach ($classInfo as $fqcn => $info) {
+            if (isset($this->resolvedModels[$fqcn])) {
+                $scannedRegistry[$fqcn] = $info['table'];
+            }
         }
 
         self::$tableRegistryCache[$cacheKey] = $scannedRegistry;
@@ -169,11 +197,11 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Recursively scan a directory for model files.
+     * Recursively scan a directory for PHP files and collect class info.
      *
-     * @param  array<string, string|null>|null  $registry  Optional registry to populate (for caching)
+     * @param  array<string, array{parent: string|null, table: string|null}>  $classInfo
      */
-    private function scanModelDirectory(string $directory, ?array &$registry = null): void
+    private function scanModelDirectoryPhase1(string $directory, array &$classInfo): void
     {
         $items = scandir($directory);
         if ($items === false) {
@@ -188,19 +216,19 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
             $path = $directory.'/'.$item;
 
             if (is_dir($path)) {
-                $this->scanModelDirectory($path, $registry);
+                $this->scanModelDirectoryPhase1($path, $classInfo);
             } elseif (str_ends_with($item, '.php')) {
-                $this->extractTableFromModel($path, $registry);
+                $this->extractClassInfo($path, $classInfo);
             }
         }
     }
 
     /**
-     * Extract table name from a model file.
+     * Extract class information (FQCN, parent, table) from a PHP file.
      *
-     * @param  array<string, string|null>|null  $registry  Optional registry to populate (for caching)
+     * @param  array<string, array{parent: string|null, table: string|null}>  $classInfo
      */
-    private function extractTableFromModel(string $file, ?array &$registry = null): void
+    private function extractClassInfo(string $file, array &$classInfo): void
     {
         try {
             $ast = $this->parser->parseFile($file);
@@ -214,24 +242,102 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
             $traverser->addVisitor($visitor);
             $traverser->traverse($ast);
 
-            $fqcn = $visitor->getClassName();
-            $table = $visitor->getTableName();
-
-            // Determine target registry (scanned cache or instance registry)
-            if ($registry !== null) {
-                // Populating cache - always add
-                if ($fqcn !== null) {
-                    $registry[$fqcn] = $table; // null if no $table property
-                }
-            } else {
-                // Legacy path (direct to instance registry) - only add if not already overridden by config
-                if ($fqcn !== null && ! array_key_exists($fqcn, $this->tableRegistry)) {
-                    $this->tableRegistry[$fqcn] = $table; // null if no $table property
-                }
+            $fqcn = $visitor->getRawClassName();
+            if ($fqcn === null) {
+                return;
             }
+
+            $classInfo[$fqcn] = [
+                'parent' => $visitor->getParentClassName(),
+                'table' => $visitor->getTableName(),
+            ];
         } catch (\Throwable) {
             // Skip files with parse errors
         }
+    }
+
+    /**
+     * Resolve which classes are Eloquent models using inheritance chain resolution.
+     *
+     * This method iteratively resolves inheritance chains to handle patterns like:
+     * - User extends BaseModel extends Model
+     * - TenantUser extends TenantModel extends BaseModel extends Model
+     */
+    private function resolveEloquentModels(): void
+    {
+        $this->resolvedModels = [];
+
+        // Known Eloquent base classes (fully qualified)
+        $eloquentBases = [
+            'Illuminate\\Database\\Eloquent\\Model',
+            'Illuminate\\Foundation\\Auth\\User',
+            'Illuminate\\Database\\Eloquent\\Relations\\Pivot',
+            'Illuminate\\Database\\Eloquent\\Relations\\MorphPivot',
+        ];
+
+        // Mark known bases as models
+        foreach ($eloquentBases as $base) {
+            $this->resolvedModels[$base] = true;
+        }
+
+        // Iteratively resolve inheritance chains
+        // Continue until no new models are discovered
+        $changed = true;
+        $maxIterations = 100; // Safety limit for potential cycles
+        $iteration = 0;
+
+        while ($changed && $iteration < $maxIterations) {
+            $changed = false;
+            $iteration++;
+
+            foreach ($this->inheritanceMap as $class => $parent) {
+                // Skip if already resolved
+                if (isset($this->resolvedModels[$class])) {
+                    continue;
+                }
+
+                if ($parent === null) {
+                    continue;
+                }
+
+                // Check if parent is a known model (resolved or base)
+                if (isset($this->resolvedModels[$parent])) {
+                    $this->resolvedModels[$class] = true;
+                    $changed = true;
+
+                    continue;
+                }
+
+                // Check if parent matches a known Eloquent base pattern
+                if ($this->matchesEloquentBase($parent)) {
+                    $this->resolvedModels[$class] = true;
+                    $changed = true;
+                }
+            }
+        }
+    }
+
+    /**
+     * Check if a class name matches a known Eloquent base class pattern.
+     */
+    private function matchesEloquentBase(string $className): bool
+    {
+        $normalized = ltrim($className, '\\');
+
+        // Direct Eloquent Model
+        if ($normalized === 'Model' || str_ends_with($normalized, '\\Model')) {
+            return true;
+        }
+
+        // Common Laravel model base classes
+        $baseModels = ['Authenticatable', 'Pivot', 'MorphPivot'];
+        foreach ($baseModels as $base) {
+            if ($normalized === $base || str_ends_with($normalized, '\\'.$base)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected function runAnalysis(): ResultInterface
@@ -834,6 +940,11 @@ class TableExtractorVisitor extends NodeVisitorAbstract
         return null;
     }
 
+    /**
+     * Get fully qualified class name only if it directly extends a known Eloquent base.
+     *
+     * @deprecated Use getRawClassName() and let the analyzer resolve inheritance.
+     */
     public function getClassName(): ?string
     {
         if (! $this->className || ! $this->isEloquentModel()) {
@@ -845,13 +956,58 @@ class TableExtractorVisitor extends NodeVisitorAbstract
             : $this->className;
     }
 
+    /**
+     * Get fully qualified class name regardless of parent class.
+     *
+     * This method returns the FQCN without checking if it's a model,
+     * allowing the caller to determine model status via inheritance resolution.
+     */
+    public function getRawClassName(): ?string
+    {
+        if (! $this->className) {
+            return null;
+        }
+
+        return $this->namespace
+            ? $this->namespace.'\\'.$this->className
+            : $this->className;
+    }
+
+    /**
+     * Get the fully qualified parent class name.
+     *
+     * Resolves the parent class to FQCN using the same namespace if not qualified.
+     */
+    public function getParentClassName(): ?string
+    {
+        if ($this->parentClass === null || $this->className === null) {
+            return null;
+        }
+
+        $normalized = ltrim($this->parentClass, '\\');
+
+        // If already fully qualified (contains backslash), use as-is
+        if (str_contains($normalized, '\\')) {
+            return $normalized;
+        }
+
+        // Otherwise, assume same namespace as current class
+        return $this->namespace
+            ? $this->namespace.'\\'.$normalized
+            : $normalized;
+    }
+
     public function getTableName(): ?string
     {
         return $this->tableName;
     }
 
     /**
-     * Check if the class extends an Eloquent model.
+     * Check if the class directly extends a known Eloquent model base.
+     *
+     * Note: This method only checks direct inheritance. For resolving
+     * custom base classes (e.g., User extends BaseModel extends Model),
+     * use the multi-pass resolution in MixedQueryBuilderEloquentAnalyzer.
      */
     private function isEloquentModel(): bool
     {

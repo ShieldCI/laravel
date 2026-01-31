@@ -1564,4 +1564,468 @@ PHP;
         // Should pass - jobs, cache, sessions don't have models so they don't count toward threshold
         $this->assertPassed($result);
     }
+
+    public function test_recognizes_models_extending_custom_base_model(): void
+    {
+        // BaseModel extends Model
+        $baseModelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+abstract class BaseModel extends Model
+{
+    // Common functionality for all models
+}
+PHP;
+
+        // User extends BaseModel (not directly Model)
+        $userModelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+class User extends BaseModel
+{
+    protected $table = 'users';
+}
+PHP;
+
+        // Repository using User model + DB::table('users')
+        $repositoryCode = <<<'PHP'
+<?php
+
+namespace Repositories;
+
+use Models\User;
+use Illuminate\Support\Facades\DB;
+
+class UserRepository
+{
+    public function findAll()
+    {
+        return User::all();
+    }
+
+    public function getCount()
+    {
+        return DB::table('users')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/BaseModel.php' => $baseModelCode,
+            'Models/User.php' => $userModelCode,
+            'Repositories/UserRepository.php' => $repositoryCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect mixing because User extends BaseModel extends Model
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
+        $this->assertHasIssueContaining('users', $result);
+    }
+
+    public function test_handles_deep_inheritance_chains(): void
+    {
+        // BaseModel extends Model
+        $baseModelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+abstract class BaseModel extends Model {}
+PHP;
+
+        // TenantModel extends BaseModel
+        $tenantModelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+abstract class TenantModel extends BaseModel
+{
+    // Adds tenant scoping
+}
+PHP;
+
+        // Post extends TenantModel (3-level deep inheritance)
+        $postModelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+class Post extends TenantModel
+{
+    protected $table = 'posts';
+}
+PHP;
+
+        // Repository using Post model + DB::table('posts')
+        $repositoryCode = <<<'PHP'
+<?php
+
+namespace Repositories;
+
+use Models\Post;
+use Illuminate\Support\Facades\DB;
+
+class PostRepository
+{
+    public function findAll()
+    {
+        return Post::all();
+    }
+
+    public function getCount()
+    {
+        return DB::table('posts')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/BaseModel.php' => $baseModelCode,
+            'Models/TenantModel.php' => $tenantModelCode,
+            'Models/Post.php' => $postModelCode,
+            'Repositories/PostRepository.php' => $repositoryCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect mixing through deep inheritance chain
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
+        $this->assertHasIssueContaining('posts', $result);
+    }
+
+    public function test_handles_multiple_custom_base_models(): void
+    {
+        // BaseModel extends Model
+        $baseModelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+abstract class BaseModel extends Model {}
+PHP;
+
+        // SoftDeleteModel extends Model (different base)
+        $softDeleteModelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+abstract class SoftDeleteModel extends Model
+{
+    // Uses soft deletes
+}
+PHP;
+
+        // User extends BaseModel
+        $userModelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+class User extends BaseModel
+{
+    protected $table = 'users';
+}
+PHP;
+
+        // Post extends SoftDeleteModel
+        $postModelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+class Post extends SoftDeleteModel
+{
+    protected $table = 'posts';
+}
+PHP;
+
+        // Repository using both models + DB::table
+        $repositoryCode = <<<'PHP'
+<?php
+
+namespace Repositories;
+
+use Models\User;
+use Models\Post;
+use Illuminate\Support\Facades\DB;
+
+class MixedRepository
+{
+    public function findUsers()
+    {
+        return User::all();
+    }
+
+    public function findPosts()
+    {
+        return Post::all();
+    }
+
+    public function getUserCount()
+    {
+        return DB::table('users')->count();
+    }
+
+    public function getPostCount()
+    {
+        return DB::table('posts')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/BaseModel.php' => $baseModelCode,
+            'Models/SoftDeleteModel.php' => $softDeleteModelCode,
+            'Models/User.php' => $userModelCode,
+            'Models/Post.php' => $postModelCode,
+            'Repositories/MixedRepository.php' => $repositoryCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect mixing on both tables (each uses different base class)
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        $usersIssue = false;
+        $postsIssue = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'users')) {
+                $usersIssue = true;
+            }
+            if (str_contains($issue->message, 'posts')) {
+                $postsIssue = true;
+            }
+        }
+
+        $this->assertTrue($usersIssue, 'Should detect mixed usage on users table');
+        $this->assertTrue($postsIssue, 'Should detect mixed usage on posts table');
+    }
+
+    public function test_non_model_classes_not_included_in_registry(): void
+    {
+        // Service class that does NOT extend Model
+        $serviceCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+class UserService
+{
+    protected $table = 'user_services';
+}
+PHP;
+
+        // Actual model
+        $userModelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class User extends Model {}
+PHP;
+
+        // Repository code
+        $repositoryCode = <<<'PHP'
+<?php
+
+namespace Repositories;
+
+use Models\User;
+use Illuminate\Support\Facades\DB;
+
+class UserRepository
+{
+    public function findUsers()
+    {
+        return User::all();
+    }
+
+    public function getServiceCount()
+    {
+        // This should NOT be flagged - UserService is not a model
+        return DB::table('user_services')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/UserService.php' => $serviceCode,
+            'Models/User.php' => $userModelCode,
+            'Repositories/UserRepository.php' => $repositoryCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - UserService is not a model, so user_services table is not in registry
+        $this->assertPassed($result);
+    }
+
+    public function test_model_extending_authenticatable(): void
+    {
+        // User extends Authenticatable (common Laravel pattern)
+        $userModelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Foundation\Auth\User as Authenticatable;
+
+class User extends Authenticatable
+{
+    protected $table = 'users';
+}
+PHP;
+
+        // Repository using User model + DB::table('users')
+        $repositoryCode = <<<'PHP'
+<?php
+
+namespace Repositories;
+
+use Models\User;
+use Illuminate\Support\Facades\DB;
+
+class UserRepository
+{
+    public function findAll()
+    {
+        return User::all();
+    }
+
+    public function getCount()
+    {
+        return DB::table('users')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/User.php' => $userModelCode,
+            'Repositories/UserRepository.php' => $repositoryCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect mixing - User extends Authenticatable which is a known base
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
+    }
+
+    public function test_custom_base_extending_authenticatable(): void
+    {
+        // BaseUser extends Authenticatable
+        $baseUserCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Foundation\Auth\User as Authenticatable;
+
+abstract class BaseUser extends Authenticatable {}
+PHP;
+
+        // Admin extends BaseUser
+        $adminModelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+class Admin extends BaseUser
+{
+    protected $table = 'admins';
+}
+PHP;
+
+        // Repository using Admin model + DB::table('admins')
+        $repositoryCode = <<<'PHP'
+<?php
+
+namespace Repositories;
+
+use Models\Admin;
+use Illuminate\Support\Facades\DB;
+
+class AdminRepository
+{
+    public function findAll()
+    {
+        return Admin::all();
+    }
+
+    public function getCount()
+    {
+        return DB::table('admins')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/BaseUser.php' => $baseUserCode,
+            'Models/Admin.php' => $adminModelCode,
+            'Repositories/AdminRepository.php' => $repositoryCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect mixing through BaseUser -> Authenticatable chain
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
+        $this->assertHasIssueContaining('admins', $result);
+    }
 }

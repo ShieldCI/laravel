@@ -158,12 +158,59 @@ PHP;
 
     public function test_detects_significant_mixing(): void
     {
+        // Models to register so QB tables count toward threshold
+        $orderModel = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Order extends Model {}
+PHP;
+
+        $customerStatModel = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class CustomerStat extends Model
+{
+    protected $table = 'customer_stats';
+}
+PHP;
+
+        $orderItemModel = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class OrderItem extends Model
+{
+    protected $table = 'order_items';
+}
+PHP;
+
+        $paymentModel = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Payment extends Model {}
+PHP;
+
         $code = <<<'PHP'
 <?php
 
-namespace App\Services;
+namespace Services;
 
-use App\Models\Order;
+use Models\Order;
 use Illuminate\Support\Facades\DB;
 
 class OrderService
@@ -190,11 +237,19 @@ class OrderService
 }
 PHP;
 
-        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+        $tempDir = $this->createTempDirectory([
+            'Models/Order.php' => $orderModel,
+            'Models/CustomerStat.php' => $customerStatModel,
+            'Models/OrderItem.php' => $orderItemModel,
+            'Models/Payment.php' => $paymentModel,
+            'Services/OrderService.php' => $code,
+        ]);
 
-        $analyzer = $this->createAnalyzer();
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
         $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
+        $analyzer->setPaths(['Services']);
 
         $result = $analyzer->analyze();
 
@@ -468,7 +523,7 @@ PHP;
 
         $this->assertNotNull($sameTableIssue, 'Should find same-table mixing issue');
         $this->assertEquals('High', $sameTableIssue->severity->name);
-        $this->assertStringContainsString('CRITICAL', $sameTableIssue->recommendation);
+        $this->assertStringContainsString('may bypass global scopes', $sameTableIssue->recommendation);
     }
 
     public function test_general_suppression_comment_works(): void
@@ -822,12 +877,69 @@ PHP;
 
     public function test_custom_mixing_threshold(): void
     {
+        // Models to register so QB tables count toward threshold
+        $orderModel = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Order extends Model {}
+PHP;
+
+        $customerStatModel = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class CustomerStat extends Model
+{
+    protected $table = 'customer_stats';
+}
+PHP;
+
+        $orderItemModel = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class OrderItem extends Model
+{
+    protected $table = 'order_items';
+}
+PHP;
+
+        $paymentModel = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Payment extends Model {}
+PHP;
+
+        $shipmentModel = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Shipment extends Model {}
+PHP;
+
         $code = <<<'PHP'
 <?php
 
-namespace App\Services;
+namespace Services;
 
-use App\Models\Order;
+use Models\Order;
 use Illuminate\Support\Facades\DB;
 
 class OrderService
@@ -859,22 +971,32 @@ class OrderService
 }
 PHP;
 
-        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+        $tempDir = $this->createTempDirectory([
+            'Models/Order.php' => $orderModel,
+            'Models/CustomerStat.php' => $customerStatModel,
+            'Models/OrderItem.php' => $orderItemModel,
+            'Models/Payment.php' => $paymentModel,
+            'Models/Shipment.php' => $shipmentModel,
+            'Services/OrderService.php' => $code,
+        ]);
 
-        // With default threshold of 2, this would fail (4 QB tables > 2)
-        $analyzer = $this->createAnalyzer();
+        // With default threshold of 2, this would fail (4 QB tables with models > 2)
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
         $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
+        $analyzer->setPaths(['Services']);
 
         $result = $analyzer->analyze();
         $this->assertFailed($result);
 
         // With higher threshold, it should pass
         $analyzer2 = $this->createAnalyzer([
+            'model_paths' => ['Models'],
             'mixing_threshold' => 5,
         ]);
         $analyzer2->setBasePath($tempDir);
-        $analyzer2->setPaths(['.']);
+        $analyzer2->setPaths(['Services']);
 
         $result2 = $analyzer2->analyze();
         $this->assertPassed($result2);
@@ -1365,6 +1487,75 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should pass - different tables used
+        $this->assertPassed($result);
+    }
+
+    public function test_system_tables_without_models_not_counted_toward_threshold(): void
+    {
+        // This test verifies the fix for false positives: using Eloquent for business models
+        // while using Query Builder for system tables (jobs, cache, sessions) should NOT
+        // trigger the "significant mixing" warning.
+
+        $userModel = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class User extends Model {}
+PHP;
+
+        $repositoryCode = <<<'PHP'
+<?php
+
+namespace Repositories;
+
+use Models\User;
+use Illuminate\Support\Facades\DB;
+
+class UserRepository
+{
+    public function findActive()
+    {
+        // Business logic using Eloquent
+        return User::where('active', true)->get();
+    }
+
+    public function clearOldJobs()
+    {
+        // System table - no model exists for 'jobs'
+        return DB::table('jobs')->where('created_at', '<', now()->subDays(7))->delete();
+    }
+
+    public function flushCache()
+    {
+        // System table - no model exists for 'cache'
+        return DB::table('cache')->truncate();
+    }
+
+    public function expireSessions()
+    {
+        // System table - no model exists for 'sessions'
+        return DB::table('sessions')->where('last_activity', '<', now()->subHours(24))->delete();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/User.php' => $userModel,
+            'Repositories/UserRepository.php' => $repositoryCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - jobs, cache, sessions don't have models so they don't count toward threshold
         $this->assertPassed($result);
     }
 }

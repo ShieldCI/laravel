@@ -563,20 +563,26 @@ class MixedQueryVisitor extends NodeVisitorAbstract
                 ),
                 'line' => $usage['line'],
                 'severity' => Severity::High,
-                'recommendation' => 'CRITICAL: Mixing Eloquent and Query Builder for the same table bypasses global scopes (tenant isolation, soft deletes, published status), relationships, and model events. This can cause data leaks in multi-tenant applications and break business logic. Use Eloquent consistently for this model.',
+                'recommendation' => 'Mixing Eloquent and Query Builder for the same table may bypass global scopes (soft deletes, tenant isolation), model events, and attribute casts. If this model uses scopes or events, use Eloquent consistently.',
                 'code' => null,
             ];
         }
 
         // Also check if class has significant use of both (even on different tables)
-        if (count($eloquentTables) > 0 && count($queryBuilderTables) > $this->mixingThreshold) {
+        // Only count Query Builder tables that have corresponding models (excludes system tables like jobs, cache, sessions)
+        $modeledQbTables = array_filter(
+            array_keys($queryBuilderTables),
+            fn (string $table): bool => $this->tableHasModel($table)
+        );
+
+        if (count($eloquentTables) > 0 && count($modeledQbTables) > $this->mixingThreshold) {
             $firstQbLine = min($queryBuilderTables);
             $this->issues[] = [
                 'message' => sprintf(
                     'Class "%s" mixes Eloquent and Query Builder approaches (%d Eloquent, %d Query Builder)',
                     $this->currentClassName ?? 'Unknown',
                     count($eloquentTables),
-                    count($queryBuilderTables)
+                    count($modeledQbTables)
                 ),
                 'line' => $firstQbLine,
                 'severity' => Severity::Low,
@@ -584,6 +590,25 @@ class MixedQueryVisitor extends NodeVisitorAbstract
                 'code' => null,
             ];
         }
+    }
+
+    /**
+     * Check if a table name has a corresponding model in the registry.
+     *
+     * This helps distinguish business tables (users, posts) from system tables
+     * (jobs, cache, sessions) that legitimately use Query Builder.
+     */
+    private function tableHasModel(string $tableName): bool
+    {
+        foreach ($this->tableRegistry as $modelFqcn => $table) {
+            // Get the inferred table name (use explicit $table property or Str::plural inference)
+            $inferredTable = $table ?? Str::plural(Str::snake(class_basename($modelFqcn)));
+            if ($inferredTable === $tableName) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -737,6 +737,8 @@ class TableExtractorVisitor extends NodeVisitorAbstract
 
     private ?string $tableName = null;
 
+    private ?string $parentClass = null;
+
     public function enterNode(Node $node): ?Node
     {
         if ($node instanceof Node\Stmt\Namespace_) {
@@ -745,6 +747,7 @@ class TableExtractorVisitor extends NodeVisitorAbstract
 
         if ($node instanceof Node\Stmt\Class_) {
             $this->className = $node->name?->toString();
+            $this->parentClass = $node->extends?->toString();
         }
 
         // Look for: protected $table = 'table_name';
@@ -763,7 +766,7 @@ class TableExtractorVisitor extends NodeVisitorAbstract
 
     public function getClassName(): ?string
     {
-        if (! $this->className) {
+        if (! $this->className || ! $this->isEloquentModel()) {
             return null;
         }
 
@@ -775,5 +778,32 @@ class TableExtractorVisitor extends NodeVisitorAbstract
     public function getTableName(): ?string
     {
         return $this->tableName;
+    }
+
+    /**
+     * Check if the class extends an Eloquent model.
+     */
+    private function isEloquentModel(): bool
+    {
+        if ($this->parentClass === null) {
+            return false;
+        }
+
+        $normalized = ltrim($this->parentClass, '\\');
+
+        // Direct Eloquent Model
+        if ($normalized === 'Model' || str_ends_with($normalized, '\\Model')) {
+            return true;
+        }
+
+        // Common Laravel model base classes
+        $baseModels = ['Authenticatable', 'Pivot', 'MorphPivot'];
+        foreach ($baseModels as $base) {
+            if ($normalized === $base || str_ends_with($normalized, '\\'.$base)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

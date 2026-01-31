@@ -129,11 +129,42 @@ class PhpSideFilteringAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if a file path is whitelisted.
+     *
+     * Supports:
+     * - Exact filename match (without extension): "LegacyUserService"
+     * - Glob patterns: "app/Legacy/*", "app/Services/Legacy/**\/*.php"
+     * - Directory segment matching: "Legacy" matches "Services/Legacy/UserService.php"
      */
     private function isWhitelisted(string $path): bool
     {
         foreach ($this->whitelist as $pattern) {
-            if (str_contains($path, $pattern)) {
+            // Exact full path match
+            if ($path === $pattern) {
+                return true;
+            }
+
+            // Glob pattern matching (supports * and **)
+            if (str_contains($pattern, '*')) {
+                if (fnmatch($pattern, $path)) {
+                    return true;
+                }
+
+                continue;
+            }
+
+            // Path segment matching (must match full path segment)
+            // Pattern "User" matches "Services/User.php" or "User/Service.php"
+            // but NOT "SuperUserService.php"
+            $segments = explode('/', $path);
+            $fileWithoutExt = pathinfo(end($segments), PATHINFO_FILENAME);
+
+            // Exact filename match (without extension)
+            if ($fileWithoutExt === $pattern) {
+                return true;
+            }
+
+            // Directory segment matching
+            if (in_array($pattern, $segments, true)) {
                 return true;
             }
         }
@@ -147,6 +178,35 @@ class PhpSideFilteringAnalyzer extends AbstractFileAnalyzer
  */
 class PhpFilteringVisitor extends NodeVisitorAbstract
 {
+    /**
+     * Eloquent methods that fetch data from the database and return collections.
+     *
+     * @var array<string>
+     */
+    private const FETCH_METHODS = [
+        'get',
+        'all',
+        'paginate',
+        'simplePaginate',
+        'cursorPaginate',
+        'cursor',        // Returns LazyCollection
+        'pluck',         // Returns collection of values
+        'find',          // Can return collection with array of IDs
+        'findMany',      // Always returns collection
+    ];
+
+    /**
+     * PHP-side filtering methods that indicate filtering after database fetch.
+     *
+     * @var array<string>
+     */
+    private const FILTER_METHODS = [
+        'filter',
+        'reject',
+        'whereIn',
+        'whereNotIn',
+    ];
+
     /**
      * Classes that are not Eloquent models/queries.
      * Static calls on these classes should not be flagged.
@@ -222,14 +282,17 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
         // Check for problematic patterns
         if ($this->hasPhpSideFiltering($chain)) {
             $pattern = implode('->', $chain);
+            $severity = $this->determineSeverity($chain);
+            $severityLabel = $severity === Severity::Critical ? 'CRITICAL' : 'WARNING';
 
             $this->issues[] = [
                 'message' => sprintf(
-                    'CRITICAL: Filtering data in PHP instead of database: %s',
+                    '%s: Filtering data in PHP instead of database: %s',
+                    $severityLabel,
                     $pattern
                 ),
                 'line' => $node->getLine(),
-                'severity' => Severity::Critical,
+                'severity' => $severity,
                 'recommendation' => $this->getRecommendation($chain),
                 'code' => null,
             ];
@@ -356,6 +419,11 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     }
 
     /**
+     * Get the full method chain including static call class name for context.
+     *
+     * For `User::where()->get()->filter()`, returns:
+     * ['User', 'where', 'get', 'filter']
+     *
      * @return array<string>
      */
     private function getMethodChain(Node\Expr\MethodCall $node): array
@@ -371,6 +439,10 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
             if ($current instanceof Node\Expr\MethodCall) {
                 $current = $current->var;
             } elseif ($current instanceof Node\Expr\StaticCall) {
+                // Include class name in chain for context
+                if ($current->class instanceof Node\Name) {
+                    array_unshift($chain, $current->class->toString());
+                }
                 break;
             } else {
                 break;
@@ -381,31 +453,29 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     }
 
     /**
+     * Check if a method chain has PHP-side filtering after a database fetch.
+     *
+     * Detects patterns NOT covered by Larastan:
+     * - filter() - Custom filtering with closures
+     * - reject() - Inverse of filter
+     * - whereIn() - Array-based filtering
+     * - whereNotIn() - Inverse of whereIn
+     *
+     * Patterns like where(), first(), last(), take(), skip() are
+     * detected by CollectionCallAnalyzer (via Larastan)
+     *
      * @param  array<string>  $chain
      */
     private function hasPhpSideFiltering(array $chain): bool
     {
-        // Only detect patterns NOT covered by Larastan:
-        // - filter() - Custom filtering with closures
-        // - reject() - Inverse of filter
-        // - whereIn() - Array-based filtering
-        // - whereNotIn() - Inverse of whereIn
-        //
-        // Patterns like where(), first(), last(), take(), skip() are
-        // detected by CollectionCallAnalyzer (via Larastan)
-        $criticalPatterns = [
-            ['all', 'filter'],
-            ['all', 'reject'],
-            ['all', 'whereIn'],
-            ['all', 'whereNotIn'],
-            ['get', 'filter'],
-            ['get', 'reject'],
-            ['get', 'whereIn'],
-            ['get', 'whereNotIn'],
-        ];
+        $fetchIndex = $this->findLastFetchMethod($chain);
+        if ($fetchIndex === null) {
+            return false;
+        }
 
-        foreach ($criticalPatterns as $pattern) {
-            if ($this->chainContainsSequence($chain, $pattern)) {
+        // Check for any filter method after the fetch
+        for ($i = $fetchIndex + 1; $i < count($chain); $i++) {
+            if (in_array($chain[$i], self::FILTER_METHODS, true)) {
                 return true;
             }
         }
@@ -414,40 +484,64 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Check if a chain contains a specific sequence of methods.
-     *
-     * This properly checks for consecutive method calls, not just substring matching.
-     * For example, ['get', 'filter'] will match in ['User', 'where', 'get', 'filter']
-     * but NOT in ['getFilter'] or ['get', 'where', 'filter'] if we're looking for
-     * consecutive calls.
+     * Find the index of the last fetch method in the chain.
      *
      * @param  array<string>  $chain
-     * @param  array<string>  $sequence
      */
-    private function chainContainsSequence(array $chain, array $sequence): bool
+    private function findLastFetchMethod(array $chain): ?int
     {
-        $chainLength = count($chain);
-        $sequenceLength = count($sequence);
-
-        if ($sequenceLength > $chainLength) {
-            return false;
-        }
-
-        // Check if sequence appears consecutively in chain
-        for ($i = 0; $i <= $chainLength - $sequenceLength; $i++) {
-            $match = true;
-            for ($j = 0; $j < $sequenceLength; $j++) {
-                if ($chain[$i + $j] !== $sequence[$j]) {
-                    $match = false;
-                    break;
-                }
-            }
-            if ($match) {
-                return true;
+        for ($i = count($chain) - 1; $i >= 0; $i--) {
+            if (in_array($chain[$i], self::FETCH_METHODS, true)) {
+                return $i;
             }
         }
 
-        return false;
+        return null;
+    }
+
+    /**
+     * Find the fetch method used in the chain (for severity determination).
+     *
+     * @param  array<string>  $chain
+     */
+    private function getFetchMethod(array $chain): ?string
+    {
+        $fetchIndex = $this->findLastFetchMethod($chain);
+
+        return $fetchIndex !== null ? $chain[$fetchIndex] : null;
+    }
+
+    /**
+     * Determine severity based on the fetch method used.
+     *
+     * - paginate/simplePaginate/cursorPaginate: Medium (controlled dataset size)
+     * - cursor: Medium (lazy loading, memory efficient)
+     * - pluck: Medium (single column, smaller memory footprint)
+     * - get/all/find/findMany: Critical (can fetch entire table)
+     *
+     * @param  array<string>  $chain
+     */
+    private function determineSeverity(array $chain): Severity
+    {
+        $fetchMethod = $this->getFetchMethod($chain);
+
+        // Pagination methods: controlled dataset size
+        if (in_array($fetchMethod, ['paginate', 'simplePaginate', 'cursorPaginate'], true)) {
+            return Severity::Medium;
+        }
+
+        // Cursor: lazy loading, memory efficient
+        if ($fetchMethod === 'cursor') {
+            return Severity::Medium;
+        }
+
+        // Pluck: single column, smaller memory footprint
+        if ($fetchMethod === 'pluck') {
+            return Severity::Medium;
+        }
+
+        // get(), all(), find(), findMany(): can potentially fetch entire table
+        return Severity::Critical;
     }
 
     /**

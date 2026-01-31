@@ -902,4 +902,547 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    // ========================================================================
+    // WHITELIST PATTERN TESTS
+    // ========================================================================
+
+    public function test_whitelist_glob_pattern_matches_directory(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Legacy;
+
+use App\Models\User;
+
+class LegacyService
+{
+    public function getUsers()
+    {
+        return User::all()->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Legacy/LegacyService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([
+            'whitelist' => ['*/LegacyService.php'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_whitelist_does_not_match_substring(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class SuperUserService
+{
+    public function getUsers()
+    {
+        // Should be flagged - "User" whitelist should NOT match "SuperUserService"
+        return User::all()->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/SuperUserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([
+            'whitelist' => ['User'], // Should NOT match SuperUserService
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    public function test_whitelist_matches_exact_filename(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function getUsers()
+    {
+        return User::all()->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([
+            'whitelist' => ['UserService'], // Exact filename match (without extension)
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_whitelist_matches_directory_segment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Legacy;
+
+use App\Models\User;
+
+class UserService
+{
+    public function getUsers()
+    {
+        return User::all()->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Legacy/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([
+            'whitelist' => ['Legacy'], // Directory segment match
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_whitelist_recursive_glob_pattern(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Legacy\Users;
+
+use App\Models\User;
+
+class UserProcessor
+{
+    public function getUsers()
+    {
+        return User::all()->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Legacy/Users/UserProcessor.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([
+            'whitelist' => ['**/Users/*.php'], // Recursive glob
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    // ========================================================================
+    // EXPANDED FETCH METHOD TESTS (Issue 1)
+    // ========================================================================
+
+    public function test_detects_filter_after_paginate(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function getActiveUsers()
+    {
+        return User::paginate(10)->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('filter', $result);
+    }
+
+    public function test_detects_filter_after_cursor(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function processUsers()
+    {
+        return User::cursor()->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('filter', $result);
+    }
+
+    public function test_detects_filter_after_pluck(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function getActiveEmails()
+    {
+        return User::pluck('email', 'id')->filter(fn($email) => str_contains($email, '@company.com'));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('filter', $result);
+    }
+
+    public function test_detects_filter_with_intermediate_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function processUsers()
+    {
+        // get()->map()->filter() - filter after fetch with intermediate method
+        return User::get()->map(fn($u) => $u->toArray())->filter(fn($u) => $u['active']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('filter', $result);
+    }
+
+    public function test_detects_reject_after_simple_paginate(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Product;
+
+class ProductService
+{
+    public function getVisibleProducts()
+    {
+        return Product::simplePaginate(20)->reject(fn($p) => $p->hidden);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ProductService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('reject', $result);
+    }
+
+    public function test_detects_wherein_after_find_many(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function filterUsers(array $ids, array $activeIds)
+    {
+        return User::findMany($ids)->whereIn('id', $activeIds);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('whereIn', $result);
+    }
+
+    // ========================================================================
+    // SEVERITY TIER TESTS (Issue 4)
+    // ========================================================================
+
+    public function test_paginate_filter_has_medium_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function getActiveUsers()
+    {
+        return User::paginate(10)->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+        $this->assertStringContainsString('WARNING', $issues[0]->message);
+    }
+
+    public function test_get_filter_has_critical_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function getActiveUsers()
+    {
+        return User::get()->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertStringContainsString('CRITICAL', $issues[0]->message);
+    }
+
+    public function test_all_filter_has_critical_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function getActiveUsers()
+    {
+        return User::all()->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+    }
+
+    public function test_cursor_filter_has_medium_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function getActiveUsers()
+    {
+        return User::cursor()->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+    }
+
+    public function test_pluck_filter_has_medium_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function getActiveEmails()
+    {
+        return User::pluck('email')->filter(fn($e) => str_ends_with($e, '@company.com'));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+    }
+
+    public function test_simple_paginate_filter_has_medium_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function getActiveUsers()
+    {
+        return User::simplePaginate(15)->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+    }
 }

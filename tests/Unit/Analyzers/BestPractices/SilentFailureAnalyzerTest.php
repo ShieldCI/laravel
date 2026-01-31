@@ -131,12 +131,15 @@ namespace App\Services;
 
 class OrderService
 {
+    private $silentCount = 0;
+
     public function createOrder()
     {
         try {
             // Create order
         } catch (\Exception $e) {
-            // Silent failure - no logging or rethrow
+            // Silent failure - no logging or rethrow, just counting
+            $this->silentCount++;
         }
     }
 }
@@ -762,5 +765,474 @@ PHP;
         $this->assertSame('Silent Failure Analyzer', $metadata->name);
         $this->assertStringContainsString('catch', $metadata->description);
         $this->assertStringContainsString('suppression', $metadata->description);
+    }
+
+    public function test_passes_when_empty_catch_has_intentional_comment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class FileService
+{
+    public function readOptionalFile($path)
+    {
+        try {
+            return file_get_contents($path);
+        } catch (\Exception $e) {
+            // Intentionally ignored: file is optional and may not exist
+        }
+        return null;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/FileService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_catch_dispatches_event(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class OrderService
+{
+    public function processOrder($order)
+    {
+        try {
+            $this->processPayment($order);
+        } catch (\Exception $e) {
+            event(new OrderFailed($order, $e));
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_catch_dispatches_job(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class NotificationService
+{
+    public function sendNotification($user)
+    {
+        try {
+            $this->sendEmail($user);
+        } catch (\Exception $e) {
+            dispatch(new RetryNotificationJob($user, $e));
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/NotificationService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_catch_sends_notification(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class PaymentService
+{
+    public function processPayment($user, $amount)
+    {
+        try {
+            $this->charge($amount);
+        } catch (\Exception $e) {
+            $user->notify(new PaymentFailedNotification($e));
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/PaymentService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_catch_uses_abort(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    public function fetchData($endpoint)
+    {
+        try {
+            return $this->client->get($endpoint);
+        } catch (\Exception $e) {
+            abort(503, 'Service unavailable');
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_catch_uses_db_rollback(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\DB;
+
+class TransactionService
+{
+    public function executeTransaction($callback)
+    {
+        DB::beginTransaction();
+        try {
+            $result = $callback();
+            DB::commit();
+            return $result;
+        } catch (\Exception $e) {
+            DB::rollback();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/TransactionService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_catch_calls_custom_handler(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ImportService
+{
+    public function import($data)
+    {
+        try {
+            $this->processData($data);
+        } catch (\Exception $e) {
+            $this->handleImportError($data);
+        }
+    }
+
+    private function handleImportError($data)
+    {
+        // Handle the error
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ImportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_exception_variable_is_used(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ErrorService
+{
+    public function process()
+    {
+        try {
+            $this->doSomething();
+        } catch (\Exception $e) {
+            $message = $e->getMessage();
+            $this->storeError($message);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ErrorService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_multiple_classes_in_file(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserServiceTest
+{
+    public function test_something()
+    {
+        try {
+            // Test code - should be whitelisted
+        } catch (\Exception $e) {
+            // Empty catch in test class - acceptable
+        }
+    }
+}
+
+class RegularService
+{
+    public function doSomething()
+    {
+        try {
+            // Regular code
+        } catch (\Exception $e) {
+            // This should be flagged as silent failure
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/MultiClass.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect the issue in RegularService but not in UserServiceTest
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+    }
+
+    public function test_passes_when_catch_uses_static_event_dispatch(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Event;
+
+class EventService
+{
+    public function process()
+    {
+        try {
+            $this->doSomething();
+        } catch (\Exception $e) {
+            Event::dispatch(new ProcessFailed($e));
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/EventService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_catch_broadcasts(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class BroadcastService
+{
+    public function process()
+    {
+        try {
+            $this->doSomething();
+        } catch (\Exception $e) {
+            broadcast(new ErrorOccurred($e));
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/BroadcastService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_catch_calls_log_method_on_this(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class LoggingService
+{
+    public function process()
+    {
+        try {
+            $this->doSomething();
+        } catch (\Exception $e) {
+            $this->logException($e);
+        }
+    }
+
+    private function logException($e)
+    {
+        // Log the exception
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/LoggingService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_catch_uses_session_flash(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class FormController
+{
+    public function submit()
+    {
+        try {
+            $this->processForm();
+        } catch (\Exception $e) {
+            session()->flash('error', 'Something went wrong');
+            return redirect()->back();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Controllers/FormController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_catch_marks_job_as_failed(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Jobs;
+
+class ProcessOrderJob
+{
+    public function handle()
+    {
+        try {
+            $this->process();
+        } catch (\Exception $e) {
+            $this->fail($e);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Jobs/ProcessOrderJob.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
     }
 }

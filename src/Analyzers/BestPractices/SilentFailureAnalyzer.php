@@ -204,7 +204,8 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                     continue;
                 }
 
-                if (empty($catch->stmts)) {
+                // Check if catch block is empty or only contains comments (Nop statements)
+                if ($this->isEmptyOrCommentOnlyCatch($catch)) {
                     // Check if catch block has an explanatory comment (intentional ignore)
                     if ($this->hasExplanatoryComment($catch)) {
                         continue;
@@ -299,21 +300,100 @@ class SilentFailureVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Check if the catch block has an explanatory comment (intentional empty catch).
+     * Check if the catch block is empty or only contains Nop statements (comments only).
      */
-    private function hasExplanatoryComment(Node\Stmt\Catch_ $catch): bool
+    private function isEmptyOrCommentOnlyCatch(Node\Stmt\Catch_ $catch): bool
     {
-        // Check for comments attached to the catch node
-        $comments = $catch->getComments();
-        if (! empty($comments)) {
+        if (empty($catch->stmts)) {
             return true;
         }
 
-        // Check for comments inside the catch block scope via attributes
+        // Check if all statements are Nop (comment-only)
+        foreach ($catch->stmts as $stmt) {
+            if (! $stmt instanceof Node\Stmt\Nop) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Check if the catch block has an explanatory comment indicating intentional empty catch.
+     * Only considers comments that appear to explicitly justify the empty catch block.
+     */
+    private function hasExplanatoryComment(Node\Stmt\Catch_ $catch): bool
+    {
+        $allComments = [];
+
+        // Collect comments attached to the catch node
+        $allComments = array_merge($allComments, $catch->getComments());
+
+        // Collect comments inside the catch block (attached to Nop statements)
+        foreach ($catch->stmts as $stmt) {
+            if ($stmt instanceof Node\Stmt\Nop) {
+                $allComments = array_merge($allComments, $stmt->getComments());
+            }
+        }
+
+        // Collect comments from attributes
         /** @var array<\PhpParser\Comment> $attributes */
         $attributes = $catch->getAttribute('comments', []);
+        $allComments = array_merge($allComments, $attributes);
 
-        return ! empty($attributes);
+        // Check if any comment indicates intentional ignoring
+        foreach ($allComments as $comment) {
+            if ($this->isIntentionalIgnoreComment($comment->getText())) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a comment text indicates intentional exception ignoring.
+     */
+    private function isIntentionalIgnoreComment(string $commentText): bool
+    {
+        $lowerText = strtolower($commentText);
+
+        // Patterns that indicate intentional ignoring
+        $intentionalPatterns = [
+            'intentional',
+            'deliberately',
+            'on purpose',
+            'expected',
+            'acceptable',
+            'safe to ignore',
+            'safely ignore',
+            'can be ignored',
+            'may be ignored',
+            'optional',
+            'not critical',
+            'non-critical',
+            'best effort',
+            'best-effort',
+            'fire and forget',
+            'fire-and-forget',
+            'no action needed',
+            'no action required',
+            'nothing to do',
+            'noop',
+            'no-op',
+            '@suppress',
+            '@ignore',
+            'phpstan-ignore',
+            'psalm-suppress',
+        ];
+
+        foreach ($intentionalPatterns as $pattern) {
+            if (str_contains($lowerText, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

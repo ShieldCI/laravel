@@ -148,38 +148,6 @@ class PhpSideFilteringAnalyzer extends AbstractFileAnalyzer
 class PhpFilteringVisitor extends NodeVisitorAbstract
 {
     /**
-     * Laravel helper functions that return non-Eloquent data.
-     * These should not be flagged as database queries.
-     *
-     * @var array<string>
-     */
-    private const EXCLUDED_HELPERS = [
-        'config',
-        'session',
-        'request',
-        'cache',
-        'cookie',
-        'collect',
-        'env',
-        'app',
-        'auth',
-        'validator',
-        'response',
-        'redirect',
-        'view',
-        'route',
-        'url',
-        'trans',
-        '__',
-        'old',
-        'now',
-        'today',
-        'json_decode',
-        'array_filter',
-        'array_map',
-    ];
-
-    /**
      * Classes that are not Eloquent models/queries.
      * Static calls on these classes should not be flagged.
      *
@@ -284,54 +252,107 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     /**
      * Check if the root expression is likely an Eloquent query source.
      *
-     * This method filters out known non-Eloquent sources to prevent false positives.
+     * Uses POSITIVE IDENTIFICATION: only returns true for patterns we can
+     * confidently identify as Eloquent sources. This prevents false positives
+     * for API clients, services, and other non-Eloquent sources.
      */
     private function isEloquentSource(Node\Expr $expr): bool
     {
-        // Case 1: Function call - check if it's an excluded helper
-        if ($expr instanceof Node\Expr\FuncCall && $expr->name instanceof Node\Name) {
-            $name = strtolower($expr->name->toString());
-            if (in_array($name, array_map('strtolower', self::EXCLUDED_HELPERS), true)) {
-                return false;
-            }
-        }
-
-        // Case 2: Static call - check class name
+        // Case 1: Static call - check if it's a model-like class
         if ($expr instanceof Node\Expr\StaticCall && $expr->class instanceof Node\Name) {
-            $className = $expr->class->getLast();
-            if (in_array($className, self::EXCLUDED_CLASSES, true)) {
-                return false;
-            }
+            return $this->looksLikeModel($expr->class);
         }
 
-        // Case 3: Property fetch on $this that looks like a helper
-        // e.g., $this->request->all()->filter() where request is injected
+        // Case 2: Function call - only helper functions, all are non-Eloquent
+        // (request, config, collect, cache, session, etc.)
+        if ($expr instanceof Node\Expr\FuncCall) {
+            return false;
+        }
+
+        // Case 3: Property fetch - cannot determine type, default to false
+        // $this->service->all() - likely NOT Eloquent
+        // $this->users could be a relationship, but without type info we can't know
         if ($expr instanceof Node\Expr\PropertyFetch) {
-            if ($expr->name instanceof Node\Identifier) {
-                $propertyName = strtolower($expr->name->toString());
-                // Skip properties that match helper names (likely injected services)
-                $serviceProperties = ['request', 'session', 'cache', 'config', 'validator'];
-                if (in_array($propertyName, $serviceProperties, true)) {
-                    return false;
-                }
-            }
+            return false;
         }
 
-        // Case 4: Method call starting from a known non-Eloquent source
-        // Handle cases like app()->make('config')->get()
+        // Case 4: Variable - cannot determine type without static analysis
+        // $collection->filter() - could be anything
+        if ($expr instanceof Node\Expr\Variable) {
+            return false;
+        }
+
+        // Case 5: Method call as root - check if it originates from model-like static call
         if ($expr instanceof Node\Expr\MethodCall) {
-            // Check the immediate method name
-            if ($expr->name instanceof Node\Identifier) {
-                $methodName = $expr->name->toString();
-                // json() typically returns array/collection from HTTP responses
-                if (in_array($methodName, ['json', 'toArray', 'jsonSerialize'], true)) {
-                    return false;
-                }
-            }
+            return $this->chainStartsWithModel($expr);
         }
 
-        // Default: assume Eloquent (safer to flag than miss)
-        return true;
+        // Default: Cannot determine source type - don't flag
+        return false;
+    }
+
+    /**
+     * Check if a class name looks like an Eloquent model.
+     *
+     * Uses positive identification patterns:
+     * - App\Models\* namespace
+     * - Domain\*\Models\* namespace (DDD patterns)
+     * - *Model suffix
+     */
+    private function looksLikeModel(Node\Name $name): bool
+    {
+        $fqn = $name->toString();
+        $normalized = ltrim($fqn, '\\');
+        $parts = explode('\\', $normalized);
+        $shortName = end($parts);
+
+        // Quick rejection: known non-model classes
+        if (in_array($shortName, self::EXCLUDED_CLASSES, true)) {
+            return false;
+        }
+
+        // POSITIVE CHECK 1: Model namespace patterns
+        if (str_starts_with($normalized, 'App\\Models\\') ||
+            str_starts_with($normalized, 'App\\Model\\')) {
+            return true;
+        }
+
+        // POSITIVE CHECK 2: Domain-driven patterns (e.g., Domain\Users\Models\User)
+        if (str_contains($normalized, '\\Models\\')) {
+            return true;
+        }
+
+        // POSITIVE CHECK 3: Class name ends with "Model" suffix
+        if (str_ends_with($shortName, 'Model')) {
+            return true;
+        }
+
+        // POSITIVE CHECK 4: Short name only (no namespace) - assume it's a model
+        // When developers write User::all(), Order::get(), etc. without namespace,
+        // it's almost always a model reference (use statement imports it)
+        if (! str_contains($normalized, '\\')) {
+            return true;
+        }
+
+        // Cannot determine - default to NOT a model
+        return false;
+    }
+
+    /**
+     * Traverse method chain to check if it starts with a model-like static call.
+     */
+    private function chainStartsWithModel(Node\Expr\MethodCall $expr): bool
+    {
+        $current = $expr;
+        while ($current instanceof Node\Expr\MethodCall) {
+            $current = $current->var;
+        }
+
+        if ($current instanceof Node\Expr\StaticCall && $current->class instanceof Node\Name) {
+            return $this->looksLikeModel($current->class);
+        }
+
+        return false;
     }
 
     /**

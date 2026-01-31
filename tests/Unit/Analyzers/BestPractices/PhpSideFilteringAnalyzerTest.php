@@ -693,4 +693,213 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    public function test_ignores_api_client_get_filter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserSyncService
+{
+    public function __construct(private ApiClient $apiClient) {}
+
+    public function getActiveUsers()
+    {
+        // NOT a database query - API client returning data
+        return $this->apiClient->getUsers()->filter(fn($u) => $u['active']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserSyncService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_service_all_filter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DataProcessor
+{
+    public function __construct(private DataService $service) {}
+
+    public function processActive()
+    {
+        // NOT a database query - service method
+        return $this->service->all()->filter(fn($item) => $item->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DataProcessor.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_variable_filter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class CollectionProcessor
+{
+    public function process($collection)
+    {
+        // Cannot determine type - should not flag
+        return $collection->filter(fn($item) => $item->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/CollectionProcessor.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_model_in_models_namespace(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Product;
+
+class ProductService
+{
+    public function getActiveProducts()
+    {
+        // This IS a database query - App\Models namespace
+        return Product::all()->filter(fn($p) => $p->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ProductService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('filter', $result);
+    }
+
+    public function test_detects_model_with_ddd_namespace(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Domain\Users\Models\User;
+
+class UserService
+{
+    public function getActiveUsers()
+    {
+        // This IS a database query - Domain\*\Models namespace (DDD)
+        return User::all()->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('filter', $result);
+    }
+
+    public function test_detects_short_class_name_model(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Order;
+
+class OrderService
+{
+    public function getPendingOrders()
+    {
+        // Short class name (no namespace in call) - assumed to be model
+        return Order::get()->filter(fn($o) => $o->status === 'pending');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('filter', $result);
+    }
+
+    public function test_ignores_non_model_namespace_with_fqn(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function processUsers()
+    {
+        // NOT a model - App\DataTransfer namespace (using FQN)
+        return \App\DataTransfer\UserCollection::all()->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

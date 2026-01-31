@@ -2028,4 +2028,256 @@ PHP;
         $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
         $this->assertHasIssueContaining('admins', $result);
     }
+
+    public function test_detects_table_from_get_table_method(): void
+    {
+        // Model with getTable() method returning string literal
+        $modelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class AuditLog extends Model
+{
+    public function getTable(): string
+    {
+        return 'audit_logs';
+    }
+}
+PHP;
+
+        // Repository using AuditLog model + DB::table('audit_logs')
+        $repositoryCode = <<<'PHP'
+<?php
+
+namespace Repositories;
+
+use Models\AuditLog;
+use Illuminate\Support\Facades\DB;
+
+class AuditLogRepository
+{
+    public function findAll()
+    {
+        return AuditLog::all();
+    }
+
+    public function getCount()
+    {
+        return DB::table('audit_logs')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/AuditLog.php' => $modelCode,
+            'Repositories/AuditLogRepository.php' => $repositoryCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect mixing because getTable() returns 'audit_logs'
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
+        $this->assertHasIssueContaining('audit_logs', $result);
+    }
+
+    public function test_get_table_method_takes_precedence_over_property(): void
+    {
+        // Model with both $table property and getTable() method
+        $modelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Document extends Model
+{
+    protected $table = 'wrong_table';
+
+    public function getTable(): string
+    {
+        return 'documents';
+    }
+}
+PHP;
+
+        // Repository that uses getTable() value (not $table property)
+        $repositoryCode = <<<'PHP'
+<?php
+
+namespace Repositories;
+
+use Models\Document;
+use Illuminate\Support\Facades\DB;
+
+class DocumentRepository
+{
+    public function findAll()
+    {
+        return Document::all();
+    }
+
+    public function getCount()
+    {
+        // Uses 'documents' - should match getTable() return, not $table property
+        return DB::table('documents')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/Document.php' => $modelCode,
+            'Repositories/DocumentRepository.php' => $repositoryCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect mixing - getTable() returns 'documents', DB::table('documents') matches
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
+        $this->assertHasIssueContaining('documents', $result);
+    }
+
+    public function test_dynamic_get_table_falls_back_to_property(): void
+    {
+        // Model with dynamic getTable() (uses concatenation)
+        $modelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class TenantUser extends Model
+{
+    protected $table = 'tenant_users';
+
+    public function getTable(): string
+    {
+        return tenant()->id . '_users';
+    }
+}
+PHP;
+
+        // Repository that uses $table property value
+        $repositoryCode = <<<'PHP'
+<?php
+
+namespace Repositories;
+
+use Models\TenantUser;
+use Illuminate\Support\Facades\DB;
+
+class TenantUserRepository
+{
+    public function findAll()
+    {
+        return TenantUser::all();
+    }
+
+    public function getCount()
+    {
+        // Uses $table property fallback since getTable() is dynamic
+        return DB::table('tenant_users')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/TenantUser.php' => $modelCode,
+            'Repositories/TenantUserRepository.php' => $repositoryCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect mixing - dynamic getTable() falls back to $table='tenant_users'
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
+        $this->assertHasIssueContaining('tenant_users', $result);
+    }
+
+    public function test_config_based_get_table_uses_str_plural_fallback(): void
+    {
+        // Model with config-based getTable() (no $table property)
+        $modelCode = <<<'PHP'
+<?php
+
+namespace Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Setting extends Model
+{
+    // No $table property
+
+    public function getTable(): string
+    {
+        return config('database.tables.settings', 'settings');
+    }
+}
+PHP;
+
+        // Repository that uses Str::plural('setting') = 'settings'
+        $repositoryCode = <<<'PHP'
+<?php
+
+namespace Repositories;
+
+use Models\Setting;
+use Illuminate\Support\Facades\DB;
+
+class SettingRepository
+{
+    public function findAll()
+    {
+        return Setting::all();
+    }
+
+    public function getCount()
+    {
+        // Uses Str::plural fallback since getTable() is dynamic and no $table property
+        return DB::table('settings')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/Setting.php' => $modelCode,
+            'Repositories/SettingRepository.php' => $repositoryCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['Models'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect mixing - config() is dynamic, falls back to Str::plural('setting')='settings'
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
+    }
 }

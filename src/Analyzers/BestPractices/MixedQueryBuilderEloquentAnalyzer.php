@@ -37,7 +37,7 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
     /** @var int Threshold for flagging significant mixing (count of Query Builder tables) */
     private int $mixingThreshold = 2;
 
-    /** @var array<string, string|null> Model FQCN => table name (null means infer with Str::plural) */
+    /** @var array<string, string|null> Model FQCN => table name (null means dynamic or inferred) */
     private array $tableRegistry = [];
 
     /** @var array<string> Directories to scan for models */
@@ -926,6 +926,10 @@ class TableExtractorVisitor extends NodeVisitorAbstract
 
     private bool $isAbstract = false;
 
+    private ?string $getTableReturnValue = null;
+
+    private bool $getTableHasDynamicReturn = false;
+
     public function enterNode(Node $node): ?Node
     {
         if ($node instanceof Node\Stmt\Namespace_) {
@@ -936,6 +940,11 @@ class TableExtractorVisitor extends NodeVisitorAbstract
             $this->className = $node->name?->toString();
             $this->parentClass = $node->extends?->toString();
             $this->isAbstract = $node->isAbstract();
+
+            // Reset per model class
+            $this->tableName = null;
+            $this->getTableReturnValue = null;
+            $this->getTableHasDynamicReturn = false;
         }
 
         // Look for: protected $table = 'table_name';
@@ -949,7 +958,108 @@ class TableExtractorVisitor extends NodeVisitorAbstract
             }
         }
 
+        // Look for: public function getTable() { return 'table_name'; }
+        if ($node instanceof Node\Stmt\ClassMethod) {
+            if ($node->name->toString() === 'getTable') {
+                $this->analyzeGetTableMethod($node);
+            }
+        }
+
         return null;
+    }
+
+    /**
+     * Analyze a getTable() method to extract literal string return values.
+     *
+     * If all return statements return the same string literal, we capture it.
+     * If ANY return statement is non-literal or returns a different value,
+     * we mark the method as having dynamic returns.
+     */
+    private function analyzeGetTableMethod(Node\Stmt\ClassMethod $method): void
+    {
+        $stmts = $method->stmts;
+        if ($stmts === null) {
+            // Abstract method or interface - treat as dynamic
+            $this->getTableHasDynamicReturn = true;
+
+            return;
+        }
+
+        $this->extractReturnsFromStatements($stmts);
+    }
+
+    /**
+     * Recursively extract return statements from a list of statements.
+     *
+     * @param  array<Node\Stmt>  $stmts
+     */
+    private function extractReturnsFromStatements(array $stmts): void
+    {
+        foreach ($stmts as $stmt) {
+            // Already marked as dynamic - no need to continue
+            if ($this->getTableHasDynamicReturn) {
+                return;
+            }
+
+            if ($stmt instanceof Node\Stmt\Return_) {
+                $this->processReturnStatement($stmt);
+            } elseif ($stmt instanceof Node\Stmt\If_) {
+                // Handle if/elseif/else blocks
+                $this->extractReturnsFromStatements($stmt->stmts);
+                foreach ($stmt->elseifs as $elseif) {
+                    $this->extractReturnsFromStatements($elseif->stmts);
+                }
+                if ($stmt->else !== null) {
+                    $this->extractReturnsFromStatements($stmt->else->stmts);
+                }
+            } elseif ($stmt instanceof Node\Stmt\Switch_) {
+                // Handle switch cases
+                foreach ($stmt->cases as $case) {
+                    $this->extractReturnsFromStatements($case->stmts);
+                }
+            } elseif ($stmt instanceof Node\Stmt\TryCatch) {
+                // Handle try/catch/finally
+                $this->extractReturnsFromStatements($stmt->stmts);
+                foreach ($stmt->catches as $catch) {
+                    $this->extractReturnsFromStatements($catch->stmts);
+                }
+                if ($stmt->finally !== null) {
+                    $this->extractReturnsFromStatements($stmt->finally->stmts);
+                }
+            }
+        }
+    }
+
+    /**
+     * Process a single return statement.
+     */
+    private function processReturnStatement(Node\Stmt\Return_ $return): void
+    {
+        $expr = $return->expr;
+
+        // Empty return or return null - treat as dynamic
+        if ($expr === null) {
+            $this->getTableHasDynamicReturn = true;
+
+            return;
+        }
+
+        // Only accept literal strings
+        if ($expr instanceof Node\Scalar\String_) {
+            $value = $expr->value;
+
+            if ($this->getTableReturnValue === null) {
+                // First string literal found
+                $this->getTableReturnValue = $value;
+            } elseif ($this->getTableReturnValue !== $value) {
+                // Multiple different string literals - treat as dynamic
+                $this->getTableHasDynamicReturn = true;
+            }
+            // Same value as before - continue
+        } else {
+            // Non-literal return (variable, function call, concatenation, etc.)
+            $this->getTableHasDynamicReturn = true;
+        }
     }
 
     /**
@@ -1001,6 +1111,13 @@ class TableExtractorVisitor extends NodeVisitorAbstract
 
     public function getTableName(): ?string
     {
+        // getTable() method takes precedence over $table property (Laravel behavior)
+        // But if method has dynamic returns, ignore it entirely and use $table property
+        if ($this->getTableReturnValue !== null && ! $this->getTableHasDynamicReturn) {
+            return $this->getTableReturnValue;
+        }
+
+        // Fall back to $table property
         return $this->tableName;
     }
 

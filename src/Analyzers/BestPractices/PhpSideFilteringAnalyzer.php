@@ -147,6 +147,78 @@ class PhpSideFilteringAnalyzer extends AbstractFileAnalyzer
  */
 class PhpFilteringVisitor extends NodeVisitorAbstract
 {
+    /**
+     * Laravel helper functions that return non-Eloquent data.
+     * These should not be flagged as database queries.
+     *
+     * @var array<string>
+     */
+    private const EXCLUDED_HELPERS = [
+        'config',
+        'session',
+        'request',
+        'cache',
+        'cookie',
+        'collect',
+        'env',
+        'app',
+        'auth',
+        'validator',
+        'response',
+        'redirect',
+        'view',
+        'route',
+        'url',
+        'trans',
+        '__',
+        'old',
+        'now',
+        'today',
+        'json_decode',
+        'array_filter',
+        'array_map',
+    ];
+
+    /**
+     * Classes that are not Eloquent models/queries.
+     * Static calls on these classes should not be flagged.
+     *
+     * @var array<string>
+     */
+    private const EXCLUDED_CLASSES = [
+        'Collection',
+        'Arr',
+        'Str',
+        'Carbon',
+        'CarbonImmutable',
+        'DateTime',
+        'DateTimeImmutable',
+        'Config',
+        'Session',
+        'Request',
+        'Cache',
+        'Cookie',
+        'Http',
+        'Response',
+        'Log',
+        'Event',
+        'Mail',
+        'Queue',
+        'Storage',
+        'File',
+        'Validator',
+        'Route',
+        'URL',
+        'View',
+        'Redirect',
+        'Gate',
+        'Bus',
+        'Notification',
+        'Password',
+        'RateLimiter',
+        'Broadcast',
+    ];
+
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
 
@@ -173,6 +245,12 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
         // Get the full chain of methods
         $chain = $this->getMethodChain($node);
 
+        // Skip if root is not an Eloquent source (false positive prevention)
+        $root = $this->getRootExpression($node);
+        if (! $this->isEloquentSource($root)) {
+            return;
+        }
+
         // Check for problematic patterns
         if ($this->hasPhpSideFiltering($chain)) {
             $pattern = implode('->', $chain);
@@ -188,6 +266,72 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
                 'code' => null,
             ];
         }
+    }
+
+    /**
+     * Traverse up the method chain to find the original expression.
+     */
+    private function getRootExpression(Node\Expr\MethodCall $node): Node\Expr
+    {
+        $current = $node;
+        while ($current instanceof Node\Expr\MethodCall) {
+            $current = $current->var;
+        }
+
+        return $current;
+    }
+
+    /**
+     * Check if the root expression is likely an Eloquent query source.
+     *
+     * This method filters out known non-Eloquent sources to prevent false positives.
+     */
+    private function isEloquentSource(Node\Expr $expr): bool
+    {
+        // Case 1: Function call - check if it's an excluded helper
+        if ($expr instanceof Node\Expr\FuncCall && $expr->name instanceof Node\Name) {
+            $name = strtolower($expr->name->toString());
+            if (in_array($name, array_map('strtolower', self::EXCLUDED_HELPERS), true)) {
+                return false;
+            }
+        }
+
+        // Case 2: Static call - check class name
+        if ($expr instanceof Node\Expr\StaticCall && $expr->class instanceof Node\Name) {
+            $className = $expr->class->getLast();
+            if (in_array($className, self::EXCLUDED_CLASSES, true)) {
+                return false;
+            }
+        }
+
+        // Case 3: Property fetch on $this that looks like a helper
+        // e.g., $this->request->all()->filter() where request is injected
+        if ($expr instanceof Node\Expr\PropertyFetch) {
+            if ($expr->name instanceof Node\Identifier) {
+                $propertyName = strtolower($expr->name->toString());
+                // Skip properties that match helper names (likely injected services)
+                $serviceProperties = ['request', 'session', 'cache', 'config', 'validator'];
+                if (in_array($propertyName, $serviceProperties, true)) {
+                    return false;
+                }
+            }
+        }
+
+        // Case 4: Method call starting from a known non-Eloquent source
+        // Handle cases like app()->make('config')->get()
+        if ($expr instanceof Node\Expr\MethodCall) {
+            // Check the immediate method name
+            if ($expr->name instanceof Node\Identifier) {
+                $methodName = $expr->name->toString();
+                // json() typically returns array/collection from HTTP responses
+                if (in_array($methodName, ['json', 'toArray', 'jsonSerialize'], true)) {
+                    return false;
+                }
+            }
+        }
+
+        // Default: assume Eloquent (safer to flag than miss)
+        return true;
     }
 
     /**

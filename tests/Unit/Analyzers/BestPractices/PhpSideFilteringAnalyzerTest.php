@@ -361,4 +361,336 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    // ========================================================================
+    // FALSE POSITIVE PREVENTION TESTS
+    // ========================================================================
+
+    public function test_ignores_request_all_filter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function store()
+    {
+        // This is NOT a database query - it's filtering request input
+        $data = request()->all()->filter(fn($v) => !empty($v));
+        return $data;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_config_get_filter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ConfigService
+{
+    public function getEnabledProviders()
+    {
+        // This is NOT a database query - it's filtering config values
+        return config()->get('providers')->filter(fn($p) => $p['enabled']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ConfigService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_session_get_filter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class CartService
+{
+    public function getActiveItems()
+    {
+        // This is NOT a database query - it's filtering session data
+        return session()->get('cart_items')->filter(fn($item) => $item->quantity > 0);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/CartService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_cache_get_filter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class CacheService
+{
+    public function getActiveData()
+    {
+        // This is NOT a database query - it's filtering cached data
+        return cache()->get('data')->filter(fn($d) => $d->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/CacheService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_collect_filter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ArrayService
+{
+    public function filterArray(array $items)
+    {
+        // This is NOT a database query - it's an explicit collection from an array
+        return collect($items)->filter(fn($item) => $item['active']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ArrayService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_collection_static_make_filter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Collection;
+
+class ArrayService
+{
+    public function processData(array $data)
+    {
+        // This is NOT a database query - Collection::make creates from array
+        return Collection::make($data)->filter(fn($item) => $item['valid']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ArrayService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_http_facade_json_filter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Http;
+
+class ApiService
+{
+    public function fetchActiveUsers()
+    {
+        // This is NOT a database query - it's HTTP response data
+        return Http::get('/api/users')->json()->filter(fn($u) => $u['active']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_injected_request_property(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+
+class UserController
+{
+    private Request $request;
+
+    public function __construct(Request $request)
+    {
+        $this->request = $request;
+    }
+
+    public function store()
+    {
+        // This is NOT a database query - it's filtering request input
+        return $this->request->all()->filter(fn($v) => !empty($v));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_detects_model_all_filter(): void
+    {
+        // Ensure we still detect the actual problematic pattern
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function getActiveUsers()
+    {
+        // This IS a database query - should be flagged
+        return User::all()->filter(fn($user) => $user->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('filter', $result);
+    }
+
+    public function test_ignores_cookie_get_filter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class PreferenceService
+{
+    public function getActivePreferences()
+    {
+        // This is NOT a database query - it's cookie data
+        return cookie()->get('preferences')->filter(fn($p) => $p['enabled']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/PreferenceService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_arr_facade_filter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Arr;
+
+class ArrayService
+{
+    public function processData(array $data)
+    {
+        // This is NOT a database query - Arr is a utility class
+        return Arr::wrap($data)->filter(fn($item) => $item['valid']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ArrayService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

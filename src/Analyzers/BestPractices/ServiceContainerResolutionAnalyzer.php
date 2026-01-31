@@ -35,11 +35,18 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - Factories: May need service resolution for test data
  * - Commands: Sometimes need conditional service resolution
  * - Service Providers: Legitimate container binding location
+ * - Jobs: Queued jobs may need conditional resolution
+ * - Listeners: Event listeners with conditional dependencies
+ * - Middleware: Conditional resolution based on request context
+ * - Observers: Model observers with dynamic dependencies
+ * - Handlers: Various handler classes
+ * - Closures: Don't support constructor DI
+ * - Route files: Use closures without DI support
  *
  * Configuration:
- * - whitelist_dirs: Directories to skip (e.g., tests, database/migrations, database/seeders)
- * - whitelist_classes: Class name patterns to skip (e.g., *Command, *Seeder)
- * - whitelist_methods: Methods to skip (e.g., environment, isLocal)
+ * - whitelist_dirs: Directories to skip (e.g., tests, database/migrations, routes)
+ * - whitelist_classes: Class name patterns to skip (e.g., *Command, *Job, *Listener)
+ * - whitelist_methods: Non-resolution methods to skip (e.g., bound, has, call, tagged)
  */
 class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
 {
@@ -84,6 +91,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             'database/migrations',  // Migrations don't support constructor DI
             'database/seeders',
             'database/factories',
+            'routes',               // Route files use closures without DI support
         ]);
         $this->whitelistDirs = is_array($configDirs) ? $configDirs : [];
 
@@ -92,16 +100,70 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             '*Command',
             '*Seeder',
             'DatabaseSeeder',
+            '*Job',
+            '*Listener',
+            '*Middleware',
+            '*Observer',
+            '*Factory',
+            '*Handler',
         ]);
         $this->whitelistClasses = is_array($configClasses) ? $configClasses : [];
 
-        // Load whitelist_methods
+        // Load whitelist_methods (non-resolution methods that are legitimate)
         $configMethods = $this->config->get("{$baseKey}.whitelist_methods", [
+            // Environment checks
             'environment',
             'isLocal',
             'isProduction',
             'runningInConsole',
             'runningUnitTests',
+            // Container inspection (not resolution)
+            'bound',
+            'has',
+            'resolved',
+            'isShared',
+            'isAlias',
+            // Method injection (legitimate pattern)
+            'call',
+            // Tagged services (legitimate pattern)
+            'tagged',
+            // Contextual binding configuration
+            'when',
+            'needs',
+            'give',
+            'giveTagged',
+            'giveConfig',
+            // Service decoration
+            'extend',
+            'alias',
+            // Lifecycle hooks
+            'terminating',
+            'booted',
+            'booting',
+            // Path helpers
+            'basePath',
+            'configPath',
+            'databasePath',
+            'resourcePath',
+            'storagePath',
+            'publicPath',
+            'langPath',
+            'bootstrapPath',
+            // Locale methods
+            'getLocale',
+            'setLocale',
+            'isLocale',
+            'currentLocale',
+            // App info
+            'version',
+            'name',
+            // Error handling
+            'abort',
+            // Testing/cleanup (usually in tests)
+            'flush',
+            'forgetInstance',
+            'forgetInstances',
+            'forgetScopedInstances',
         ]);
         $this->whitelistMethods = is_array($configMethods) ? $configMethods : [];
     }
@@ -258,6 +320,11 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     private ?string $currentMethod = null;
 
     /**
+     * Closure depth (closures don't support constructor DI).
+     */
+    private int $closureDepth = 0;
+
+    /**
      * @param  array<string>  $whitelistClasses
      * @param  array<string>  $whitelistMethods
      */
@@ -282,8 +349,20 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
             return null;
         }
 
+        // Track closure entry (closures don't support constructor DI)
+        if ($node instanceof Expr\Closure || $node instanceof Expr\ArrowFunction) {
+            $this->closureDepth++;
+
+            return null;
+        }
+
         // Skip if class is whitelisted
         if ($this->isWhitelistedClass()) {
+            return null;
+        }
+
+        // Skip if inside closure (closures don't support constructor DI)
+        if ($this->closureDepth > 0) {
             return null;
         }
 
@@ -416,6 +495,11 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         // Clear class context on exit
         if ($node instanceof Stmt\Class_) {
             $this->currentClass = null;
+        }
+
+        // Track closure exit
+        if ($node instanceof Expr\Closure || $node instanceof Expr\ArrowFunction) {
+            $this->closureDepth--;
         }
 
         return null;

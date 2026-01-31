@@ -205,6 +205,11 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                 }
 
                 if (empty($catch->stmts)) {
+                    // Check if catch block has an explanatory comment (intentional ignore)
+                    if ($this->hasExplanatoryComment($catch)) {
+                        continue;
+                    }
+
                     $this->issues[] = [
                         'message' => 'Empty catch block silently swallows exceptions',
                         'line' => $catch->getLine(),
@@ -213,6 +218,15 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                         'code' => null,
                     ];
                 } else {
+                    // Get exception variable name
+                    $exceptionVar = $catch->var?->name;
+                    $exceptionVarName = is_string($exceptionVar) ? $exceptionVar : null;
+
+                    // Check if exception variable is used (indicates it's being handled)
+                    if ($this->usesExceptionVariable($catch->stmts, $exceptionVarName)) {
+                        continue;
+                    }
+
                     // Check if catch block has logging, reporting, or rethrow
                     $hasLogging = false;
                     $hasRethrow = false;
@@ -272,6 +286,85 @@ class SilentFailureVisitor extends NodeVisitorAbstract
         return null;
     }
 
+    /**
+     * Reset class context when leaving a class to prevent context leaking in multi-class files.
+     */
+    public function leaveNode(Node $node): ?Node
+    {
+        if ($node instanceof Node\Stmt\Class_) {
+            $this->currentClass = null;
+        }
+
+        return null;
+    }
+
+    /**
+     * Check if the catch block has an explanatory comment (intentional empty catch).
+     */
+    private function hasExplanatoryComment(Node\Stmt\Catch_ $catch): bool
+    {
+        // Check for comments attached to the catch node
+        $comments = $catch->getComments();
+        if (! empty($comments)) {
+            return true;
+        }
+
+        // Check for comments inside the catch block scope via attributes
+        /** @var array<\PhpParser\Comment> $attributes */
+        $attributes = $catch->getAttribute('comments', []);
+
+        return ! empty($attributes);
+    }
+
+    /**
+     * Check if the exception variable is used within the catch block statements.
+     *
+     * @param  array<Node>  $stmts
+     */
+    private function usesExceptionVariable(array $stmts, ?string $exceptionVar): bool
+    {
+        if ($exceptionVar === null) {
+            return false;
+        }
+
+        foreach ($stmts as $stmt) {
+            if ($this->nodeContainsVariable($stmt, $exceptionVar)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Recursively check if a node contains a reference to the given variable.
+     */
+    private function nodeContainsVariable(Node $node, string $varName): bool
+    {
+        // Check if this node is the variable
+        if ($node instanceof Node\Expr\Variable && $node->name === $varName) {
+            return true;
+        }
+
+        // Recursively check child nodes
+        foreach ($node->getSubNodeNames() as $name) {
+            $subNode = $node->$name;
+            if ($subNode instanceof Node) {
+                if ($this->nodeContainsVariable($subNode, $varName)) {
+                    return true;
+                }
+            } elseif (is_array($subNode)) {
+                foreach ($subNode as $child) {
+                    if ($child instanceof Node && $this->nodeContainsVariable($child, $varName)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
     private function isLoggingOrReportingStatement(Node $stmt): bool
     {
         if (! $stmt instanceof Node\Stmt\Expression) {
@@ -281,40 +374,22 @@ class SilentFailureVisitor extends NodeVisitorAbstract
         $expr = $stmt->expr;
 
         // Check for Log::* calls (Log::error, Log::warning, etc.)
-        if ($expr instanceof Node\Expr\StaticCall) {
-            if ($expr->class instanceof Node\Name && $expr->class->toString() === 'Log') {
-                return true;
-            }
-        }
-
-        // Check for function calls
-        if ($expr instanceof Node\Expr\FuncCall && $expr->name instanceof Node\Name) {
-            $functionName = $expr->name->toString();
-
-            // Laravel error reporting helpers
-            if (in_array($functionName, ['logger', 'report', 'rescue'], true)) {
-                return true;
-            }
-        }
-
-        // Check for method calls
-        if ($expr instanceof Node\Expr\MethodCall && $expr->name instanceof Node\Identifier) {
-            $method = $expr->name->toString();
-
-            // Logger methods (PSR-3)
-            if (in_array($method, ['error', 'warning', 'info', 'debug', 'log', 'critical', 'alert', 'emergency', 'notice'], true)) {
-                return true;
-            }
-
-            // Error reporting service methods (Sentry, Bugsnag, etc.)
-            if (in_array($method, ['captureException', 'notifyException', 'report'], true)) {
-                return true;
-            }
-        }
-
-        // Check for static calls to error reporting services
         if ($expr instanceof Node\Expr\StaticCall && $expr->class instanceof Node\Name) {
             $className = $expr->class->toString();
+
+            if ($className === 'Log') {
+                return true;
+            }
+
+            // Event::dispatch(), Bus::dispatch(), Notification::send(), Mail::send()
+            if (in_array($className, ['Event', 'Bus', 'Queue', 'Notification', 'Mail'], true)) {
+                return true;
+            }
+
+            // DB::rollback()
+            if ($className === 'DB' && $expr->name instanceof Node\Identifier && $expr->name->toString() === 'rollback') {
+                return true;
+            }
 
             // Sentry: \Sentry\captureException()
             if (str_contains($className, 'Sentry')) {
@@ -332,6 +407,61 @@ class SilentFailureVisitor extends NodeVisitorAbstract
             }
         }
 
+        // Check for function calls
+        if ($expr instanceof Node\Expr\FuncCall && $expr->name instanceof Node\Name) {
+            $functionName = $expr->name->toString();
+
+            // Laravel error reporting helpers
+            if (in_array($functionName, ['logger', 'report', 'rescue'], true)) {
+                return true;
+            }
+
+            // Event/job dispatching helpers
+            if (in_array($functionName, ['event', 'dispatch', 'broadcast'], true)) {
+                return true;
+            }
+
+            // Laravel abort helpers
+            if (in_array($functionName, ['abort', 'abort_if', 'abort_unless'], true)) {
+                return true;
+            }
+        }
+
+        // Check for method calls
+        if ($expr instanceof Node\Expr\MethodCall && $expr->name instanceof Node\Identifier) {
+            $method = $expr->name->toString();
+
+            // Logger methods (PSR-3)
+            if (in_array($method, ['error', 'warning', 'info', 'debug', 'log', 'critical', 'alert', 'emergency', 'notice'], true)) {
+                return true;
+            }
+
+            // Error reporting service methods (Sentry, Bugsnag, etc.)
+            if (in_array($method, ['captureException', 'notifyException', 'report'], true)) {
+                return true;
+            }
+
+            // Notification method: $user->notify(), $notifiable->notify()
+            if ($method === 'notify') {
+                return true;
+            }
+
+            // Session flash methods: session()->flash(), session()->put()
+            if (in_array($method, ['flash', 'put', 'push'], true) && $this->isSessionMethodCall($expr)) {
+                return true;
+            }
+
+            // Custom handler method calls on $this (e.g., $this->logError(), $this->handleException())
+            if ($expr->var instanceof Node\Expr\Variable && $expr->var->name === 'this') {
+                $handlerPatterns = ['log', 'error', 'exception', 'report', 'handle', 'notify', 'fail'];
+                foreach ($handlerPatterns as $pattern) {
+                    if (stripos($method, $pattern) !== false) {
+                        return true;
+                    }
+                }
+            }
+        }
+
         // Check for namespace function calls like \Sentry\captureException()
         if ($expr instanceof Node\Expr\FuncCall && $expr->name instanceof Node\Name\FullyQualified) {
             $functionName = $expr->name->toString();
@@ -341,6 +471,28 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                 str_contains($functionName, 'report')) {
                 return true;
             }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a method call is on a session object.
+     */
+    private function isSessionMethodCall(Node\Expr\MethodCall $expr): bool
+    {
+        // Check for session()->flash() pattern
+        if ($expr->var instanceof Node\Expr\FuncCall &&
+            $expr->var->name instanceof Node\Name &&
+            $expr->var->name->toString() === 'session') {
+            return true;
+        }
+
+        // Check for $session->flash() pattern
+        if ($expr->var instanceof Node\Expr\Variable &&
+            is_string($expr->var->name) &&
+            str_contains(strtolower($expr->var->name), 'session')) {
+            return true;
         }
 
         return false;

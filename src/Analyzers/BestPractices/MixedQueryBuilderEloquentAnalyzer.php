@@ -160,8 +160,8 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        // Phase 1: Collect all class info (FQCN, parent, table)
-        /** @var array<string, array{parent: string|null, table: string|null}> $classInfo */
+        // Phase 1: Collect all class info (FQCN, parent, table, abstract)
+        /** @var array<string, array{parent: string|null, table: string|null, abstract: bool}> $classInfo */
         $classInfo = [];
 
         foreach ($this->modelPaths as $modelPath) {
@@ -187,9 +187,17 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
         $scannedRegistry = [];
 
         foreach ($classInfo as $fqcn => $info) {
-            if (isset($this->resolvedModels[$fqcn])) {
-                $scannedRegistry[$fqcn] = $info['table'];
+            // Only include classes that are confirmed Eloquent models
+            if (! isset($this->resolvedModels[$fqcn])) {
+                continue;
             }
+
+            // Skip abstract models that do not represent real database tables.
+            if (($info['abstract'] ?? false) === true) {
+                continue;
+            }
+
+            $scannedRegistry[$fqcn] = $info['table'];
         }
 
         self::$tableRegistryCache[$cacheKey] = $scannedRegistry;
@@ -199,7 +207,7 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
     /**
      * Recursively scan a directory for PHP files and collect class info.
      *
-     * @param  array<string, array{parent: string|null, table: string|null}>  $classInfo
+     * @param  array<string, array{parent: string|null, table: string|null, abstract: bool}>  $classInfo
      */
     private function scanModelDirectoryPhase1(string $directory, array &$classInfo): void
     {
@@ -224,9 +232,9 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Extract class information (FQCN, parent, table) from a PHP file.
+     * Extract class information (FQCN, parent, table, abstract) from a PHP file.
      *
-     * @param  array<string, array{parent: string|null, table: string|null}>  $classInfo
+     * @param  array<string, array{parent: string|null, table: string|null, abstract: bool}>  $classInfo
      */
     private function extractClassInfo(string $file, array &$classInfo): void
     {
@@ -250,6 +258,7 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
             $classInfo[$fqcn] = [
                 'parent' => $visitor->getParentClassName(),
                 'table' => $visitor->getTableName(),
+                'abstract' => $visitor->isAbstract(),
             ];
         } catch (\Throwable) {
             // Skip files with parse errors
@@ -915,6 +924,8 @@ class TableExtractorVisitor extends NodeVisitorAbstract
 
     private ?string $parentClass = null;
 
+    private bool $isAbstract = false;
+
     public function enterNode(Node $node): ?Node
     {
         if ($node instanceof Node\Stmt\Namespace_) {
@@ -924,6 +935,7 @@ class TableExtractorVisitor extends NodeVisitorAbstract
         if ($node instanceof Node\Stmt\Class_) {
             $this->className = $node->name?->toString();
             $this->parentClass = $node->extends?->toString();
+            $this->isAbstract = $node->isAbstract();
         }
 
         // Look for: protected $table = 'table_name';
@@ -980,26 +992,21 @@ class TableExtractorVisitor extends NodeVisitorAbstract
      */
     public function getParentClassName(): ?string
     {
-        if ($this->parentClass === null || $this->className === null) {
+        if ($this->parentClass === null) {
             return null;
         }
 
-        $normalized = ltrim($this->parentClass, '\\');
-
-        // If already fully qualified (contains backslash), use as-is
-        if (str_contains($normalized, '\\')) {
-            return $normalized;
-        }
-
-        // Otherwise, assume same namespace as current class
-        return $this->namespace
-            ? $this->namespace.'\\'.$normalized
-            : $normalized;
+        return ltrim($this->parentClass, '\\');
     }
 
     public function getTableName(): ?string
     {
         return $this->tableName;
+    }
+
+    public function isAbstract(): bool
+    {
+        return $this->isAbstract;
     }
 
     /**

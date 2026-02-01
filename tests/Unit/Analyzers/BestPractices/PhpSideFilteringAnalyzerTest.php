@@ -1445,4 +1445,274 @@ PHP;
         $this->assertCount(1, $issues);
         $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
     }
+
+    // ========================================================================
+    // RELATIONSHIP COLLECTION FILTERING TESTS
+    // ========================================================================
+
+    public function test_detects_relationship_filter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class PostService
+{
+    public function getPublishedPosts($user)
+    {
+        return $user->posts->filter(fn($p) => $p->published);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/PostService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Filtering data in PHP', $result);
+    }
+
+    public function test_detects_relationship_reject(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class OrderService
+{
+    public function getActiveItems($order)
+    {
+        return $order->items->reject(fn($i) => $i->cancelled);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Filtering data in PHP', $result);
+    }
+
+    public function test_detects_relationship_wherein(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class OrderService
+{
+    public function getItemsByStatus($order, array $statuses)
+    {
+        return $order->items->whereIn('status', $statuses);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('whereIn', $result);
+    }
+
+    public function test_detects_relationship_wherenotin(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getActiveRoles($user, array $excludeRoles)
+    {
+        return $user->roles->whereNotIn('name', $excludeRoles);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('whereNotIn', $result);
+    }
+
+    public function test_ignores_non_relationship_properties(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DataService
+{
+    public function process($obj)
+    {
+        // These should NOT be flagged - not relationships
+        $obj->data->filter(fn($d) => $d->valid);
+        $obj->metadata->reject(fn($m) => $m->empty);
+        $obj->settings->whereIn('key', ['a', 'b']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DataService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_relationship_issues_have_medium_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getActivePosts($user)
+    {
+        return $user->posts->filter(fn($p) => $p->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+    }
+
+    public function test_relationship_recommendation_mentions_eager_loading(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class PostService
+{
+    public function getPublishedPosts($user)
+    {
+        return $user->posts->filter(fn($p) => $p->published);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/PostService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertGreaterThan(0, count($issues));
+        $this->assertStringContainsString('eager loading', $issues[0]->recommendation);
+    }
+
+    public function test_ignores_excluded_property_patterns(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function processUser($user)
+    {
+        // Foreign key pattern: *_id
+        $user->parent_id->filter(fn($x) => $x);
+
+        // Timestamp pattern: *_at
+        $user->logged_in_at->filter(fn($x) => $x);
+
+        // Boolean prefix: is_*, has_*
+        $user->is_active->filter(fn($x) => $x);
+        $user->has_permission->filter(fn($x) => $x);
+
+        // Count suffix: *_count
+        $user->posts_count->filter(fn($x) => $x);
+
+        // Single character
+        $user->x->filter(fn($x) => $x);
+
+        // Underscore prefix
+        $user->_internal->filter(fn($x) => $x);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_nested_relationship_filter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class CompanyService
+{
+    public function getActiveEmployees($company)
+    {
+        // Nested relationship access
+        return $company->departments->filter(fn($d) => $d->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/CompanyService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('filter', $result);
+    }
 }

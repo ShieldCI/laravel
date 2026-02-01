@@ -247,6 +247,50 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
         'Broadcast',
     ];
 
+    /**
+     * Common model properties that are NOT relationships.
+     * Borrowed from EloquentNPlusOneAnalyzer.
+     *
+     * @var array<string>
+     */
+    private const EXCLUDED_PROPERTIES = [
+        // Primary keys and identifiers
+        'id', 'uuid', 'key', 'code', 'token', 'hash', 'reference',
+        // Timestamps
+        'created_at', 'updated_at', 'deleted_at', 'published_at', 'expires_at',
+        'verified_at', 'email_verified_at', 'started_at', 'ended_at', 'sent_at',
+        // Authentication
+        'password', 'remember_token', 'api_token', 'secret',
+        // Common string fields
+        'name', 'title', 'label', 'slug', 'email', 'username', 'nickname',
+        'description', 'content', 'body', 'text', 'summary', 'excerpt', 'message',
+        // URLs and paths
+        'url', 'path', 'link', 'href', 'src', 'route',
+        // Media
+        'image', 'avatar', 'photo', 'picture', 'icon', 'thumbnail', 'logo', 'file',
+        // Contact info
+        'phone', 'address', 'street', 'city', 'state', 'country', 'zip', 'postal_code',
+        // Localization
+        'locale', 'timezone', 'currency', 'lang', 'language',
+        // Numeric values
+        'count', 'total', 'amount', 'price', 'quantity', 'balance', 'score', 'rating',
+        'order', 'position', 'sort', 'rank', 'level', 'priority', 'weight', 'size',
+        // Status and flags
+        'status', 'state', 'type', 'kind', 'category', 'role', 'group',
+        'active', 'enabled', 'visible', 'published', 'approved', 'verified',
+        // JSON/array fields
+        'data', 'meta', 'metadata', 'settings', 'options', 'config', 'attributes',
+        'properties', 'payload', 'extra', 'info', 'details', 'preferences',
+        // Miscellaneous
+        'value', 'result', 'output', 'input', 'response', 'request',
+        'color', 'format', 'version', 'note', 'notes', 'comment', 'reason',
+        // Service/dependency injection properties (commonly on $this)
+        'service', 'client', 'repository', 'handler', 'factory', 'manager',
+        'provider', 'driver', 'adapter', 'gateway', 'connector', 'dispatcher',
+        'resolver', 'builder', 'validator', 'transformer', 'serializer', 'parser',
+        'logger', 'cache', 'session', 'queue', 'mailer', 'notifier', 'broadcaster',
+    ];
+
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
 
@@ -332,10 +376,14 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // Case 3: Property fetch - cannot determine type, default to false
-        // $this->service->all() - likely NOT Eloquent
-        // $this->users could be a relationship, but without type info we can't know
+        // Case 3: Property fetch - check if looks like relationship
+        // $this->service->all() - likely NOT Eloquent (returns false)
+        // $user->posts - likely relationship (returns true if posts looks like relationship)
         if ($expr instanceof Node\Expr\PropertyFetch) {
+            if ($expr->name instanceof Node\Identifier) {
+                return $this->looksLikeRelationship($expr->name->toString());
+            }
+
             return false;
         }
 
@@ -419,6 +467,65 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     }
 
     /**
+     * Check if property name looks like an Eloquent relationship.
+     *
+     * Uses heuristic exclusion patterns from EloquentNPlusOneAnalyzer.
+     */
+    private function looksLikeRelationship(string $name): bool
+    {
+        $lowerName = strtolower($name);
+
+        // Exclude common non-relationship properties
+        if (in_array($lowerName, self::EXCLUDED_PROPERTIES, true)) {
+            return false;
+        }
+
+        // Foreign key pattern: *_id
+        if (str_ends_with($lowerName, '_id')) {
+            return false;
+        }
+
+        // Timestamp pattern: *_at
+        if (str_ends_with($lowerName, '_at')) {
+            return false;
+        }
+
+        // Boolean prefix patterns: is_*, has_*, can_*, should_*, was_*, will_*
+        if (preg_match('/^(is|has|can|should|was|will)_/', $lowerName) === 1) {
+            return false;
+        }
+
+        // Count/total suffix patterns: *_count, *_total, *_sum, *_avg, *_min, *_max
+        if (preg_match('/_(count|total|sum|avg|min|max)$/', $lowerName) === 1) {
+            return false;
+        }
+
+        // Raw/original prefix patterns: raw_*, original_*, cached_*, computed_*, calculated_*
+        if (preg_match('/^(raw|original|cached|computed|calculated)_/', $lowerName) === 1) {
+            return false;
+        }
+
+        // Service/dependency injection patterns (camelCase): *Service, *Client, *Repository, etc.
+        // These are typically injected dependencies, not Eloquent relationships
+        if (preg_match('/(service|client|repository|handler|factory|manager|provider|driver|adapter|gateway|connector|api)$/i', $name) === 1) {
+            return false;
+        }
+
+        // Single character names are unlikely to be relationships
+        if (strlen($name) === 1) {
+            return false;
+        }
+
+        // Names starting with underscore are typically internal
+        if (str_starts_with($name, '_')) {
+            return false;
+        }
+
+        // Assume it's a relationship (heuristic)
+        return true;
+    }
+
+    /**
      * Get the full method chain including static call class name for context.
      *
      * For `User::where()->get()->filter()`, returns:
@@ -469,13 +576,22 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     private function hasPhpSideFiltering(array $chain): bool
     {
         $fetchIndex = $this->findLastFetchMethod($chain);
-        if ($fetchIndex === null) {
+
+        // Standard pattern: Model::get()->filter()
+        if ($fetchIndex !== null) {
+            for ($i = $fetchIndex + 1; $i < count($chain); $i++) {
+                if (in_array($chain[$i], self::FILTER_METHODS, true)) {
+                    return true;
+                }
+            }
+
             return false;
         }
 
-        // Check for any filter method after the fetch
-        for ($i = $fetchIndex + 1; $i < count($chain); $i++) {
-            if (in_array($chain[$i], self::FILTER_METHODS, true)) {
+        // Relationship pattern: $model->relationship->filter()
+        // No fetch method, but has filter method
+        foreach ($chain as $method) {
+            if (in_array($method, self::FILTER_METHODS, true)) {
                 return true;
             }
         }
@@ -517,6 +633,7 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
      * - paginate/simplePaginate/cursorPaginate: Medium (controlled dataset size)
      * - cursor: Medium (lazy loading, memory efficient)
      * - pluck: Medium (single column, smaller memory footprint)
+     * - relationship (no fetch method): Medium (scoped by foreign key)
      * - get/all/find/findMany: Critical (can fetch entire table)
      *
      * @param  array<string>  $chain
@@ -540,6 +657,13 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
             return Severity::Medium;
         }
 
+        // Relationship pattern (no fetch method in chain)
+        // e.g., $user->posts->filter() has no get()/all() call
+        // Relationship collections are scoped by foreign key, less dangerous
+        if ($fetchMethod === null) {
+            return Severity::Medium;
+        }
+
         // get(), all(), find(), findMany(): can potentially fetch entire table
         return Severity::Critical;
     }
@@ -550,8 +674,29 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     private function getRecommendation(array $chain): string
     {
         $pattern = implode('->', $chain);
+        $fetchMethod = $this->getFetchMethod($chain);
 
-        // Recommendations for the 4 unique patterns we detect
+        // Relationship pattern (no fetch method means direct property access)
+        if ($fetchMethod === null) {
+            $relationshipRecommendations = [
+                'filter' => 'Use constrained eager loading instead: User::with([\'relationship\' => fn($q) => $q->where(...)])->get(). Or query the relationship directly: $model->relationship()->where(...)->get().',
+                'reject' => 'Use constrained eager loading with whereNot conditions: User::with([\'relationship\' => fn($q) => $q->whereNot(...)])->get(). Or query directly: $model->relationship()->whereNot(...)->get().',
+                'whereIn' => 'Use constrained eager loading: User::with([\'relationship\' => fn($q) => $q->whereIn(...)])->get(). Or query directly: $model->relationship()->whereIn(...)->get().',
+                'whereNotIn' => 'Use constrained eager loading: User::with([\'relationship\' => fn($q) => $q->whereNotIn(...)])->get(). Or query directly: $model->relationship()->whereNotIn(...)->get().',
+            ];
+
+            foreach ($relationshipRecommendations as $method => $recommendation) {
+                if (in_array($method, $chain, true)) {
+                    return sprintf(
+                        '%s Current pattern "%s" filters an already-loaded collection in PHP memory instead of at the database level.',
+                        $recommendation,
+                        $pattern
+                    );
+                }
+            }
+        }
+
+        // Standard recommendations for static model patterns
         $recommendations = [
             'filter' => 'Replace filter() with where() clauses before get()/all() to filter at database level. For complex filtering logic, consider database computed columns or raw where clauses.',
             'reject' => 'Replace reject() with where() or whereNot() clauses before get()/all() to filter at database level. The inverse logic can be expressed with whereNot() or negative where conditions.',

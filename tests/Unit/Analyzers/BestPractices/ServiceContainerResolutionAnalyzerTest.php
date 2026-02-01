@@ -38,6 +38,19 @@ class ServiceContainerResolutionAnalyzerTest extends AnalyzerTestCase
                     'runningInConsole',
                     'runningUnitTests',
                 ],
+                'whitelist_services' => $config['whitelist_services'] ?? [
+                    'config',
+                    'request',
+                    'log',
+                    'cache',
+                    'session',
+                ],
+                'detect_psr_get' => $config['detect_psr_get'] ?? false,
+                'detect_manual_instantiation' => $config['detect_manual_instantiation'] ?? false,
+                'manual_instantiation_patterns' => $config['manual_instantiation_patterns'] ?? [
+                    '*Service',
+                    '*Repository',
+                ],
             ],
         ];
 
@@ -868,7 +881,7 @@ PHP;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertStringContainsString('manual service container resolution', $issues[0]->recommendation);
+        $this->assertStringContainsString('constructor injection', $issues[0]->recommendation);
     }
 
     public function test_detects_non_service_provider_in_providers_directory(): void
@@ -1036,5 +1049,650 @@ PHP;
         $this->assertArrayHasKey('argument_type', $metadata);
         $this->assertSame('app()', $metadata['pattern']);
         $this->assertSame('class', $metadata['argument_type']);
+    }
+
+    // ============================================================
+    // NEW TESTS FOR IMPROVED FEATURES
+    // ============================================================
+
+    public function test_skips_resolution_in_closures(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class EventService
+{
+    public function register()
+    {
+        Event::listen(function () {
+            // Closures don't support constructor DI, this is legitimate
+            $handler = app(EventHandler::class);
+            $handler->handle();
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/EventService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because resolution in closures is legitimate
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_binding_in_closures(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class SetupService
+{
+    public function setup()
+    {
+        Route::get('/', function () {
+            // Binding inside closures is ALWAYS problematic
+            app()->bind(UserInterface::class, UserRepository::class);
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/SetupService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should detect binding even in closures
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('app()->bind()', $result);
+    }
+
+    public function test_skips_whitelisted_service_aliases(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ConfigService
+{
+    public function getConfig()
+    {
+        // These are common Laravel service aliases - legitimate usage
+        $config = app('config');
+        $request = app('request');
+        $log = app('log');
+        $cache = app('cache');
+        $session = app('session');
+
+        return $config->get('app.name');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/ConfigService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because these are whitelisted service aliases
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_non_whitelisted_service_aliases(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class CacheService
+{
+    public function get()
+    {
+        // 'cache.store' is NOT in whitelist
+        $cache = app('cache.store');
+        return $cache->get('key');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/CacheService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('app()', $result);
+    }
+
+    public function test_deduplicates_issues_on_same_line(): void
+    {
+        // This tests that the same pattern on the same line is only reported once
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function fetch()
+    {
+        $repo = app(UserRepository::class);
+        return $repo->all();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        // Should have exactly 1 issue, not duplicated
+        $this->assertCount(1, $issues);
+    }
+
+    public function test_provides_binding_specific_recommendation(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class SetupService
+{
+    public function init()
+    {
+        app()->singleton(CacheInterface::class, RedisCache::class);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/SetupService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('ServiceProvider', $issues[0]->recommendation);
+        $this->assertStringContainsString('register()', $issues[0]->recommendation);
+    }
+
+    public function test_psr_get_not_detected_by_default(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ContainerService
+{
+    public function resolve()
+    {
+        // PSR-11 get() method - not commonly used in Laravel
+        $service = app()->get(SomeService::class);
+        return $service;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/ContainerService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'detect_psr_get' => false,
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because detect_psr_get is false
+        $this->assertPassed($result);
+    }
+
+    public function test_psr_get_detected_when_enabled(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ContainerService
+{
+    public function resolve()
+    {
+        $service = app()->get(SomeService::class);
+        return $service;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/ContainerService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'detect_psr_get' => true,
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('app()->get()', $result);
+    }
+
+    public function test_manual_instantiation_not_detected_by_default(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class OrderService
+{
+    public function process()
+    {
+        // Manual instantiation of service - DI violation
+        $repo = new OrderRepository();
+        return $repo->all();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/OrderService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'detect_manual_instantiation' => false,
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because detect_manual_instantiation is false
+        $this->assertPassed($result);
+    }
+
+    public function test_manual_instantiation_detected_when_enabled(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class OrderService
+{
+    public function process()
+    {
+        $repo = new OrderRepository();
+        return $repo->all();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/OrderService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'detect_manual_instantiation' => true,
+            'manual_instantiation_patterns' => ['*Repository'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('new OrderRepository()', $result);
+    }
+
+    public function test_manual_instantiation_skips_non_matching_patterns(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class OrderService
+{
+    public function process()
+    {
+        // UserDTO doesn't match *Service or *Repository patterns
+        $dto = new UserDTO(['name' => 'John']);
+        return $dto;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/OrderService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'detect_manual_instantiation' => true,
+            'manual_instantiation_patterns' => ['*Service', '*Repository'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because UserDTO doesn't match patterns
+        $this->assertPassed($result);
+    }
+
+    public function test_namespace_aware_whitelist_matching(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Jobs;
+
+class ProcessOrderJob
+{
+    public function handle()
+    {
+        $repo = app(OrderRepository::class);
+        return $repo->process();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Jobs/ProcessOrderJob.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'whitelist_classes' => ['*Job'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because ProcessOrderJob matches *Job pattern
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_resolution_in_arrow_functions(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class CollectionService
+{
+    public function transform()
+    {
+        return collect([1, 2, 3])->map(fn($item) => app(Transformer::class)->transform($item));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/CollectionService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because arrow functions also don't support constructor DI
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_route_service_provider(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Foundation\Support\Providers\RouteServiceProvider as ServiceProvider;
+
+class RouteServiceProvider extends ServiceProvider
+{
+    public function boot()
+    {
+        $this->routes(function () {
+            $router = app('router');
+            $router->middleware('api');
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/RouteServiceProvider.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because it extends RouteServiceProvider
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_event_service_provider(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Foundation\Support\Providers\EventServiceProvider as ServiceProvider;
+
+class EventServiceProvider extends ServiceProvider
+{
+    public function boot()
+    {
+        $events = app('events');
+        $events->listen('*', function ($event) {
+            // ...
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/EventServiceProvider.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because it extends EventServiceProvider
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_scoped_binding_outside_provider(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class SetupService
+{
+    public function init()
+    {
+        app()->scoped(RequestContext::class, function () {
+            return new RequestContext();
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/SetupService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('app()->scoped()', $result);
+    }
+
+    public function test_detects_instance_binding_outside_provider(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class SetupService
+{
+    public function init()
+    {
+        $config = new AppConfig();
+        app()->instance(ConfigInterface::class, $config);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/SetupService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('app()->instance()', $result);
+    }
+
+    public function test_resolve_in_nested_closures_is_skipped(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class EventService
+{
+    public function register()
+    {
+        Event::listen(function () {
+            collect([1, 2, 3])->each(function ($item) {
+                // Nested closure - still should be skipped
+                $handler = resolve(ItemHandler::class);
+                $handler->handle($item);
+            });
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/EventService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because resolution in nested closures is also legitimate
+        $this->assertPassed($result);
+    }
+
+    public function test_resolve_after_closure_is_detected(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class EventService
+{
+    public function register()
+    {
+        Event::listen(function () {
+            // This is inside closure - skipped
+        });
+
+        // This is OUTSIDE closure - should be detected
+        $service = app(SomeService::class);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/EventService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because app() is outside the closure
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('app()', $result);
     }
 }

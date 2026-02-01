@@ -216,10 +216,9 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 
                     // If it looks like a real value (long enough and not a placeholder)
                     if (! $isPlaceholder && strlen($value) > 20 && ! str_starts_with($value, 'base64:')) {
-                        $issues[] = $this->createIssueWithSnippet(
+                        $issues[] = $this->createIssue(
                             message: sprintf('Sensitive key "%s" may contain real credentials in .env.example', $key),
-                            filePath: $envExample,
-                            lineNumber: $lineNumber + 1,
+                            location: new Location($this->getRelativePath($envExample), $lineNumber + 1),
                             severity: Severity::High,
                             recommendation: 'Replace with placeholder value. .env.example should not contain real credentials',
                             code: $key,
@@ -254,10 +253,9 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
         // Check if .env is ignored
         $ignored = preg_match('/^\s*(?:\.env|\*\.env)\s*$/m', $content) === 1;
         if (! $ignored) {
-            $issues[] = $this->createIssueWithSnippet(
+            $issues[] = $this->createIssue(
                 message: '.env file is not excluded in .gitignore',
-                filePath: $gitignorePath,
-                lineNumber: null,
+                location: new Location($this->getRelativePath($gitignorePath)),
                 severity: Severity::Critical,
                 recommendation: 'Add ".env" to .gitignore to prevent accidentally committing secrets to version control',
                 code: '.env',
@@ -312,10 +310,9 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 
         // Return code 0 means file is tracked by git
         if ($returnCode === 0 && is_string($output) && str_contains($output, '.env')) {
-            $issues[] = $this->createIssueWithSnippet(
+            $issues[] = $this->createIssue(
                 message: '.env file is committed to git repository',
-                filePath: $envPath,
-                lineNumber: null,
+                location: new Location($this->getRelativePath($envPath)),
                 severity: Severity::Critical,
                 recommendation: 'Remove .env from git: "git rm --cached .env" and ensure it\'s in .gitignore',
                 code: 'git-tracked',
@@ -347,10 +344,9 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 
         // Check if file is world-readable or world-writable (Critical)
         if (($perms & self::WORLD_READABLE) || ($perms & self::WORLD_WRITABLE)) {
-            $issues[] = $this->createIssueWithSnippet(
+            $issues[] = $this->createIssue(
                 message: sprintf('.env file has insecure permissions (%s)', $octal),
-                filePath: $envPath,
-                lineNumber: null,
+                location: new Location($this->getRelativePath($envPath)),
                 severity: Severity::Critical,
                 recommendation: 'Restrict .env permissions: chmod 600 .env',
                 code: 'permissions',
@@ -366,10 +362,9 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 
         // Check if file is group-readable or group-writable (Medium)
         if (($perms & self::GROUP_READABLE) || ($perms & self::GROUP_WRITABLE)) {
-            $issues[] = $this->createIssueWithSnippet(
+            $issues[] = $this->createIssue(
                 message: sprintf('.env file has overly permissive permissions (%s)', $octal),
-                filePath: $envPath,
-                lineNumber: null,
+                location: new Location($this->getRelativePath($envPath)),
                 severity: Severity::Medium,
                 recommendation: 'Consider restricting .env permissions: chmod 600 .env (readable only by owner)',
                 code: 'permissions',

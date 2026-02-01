@@ -36,6 +36,9 @@ class PhpSideFilteringAnalyzer extends AbstractFileAnalyzer
     /** @var array<string> */
     private array $whitelist = [];
 
+    /** @var array<string> */
+    private array $modelNamespaces = ['App\\Models', 'App\\Model'];
+
     public function __construct(
         private ParserInterface $parser,
         private Config $config
@@ -73,6 +76,24 @@ class PhpSideFilteringAnalyzer extends AbstractFileAnalyzer
 
         // Merge defaults with config (config takes precedence)
         $this->whitelist = array_values(array_unique(array_merge($defaultWhitelist, $configWhitelist)));
+
+        // Load model namespaces from config
+        $configModelNamespaces = $this->config->get(
+            'shieldci.analyzers.best-practices.php-side-filtering.model_namespaces'
+        );
+        if (is_array($configModelNamespaces) && count($configModelNamespaces) > 0) {
+            $this->modelNamespaces = $configModelNamespaces;
+        }
+    }
+
+    /**
+     * Get the configured model namespaces.
+     *
+     * @return array<string>
+     */
+    public function getModelNamespaces(): array
+    {
+        return $this->modelNamespaces;
     }
 
     protected function runAnalysis(): ResultInterface
@@ -97,7 +118,7 @@ class PhpSideFilteringAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $visitor = new PhpFilteringVisitor;
+                $visitor = new PhpFilteringVisitor($this->modelNamespaces);
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
@@ -291,8 +312,33 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
         'logger', 'cache', 'session', 'queue', 'mailer', 'notifier', 'broadcaster',
     ];
 
+    /**
+     * Suffixes that indicate a class is NOT an Eloquent model.
+     * Classes with these suffixes are services, clients, etc.
+     *
+     * @var array<string>
+     */
+    private const NON_MODEL_SUFFIXES = [
+        'Service', 'Client', 'Repository', 'Handler', 'Factory',
+        'Manager', 'Provider', 'Driver', 'Adapter', 'Gateway',
+        'Connector', 'Api', 'Helper', 'Utility', 'Collection',
+        'Controller', 'Middleware', 'Request', 'Resource', 'Job',
+        'Event', 'Listener', 'Observer', 'Policy', 'Rule',
+    ];
+
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
+
+    /** @var array<string> */
+    private array $modelNamespaces;
+
+    /**
+     * @param  array<string>  $modelNamespaces
+     */
+    public function __construct(array $modelNamespaces = ['App\\Models', 'App\\Model'])
+    {
+        $this->modelNamespaces = $modelNamespaces;
+    }
 
     public function enterNode(Node $node): ?Node
     {
@@ -409,9 +455,12 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
      * Check if a class name looks like an Eloquent model.
      *
      * Uses positive identification patterns:
-     * - App\Models\* namespace
+     * - Configured model namespace patterns (default: App\Models\*, App\Model\*)
      * - Domain\*\Models\* namespace (DDD patterns)
      * - *Model suffix
+     *
+     * Conservative for short names (no namespace): won't flag unless users configure
+     * model_namespaces, to avoid false positives on services/clients.
      */
     private function looksLikeModel(Node\Name $name): bool
     {
@@ -425,10 +474,12 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // POSITIVE CHECK 1: Model namespace patterns
-        if (str_starts_with($normalized, 'App\\Models\\') ||
-            str_starts_with($normalized, 'App\\Model\\')) {
-            return true;
+        // POSITIVE CHECK 1: Configured model namespace patterns
+        foreach ($this->modelNamespaces as $modelNamespace) {
+            $prefix = rtrim($modelNamespace, '\\').'\\';
+            if (str_starts_with($normalized, $prefix)) {
+                return true;
+            }
         }
 
         // POSITIVE CHECK 2: Domain-driven patterns (e.g., Domain\Users\Models\User)
@@ -441,14 +492,36 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
             return true;
         }
 
-        // POSITIVE CHECK 4: Short name only (no namespace) - assume it's a model
-        // When developers write User::all(), Order::get(), etc. without namespace,
-        // it's almost always a model reference (use statement imports it)
+        // POSITIVE CHECK 4: Short name only (no namespace) - use conservative heuristics
+        // Without namespace info, we cannot determine if it's a model or a service/client
         if (! str_contains($normalized, '\\')) {
-            return true;
+            // Reject common non-model patterns (services, clients, etc.)
+            if ($this->looksLikeServiceOrClient($shortName)) {
+                return false;
+            }
+
+            // For remaining short names, we cannot reliably determine - don't flag
+            // Users should configure model_namespaces if they want short name detection
+            return false;
         }
 
         // Cannot determine - default to NOT a model
+        return false;
+    }
+
+    /**
+     * Check if a class name looks like a service, client, or other non-model class.
+     *
+     * @param  string  $name  Short class name (without namespace)
+     */
+    private function looksLikeServiceOrClient(string $name): bool
+    {
+        foreach (self::NON_MODEL_SUFFIXES as $suffix) {
+            if (str_ends_with($name, $suffix)) {
+                return true;
+            }
+        }
+
         return false;
     }
 

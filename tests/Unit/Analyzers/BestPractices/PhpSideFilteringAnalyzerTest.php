@@ -17,11 +17,18 @@ class PhpSideFilteringAnalyzerTest extends AnalyzerTestCase
     protected function createAnalyzer(array $config = []): AnalyzerInterface
     {
         // Build best-practices config with defaults
+        $phpSideFilteringConfig = [
+            'whitelist' => $config['whitelist'] ?? [],
+        ];
+
+        // Add model_namespaces if provided
+        if (isset($config['model_namespaces'])) {
+            $phpSideFilteringConfig['model_namespaces'] = $config['model_namespaces'];
+        }
+
         $bestPracticesConfig = [
             'enabled' => true,
-            'php-side-filtering' => [
-                'whitelist' => $config['whitelist'] ?? [],
-            ],
+            'php-side-filtering' => $phpSideFilteringConfig,
         ];
 
         $configRepo = new Repository([
@@ -71,13 +78,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\User;
-
 class UserService
 {
     public function getActiveUsers()
     {
-        return User::all()->filter(function($user) {
+        // Using FQN - should be detected
+        return \App\Models\User::all()->filter(function($user) {
             return $user->status === 'active';
         });
     }
@@ -134,13 +140,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\Order;
-
 class OrderService
 {
     public function getPendingOrders()
     {
-        return Order::get()->filter(fn($order) => $order->status === 'pending');
+        // Using FQN - should be detected
+        return \App\Models\Order::get()->filter(fn($order) => $order->status === 'pending');
     }
 }
 PHP;
@@ -164,13 +169,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\User;
-
 class UserService
 {
     public function getVerifiedUsers()
     {
-        return User::all()->filter(function($user) {
+        // Using FQN - should be detected
+        return \App\Models\User::all()->filter(function($user) {
             return $user->email_verified_at !== null;
         });
     }
@@ -213,13 +217,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\User;
-
 class UserService
 {
     public function getActiveUsers()
     {
-        return User::all()->reject(function($user) {
+        // Using FQN - should be detected
+        return \App\Models\User::all()->reject(function($user) {
             return $user->status === 'inactive';
         });
     }
@@ -245,13 +248,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\Product;
-
 class ProductService
 {
     public function getProductsByIds($ids)
     {
-        return Product::all()->whereIn('id', $ids);
+        // Using FQN - should be detected
+        return \App\Models\Product::all()->whereIn('id', $ids);
     }
 }
 PHP;
@@ -275,13 +277,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\Product;
-
 class ProductService
 {
     public function getProductsExcludingIds($excludeIds)
     {
-        return Product::get()->whereNotIn('id', $excludeIds);
+        // Using FQN - should be detected
+        return \App\Models\Product::get()->whereNotIn('id', $excludeIds);
     }
 }
 PHP;
@@ -336,13 +337,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\User;
-
 class LegacyUserService
 {
     public function getActiveUsers()
     {
-        return User::all()->filter(function($user) {
+        // Using FQN - would be detected, but whitelisted
+        return \App\Models\User::all()->filter(function($user) {
             return $user->status === 'active';
         });
     }
@@ -606,20 +606,18 @@ PHP;
 
     public function test_still_detects_model_all_filter(): void
     {
-        // Ensure we still detect the actual problematic pattern
+        // Ensure we still detect the actual problematic pattern with FQN
         $code = <<<'PHP'
 <?php
 
 namespace App\Services;
 
-use App\Models\User;
-
 class UserService
 {
     public function getActiveUsers()
     {
-        // This IS a database query - should be flagged
-        return User::all()->filter(fn($user) => $user->active);
+        // This IS a database query with FQN - should be flagged
+        return \App\Models\User::all()->filter(fn($user) => $user->active);
     }
 }
 PHP;
@@ -965,14 +963,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\Product;
-
 class ProductService
 {
     public function getActiveProducts()
     {
-        // This IS a database query - App\Models namespace
-        return Product::all()->filter(fn($p) => $p->active);
+        // This IS a database query - App\Models namespace with FQN
+        return \App\Models\Product::all()->filter(fn($p) => $p->active);
     }
 }
 PHP;
@@ -996,14 +992,12 @@ PHP;
 
 namespace App\Services;
 
-use Domain\Users\Models\User;
-
 class UserService
 {
     public function getActiveUsers()
     {
-        // This IS a database query - Domain\*\Models namespace (DDD)
-        return User::all()->filter(fn($u) => $u->active);
+        // This IS a database query - Domain\*\Models namespace (DDD) with FQN
+        return \Domain\Users\Models\User::all()->filter(fn($u) => $u->active);
     }
 }
 PHP;
@@ -1020,7 +1014,7 @@ PHP;
         $this->assertHasIssueContaining('filter', $result);
     }
 
-    public function test_detects_short_class_name_model(): void
+    public function test_ignores_short_class_name_without_fqn(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1033,7 +1027,8 @@ class OrderService
 {
     public function getPendingOrders()
     {
-        // Short class name (no namespace in call) - assumed to be model
+        // Short class name (no namespace in call) - NOT detected to avoid false positives
+        // Use FQN (\App\Models\Order) or configure model_namespaces for detection
         return Order::get()->filter(fn($o) => $o->status === 'pending');
     }
 }
@@ -1047,8 +1042,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('filter', $result);
+        // Short names without FQN are NOT detected to avoid false positives
+        $this->assertPassed($result);
     }
 
     public function test_ignores_non_model_namespace_with_fqn(): void
@@ -1090,13 +1085,12 @@ PHP;
 
 namespace App\Legacy;
 
-use App\Models\User;
-
 class LegacyService
 {
     public function getUsers()
     {
-        return User::all()->filter(fn($u) => $u->active);
+        // Using FQN - would be detected, but whitelisted by glob
+        return \App\Models\User::all()->filter(fn($u) => $u->active);
     }
 }
 PHP;
@@ -1121,14 +1115,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\User;
-
 class SuperUserService
 {
     public function getUsers()
     {
         // Should be flagged - "User" whitelist should NOT match "SuperUserService"
-        return User::all()->filter(fn($u) => $u->active);
+        return \App\Models\User::all()->filter(fn($u) => $u->active);
     }
 }
 PHP;
@@ -1153,13 +1145,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\User;
-
 class UserService
 {
     public function getUsers()
     {
-        return User::all()->filter(fn($u) => $u->active);
+        // Using FQN - would be detected, but whitelisted by filename
+        return \App\Models\User::all()->filter(fn($u) => $u->active);
     }
 }
 PHP;
@@ -1184,13 +1175,12 @@ PHP;
 
 namespace App\Legacy;
 
-use App\Models\User;
-
 class UserService
 {
     public function getUsers()
     {
-        return User::all()->filter(fn($u) => $u->active);
+        // Using FQN - would be detected, but whitelisted by directory segment
+        return \App\Models\User::all()->filter(fn($u) => $u->active);
     }
 }
 PHP;
@@ -1215,13 +1205,12 @@ PHP;
 
 namespace App\Legacy\Users;
 
-use App\Models\User;
-
 class UserProcessor
 {
     public function getUsers()
     {
-        return User::all()->filter(fn($u) => $u->active);
+        // Using FQN - would be detected, but whitelisted by recursive glob
+        return \App\Models\User::all()->filter(fn($u) => $u->active);
     }
 }
 PHP;
@@ -1250,13 +1239,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\User;
-
 class UserService
 {
     public function getActiveUsers()
     {
-        return User::paginate(10)->filter(fn($u) => $u->active);
+        // Using FQN - should be detected
+        return \App\Models\User::paginate(10)->filter(fn($u) => $u->active);
     }
 }
 PHP;
@@ -1280,13 +1268,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\User;
-
 class UserService
 {
     public function processUsers()
     {
-        return User::cursor()->filter(fn($u) => $u->active);
+        // Using FQN - should be detected
+        return \App\Models\User::cursor()->filter(fn($u) => $u->active);
     }
 }
 PHP;
@@ -1310,13 +1297,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\User;
-
 class UserService
 {
     public function getActiveEmails()
     {
-        return User::pluck('email', 'id')->filter(fn($email) => str_contains($email, '@company.com'));
+        // Using FQN - should be detected
+        return \App\Models\User::pluck('email', 'id')->filter(fn($email) => str_contains($email, '@company.com'));
     }
 }
 PHP;
@@ -1340,14 +1326,13 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\User;
-
 class UserService
 {
     public function processUsers()
     {
         // get()->map()->filter() - filter after fetch with intermediate method
-        return User::get()->map(fn($u) => $u->toArray())->filter(fn($u) => $u['active']);
+        // Using FQN - should be detected
+        return \App\Models\User::get()->map(fn($u) => $u->toArray())->filter(fn($u) => $u['active']);
     }
 }
 PHP;
@@ -1371,13 +1356,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\Product;
-
 class ProductService
 {
     public function getVisibleProducts()
     {
-        return Product::simplePaginate(20)->reject(fn($p) => $p->hidden);
+        // Using FQN - should be detected
+        return \App\Models\Product::simplePaginate(20)->reject(fn($p) => $p->hidden);
     }
 }
 PHP;
@@ -1401,13 +1385,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\User;
-
 class UserService
 {
     public function filterUsers(array $ids, array $activeIds)
     {
-        return User::findMany($ids)->whereIn('id', $activeIds);
+        // Using FQN - should be detected
+        return \App\Models\User::findMany($ids)->whereIn('id', $activeIds);
     }
 }
 PHP;
@@ -1435,13 +1418,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\User;
-
 class UserService
 {
     public function getActiveUsers()
     {
-        return User::paginate(10)->filter(fn($u) => $u->active);
+        // Using FQN - should be detected
+        return \App\Models\User::paginate(10)->filter(fn($u) => $u->active);
     }
 }
 PHP;
@@ -1468,13 +1450,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\User;
-
 class UserService
 {
     public function getActiveUsers()
     {
-        return User::get()->filter(fn($u) => $u->active);
+        // Using FQN - should be detected
+        return \App\Models\User::get()->filter(fn($u) => $u->active);
     }
 }
 PHP;
@@ -1501,13 +1482,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\User;
-
 class UserService
 {
     public function getActiveUsers()
     {
-        return User::all()->filter(fn($u) => $u->active);
+        // Using FQN - should be detected
+        return \App\Models\User::all()->filter(fn($u) => $u->active);
     }
 }
 PHP;
@@ -1533,13 +1513,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\User;
-
 class UserService
 {
     public function getActiveUsers()
     {
-        return User::cursor()->filter(fn($u) => $u->active);
+        // Using FQN - should be detected
+        return \App\Models\User::cursor()->filter(fn($u) => $u->active);
     }
 }
 PHP;
@@ -1565,13 +1544,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\User;
-
 class UserService
 {
     public function getActiveEmails()
     {
-        return User::pluck('email')->filter(fn($e) => str_ends_with($e, '@company.com'));
+        // Using FQN - should be detected
+        return \App\Models\User::pluck('email')->filter(fn($e) => str_ends_with($e, '@company.com'));
     }
 }
 PHP;
@@ -1597,13 +1575,12 @@ PHP;
 
 namespace App\Services;
 
-use App\Models\User;
-
 class UserService
 {
     public function getActiveUsers()
     {
-        return User::simplePaginate(15)->filter(fn($u) => $u->active);
+        // Using FQN - should be detected
+        return \App\Models\User::simplePaginate(15)->filter(fn($u) => $u->active);
     }
 }
 PHP;
@@ -1882,6 +1859,315 @@ class CompanyService
 PHP;
 
         $tempDir = $this->createTempDirectory(['Services/CompanyService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('filter', $result);
+    }
+
+    // ========================================================================
+    // MODEL NAMESPACES CONFIGURATION TESTS
+    // ========================================================================
+
+    public function test_respects_custom_model_namespaces_config(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getActiveUsers()
+    {
+        // Using FQN with custom namespace - should be detected when configured
+        return \MyCompany\Domain\User::all()->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        // Without custom config - should pass (not detected)
+        $analyzer1 = $this->createAnalyzer();
+        $analyzer1->setBasePath($tempDir);
+        $analyzer1->setPaths(['.']);
+        $result1 = $analyzer1->analyze();
+        $this->assertPassed($result1);
+
+        // With custom model_namespaces config - should fail (detected)
+        $analyzer2 = $this->createAnalyzer([
+            'model_namespaces' => ['MyCompany\\Domain'],
+        ]);
+        $analyzer2->setBasePath($tempDir);
+        $analyzer2->setPaths(['.']);
+        $result2 = $analyzer2->analyze();
+        $this->assertFailed($result2);
+        $this->assertHasIssueContaining('filter', $result2);
+    }
+
+    public function test_model_namespaces_config_replaces_defaults(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getActiveUsers()
+    {
+        // App\Entities would normally be detected if in default namespace list
+        // but with custom config that doesn't include it, should pass
+        return \App\Entities\User::all()->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        // First verify it's NOT detected with just the custom namespace
+        $analyzer1 = $this->createAnalyzer([
+            'model_namespaces' => ['MyCompany\\Domain'],
+        ]);
+        $analyzer1->setBasePath($tempDir);
+        $analyzer1->setPaths(['.']);
+        $result1 = $analyzer1->analyze();
+        $this->assertPassed($result1);
+
+        // Now verify it IS detected when App\Entities is in the config
+        $analyzer2 = $this->createAnalyzer([
+            'model_namespaces' => ['App\\Entities'],
+        ]);
+        $analyzer2->setBasePath($tempDir);
+        $analyzer2->setPaths(['.']);
+        $result2 = $analyzer2->analyze();
+        $this->assertFailed($result2);
+    }
+
+    // ========================================================================
+    // SERVICE/CLIENT SUFFIX REJECTION TESTS
+    // ========================================================================
+
+    public function test_ignores_short_name_with_service_suffix(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DataProcessor
+{
+    public function processData()
+    {
+        // UserService is a service class, not a model - should NOT be flagged
+        return UserService::all()->filter(fn($item) => $item->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DataProcessor.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_short_name_with_client_suffix(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiConsumer
+{
+    public function fetchUsers()
+    {
+        // ApiClient is a client class, not a model - should NOT be flagged
+        return ApiClient::get('users')->filter(fn($u) => $u['active']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiConsumer.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_short_name_with_repository_suffix(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DataHandler
+{
+    public function getActiveRecords()
+    {
+        // UserRepository is a repository class, not a model - should NOT be flagged
+        return UserRepository::all()->filter(fn($r) => $r->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DataHandler.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_short_name_with_factory_suffix(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ProductionLine
+{
+    public function getFactoryProducts()
+    {
+        // ProductFactory is a factory class, not a model - should NOT be flagged
+        return ProductFactory::all()->filter(fn($p) => $p->ready);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ProductionLine.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_short_name_with_controller_suffix(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class MetaService
+{
+    public function getControllerActions()
+    {
+        // UserController is a controller class, not a model - should NOT be flagged
+        return UserController::all()->filter(fn($a) => $a->public);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/MetaService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_short_name_with_handler_suffix(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class EventProcessor
+{
+    public function processEvents()
+    {
+        // EventHandler is a handler class, not a model - should NOT be flagged
+        return EventHandler::all()->filter(fn($e) => $e->processed);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/EventProcessor.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_short_name_with_job_suffix(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class QueueManager
+{
+    public function getPendingJobs()
+    {
+        // ProcessReportJob is a job class, not a model - should NOT be flagged
+        return ProcessReportJob::all()->filter(fn($j) => $j->pending);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/QueueManager.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_detects_model_suffix_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DataProcessor
+{
+    public function getUsers()
+    {
+        // UserModel ends with "Model" suffix - should be detected
+        return UserModel::all()->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DataProcessor.php' => $code]);
+
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);

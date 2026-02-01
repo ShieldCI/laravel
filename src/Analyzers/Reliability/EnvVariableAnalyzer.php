@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Checks that all environment variables from .env.example are defined in .env.
@@ -50,10 +51,9 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
         if (! file_exists($envPath)) {
             return $this->failed(
                 '.env file not found',
-                [$this->createIssueWithSnippet(
+                [$this->createIssue(
                     message: '.env file is missing',
-                    filePath: $envPath,
-                    lineNumber: null,
+                    location: new Location($this->getRelativePath($envPath)),
                     severity: Severity::Critical,
                     recommendation: $this->buildMissingEnvFileRecommendation(),
                     code: 'missing-env',
@@ -70,10 +70,9 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
         if ($exampleResult['error'] !== null) {
             return $this->failed(
                 'Failed to parse .env.example file',
-                [$this->createIssueWithSnippet(
+                [$this->createIssue(
                     message: 'Unable to parse .env.example file',
-                    filePath: $envExamplePath,
-                    lineNumber: null,
+                    location: new Location($this->getRelativePath($envExamplePath)),
                     severity: Severity::Critical,
                     recommendation: sprintf(
                         "The .env.example file could not be parsed. Error: %s\n\nEnsure the file is readable and properly formatted.",
@@ -88,10 +87,9 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
         if ($actualResult['error'] !== null) {
             return $this->failed(
                 'Failed to parse .env file',
-                [$this->createIssueWithSnippet(
+                [$this->createIssue(
                     message: 'Unable to parse .env file',
-                    filePath: $envPath,
-                    lineNumber: null,
+                    location: new Location($this->getRelativePath($envPath)),
                     severity: Severity::High,
                     recommendation: sprintf(
                         "The .env file could not be parsed. Error: %s\n\nEnsure the file is readable and properly formatted.",
@@ -137,10 +135,9 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
         if (empty($missingVars) && ! empty($commentedOnlyVars)) {
             return $this->warning(
                 sprintf('Found %d commented environment variable(s)', count($commentedOnlyVars)),
-                [$this->createIssueWithSnippet(
+                [$this->createIssue(
                     message: 'Environment variables are commented out',
-                    filePath: $envPath,
-                    lineNumber: null,
+                    location: new Location($this->getRelativePath($envPath)),
                     severity: Severity::Low,
                     recommendation: $this->buildCommentedVariablesRecommendation($commentedOnlyVars),
                     code: 'commented-variables',
@@ -156,10 +153,9 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
         $issues = [];
 
         if (! empty($missingVars)) {
-            $issues[] = $this->createIssueWithSnippet(
+            $issues[] = $this->createIssue(
                 message: 'Missing environment variables',
-                filePath: $envPath,
-                lineNumber: null,
+                location: new Location($this->getRelativePath($envPath)),
                 severity: Severity::High,
                 recommendation: $this->buildMissingVariablesRecommendation($missingVars),
                 code: 'missing-variables',
@@ -171,10 +167,9 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
         }
 
         if (! empty($commentedOnlyVars)) {
-            $issues[] = $this->createIssueWithSnippet(
+            $issues[] = $this->createIssue(
                 message: 'Environment variables are commented out',
-                filePath: $envPath,
-                lineNumber: null,
+                location: new Location($this->getRelativePath($envPath)),
                 severity: Severity::Low,
                 recommendation: $this->buildCommentedVariablesRecommendation($commentedOnlyVars),
                 code: 'commented-variables',

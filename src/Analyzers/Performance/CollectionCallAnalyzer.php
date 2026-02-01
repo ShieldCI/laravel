@@ -54,17 +54,6 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
         );
     }
 
-    public function shouldRun(): bool
-    {
-        // Check if PHPStan and Larastan are available
-        return $this->hasLarastan();
-    }
-
-    public function getSkipReason(): string
-    {
-        return 'Larastan package not installed (required for collection call analysis)';
-    }
-
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
@@ -136,46 +125,5 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             sprintf('Found %d inefficient collection operation(s) that should be database queries', count($issues)),
             $issues
         );
-    }
-
-    /**
-     * Check if Larastan is installed using capability-based detection.
-     *
-     * This approach is more reliable than checking file paths because it:
-     * - Works regardless of vendor directory structure
-     * - Detects Larastan even if loaded via custom neon config
-     * - Handles different installation methods (Composer, custom autoloading)
-     */
-    protected function hasLarastan(): bool
-    {
-        // For testing: check if PHPStan is mocked
-        if ($this->isMockedPHPStan()) {
-            return true; // Assume Larastan is available when using mocked PHPStan
-        }
-
-        // Primary detection: Check if Larastan classes exist
-        // This works regardless of how Larastan is installed or configured
-        return class_exists('Larastan\\Larastan\\ApplicationServiceProvider')
-            || class_exists('NunoMaduro\\Larastan\\ApplicationServiceProvider');
-    }
-
-    /**
-     * Check if PHPStan instance is a mock (for testing).
-     */
-    private function isMockedPHPStan(): bool
-    {
-        // Check for Mockery mock
-        if (interface_exists('Mockery\MockInterface') && $this->phpStan instanceof \Mockery\MockInterface) {
-            return true;
-        }
-
-        // Check for PHPUnit mock (starts with "Mock_")
-        $className = get_class($this->phpStan);
-        if (str_starts_with($className, 'Mock_')) {
-            return true;
-        }
-
-        // Fallback: check class name for common mock patterns
-        return str_contains($className, 'Mockery') || str_contains($className, 'PHPUnit');
     }
 }

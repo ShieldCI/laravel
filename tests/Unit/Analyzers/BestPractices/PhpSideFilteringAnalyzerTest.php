@@ -2446,4 +2446,180 @@ PHP;
         // Should NOT be flagged - find('uuid') returns Model, not Collection
         $this->assertPassed($result);
     }
+
+    // ========================================================================
+    // PLUCK-SPECIFIC RECOMMENDATION TESTS
+    // ========================================================================
+
+    public function test_pluck_filter_has_appropriate_recommendation(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getActiveEmails()
+    {
+        // Using FQN - should be detected with pluck-specific recommendation
+        return \App\Models\User::pluck('email')->filter(fn($e) => str_ends_with($e, '@company.com'));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        // Should have pluck-specific recommendation (not "loads all data into memory")
+        $recommendation = $issues[0]->recommendation;
+        $this->assertStringContainsString('where() clauses before pluck()', $recommendation);
+        $this->assertStringContainsString('only loads one column', $recommendation);
+        $this->assertStringNotContainsString('loads all data into memory', $recommendation);
+    }
+
+    public function test_pluck_reject_has_appropriate_recommendation(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getNonBannedIds()
+    {
+        return \App\Models\User::pluck('id')->reject(fn($id) => $id < 100);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        // Should have pluck-specific recommendation for reject
+        $recommendation = $issues[0]->recommendation;
+        $this->assertStringContainsString('whereNot() or where() clauses before pluck()', $recommendation);
+        $this->assertStringNotContainsString('loads all data into memory', $recommendation);
+    }
+
+    public function test_pluck_wherein_has_appropriate_recommendation(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getAdminIds(array $roles)
+    {
+        return \App\Models\User::pluck('id')->whereIn('role', $roles);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        // Should have pluck-specific recommendation for whereIn
+        $recommendation = $issues[0]->recommendation;
+        $this->assertStringContainsString('whereIn() to the query before pluck()', $recommendation);
+        $this->assertStringNotContainsString('loads all data into memory', $recommendation);
+    }
+
+    public function test_pluck_wherenotin_has_appropriate_recommendation(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getActiveIds(array $excludeStatuses)
+    {
+        return \App\Models\User::pluck('id')->whereNotIn('status', $excludeStatuses);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        // Should have pluck-specific recommendation for whereNotIn
+        $recommendation = $issues[0]->recommendation;
+        $this->assertStringContainsString('whereNotIn() to the query before pluck()', $recommendation);
+        $this->assertStringNotContainsString('loads all data into memory', $recommendation);
+    }
+
+    public function test_get_filter_still_has_memory_warning(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getActiveUsers()
+    {
+        // get() should still have the "loads all data into memory" warning
+        return \App\Models\User::get()->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        // get() should still have the memory warning
+        $recommendation = $issues[0]->recommendation;
+        $this->assertStringContainsString('loads all data into memory', $recommendation);
+    }
 }

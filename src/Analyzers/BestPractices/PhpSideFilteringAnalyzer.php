@@ -906,24 +906,87 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
 
         // Relationship pattern (no fetch method means direct property access)
         if ($fetchMethod === null) {
-            $relationshipRecommendations = [
-                'filter' => 'Use constrained eager loading instead: User::with([\'relationship\' => fn($q) => $q->where(...)])->get(). Or query the relationship directly: $model->relationship()->where(...)->get().',
-                'reject' => 'Use constrained eager loading with whereNot conditions: User::with([\'relationship\' => fn($q) => $q->whereNot(...)])->get(). Or query directly: $model->relationship()->whereNot(...)->get().',
-                'whereIn' => 'Use constrained eager loading: User::with([\'relationship\' => fn($q) => $q->whereIn(...)])->get(). Or query directly: $model->relationship()->whereIn(...)->get().',
-                'whereNotIn' => 'Use constrained eager loading: User::with([\'relationship\' => fn($q) => $q->whereNotIn(...)])->get(). Or query directly: $model->relationship()->whereNotIn(...)->get().',
-            ];
+            return $this->getRelationshipRecommendation($chain, $pattern);
+        }
 
-            foreach ($relationshipRecommendations as $method => $recommendation) {
-                if (in_array($method, $chain, true)) {
-                    return sprintf(
-                        '%s Current pattern "%s" filters an already-loaded collection in PHP memory instead of at the database level.',
-                        $recommendation,
-                        $pattern
-                    );
-                }
+        // Special handling for pluck() patterns
+        if ($fetchMethod === 'pluck') {
+            return $this->getPluckRecommendation($chain, $pattern);
+        }
+
+        return $this->getStandardRecommendation($chain, $pattern);
+    }
+
+    /**
+     * Get recommendation for relationship patterns (no fetch method).
+     *
+     * @param  array<string>  $chain
+     */
+    private function getRelationshipRecommendation(array $chain, string $pattern): string
+    {
+        $relationshipRecommendations = [
+            'filter' => 'Use constrained eager loading instead: User::with([\'relationship\' => fn($q) => $q->where(...)])->get(). Or query the relationship directly: $model->relationship()->where(...)->get().',
+            'reject' => 'Use constrained eager loading with whereNot conditions: User::with([\'relationship\' => fn($q) => $q->whereNot(...)])->get(). Or query directly: $model->relationship()->whereNot(...)->get().',
+            'whereIn' => 'Use constrained eager loading: User::with([\'relationship\' => fn($q) => $q->whereIn(...)])->get(). Or query directly: $model->relationship()->whereIn(...)->get().',
+            'whereNotIn' => 'Use constrained eager loading: User::with([\'relationship\' => fn($q) => $q->whereNotIn(...)])->get(). Or query directly: $model->relationship()->whereNotIn(...)->get().',
+        ];
+
+        foreach ($relationshipRecommendations as $method => $recommendation) {
+            if (in_array($method, $chain, true)) {
+                return sprintf(
+                    '%s Current pattern "%s" filters an already-loaded collection in PHP memory instead of at the database level.',
+                    $recommendation,
+                    $pattern
+                );
             }
         }
 
+        return sprintf(
+            'Move filtering logic to the query builder. Current pattern "%s" filters an already-loaded collection in PHP memory instead of at the database level.',
+            $pattern
+        );
+    }
+
+    /**
+     * Get recommendation for pluck() patterns.
+     *
+     * pluck() already optimizes SQL to select only specific columns,
+     * so the recommendation differs from get()/all() patterns.
+     *
+     * @param  array<string>  $chain
+     */
+    private function getPluckRecommendation(array $chain, string $pattern): string
+    {
+        $pluckRecommendations = [
+            'filter' => 'Add where() clauses before pluck() to filter at database level. Example: User::where("active", true)->pluck("id") instead of User::pluck("id")->filter(...).',
+            'reject' => 'Add whereNot() or where() clauses before pluck() to exclude values at database level. Example: User::where("banned", false)->pluck("id") instead of User::pluck("id")->reject(...).',
+            'whereIn' => 'Add whereIn() to the query before pluck(). Example: User::whereIn("role", ["admin"])->pluck("id") instead of User::pluck("id")->whereIn(...).',
+            'whereNotIn' => 'Add whereNotIn() to the query before pluck(). Example: User::whereNotIn("status", ["deleted"])->pluck("id") instead of User::pluck("id")->whereNotIn(...).',
+        ];
+
+        foreach ($pluckRecommendations as $method => $recommendation) {
+            if (in_array($method, $chain, true)) {
+                return sprintf(
+                    '%s Current pattern "%s" fetches column values then filters in PHP. While pluck() only loads one column, filtering should still happen in SQL for efficiency.',
+                    $recommendation,
+                    $pattern
+                );
+            }
+        }
+
+        return sprintf(
+            'Move filtering to the query builder before pluck(). Current pattern "%s" filters column values in PHP instead of at the database level.',
+            $pattern
+        );
+    }
+
+    /**
+     * Get standard recommendation for static model patterns (get/all/etc.).
+     *
+     * @param  array<string>  $chain
+     */
+    private function getStandardRecommendation(array $chain, string $pattern): string
+    {
         // Standard recommendations for static model patterns
         $recommendations = [
             'filter' => 'Replace filter() with where() clauses before get()/all() to filter at database level. For complex filtering logic, consider database computed columns or raw where clauses.',

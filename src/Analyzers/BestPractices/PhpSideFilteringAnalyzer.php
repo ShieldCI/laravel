@@ -202,6 +202,12 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     /**
      * Eloquent methods that fetch data from the database and return collections.
      *
+     * Note: find() is intentionally NOT in this list because:
+     * - find(1) returns Model|null (not a Collection)
+     * - find([1,2,3]) returns Collection (array of IDs)
+     * We handle find() specially via isFindWithArrayArgument() to only flag
+     * when called with an array literal.
+     *
      * @var array<string>
      */
     private const FETCH_METHODS = [
@@ -212,7 +218,6 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
         'cursorPaginate',
         'cursor',        // Returns LazyCollection
         'pluck',         // Returns collection of values
-        'find',          // Can return collection with array of IDs
         'findMany',      // Always returns collection
     ];
 
@@ -363,16 +368,19 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
         // Get the full chain of methods
         $chain = $this->getMethodChain($node);
 
+        // Check if the chain contains find() with an array argument
+        $hasFindWithArray = $this->hasFindWithArrayArgument($node);
+
         // Skip if root is not an Eloquent source (false positive prevention)
         $root = $this->getRootExpression($node);
-        if (! $this->isEloquentSource($root, $chain)) {
+        if (! $this->isEloquentSource($root, $chain, $hasFindWithArray)) {
             return;
         }
 
         // Check for problematic patterns
-        if ($this->hasPhpSideFiltering($chain)) {
+        if ($this->hasPhpSideFiltering($chain, $hasFindWithArray)) {
             $pattern = implode('->', $chain);
-            $severity = $this->determineSeverity($chain);
+            $severity = $this->determineSeverity($chain, $hasFindWithArray);
             $severityLabel = $severity === Severity::Critical ? 'CRITICAL' : 'WARNING';
 
             $this->issues[] = [
@@ -410,8 +418,9 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
      * for API clients, services, and other non-Eloquent sources.
      *
      * @param  array<string>  $chain  Method chain for heuristic detection
+     * @param  bool  $hasFindWithArray  Whether the chain contains find() with array argument
      */
-    private function isEloquentSource(Node\Expr $expr, array $chain = []): bool
+    private function isEloquentSource(Node\Expr $expr, array $chain = [], bool $hasFindWithArray = false): bool
     {
         // Case 1: Static call - check if it's a model-like class
         if ($expr instanceof Node\Expr\StaticCall && $expr->class instanceof Node\Name) {
@@ -439,12 +448,12 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
         // it's likely an Eloquent query being filtered in PHP
         // e.g., $query->get()->filter() where $query = User::where(...)
         if ($expr instanceof Node\Expr\Variable) {
-            return $this->hasLikelyEloquentPattern($chain);
+            return $this->hasLikelyEloquentPattern($chain, $hasFindWithArray);
         }
 
         // Case 5: Method call as root - check if it originates from model-like static call
         if ($expr instanceof Node\Expr\MethodCall) {
-            return $this->chainStartsWithModel($expr, $chain);
+            return $this->chainStartsWithModel($expr, $chain, $hasFindWithArray);
         }
 
         // Default: Cannot determine source type - don't flag
@@ -535,10 +544,11 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
      * Eloquent query being filtered in PHP.
      *
      * @param  array<string>  $chain
+     * @param  bool  $hasFindWithArray  Whether the chain contains find() with array argument
      */
-    private function hasLikelyEloquentPattern(array $chain): bool
+    private function hasLikelyEloquentPattern(array $chain, bool $hasFindWithArray = false): bool
     {
-        $hasFetch = false;
+        $hasFetch = $hasFindWithArray; // find() with array counts as a fetch
         $hasFilter = false;
 
         foreach ($chain as $method) {
@@ -557,8 +567,9 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
      * Traverse method chain to check if it starts with a model-like static call.
      *
      * @param  array<string>  $chain  Method chain for heuristic detection when variable is found
+     * @param  bool  $hasFindWithArray  Whether the chain contains find() with array argument
      */
-    private function chainStartsWithModel(Node\Expr\MethodCall $expr, array $chain = []): bool
+    private function chainStartsWithModel(Node\Expr\MethodCall $expr, array $chain = [], bool $hasFindWithArray = false): bool
     {
         $current = $expr;
         while ($current instanceof Node\Expr\MethodCall) {
@@ -571,7 +582,7 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
 
         // Variable at root of subchain - use heuristic
         if ($current instanceof Node\Expr\Variable) {
-            return $this->hasLikelyEloquentPattern($chain);
+            return $this->hasLikelyEloquentPattern($chain, $hasFindWithArray);
         }
 
         return false;
@@ -671,6 +682,57 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     }
 
     /**
+     * Check if a method chain contains a find() call with an array argument.
+     *
+     * find() has dual return types:
+     * - find(1) → Model|null (single ID)
+     * - find([1,2,3]) → Collection (array of IDs)
+     *
+     * We only flag find() when it's called with an array literal, since that
+     * returns a Collection. For variables, we cannot determine the type statically.
+     */
+    private function hasFindWithArrayArgument(Node\Expr\MethodCall $node): bool
+    {
+        $current = $node;
+
+        while ($current instanceof Node\Expr\MethodCall || $current instanceof Node\Expr\StaticCall) {
+            if ($this->isFindWithArrayArgument($current)) {
+                return true;
+            }
+
+            if ($current instanceof Node\Expr\MethodCall) {
+                $current = $current->var;
+            } else {
+                break;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if this specific node is a find() call with an array argument.
+     */
+    private function isFindWithArrayArgument(Node\Expr\StaticCall|Node\Expr\MethodCall $node): bool
+    {
+        if (! ($node->name instanceof Node\Identifier) || $node->name->toString() !== 'find') {
+            return false;
+        }
+
+        if (empty($node->args) || ! isset($node->args[0])) {
+            return false;
+        }
+
+        $firstArg = $node->args[0];
+        if (! ($firstArg instanceof Node\Arg)) {
+            return false;
+        }
+
+        // Array literal: find([1, 2, 3]) -> returns Collection
+        return $firstArg->value instanceof Node\Expr\Array_;
+    }
+
+    /**
      * Check if a method chain has PHP-side filtering after a database fetch.
      *
      * Detects patterns NOT covered by Larastan:
@@ -683,10 +745,26 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
      * detected by CollectionCallAnalyzer (via Larastan)
      *
      * @param  array<string>  $chain
+     * @param  bool  $hasFindWithArray  Whether the chain contains find() with an array argument
      */
-    private function hasPhpSideFiltering(array $chain): bool
+    private function hasPhpSideFiltering(array $chain, bool $hasFindWithArray = false): bool
     {
         $fetchIndex = $this->findLastFetchMethod($chain);
+
+        // Check for find() with array argument (acts like a fetch method)
+        if ($hasFindWithArray && $fetchIndex === null) {
+            $findIndex = $this->findFindMethodIndex($chain);
+            if ($findIndex !== null) {
+                $fetchIndex = $findIndex;
+            }
+        }
+
+        // If chain contains find() WITHOUT array argument, skip entirely
+        // find(1) or find($id) returns Model|null, not Collection
+        // Calling filter() on this is broken code, not a PHP-side filtering issue
+        if ($fetchIndex === null && $this->chainContainsFindWithoutArray($chain, $hasFindWithArray)) {
+            return false;
+        }
 
         // Standard pattern: Model::get()->filter()
         if ($fetchIndex !== null) {
@@ -708,6 +786,39 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
         }
 
         return false;
+    }
+
+    /**
+     * Check if chain contains find() without an array argument.
+     *
+     * @param  array<string>  $chain
+     * @param  bool  $hasFindWithArray  Whether we already know find() has an array argument
+     */
+    private function chainContainsFindWithoutArray(array $chain, bool $hasFindWithArray): bool
+    {
+        // If find() has an array argument, it's not "find without array"
+        if ($hasFindWithArray) {
+            return false;
+        }
+
+        // Check if 'find' is in the chain
+        return in_array('find', $chain, true);
+    }
+
+    /**
+     * Find the index of the find() method in the chain.
+     *
+     * @param  array<string>  $chain
+     */
+    private function findFindMethodIndex(array $chain): ?int
+    {
+        for ($i = count($chain) - 1; $i >= 0; $i--) {
+            if ($chain[$i] === 'find') {
+                return $i;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -745,12 +856,18 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
      * - cursor: Medium (lazy loading, memory efficient)
      * - pluck: Medium (single column, smaller memory footprint)
      * - relationship (no fetch method): Medium (scoped by foreign key)
-     * - get/all/find/findMany: Critical (can fetch entire table)
+     * - get/all/find([...])/findMany: Critical (can fetch entire table)
      *
      * @param  array<string>  $chain
+     * @param  bool  $hasFindWithArray  Whether the chain contains find() with array argument
      */
-    private function determineSeverity(array $chain): Severity
+    private function determineSeverity(array $chain, bool $hasFindWithArray = false): Severity
     {
+        // find() with array argument is critical (can fetch many records)
+        if ($hasFindWithArray) {
+            return Severity::Critical;
+        }
+
         $fetchMethod = $this->getFetchMethod($chain);
 
         // Pagination methods: controlled dataset size

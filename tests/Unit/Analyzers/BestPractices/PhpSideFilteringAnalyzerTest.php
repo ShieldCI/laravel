@@ -2177,4 +2177,273 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('filter', $result);
     }
+
+    // ========================================================================
+    // FIND() FALSE POSITIVE PREVENTION TESTS
+    // ========================================================================
+
+    public function test_ignores_find_with_single_id(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getUser()
+    {
+        // find(1) returns Model|null, not Collection
+        // Calling filter() on this is broken code, not a PHP-side filtering issue
+        return \App\Models\User::find(1)->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should NOT be flagged - find(1) returns Model, not Collection
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_find_with_array_ids(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getActiveUsers()
+    {
+        // find([1, 2, 3]) returns Collection - this is a performance issue
+        return \App\Models\User::find([1, 2, 3])->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('filter', $result);
+    }
+
+    public function test_find_with_array_has_critical_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getUsers()
+    {
+        // find([...]) with filter should be critical
+        return \App\Models\User::find([1, 2, 3])->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+    }
+
+    public function test_ignores_find_with_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getUser($id)
+    {
+        // find($id) - cannot determine if $id is single value or array
+        // Don't flag to avoid false positives
+        return \App\Models\User::find($id)->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should NOT be flagged - cannot determine type of $id
+        $this->assertPassed($result);
+    }
+
+    public function test_still_detects_findmany_with_filter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getActiveUsers(array $ids)
+    {
+        // findMany() always returns Collection - should be detected
+        return \App\Models\User::findMany($ids)->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('filter', $result);
+    }
+
+    public function test_detects_find_with_empty_array(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getNoUsers()
+    {
+        // find([]) with empty array returns Collection
+        return \App\Models\User::find([])->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('filter', $result);
+    }
+
+    public function test_detects_find_with_array_and_reject(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getActiveUsers()
+    {
+        // find([...]) with reject should be detected
+        return \App\Models\User::find([1, 2, 3])->reject(fn($u) => $u->inactive);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('reject', $result);
+    }
+
+    public function test_detects_find_with_array_and_wherein(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function filterUsers(array $statuses)
+    {
+        // find([...]) with whereIn should be detected
+        return \App\Models\User::find([1, 2, 3])->whereIn('status', $statuses);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('whereIn', $result);
+    }
+
+    public function test_ignores_find_with_string_id(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getUser()
+    {
+        // find('uuid-string') returns Model|null, not Collection
+        return \App\Models\User::find('550e8400-e29b-41d4-a716-446655440000')->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should NOT be flagged - find('uuid') returns Model, not Collection
+        $this->assertPassed($result);
+    }
 }

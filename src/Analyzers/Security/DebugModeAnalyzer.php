@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Detects debug mode and debugging-related security issues.
@@ -133,10 +134,9 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
             }
 
             // Create issue only once for the line where APP_DEBUG is actually set
-            $issues[] = $this->createIssueWithSnippet(
+            $issues[] = $this->createIssue(
                 message: 'Debug mode is enabled (APP_DEBUG=true) in '.($appEnv ?: 'unknown').' environment',
-                filePath: $envFile,
-                lineNumber: $debugLineNumber ?? 1, // Fallback to line 1 if not found (shouldn't happen)
+                location: new Location($this->getRelativePath($envFile), $debugLineNumber ?? 1),
                 severity: Severity::Critical,
                 recommendation: 'Set APP_DEBUG=false in production/staging environments to prevent information disclosure',
                 metadata: [

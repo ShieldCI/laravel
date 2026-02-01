@@ -837,7 +837,14 @@ GITIGNORE;
 
     // ==================== CODE SNIPPET TESTS ====================
 
-    public function test_code_snippets_are_attached_to_issues(): void
+    /**
+     * Tests that code snippets are NOT attached to .env file issues.
+     *
+     * This is intentional security behavior: .env and .env.example files
+     * may contain sensitive values (secrets, API keys, passwords) that
+     * should never be exposed in issue reports sent to the platform API.
+     */
+    public function test_code_snippets_are_not_attached_to_env_file_issues(): void
     {
         $envExample = <<<'ENV'
 APP_NAME=Laravel
@@ -850,7 +857,7 @@ ENV;
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
 
-        // Enable code snippets in config
+        // Enable code snippets in config (should still not attach for .env files)
         config(['shieldci.report.show_code_snippets' => true]);
         config(['shieldci.report.snippet_context_lines' => 5]);
 
@@ -860,17 +867,12 @@ ENV;
         $issues = $result->getIssues();
         $this->assertGreaterThan(0, count($issues));
 
-        // Check that at least one issue has a code snippet
-        $hasSnippet = false;
+        // Verify that NO issue has a code snippet (to prevent secret leakage)
         foreach ($issues as $issue) {
-            if ($issue->codeSnippet !== null) {
-                $hasSnippet = true;
-                $this->assertGreaterThan(0, count($issue->codeSnippet->getLines()));
-                $this->assertGreaterThan(0, $issue->codeSnippet->getTargetLine());
-                break;
-            }
+            $this->assertNull(
+                $issue->codeSnippet,
+                'Issues for .env files should NOT have code snippets to prevent secret leakage'
+            );
         }
-
-        $this->assertTrue($hasSnippet, 'At least one issue should have a code snippet attached');
     }
 }

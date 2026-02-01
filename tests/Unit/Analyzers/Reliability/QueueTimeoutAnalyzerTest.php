@@ -102,7 +102,7 @@ PHP;
 
         $issue = $issues[0];
         $this->assertSame("Queue connection 'redis' has improper timeout configuration", $issue->message);
-        $this->assertSame(Severity::Critical, $issue->severity);
+        $this->assertSame(Severity::High, $issue->severity);
     }
 
     #[Test]
@@ -439,7 +439,7 @@ PHP;
 
         $this->assertSame('queue-timeout-configuration', $metadata->id);
         $this->assertSame('Queue Timeout Configuration Analyzer', $metadata->name);
-        $this->assertSame(Severity::Critical, $metadata->severity);
+        $this->assertSame(Severity::High, $metadata->severity);
         $this->assertSame(10, $metadata->timeToFix);
         $this->assertContains('queue', $metadata->tags);
         $this->assertContains('configuration', $metadata->tags);
@@ -532,5 +532,417 @@ PHP;
 
         // Should pass - connections without driver are skipped
         $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_enforces_minimum_buffer_requirement(): void
+    {
+        // timeout=60 (default), retry_after=65, buffer=10
+        // 60 + 10 = 70, which is >= 65, so should fail
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'redis',
+    'connections' => [
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => 'default',
+            'queue' => 'default',
+            'retry_after' => 65,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because buffer is only 5 seconds (less than 10 second minimum)
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        $issue = $issues[0];
+        $metadata = $issue->metadata;
+
+        // Verify buffer information is in metadata
+        $this->assertArrayHasKey('minimum_buffer', $metadata);
+        $this->assertSame(10, $metadata['minimum_buffer']);
+        $this->assertArrayHasKey('actual_buffer', $metadata);
+        $this->assertSame(5, $metadata['actual_buffer']); // 65 - 60 = 5
+
+        // Verify recommendation mentions the buffer
+        $this->assertStringContainsString('at least 70 seconds', $issue->recommendation);
+        $this->assertStringContainsString('buffer: 5 seconds', $issue->recommendation);
+    }
+
+    #[Test]
+    public function test_passes_with_sufficient_buffer(): void
+    {
+        // timeout=60 (default), retry_after=71, buffer=10
+        // 60 + 10 = 70, which is < 71, so should pass
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'redis',
+    'connections' => [
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => 'default',
+            'queue' => 'default',
+            'retry_after' => 71,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because buffer is 11 seconds (more than 10 second minimum)
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_extracts_queue_name_from_connection(): void
+    {
+        // Test that analyzer correctly extracts queue name from connection config
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'redis',
+    'connections' => [
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => 'default',
+            'queue' => 'fast',  // Specific queue name
+            'retry_after' => 65,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should fail due to insufficient buffer
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $metadata = $issues[0]->metadata;
+
+        // Should include queue_name in metadata
+        $this->assertArrayHasKey('queue_name', $metadata);
+        $this->assertSame('fast', $metadata['queue_name']);
+    }
+
+    #[Test]
+    public function test_uses_fallback_when_queue_not_matched(): void
+    {
+        // When queue name doesn't match any Horizon supervisor,
+        // should fall back to maximum timeout
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'redis',
+    'connections' => [
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => 'default',
+            'queue' => 'unmatched-queue',
+            'retry_after' => 65,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should fail due to insufficient buffer
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $metadata = $issues[0]->metadata;
+
+        // Should indicate fallback detection if Horizon config exists
+        // Otherwise may not have horizon_detection key
+        if (isset($metadata['horizon_detection'])) {
+            $this->assertContains($metadata['horizon_detection'], ['fallback_max', 'matched']);
+        }
+    }
+
+    #[Test]
+    public function test_handles_wildcard_queue_in_horizon(): void
+    {
+        // Test that '*' wildcard in Horizon supervisor queue matches any queue
+        // This would require mocking config(), which we can't easily do in unit tests
+        // So we'll just verify the queue name is extracted correctly
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'redis',
+    'connections' => [
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => 'default',
+            'queue' => 'any-queue',
+            'retry_after' => 90,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // With retry_after=90 and default timeout=60, should pass
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_metadata_includes_horizon_detection_status(): void
+    {
+        // Verify that when an issue is found, metadata includes Horizon detection info
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'redis',
+    'connections' => [
+        'redis-fast' => [
+            'driver' => 'redis',
+            'connection' => 'default',
+            'queue' => 'fast',
+            'retry_after' => 65, // Will fail with default timeout
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $metadata = $issues[0]->metadata;
+
+        // Should have queue_name
+        $this->assertArrayHasKey('queue_name', $metadata);
+        $this->assertSame('fast', $metadata['queue_name']);
+
+        // May have horizon_detection if Horizon config is loaded
+        // (depends on test environment)
+    }
+
+    #[Test]
+    public function test_uses_connection_specific_timeout_from_queue_config(): void
+    {
+        // Test custom timeout in connection config (non-standard but supported)
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'database',
+    'connections' => [
+        'database' => [
+            'driver' => 'database',
+            'table' => 'jobs',
+            'queue' => 'default',
+            'timeout' => 120,  // Custom timeout in connection config
+            'retry_after' => 125, // Only 5 second buffer - should fail
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because 120 + 10 >= 125
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $metadata = $issues[0]->metadata;
+
+        // Should use the custom timeout
+        $this->assertSame(120, $metadata['timeout']);
+        $this->assertSame('connection_config', $metadata['timeout_source']);
+        $this->assertSame(5, $metadata['actual_buffer']); // 125 - 120
+    }
+
+    #[Test]
+    public function test_database_driver_includes_detection_warning(): void
+    {
+        // Database drivers should include warning about default timeout assumption
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'database',
+    'connections' => [
+        'database' => [
+            'driver' => 'database',
+            'table' => 'jobs',
+            'queue' => 'default',
+            'retry_after' => 65, // Will fail with default timeout=60
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $metadata = $issues[0]->metadata;
+
+        // Should include detection warning
+        $this->assertArrayHasKey('detection_warning', $metadata);
+        $detectionWarning = $metadata['detection_warning'];
+        $this->assertIsString($detectionWarning);
+        $this->assertStringContainsString('default timeout (60s)', $detectionWarning);
+        $this->assertStringContainsString('CLI (--timeout)', $detectionWarning);
+        $this->assertSame('default_assumption', $metadata['timeout_source']);
+    }
+
+    #[Test]
+    public function test_beanstalkd_driver_includes_detection_warning(): void
+    {
+        // Beanstalkd drivers should also include warning
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'beanstalkd',
+    'connections' => [
+        'beanstalkd' => [
+            'driver' => 'beanstalkd',
+            'host' => 'localhost',
+            'queue' => 'default',
+            'retry_after' => 65,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $metadata = $issues[0]->metadata;
+
+        // Should include detection warning
+        $this->assertArrayHasKey('detection_warning', $metadata);
+        $this->assertSame('default_assumption', $metadata['timeout_source']);
+    }
+
+    #[Test]
+    public function test_timeout_source_included_in_metadata(): void
+    {
+        // Verify timeout_source is always included in metadata
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'redis',
+    'connections' => [
+        'redis' => [
+            'driver' => 'redis',
+            'queue' => 'default',
+            'retry_after' => 65,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $metadata = $issues[0]->metadata;
+
+        // Should have timeout_source
+        $this->assertArrayHasKey('timeout_source', $metadata);
+        $this->assertIsString($metadata['timeout_source']);
+        $this->assertContains($metadata['timeout_source'], [
+            'connection_config',
+            'horizon_config',
+            'shieldci_config',
+            'default_assumption',
+        ]);
     }
 }

@@ -19,7 +19,6 @@ class Reporter implements ReporterInterface
     public function generate(Collection $results): AnalysisReport
     {
         return new AnalysisReport(
-            projectId: config('shieldci.project_id', 'unknown'),
             laravelVersion: app()->version(),
             packageVersion: $this->getPackageVersion(),
             results: $results,
@@ -124,11 +123,16 @@ class Reporter implements ReporterInterface
 
                         // Show issue locations
                         foreach (array_slice($issues, 0, $displayCount) as $issue) {
+                            // Show message for application-wide issues without location
+                            $displayText = $issue->location === null
+                                ? $issue->message
+                                : "At {$issue->location}";
+
                             // Highlight critical issues with background color
                             if (isset($issue->severity) && $issue->severity->value === 'critical') {
-                                $output[] = $this->color("At {$issue->location}", 'white', 'bg_red');
+                                $output[] = $this->color($displayText, 'white', 'bg_red');
                             } else {
-                                $output[] = $this->color("At {$issue->location}", 'magenta');
+                                $output[] = $this->color($displayText, 'magenta');
                             }
                         }
 
@@ -496,11 +500,6 @@ class Reporter implements ReporterInterface
         return json_encode($report->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
     }
 
-    public function toApi(AnalysisReport $report): array
-    {
-        return $report->toArray();
-    }
-
     protected function getPackageVersion(): string
     {
         $composerPath = __DIR__.'/../../composer.json';
@@ -608,11 +607,16 @@ class Reporter implements ReporterInterface
 
                 // Show issue locations
                 foreach (array_slice($issues, 0, $displayCount) as $issue) {
+                    // Show message for application-wide issues without location
+                    $displayText = $issue->location === null
+                        ? $issue->message
+                        : "At {$issue->location}";
+
                     // Highlight critical issues with background color
                     if (isset($issue->severity) && $issue->severity->value === 'critical') {
-                        $output[] = $this->color("At {$issue->location}", 'white', 'bg_red');
+                        $output[] = $this->color($displayText, 'white', 'bg_red');
                     } else {
-                        $output[] = $this->color("At {$issue->location}", 'magenta');
+                        $output[] = $this->color($displayText, 'magenta');
                     }
                 }
 

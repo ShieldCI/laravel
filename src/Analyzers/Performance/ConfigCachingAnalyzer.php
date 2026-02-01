@@ -11,7 +11,6 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -105,30 +104,34 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
 
             $issues[] = $this->createIssue(
                 message: "Configuration is cached in {$environment} environment",
-                location: new Location($this->getRelativePath($configPath)),
+                location: null,
                 severity: Severity::Medium,
                 recommendation: 'Configuration caching is not recommended for '.$environment.'. Run "php artisan config:clear" to clear the cache. As you change your config files, the changes will not be reflected unless you clear the cache.',
                 metadata: [
                     'environment' => $environment,
                     'cached' => true,
                     'detection_method' => 'configurationIsCached()',
+                    'detected_via' => 'bootstrap/cache/config.php',
                 ]
             );
         }
 
         // Config not cached in production/staging - performance issue
         if ($this->shouldCacheConfig($environment) && ! $configIsCached) {
-            $configPath = $this->getAppConfigPath();
+            // Point to the cache file location (which doesn't exist - that's the issue)
+            $configPath = $this->getCachedConfigPath();
 
             $issues[] = $this->createIssue(
                 message: "Configuration is not cached in {$environment} environment",
-                location: new Location($this->getRelativePath($configPath)),
+                location: null,
                 severity: Severity::High,
                 recommendation: 'Configuration caching is critical for production performance - it improves bootstrap time by up to 50% on every request. Add "php artisan config:cache" to your deployment script. Without caching, Laravel must load and parse all config files on every request, causing significant performance degradation.',
                 metadata: [
                     'environment' => $environment,
                     'cached' => false,
                     'detection_method' => 'configurationIsCached()',
+                    'expected_cache_path' => $configPath,
+                    'detected_via' => 'bootstrap/cache/config.php',
                 ]
             );
         }
@@ -165,26 +168,5 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
     private function getCachedConfigPath(): string
     {
         return $this->buildPath('bootstrap', 'cache', 'config.php');
-    }
-
-    /**
-     * Get the path to the app config file.
-     */
-    private function getAppConfigPath(): string
-    {
-        $basePath = $this->getBasePath();
-
-        $configPath = ConfigFileHelper::getConfigPath(
-            $basePath,
-            'app.php',
-            fn ($file) => function_exists('config_path') ? config_path($file) : null
-        );
-
-        // Fallback if ConfigFileHelper returns empty string
-        if ($configPath === '' || ! file_exists($configPath)) {
-            return $this->buildPath('config', 'app.php');
-        }
-
-        return $configPath;
     }
 }

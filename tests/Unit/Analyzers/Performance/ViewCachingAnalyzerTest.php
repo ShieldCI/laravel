@@ -15,19 +15,43 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class ViewCachingAnalyzerTest extends AnalyzerTestCase
 {
+    private string $compiledPath;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->compiledPath = sys_get_temp_dir().'/shieldci_compiled_'.uniqid();
+        @mkdir($this->compiledPath, 0755, true);
+    }
+
+    protected function tearDown(): void
+    {
+        // Clean up compiled path
+        if (is_dir($this->compiledPath)) {
+            $files = glob($this->compiledPath.'/*.php');
+            if (is_array($files)) {
+                foreach ($files as $file) {
+                    @unlink($file);
+                }
+            }
+            @rmdir($this->compiledPath);
+        }
+
+        Mockery::close();
+        parent::tearDown();
+    }
+
     /**
      * @param  array<string, mixed>  $configValues
      * @param  array<string>  $viewPaths
      * @param  array<string, array<string>>  $viewHints
-     * @param  array<string>|null  $compiledFiles
+     * @param  array<string>|false|null  $globReturn
      */
     protected function createAnalyzer(
         array $configValues = [],
         array $viewPaths = [],
         array $viewHints = [],
-        ?array $compiledFiles = null,
-        bool $globShouldFail = false,
-        int $compiledFileCount = 10
+        array|false|null $globReturn = null,
     ): AnalyzerInterface {
         /** @var Filesystem&\Mockery\MockInterface $files */
         $files = Mockery::mock(Filesystem::class);
@@ -38,10 +62,10 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
         // Set up default config values
         $defaults = [
             'app' => [
-                'env' => 'production', // Default to production so tests actually run
+                'env' => 'production',
             ],
             'view' => [
-                'compiled' => '/path/to/compiled/views',
+                'compiled' => $this->compiledPath,
             ],
             'shieldci' => [
                 'environment_mapping' => [],
@@ -50,10 +74,9 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
 
         $configMap = array_replace_recursive($defaults, $configValues);
 
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
+        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->andReturnUsing(function ($key, $default = null) use ($configMap) {
-                // Handle dotted key access (e.g., 'view.compiled', 'app.env')
                 $keys = explode('.', $key);
                 $value = $configMap;
 
@@ -69,30 +92,23 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
             });
 
         // Mock filesystem glob for compiled views
-        $configuredCompiledPath = $configMap['view']['compiled'] ?? '/path/to/compiled/views';
+        $configuredCompiledPath = $configMap['view']['compiled'] ?? $this->compiledPath;
         $compiledPathForGlob = is_string($configuredCompiledPath)
             ? $configuredCompiledPath
-            : '/path/to/compiled/views';
+            : $this->compiledPath;
 
-        if ($compiledFiles === null && ! $globShouldFail) {
-            if ($compiledFileCount <= 0) {
-                $compiledFiles = [];
-            } else {
-                $compiledFiles = array_map(
-                    fn ($i) => $compiledPathForGlob.'/file'.$i.'.php',
-                    range(1, $compiledFileCount)
-                );
-            }
+        // If globReturn not specified, use actual files from the directory
+        if ($globReturn === null) {
+            $actualFiles = glob($compiledPathForGlob.'/*.php');
+            $globReturn = is_array($actualFiles) ? $actualFiles : [];
         }
-
-        $globReturn = $globShouldFail ? false : $compiledFiles;
 
         /** @phpstan-ignore-next-line */
         $files->allows('glob')
             ->with($compiledPathForGlob.'/*.php')
             ->andReturn($globReturn);
 
-        // Mock view finder for counting blade files
+        // Mock view finder
         if (! empty($viewPaths) || ! empty($viewHints)) {
             $this->mockViewFinder($viewPaths, $viewHints);
         }
@@ -101,8 +117,6 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
     }
 
     /**
-     * Mock Laravel's view finder.
-     *
      * @param  array<string>  $paths
      * @param  array<string, array<string>>  $hints
      */
@@ -120,7 +134,6 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
         $viewFactory->shouldReceive('getFinder')
             ->andReturn($finder);
 
-        // Mock app('view') to return our mock view factory
         if ($this->app === null) {
             throw new \RuntimeException('Application not available in test');
         }
@@ -128,52 +141,99 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
         $this->app->instance('view', $viewFactory);
     }
 
-    public function test_passes_when_all_views_cached_in_production(): void
+    /**
+     * Create compiled view files with a specific timestamp.
+     *
+     * @return array<string>
+     */
+    private function createCompiledViews(int $count, int $timestamp): array
     {
-        // Create a temp directory with blade files
+        $files = [];
+        for ($i = 1; $i <= $count; $i++) {
+            $file = $this->compiledPath.'/compiled'.$i.'.php';
+            file_put_contents($file, '<?php // compiled view');
+            touch($file, $timestamp);
+            $files[] = $file;
+        }
+
+        return $files;
+    }
+
+    public function test_passes_when_cache_is_fresh(): void
+    {
+        $bladeTime = time() - 3600; // Blade files modified 1 hour ago
+        $compiledTime = time() - 1800; // Compiled files created 30 minutes ago (more recent)
+
         $tempDir = $this->createTempDirectory([
             'resources/views/welcome.blade.php' => '<html></html>',
             'resources/views/home.blade.php' => '<html></html>',
         ]);
 
+        // Set blade files to older timestamp
+        touch($tempDir.'/resources/views/welcome.blade.php', $bladeTime);
+        touch($tempDir.'/resources/views/home.blade.php', $bladeTime);
+
+        // Create compiled files with newer timestamp
+        $compiledFiles = $this->createCompiledViews(2, $compiledTime);
+
         $analyzer = $this->createAnalyzer(
             configValues: [],
             viewPaths: [$tempDir.'/resources/views'],
             viewHints: [],
-            compiledFileCount: 2
+            globReturn: $compiledFiles
         );
 
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+        $this->assertStringContainsString('fresh', $result->getMessage());
     }
 
-    public function test_warns_when_views_not_fully_cached_in_production(): void
+    public function test_warns_when_cache_is_stale(): void
     {
-        // Create a temp directory with blade files
+        $compiledTime = time() - 3600; // Compiled files created 1 hour ago
+        $bladeTime = time() - 1800; // Blade files modified 30 minutes ago (more recent)
+
         $tempDir = $this->createTempDirectory([
             'resources/views/welcome.blade.php' => '<html></html>',
-            'resources/views/home.blade.php' => '<html></html>',
-            'resources/views/about.blade.php' => '<html></html>',
+        ]);
+
+        // Set blade file to newer timestamp
+        touch($tempDir.'/resources/views/welcome.blade.php', $bladeTime);
+
+        // Create compiled files with older timestamp
+        $compiledFiles = $this->createCompiledViews(2, $compiledTime);
+
+        $analyzer = $this->createAnalyzer(
+            configValues: [],
+            viewPaths: [$tempDir.'/resources/views'],
+            viewHints: [],
+            globReturn: $compiledFiles
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertStringContainsString('stale', $result->getMessage());
+    }
+
+    public function test_warns_when_no_compiled_views_exist(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'resources/views/welcome.blade.php' => '<html></html>',
         ]);
 
         $analyzer = $this->createAnalyzer(
             configValues: [],
             viewPaths: [$tempDir.'/resources/views'],
             viewHints: [],
-            compiledFileCount: 1  // Only 1 out of 3 views compiled
+            globReturn: [] // No compiled files
         );
 
         $result = $analyzer->analyze();
 
         $this->assertWarning($result);
-        $this->assertHasIssueContaining('1 out of 3', $result);
-
-        $issues = $result->getIssues();
-        $this->assertNotEmpty($issues);
-        $this->assertEquals(3, $issues[0]->metadata['total_views'] ?? 0);
-        $this->assertEquals(1, $issues[0]->metadata['compiled_views'] ?? 0);
-        $this->assertEquals(2, $issues[0]->metadata['missing_views'] ?? 0);
+        $this->assertHasIssueContaining('No compiled views found', $result);
     }
 
     public function test_skips_in_local_environment(): void
@@ -189,63 +249,46 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
         $this->assertSkipped($result);
     }
 
-    public function test_passes_when_no_views_exist(): void
+    public function test_passes_when_no_blade_files_exist(): void
     {
         $tempDir = $this->createTempDirectory([]);
 
+        // No compiled files needed - if there are no blade files, we don't need cache
         $analyzer = $this->createAnalyzer(
             configValues: [],
             viewPaths: [$tempDir.'/resources/views'],
             viewHints: [],
-            compiledFileCount: 0
+            globReturn: [] // No compiled files
         );
 
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
-    }
-
-    public function test_detects_partial_caching(): void
-    {
-        // Create a temp directory with blade files
-        $tempDir = $this->createTempDirectory([
-            'resources/views/page1.blade.php' => '<html></html>',
-            'resources/views/page2.blade.php' => '<html></html>',
-            'resources/views/page3.blade.php' => '<html></html>',
-            'resources/views/page4.blade.php' => '<html></html>',
-            'resources/views/page5.blade.php' => '<html></html>',
-        ]);
-
-        $analyzer = $this->createAnalyzer(
-            configValues: [],
-            viewPaths: [$tempDir.'/resources/views'],
-            viewHints: [],
-            compiledFileCount: 3  // 60% cached
-        );
-
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('3 out of 5', $result);
-        $this->assertHasIssueContaining('60.0%', $result);
+        $this->assertStringContainsString('No Blade templates found', $result->getMessage());
     }
 
     public function test_handles_multiple_view_paths(): void
     {
-        // Create temp directories for multiple view paths
+        $bladeTime = time() - 3600;
+        $compiledTime = time() - 1800;
+
         $tempDir1 = $this->createTempDirectory([
             'views/main.blade.php' => '<html></html>',
         ]);
+        touch($tempDir1.'/views/main.blade.php', $bladeTime);
 
         $tempDir2 = $this->createTempDirectory([
             'views/admin.blade.php' => '<html></html>',
         ]);
+        touch($tempDir2.'/views/admin.blade.php', $bladeTime);
+
+        $compiledFiles = $this->createCompiledViews(2, $compiledTime);
 
         $analyzer = $this->createAnalyzer(
             configValues: [],
             viewPaths: [$tempDir1.'/views', $tempDir2.'/views'],
             viewHints: [],
-            compiledFileCount: 2
+            globReturn: $compiledFiles
         );
 
         $result = $analyzer->analyze();
@@ -253,30 +296,88 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
-    public function test_handles_package_view_hints(): void
+    public function test_excludes_package_views_by_default(): void
     {
+        $appBladeTime = time() - 3600; // App views older
+        $packageBladeTime = time() - 1800; // Package views newer (would trigger stale if included)
+        $compiledTime = time() - 2400; // Between app and package times
+
         $tempDir = $this->createTempDirectory([
             'resources/views/app.blade.php' => '<html></html>',
             'vendor/package/views/package.blade.php' => '<html></html>',
         ]);
 
+        touch($tempDir.'/resources/views/app.blade.php', $appBladeTime);
+        touch($tempDir.'/vendor/package/views/package.blade.php', $packageBladeTime);
+
+        $compiledFiles = $this->createCompiledViews(2, $compiledTime);
+
+        // Default: package views excluded
         $analyzer = $this->createAnalyzer(
             configValues: [],
             viewPaths: [$tempDir.'/resources/views'],
             viewHints: ['package' => [$tempDir.'/vendor/package/views']],
-            compiledFileCount: 2
+            globReturn: $compiledFiles
         );
 
         $result = $analyzer->analyze();
 
+        // Should PASS because only app views are checked (older than compiled)
         $this->assertPassed($result);
     }
 
-    public function test_fails_in_staging_environment(): void
+    public function test_includes_package_views_when_configured(): void
     {
+        $appBladeTime = time() - 3600; // App views older
+        $packageBladeTime = time() - 1800; // Package views newer
+        $compiledTime = time() - 2400; // Between app and package times
+
+        $tempDir = $this->createTempDirectory([
+            'resources/views/app.blade.php' => '<html></html>',
+            'vendor/package/views/package.blade.php' => '<html></html>',
+        ]);
+
+        touch($tempDir.'/resources/views/app.blade.php', $appBladeTime);
+        touch($tempDir.'/vendor/package/views/package.blade.php', $packageBladeTime);
+
+        $compiledFiles = $this->createCompiledViews(2, $compiledTime);
+
+        // Explicitly include package views
+        $analyzer = $this->createAnalyzer(
+            configValues: [
+                'shieldci' => [
+                    'analyzers' => [
+                        'performance' => [
+                            'view-caching' => [
+                                'include_package_views' => true,
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            viewPaths: [$tempDir.'/resources/views'],
+            viewHints: ['package' => [$tempDir.'/vendor/package/views']],
+            globReturn: $compiledFiles
+        );
+
+        $result = $analyzer->analyze();
+
+        // Should be STALE because package views are included and newer than compiled
+        $this->assertWarning($result);
+        $this->assertStringContainsString('stale', $result->getMessage());
+    }
+
+    public function test_runs_in_staging_environment(): void
+    {
+        $bladeTime = time() - 3600;
+        $compiledTime = time() - 1800;
+
         $tempDir = $this->createTempDirectory([
             'resources/views/page.blade.php' => '<html></html>',
         ]);
+        touch($tempDir.'/resources/views/page.blade.php', $bladeTime);
+
+        $compiledFiles = $this->createCompiledViews(1, $compiledTime);
 
         $analyzer = $this->createAnalyzer(
             configValues: [
@@ -286,13 +387,13 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
             ],
             viewPaths: [$tempDir.'/resources/views'],
             viewHints: [],
-            compiledFileCount: 0
+            globReturn: $compiledFiles
         );
 
         $result = $analyzer->analyze();
 
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('0 out of 1', $result);
+        $this->assertPassed($result);
+        $this->assertStringContainsString('staging', $result->getMessage());
     }
 
     public function test_errors_when_view_compiled_config_is_invalid(): void
@@ -317,6 +418,27 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('Invalid view.compiled', $result->getMessage());
     }
 
+    public function test_warn_when_compiled_directory_does_not_exist(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'resources/views/example.blade.php' => '<html></html>',
+        ]);
+
+        // Remove the compiled path so it doesn't exist
+        @rmdir($this->compiledPath);
+
+        $analyzer = $this->createAnalyzer(
+            configValues: [],
+            viewPaths: [$tempDir.'/resources/views'],
+            viewHints: []
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertStringContainsString('View cache has not been generated', $result->getMessage());
+    }
+
     public function test_handles_glob_failure(): void
     {
         $tempDir = $this->createTempDirectory([
@@ -327,189 +449,81 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
             configValues: [],
             viewPaths: [$tempDir.'/resources/views'],
             viewHints: [],
-            compiledFiles: null,
-            globShouldFail: true
+            globReturn: false
         );
 
         $result = $analyzer->analyze();
 
         $this->assertWarning($result);
-        $this->assertHasIssueContaining('0 out of 1', $result);
-    }
-
-    public function test_handles_zero_compiled_views_correctly(): void
-    {
-        $tempDir = $this->createTempDirectory([
-            'resources/views/page1.blade.php' => '<html></html>',
-            'resources/views/page2.blade.php' => '<html></html>',
-        ]);
-
-        $analyzer = $this->createAnalyzer(
-            configValues: [],
-            viewPaths: [$tempDir.'/resources/views'],
-            viewHints: [],
-            compiledFileCount: 0 // Zero compiled views
-        );
-
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('0 out of 2', $result);
-        $this->assertHasIssueContaining('0.0%', $result);
-
-        $issues = $result->getIssues();
-        $this->assertEquals(0.0, $issues[0]->metadata['cached_percentage']);
+        $this->assertHasIssueContaining('No compiled views found', $result);
     }
 
     public function test_handles_view_factory_exception_gracefully(): void
     {
-        // Don't mock view factory - let it fail and use fallback
-        $tempDir = $this->createTempDirectory([
-            'resources/views/example.blade.php' => '<html></html>',
-        ]);
+        $compiledFiles = $this->createCompiledViews(1, time());
 
         $analyzer = $this->createAnalyzer(
             configValues: [],
-            viewPaths: [], // Empty - will trigger fallback
+            viewPaths: [],
             viewHints: [],
-            compiledFileCount: 0
+            globReturn: $compiledFiles
         );
 
         $result = $analyzer->analyze();
 
-        // Should still work using fallback resource_path('views')
         $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
     }
 
     public function test_handles_empty_view_path_string(): void
     {
+        $compiledFiles = $this->createCompiledViews(1, time());
+
         $analyzer = $this->createAnalyzer(
             configValues: [],
-            viewPaths: ['', '   '], // Empty and whitespace paths
+            viewPaths: ['', '   '],
             viewHints: [],
-            compiledFileCount: 0
+            globReturn: $compiledFiles
         );
 
         $result = $analyzer->analyze();
 
+        // No blade files found = passed
         $this->assertPassed($result);
     }
 
-    public function test_handles_finder_exception_in_count_blade_files(): void
+    public function test_handles_finder_exception_in_blade_files(): void
     {
-        // Create a path that will cause Finder to throw exception
+        $compiledFiles = $this->createCompiledViews(1, time());
+
         $analyzer = $this->createAnalyzer(
             configValues: [],
             viewPaths: ['/this/path/definitely/does/not/exist/at/all'],
             viewHints: [],
-            compiledFileCount: 0
+            globReturn: $compiledFiles
         );
 
         $result = $analyzer->analyze();
 
-        // Should pass because no views found (exception caught)
         $this->assertPassed($result);
     }
 
-    public function test_handles_division_by_zero_in_percentage_calculation(): void
+    public function test_issue_metadata_includes_timestamps(): void
     {
-        // No views exist, but we'll force the scenario
-        $tempDir = $this->createTempDirectory([]);
+        $compiledTime = time() - 3600;
+        $bladeTime = time() - 1800;
 
-        $analyzer = $this->createAnalyzer(
-            configValues: [],
-            viewPaths: [$tempDir.'/nonexistent'],
-            viewHints: [],
-            compiledFileCount: 0
-        );
-
-        $result = $analyzer->analyze();
-
-        // Should pass without errors (division by zero protected)
-        $this->assertPassed($result);
-    }
-
-    public function test_fallback_to_artisan_when_config_file_not_found(): void
-    {
         $tempDir = $this->createTempDirectory([
-            'resources/views/example.blade.php' => '<html></html>',
-            'artisan' => '#!/usr/bin/env php',
+            'resources/views/page.blade.php' => '<html></html>',
         ]);
+        touch($tempDir.'/resources/views/page.blade.php', $bladeTime);
+
+        $compiledFiles = $this->createCompiledViews(1, $compiledTime);
 
         $analyzer = $this->createAnalyzer(
             configValues: [],
             viewPaths: [$tempDir.'/resources/views'],
             viewHints: [],
-            compiledFileCount: 0
-        );
-
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $issues = $result->getIssues();
-        $this->assertNotEmpty($issues);
-
-        // Location should be in view.php config or artisan file
-        // In test environment, config file exists, so we just verify location is set
-        $this->assertNotNull($issues[0]->location);
-        $this->assertNotNull($issues[0]->location->file);
-        $this->assertGreaterThan(0, $issues[0]->location->line);
-    }
-
-    public function test_handles_non_existent_view_path(): void
-    {
-        $tempDir = $this->createTempDirectory([
-            'resources/views/exists.blade.php' => '<html></html>',
-        ]);
-
-        $analyzer = $this->createAnalyzer(
-            configValues: [],
-            viewPaths: [
-                $tempDir.'/resources/views',
-                $tempDir.'/resources/nonexistent', // This doesn't exist
-            ],
-            viewHints: [],
-            compiledFileCount: 1
-        );
-
-        $result = $analyzer->analyze();
-
-        // Should still work, just skip the non-existent path
-        $this->assertPassed($result);
-    }
-
-    public function test_vendor_directory_is_excluded_from_blade_count(): void
-    {
-        $tempDir = $this->createTempDirectory([
-            'resources/views/app.blade.php' => '<html></html>',
-            'resources/views/vendor/package/view.blade.php' => '<html></html>', // Should be excluded
-        ]);
-
-        $analyzer = $this->createAnalyzer(
-            configValues: [],
-            viewPaths: [$tempDir.'/resources/views'],
-            viewHints: [],
-            compiledFileCount: 1 // Only 1, not 2
-        );
-
-        $result = $analyzer->analyze();
-
-        // Should pass because vendor views are excluded
-        $this->assertPassed($result);
-    }
-
-    public function test_issue_metadata_includes_all_required_fields(): void
-    {
-        $tempDir = $this->createTempDirectory([
-            'resources/views/page1.blade.php' => '<html></html>',
-            'resources/views/page2.blade.php' => '<html></html>',
-        ]);
-
-        $analyzer = $this->createAnalyzer(
-            configValues: [],
-            viewPaths: [$tempDir.'/resources/views'],
-            viewHints: [],
-            compiledFileCount: 1
+            globReturn: $compiledFiles
         );
 
         $result = $analyzer->analyze();
@@ -520,16 +534,12 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
 
         $issue = $issues[0];
         $this->assertArrayHasKey('environment', $issue->metadata);
-        $this->assertArrayHasKey('total_views', $issue->metadata);
-        $this->assertArrayHasKey('compiled_views', $issue->metadata);
-        $this->assertArrayHasKey('cached_percentage', $issue->metadata);
-        $this->assertArrayHasKey('missing_views', $issue->metadata);
+        $this->assertArrayHasKey('newest_blade_mtime', $issue->metadata);
+        $this->assertArrayHasKey('newest_compiled_mtime', $issue->metadata);
+        $this->assertArrayHasKey('stale_by_seconds', $issue->metadata);
+        $this->assertArrayHasKey('cache_age_seconds', $issue->metadata);
 
         $this->assertEquals('production', $issue->metadata['environment']);
-        $this->assertEquals(2, $issue->metadata['total_views']);
-        $this->assertEquals(1, $issue->metadata['compiled_views']);
-        $this->assertEquals(50.0, $issue->metadata['cached_percentage']);
-        $this->assertEquals(1, $issue->metadata['missing_views']);
     }
 
     public function test_recommendation_includes_artisan_command(): void
@@ -542,7 +552,7 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
             configValues: [],
             viewPaths: [$tempDir.'/resources/views'],
             viewHints: [],
-            compiledFileCount: 0
+            globReturn: []
         );
 
         $result = $analyzer->analyze();
@@ -550,29 +560,6 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
         $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertStringContainsString('php artisan view:cache', $issues[0]->recommendation);
-    }
-
-    public function test_result_message_includes_percentage(): void
-    {
-        $tempDir = $this->createTempDirectory([
-            'resources/views/page1.blade.php' => '<html></html>',
-            'resources/views/page2.blade.php' => '<html></html>',
-            'resources/views/page3.blade.php' => '<html></html>',
-            'resources/views/page4.blade.php' => '<html></html>',
-        ]);
-
-        $analyzer = $this->createAnalyzer(
-            configValues: [],
-            viewPaths: [$tempDir.'/resources/views'],
-            viewHints: [],
-            compiledFileCount: 2
-        );
-
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $this->assertStringContainsString('2/4', $result->getMessage());
-        $this->assertStringContainsString('50.0%', $result->getMessage());
     }
 
     public function test_all_issues_have_medium_severity(): void
@@ -585,7 +572,7 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
             configValues: [],
             viewPaths: [$tempDir.'/resources/views'],
             viewHints: [],
-            compiledFileCount: 0
+            globReturn: []
         );
 
         $result = $analyzer->analyze();
@@ -594,25 +581,6 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
         foreach ($issues as $issue) {
             $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issue->severity);
         }
-    }
-
-    public function test_warning_result_for_medium_severity(): void
-    {
-        $tempDir = $this->createTempDirectory([
-            'resources/views/page.blade.php' => '<html></html>',
-        ]);
-
-        $analyzer = $this->createAnalyzer(
-            configValues: [],
-            viewPaths: [$tempDir.'/resources/views'],
-            viewHints: [],
-            compiledFileCount: 0
-        );
-
-        $result = $analyzer->analyze();
-
-        // Medium severity issues should return warning
-        $this->assertWarning($result);
     }
 
     public function test_skip_reason_includes_environment_names(): void
@@ -637,15 +605,21 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
 
     public function test_handles_empty_view_hints(): void
     {
+        $bladeTime = time() - 3600;
+        $compiledTime = time() - 1800;
+
         $tempDir = $this->createTempDirectory([
             'resources/views/app.blade.php' => '<html></html>',
         ]);
+        touch($tempDir.'/resources/views/app.blade.php', $bladeTime);
+
+        $compiledFiles = $this->createCompiledViews(1, $compiledTime);
 
         $analyzer = $this->createAnalyzer(
             configValues: [],
             viewPaths: [$tempDir.'/resources/views'],
-            viewHints: ['package' => []], // Empty hints array
-            compiledFileCount: 1
+            viewHints: ['package' => []],
+            globReturn: $compiledFiles
         );
 
         $result = $analyzer->analyze();
@@ -655,32 +629,43 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
 
     public function test_handles_mixed_valid_invalid_paths(): void
     {
+        $bladeTime = time() - 3600;
+        $compiledTime = time() - 1800;
+
         $tempDir = $this->createTempDirectory([
             'resources/views/valid.blade.php' => '<html></html>',
         ]);
+        touch($tempDir.'/resources/views/valid.blade.php', $bladeTime);
+
+        $compiledFiles = $this->createCompiledViews(1, $compiledTime);
 
         $analyzer = $this->createAnalyzer(
             configValues: [],
             viewPaths: [
                 '/totally/invalid/path',
-                $tempDir.'/resources/views', // Valid
+                $tempDir.'/resources/views',
                 '/another/invalid/path',
             ],
             viewHints: [],
-            compiledFileCount: 1
+            globReturn: $compiledFiles
         );
 
         $result = $analyzer->analyze();
 
-        // Should pass - counts only from valid path
         $this->assertPassed($result);
     }
 
     public function test_passed_message_includes_environment(): void
     {
+        $bladeTime = time() - 3600;
+        $compiledTime = time() - 1800;
+
         $tempDir = $this->createTempDirectory([
             'resources/views/page.blade.php' => '<html></html>',
         ]);
+        touch($tempDir.'/resources/views/page.blade.php', $bladeTime);
+
+        $compiledFiles = $this->createCompiledViews(1, $compiledTime);
 
         $analyzer = $this->createAnalyzer(
             configValues: [
@@ -690,43 +675,259 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
             ],
             viewPaths: [$tempDir.'/resources/views'],
             viewHints: [],
-            compiledFileCount: 1
+            globReturn: $compiledFiles
         );
 
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
         $this->assertStringContainsString('staging', $result->getMessage());
-        $this->assertStringContainsString('1 views', $result->getMessage());
     }
 
-    public function test_cached_percentage_calculation_accuracy(): void
+    public function test_published_vendor_views_are_included_in_scan(): void
     {
+        $bladeTime = time() - 3600;
+        $publishedViewTime = time() - 1800; // Published view modified more recently
+        $compiledTime = time() - 2400; // Compiled before published view was modified
+
         $tempDir = $this->createTempDirectory([
-            'resources/views/page1.blade.php' => '<html></html>',
-            'resources/views/page2.blade.php' => '<html></html>',
-            'resources/views/page3.blade.php' => '<html></html>',
+            'resources/views/app.blade.php' => '<html></html>',
+            'resources/views/vendor/package/view.blade.php' => '<html></html>',
         ]);
+
+        touch($tempDir.'/resources/views/app.blade.php', $bladeTime);
+        touch($tempDir.'/resources/views/vendor/package/view.blade.php', $publishedViewTime);
+
+        $compiledFiles = $this->createCompiledViews(1, $compiledTime);
 
         $analyzer = $this->createAnalyzer(
             configValues: [],
             viewPaths: [$tempDir.'/resources/views'],
             viewHints: [],
-            compiledFileCount: 1
+            globReturn: $compiledFiles
+        );
+
+        $result = $analyzer->analyze();
+
+        // Should be STALE because the published vendor view was modified after compilation
+        $this->assertWarning($result);
+        $this->assertStringContainsString('stale', $result->getMessage());
+    }
+
+    public function test_human_duration_formatting_seconds(): void
+    {
+        $compiledTime = time() - 100; // 100 seconds ago
+        $bladeTime = time() - 50; // 50 seconds ago (50 seconds stale)
+
+        $tempDir = $this->createTempDirectory([
+            'resources/views/page.blade.php' => '<html></html>',
+        ]);
+        touch($tempDir.'/resources/views/page.blade.php', $bladeTime);
+
+        $compiledFiles = $this->createCompiledViews(1, $compiledTime);
+
+        $analyzer = $this->createAnalyzer(
+            configValues: [],
+            viewPaths: [$tempDir.'/resources/views'],
+            viewHints: [],
+            globReturn: $compiledFiles
         );
 
         $result = $analyzer->analyze();
 
         $this->assertWarning($result);
         $issues = $result->getIssues();
-
-        // 1 out of 3 = 33.3%
-        $this->assertEquals(33.3, $issues[0]->metadata['cached_percentage']);
+        $this->assertStringContainsString('seconds', $issues[0]->message);
     }
 
-    protected function tearDown(): void
+    public function test_human_duration_formatting_minutes(): void
     {
-        Mockery::close();
-        parent::tearDown();
+        $compiledTime = time() - 3600; // 1 hour ago
+        $bladeTime = time() - 1800; // 30 minutes ago (30 minutes stale)
+
+        $tempDir = $this->createTempDirectory([
+            'resources/views/page.blade.php' => '<html></html>',
+        ]);
+        touch($tempDir.'/resources/views/page.blade.php', $bladeTime);
+
+        $compiledFiles = $this->createCompiledViews(1, $compiledTime);
+
+        $analyzer = $this->createAnalyzer(
+            configValues: [],
+            viewPaths: [$tempDir.'/resources/views'],
+            viewHints: [],
+            globReturn: $compiledFiles
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('minutes', $issues[0]->message);
+    }
+
+    public function test_human_duration_formatting_hours(): void
+    {
+        $compiledTime = time() - 86400; // 1 day ago
+        $bladeTime = time() - 7200; // 2 hours ago (22 hours stale)
+
+        $tempDir = $this->createTempDirectory([
+            'resources/views/page.blade.php' => '<html></html>',
+        ]);
+        touch($tempDir.'/resources/views/page.blade.php', $bladeTime);
+
+        $compiledFiles = $this->createCompiledViews(1, $compiledTime);
+
+        $analyzer = $this->createAnalyzer(
+            configValues: [],
+            viewPaths: [$tempDir.'/resources/views'],
+            viewHints: [],
+            globReturn: $compiledFiles
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('hours', $issues[0]->message);
+    }
+
+    public function test_human_duration_formatting_days(): void
+    {
+        $compiledTime = time() - (86400 * 3); // 3 days ago
+        $bladeTime = time() - 86400; // 1 day ago (2 days stale)
+
+        $tempDir = $this->createTempDirectory([
+            'resources/views/page.blade.php' => '<html></html>',
+        ]);
+        touch($tempDir.'/resources/views/page.blade.php', $bladeTime);
+
+        $compiledFiles = $this->createCompiledViews(1, $compiledTime);
+
+        $analyzer = $this->createAnalyzer(
+            configValues: [],
+            viewPaths: [$tempDir.'/resources/views'],
+            viewHints: [],
+            globReturn: $compiledFiles
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('days', $issues[0]->message);
+    }
+
+    public function test_stale_cache_metadata_includes_compiled_path_for_no_cache(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'resources/views/page.blade.php' => '<html></html>',
+        ]);
+
+        $analyzer = $this->createAnalyzer(
+            configValues: [],
+            viewPaths: [$tempDir.'/resources/views'],
+            viewHints: [],
+            globReturn: []
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertArrayHasKey('compiled_path', $issues[0]->metadata);
+    }
+
+    public function test_handles_non_existent_view_path(): void
+    {
+        $bladeTime = time() - 3600;
+        $compiledTime = time() - 1800;
+
+        $tempDir = $this->createTempDirectory([
+            'resources/views/exists.blade.php' => '<html></html>',
+        ]);
+        touch($tempDir.'/resources/views/exists.blade.php', $bladeTime);
+
+        $compiledFiles = $this->createCompiledViews(1, $compiledTime);
+
+        $analyzer = $this->createAnalyzer(
+            configValues: [],
+            viewPaths: [
+                $tempDir.'/resources/views',
+                $tempDir.'/resources/nonexistent',
+            ],
+            viewHints: [],
+            globReturn: $compiledFiles
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_uses_newest_blade_timestamp_across_all_paths(): void
+    {
+        $oldBladeTime = time() - 7200; // 2 hours ago
+        $newBladeTime = time() - 1800; // 30 minutes ago
+        $compiledTime = time() - 3600; // 1 hour ago (stale because newBladeTime > compiledTime)
+
+        $tempDir1 = $this->createTempDirectory([
+            'views/old.blade.php' => '<html></html>',
+        ]);
+        touch($tempDir1.'/views/old.blade.php', $oldBladeTime);
+
+        $tempDir2 = $this->createTempDirectory([
+            'views/new.blade.php' => '<html></html>',
+        ]);
+        touch($tempDir2.'/views/new.blade.php', $newBladeTime);
+
+        $compiledFiles = $this->createCompiledViews(2, $compiledTime);
+
+        $analyzer = $this->createAnalyzer(
+            configValues: [],
+            viewPaths: [$tempDir1.'/views', $tempDir2.'/views'],
+            viewHints: [],
+            globReturn: $compiledFiles
+        );
+
+        $result = $analyzer->analyze();
+
+        // Should be stale because the newest blade (30 min ago) is newer than compiled (1 hour ago)
+        $this->assertWarning($result);
+        $this->assertStringContainsString('stale', $result->getMessage());
+    }
+
+    public function test_uses_newest_compiled_timestamp(): void
+    {
+        $bladeTime = time() - 3600; // 1 hour ago
+
+        $tempDir = $this->createTempDirectory([
+            'resources/views/page.blade.php' => '<html></html>',
+        ]);
+        touch($tempDir.'/resources/views/page.blade.php', $bladeTime);
+
+        // Create compiled files with different timestamps
+        // One older than blade (stale orphan), one newer than blade (from view:cache)
+        $compiledFile1 = $this->compiledPath.'/compiled1.php';
+        $compiledFile2 = $this->compiledPath.'/compiled2.php';
+
+        file_put_contents($compiledFile1, '<?php // compiled view');
+        file_put_contents($compiledFile2, '<?php // compiled view');
+
+        touch($compiledFile1, time() - 7200); // 2 hours ago (stale orphan)
+        touch($compiledFile2, time() - 1800); // 30 minutes ago (newest - from view:cache)
+
+        $analyzer = $this->createAnalyzer(
+            configValues: [],
+            viewPaths: [$tempDir.'/resources/views'],
+            viewHints: [],
+            globReturn: [$compiledFile1, $compiledFile2]
+        );
+
+        $result = $analyzer->analyze();
+
+        // Should be FRESH because blade (1 hour ago) is OLDER than newest compiled (30 min ago)
+        // The newest compiled timestamp represents when view:cache was last run
+        $this->assertPassed($result);
     }
 }

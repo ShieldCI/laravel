@@ -311,6 +311,45 @@ PHP;
     }
 
     #[Test]
+    public function test_detects_partial_param_tags(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Process a user action.
+     *
+     * @param mixed $userId The user ID
+     * @return User|null
+     */
+    public function processUser($userId, $action, $timestamp, $metadata, $options)
+    {
+        return User::find($userId);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        // Should flag that 4 out of 5 parameters are missing @param tags
+        $this->assertHasIssueContaining('4 parameter(s) missing @param', $result);
+        $this->assertHasIssueContaining('found 1, need 5', $result);
+    }
+
+    #[Test]
     public function test_detects_missing_return_tags(): void
     {
         $code = <<<'PHP'
@@ -343,8 +382,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('@return', $result);
+        $this->assertPassed($result);
     }
 
     #[Test]
@@ -514,6 +552,92 @@ PHP;
     }
 
     #[Test]
+    public function test_ignores_caught_exceptions_in_try_block(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Process a user action.
+     *
+     * @param int $userId
+     * @return User|null
+     */
+    public function processUser($userId)
+    {
+        try {
+            // These exceptions are caught and handled - no @throws needed
+            throw new \InvalidArgumentException('Invalid user');
+        } catch (\InvalidArgumentException $e) {
+            // Handle exception without re-throwing
+            logger()->error($e->getMessage());
+            return null;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - exception is caught and handled, not propagated
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_detects_throws_in_catch_block_without_rethrow(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Process a user action.
+     *
+     * @param int $userId
+     */
+    public function processUser($userId)
+    {
+        try {
+            $user = User::find($userId);
+        } catch (\Exception $e) {
+            // New throw in catch - this DOES need @throws
+            throw new \RuntimeException('Failed to process user', 0, $e);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - new exception in catch block propagates
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('@throws', $result);
+    }
+
+    #[Test]
     public function test_ignores_private_methods(): void
     {
         $code = <<<'PHP'
@@ -614,7 +738,7 @@ PHP;
     }
 
     #[Test]
-    public function test_method_without_return_type_doesnt_require_return_tag(): void
+    public function test_method_without_return_type_requires_return_tag(): void
     {
         $code = <<<'PHP'
 <?php
@@ -630,7 +754,7 @@ class UserService
      */
     public function processUser($userId)
     {
-        User::find($userId);
+        return User::find($userId);
     }
 }
 PHP;
@@ -645,8 +769,82 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass because no return type means @return not strictly required
-        $this->assertPassed($result);
+        // Should fail - methods without return type need @return documentation
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('@return', $result);
+    }
+
+    #[Test]
+    public function test_return_type_requirements(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+
+class UserService
+{
+    /** Doc */ public function needsReturnMixed(): mixed { return null; }
+    /** Doc */ public function needsReturnArray(): array { return []; }
+    /** Doc */ public function needsReturnIterable(): iterable { return []; }
+    /** Doc */ public function needsReturnCallable(): callable { return fn() => true; }
+    /** Doc */ public function needsReturnObject(): object { return new \stdClass; }
+    /** Doc */ public function needsReturnUnion(): string|int { return 'test'; }
+
+    /** @return string */ public function scalarString(): string { return 'test'; }
+    /** @return int */ public function scalarInt(): int { return 1; }
+    /** @return void */ public function scalarVoid(): void { }
+    /** @return never @throws \Exception */ public function scalarNever(): never { throw new \Exception; }
+    /** @return BelongsToMany */ public function concreteClass(): BelongsToMany { }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        // These should be flagged (missing @return)
+        $this->assertHasIssueContaining('needsReturnMixed', $result);
+        $this->assertHasIssueContaining('needsReturnArray', $result);
+        $this->assertHasIssueContaining('needsReturnIterable', $result);
+        $this->assertHasIssueContaining('needsReturnCallable', $result);
+        $this->assertHasIssueContaining('needsReturnObject', $result);
+        $this->assertHasIssueContaining('needsReturnUnion', $result);
+
+        // These should NOT be flagged (have @return or don't need it)
+        $issues = $result->getIssues();
+        $issueMessages = array_map(fn ($i) => $i->message, $issues);
+
+        $this->assertFalse(
+            in_array(true, array_map(fn ($m) => str_contains($m, 'scalarString'), $issueMessages)),
+            'scalarString should not be flagged'
+        );
+        $this->assertFalse(
+            in_array(true, array_map(fn ($m) => str_contains($m, 'scalarInt'), $issueMessages)),
+            'scalarInt should not be flagged'
+        );
+        $this->assertFalse(
+            in_array(true, array_map(fn ($m) => str_contains($m, 'scalarVoid'), $issueMessages)),
+            'scalarVoid should not be flagged'
+        );
+        $this->assertFalse(
+            in_array(true, array_map(fn ($m) => str_contains($m, 'scalarNever'), $issueMessages)),
+            'scalarNever should not be flagged'
+        );
+        $this->assertFalse(
+            in_array(true, array_map(fn ($m) => str_contains($m, 'concreteClass'), $issueMessages)),
+            'concreteClass should not be flagged'
+        );
     }
 
     #[Test]
@@ -733,6 +931,46 @@ PHP;
         $this->assertCount(2, $issues);
         $this->assertHasIssueContaining('firstMethod', $result);
         $this->assertHasIssueContaining('secondMethod', $result);
+    }
+
+    #[Test]
+    public function test_message_counts_issues_and_methods_separately(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    /**
+     * Process a user action.
+     */
+    public function processUser($userId, $action)
+    {
+        throw new \Exception('Error');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        // This method has 3 issues: missing @param (2 params), missing @throws, and missing @return (no return type)
+        $this->assertCount(3, $issues);
+
+        // Message should say "3 issues across 1 method" (not "3 methods")
+        $this->assertStringContainsString('3 documentation issues across 1 public method', $result->getMessage());
     }
 
     #[Test]

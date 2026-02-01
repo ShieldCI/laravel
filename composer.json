@@ -46,9 +46,21 @@
     },
     "scripts": {
         "test": "vendor/bin/phpunit",
-        "test-coverage": "vendor/bin/phpunit --coverage-html coverage",
+        "test-coverage": "vendor/bin/phpunit --coverage-html coverage --coverage-text --coverage-clover=coverage.xml",
+        "test-coverage-check": "vendor/bin/phpunit --coverage-text --coverage-clover=coverage.xml --coverage-filter src/ --fail-on-risky --fail-on-warning",
         "analyse": "vendor/bin/phpstan analyse",
-        "format": "vendor/bin/pint"
+        "format": "vendor/bin/pint",
+        "format-check": "vendor/bin/pint --test",
+        "check": [
+            "@format-check",
+            "@analyse",
+            "@test"
+        ],
+        "quality": [
+            "@format",
+            "@analyse",
+            "@test-coverage"
+        ]
     },
     "extra": {
         "laravel": {

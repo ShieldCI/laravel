@@ -14,6 +14,7 @@ use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Support\MessageHelper;
 
 /**
  * Checks that the application cache is working properly.
@@ -22,6 +23,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - Cache driver is accessible and functional
  * - Cache can store and retrieve values
  * - Cache operations don't throw exceptions
+ * - Warns about ephemeral drivers (array, null) in production
  */
 class CacheStatusAnalyzer extends AbstractFileAnalyzer
 {
@@ -29,6 +31,13 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
      * Cache connectivity checks are not applicable in CI environments.
      */
     public static bool $runInCI = false;
+
+    /**
+     * Ephemeral cache drivers that don't persist across requests.
+     *
+     * @var array<string>
+     */
+    private const EPHEMERAL_DRIVERS = ['array', 'null'];
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -52,12 +61,12 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
 
         try {
             // Test cache write
-            Cache::put($testKey, $testValue, 60);
+            Cache::put($testKey, $testValue, now()->addMinute());
 
             // Test cache read
             $retrievedValue = Cache::get($testKey);
 
-            // Verify retrieved value matches
+            // Verify retrieved value matches (Strict comparison ensures cache serialization/deserialization integrity)
             if ($retrievedValue !== $testValue) {
                 // Clean up test key before returning
                 $this->cleanupTestKey($testKey);
@@ -81,6 +90,25 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
 
             // Clean up test key after successful test
             $this->cleanupTestKey($testKey);
+
+            // Check for ephemeral cache drivers in production
+            $driver = $this->getCacheDriver();
+            if ($this->isEphemeralDriver($driver) && $this->isProductionEnvironment()) {
+                return $this->warning(
+                    "Cache driver '{$driver}' is ephemeral and won't persist across requests",
+                    [$this->createIssue(
+                        message: "Cache driver '{$driver}' does not persist data across requests",
+                        location: $configLocation,
+                        severity: Severity::Medium,
+                        recommendation: $this->getEphemeralDriverRecommendation($driver),
+                        code: $configLocation->line ? FileParser::getCodeSnippet($configLocation->file, $configLocation->line) : null,
+                        metadata: [
+                            'cache_driver' => $driver,
+                            'environment' => $this->getEnvironment(),
+                        ]
+                    )]
+                );
+            }
 
             return $this->passed('Cache is working correctly');
         } catch (\Throwable $e) {
@@ -141,9 +169,13 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
      */
     private function getCacheDriver(): string
     {
-        $driver = config('cache.default');
+        try {
+            $driver = config('cache.default');
 
-        return is_string($driver) ? $driver : 'unknown';
+            return is_string($driver) ? $driver : 'unknown';
+        } catch (\Throwable) {
+            return 'unknown';
+        }
     }
 
     /**
@@ -160,23 +192,9 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
     private function getConnectionFailureRecommendation(\Throwable $e): string
     {
         $errorMessage = $e->getMessage();
-        $sanitizedError = $this->sanitizeErrorMessage($errorMessage);
+        $sanitizedError = MessageHelper::sanitizeErrorMessage($errorMessage);
 
         return "Check your cache configuration and ensure the cache server is running. Error: {$sanitizedError}. Common issues: 1) Redis/Memcached server not running, 2) Incorrect host/port configuration, 3) Authentication issues, 4) Firewall blocking connection.";
-    }
-
-    /**
-     * Sanitize error message for display in recommendations.
-     */
-    private function sanitizeErrorMessage(string $error): string
-    {
-        // Limit error message length to prevent overly long recommendations
-        $maxLength = 200;
-        if (strlen($error) > $maxLength) {
-            return substr($error, 0, $maxLength).'...';
-        }
-
-        return $error;
     }
 
     /**
@@ -191,5 +209,33 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
             // Silently ignore cleanup errors - we don't want cleanup failures
             // to mask the actual cache issue we're testing for
         }
+    }
+
+    /**
+     * Check if the driver is ephemeral (non-persistent).
+     */
+    private function isEphemeralDriver(string $driver): bool
+    {
+        return in_array(strtolower($driver), self::EPHEMERAL_DRIVERS, true);
+    }
+
+    /**
+     * Check if the current environment is production.
+     */
+    private function isProductionEnvironment(): bool
+    {
+        $environment = $this->getEnvironment();
+
+        // Consider production and staging
+        return in_array(strtolower($environment), ['production', 'staging'], true);
+    }
+
+    /**
+     * Get recommendation message for ephemeral cache driver.
+     */
+    private function getEphemeralDriverRecommendation(string $driver): string
+    {
+        return "The '{$driver}' cache driver stores data in memory and does not persist across requests or application restarts. ".
+               'Configure a persistent cache driver (redis, memcached, database, dynamodb, or file) in config/cache.php for production environments. ';
     }
 }

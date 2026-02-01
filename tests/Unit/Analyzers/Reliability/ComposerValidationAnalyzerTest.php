@@ -327,6 +327,7 @@ class ComposerValidationAnalyzerTest extends AnalyzerTestCase
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
+        $this->assertNotNull($issues[0]->location);
         $this->assertStringContainsString('composer.json', $issues[0]->location->file);
     }
 }

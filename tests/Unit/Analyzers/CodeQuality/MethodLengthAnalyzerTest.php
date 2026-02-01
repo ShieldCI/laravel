@@ -99,7 +99,41 @@ PHP;
     }
 
     #[Test]
-    public function test_excludes_getter_methods(): void
+    public function test_excludes_simple_getter_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DataService
+{
+    private $user;
+
+    // Simple getter should be excluded (< 10 lines)
+    public function getUser()
+    {
+        return $this->user;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/DataService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because simple getters are excluded
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_flags_large_getter_methods(): void
     {
         $statements = str_repeat('        $var = "value";'."\n", 60);
 
@@ -110,8 +144,8 @@ namespace App\Services;
 
 class DataService
 {
-    // Getter should be excluded even if long
-    public function getData()
+    // Large "getter" should NOT be excluded (> 10 lines)
+    public function getUsersWithComplexFiltering()
     {
 {$statements}
         return \$var;
@@ -129,27 +163,27 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass because getters are excluded
-        $this->assertPassed($result);
+        // Should fail because large methods are not excluded, even if they start with "get"
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('getUsersWithComplexFiltering', $result);
     }
 
     #[Test]
-    public function test_excludes_setter_methods(): void
+    public function test_excludes_simple_setter_methods(): void
     {
-        $statements = str_repeat('        $var = "value";'."\n", 60);
-
-        $code = <<<PHP
+        $code = <<<'PHP'
 <?php
 
 namespace App\Services;
 
 class DataService
 {
-    // Setter should be excluded even if long
-    public function setConfiguration(\$config)
+    private $config;
+
+    // Simple setter should be excluded (< 10 lines)
+    public function setConfig($config)
     {
-{$statements}
-        return \$var;
+        $this->config = $config;
     }
 }
 PHP;
@@ -164,27 +198,26 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass because setters are excluded
+        // Should pass because simple setters are excluded
         $this->assertPassed($result);
     }
 
     #[Test]
-    public function test_excludes_is_methods(): void
+    public function test_excludes_simple_is_methods(): void
     {
-        $statements = str_repeat('        $var = "value";'."\n", 60);
-
-        $code = <<<PHP
+        $code = <<<'PHP'
 <?php
 
 namespace App\Services;
 
 class ValidationService
 {
-    // is* methods should be excluded even if long
-    public function isValid(\$data)
+    private $valid;
+
+    // Simple is* method should be excluded (< 10 lines)
+    public function isValid()
     {
-{$statements}
-        return true;
+        return $this->valid === true;
     }
 }
 PHP;
@@ -199,12 +232,46 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass because is* methods are excluded
+        // Should pass because simple is* methods are excluded
         $this->assertPassed($result);
     }
 
     #[Test]
-    public function test_excludes_has_methods(): void
+    public function test_excludes_simple_has_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    private $permissions = [];
+
+    // Simple has* method should be excluded (< 10 lines)
+    public function hasPermission($permission)
+    {
+        return in_array($permission, $this->permissions);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because simple has* methods are excluded
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_flags_large_methods_matching_exclude_patterns(): void
     {
         $statements = str_repeat('        $var = "value";'."\n", 60);
 
@@ -215,8 +282,20 @@ namespace App\Services;
 
 class FeatureService
 {
-    // has* methods should be excluded even if long
-    public function hasPermission(\$user)
+    // Large methods should NOT be excluded, even if they match patterns
+    public function setConfigurationFromMultipleSources(\$sources)
+    {
+{$statements}
+        return true;
+    }
+
+    public function isOrderValidForProcessing(\$order)
+    {
+{$statements}
+        return true;
+    }
+
+    public function hasAdvancedPermissions(\$user)
     {
 {$statements}
         return true;
@@ -234,15 +313,19 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass because has* methods are excluded
-        $this->assertPassed($result);
+        // Should fail because these methods are too large to be simple accessors
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('setConfigurationFromMultipleSources', $result);
+        $this->assertHasIssueContaining('isOrderValidForProcessing', $result);
+        $this->assertHasIssueContaining('hasAdvancedPermissions', $result);
     }
 
     #[Test]
     public function test_method_at_exact_threshold_passes(): void
     {
-        // Exactly 50 statements (at threshold, not over)
-        $statements = str_repeat('        $var = "value";'."\n", 50);
+        // Exactly 50 physical lines (at threshold, not over)
+        // Method declaration + 47 statements + closing brace = 50 lines
+        $statements = str_repeat('        $var = "value";'."\n", 47);
 
         $code = <<<PHP
 <?php
@@ -253,8 +336,7 @@ class Service
 {
     public function process()
     {
-{$statements}
-    }
+{$statements}    }
 }
 PHP;
 
@@ -275,8 +357,9 @@ PHP;
     #[Test]
     public function test_method_at_threshold_plus_one_fails(): void
     {
-        // 51 statements (threshold + 1)
-        $statements = str_repeat('        $var = "value";'."\n", 51);
+        // 51 physical lines (threshold + 1)
+        // Method declaration + 48 statements + closing brace = 51 lines
+        $statements = str_repeat('        $var = "value";'."\n", 48);
 
         $code = <<<PHP
 <?php
@@ -287,8 +370,7 @@ class Service
 {
     public function process()
     {
-{$statements}
-    }
+{$statements}    }
 }
 PHP;
 
@@ -410,253 +492,6 @@ PHP;
     }
 
     #[Test]
-    public function test_counts_nested_if_statements(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Services;
-
-class Service
-{
-    public function process($data)
-    {
-        if ($data > 0) {
-            $a = 1;
-            $b = 2;
-            $c = 3;
-            if ($data > 10) {
-                $d = 4;
-                $e = 5;
-                $f = 6;
-            } else {
-                $g = 7;
-                $h = 8;
-            }
-        }
-        // Add statements to exceed threshold
-        $s1 = 1; $s2 = 2; $s3 = 3; $s4 = 4; $s5 = 5;
-        $s6 = 6; $s7 = 7; $s8 = 8; $s9 = 9; $s10 = 10;
-        $s11 = 11; $s12 = 12; $s13 = 13; $s14 = 14; $s15 = 15;
-        $s16 = 16; $s17 = 17; $s18 = 18; $s19 = 19; $s20 = 20;
-        $s21 = 21; $s22 = 22; $s23 = 23; $s24 = 24; $s25 = 25;
-        $s26 = 26; $s27 = 27; $s28 = 28; $s29 = 29; $s30 = 30;
-        $s31 = 31; $s32 = 32; $s33 = 33; $s34 = 34; $s35 = 35;
-        $s36 = 36; $s37 = 37; $s38 = 38; $s39 = 39; $s40 = 40;
-        $s41 = 41; $s42 = 42; $s43 = 43; $s44 = 44; $s45 = 45;
-        $s46 = 46; $s47 = 47; $s48 = 48; $s49 = 49; $s50 = 50;
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Services/Service.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-    }
-
-    #[Test]
-    public function test_counts_foreach_loops(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Services;
-
-class Service
-{
-    public function process($items)
-    {
-        foreach ($items as $item) {
-            $a = 1;
-            $b = 2;
-            $c = 3;
-        }
-        // Total: 1 (foreach) + 3 (a,b,c) = 4 statements
-        // Need 47+ more to exceed threshold
-        $s1 = 1; $s2 = 2; $s3 = 3; $s4 = 4; $s5 = 5;
-        $s6 = 6; $s7 = 7; $s8 = 8; $s9 = 9; $s10 = 10;
-        $s11 = 11; $s12 = 12; $s13 = 13; $s14 = 14; $s15 = 15;
-        $s16 = 16; $s17 = 17; $s18 = 18; $s19 = 19; $s20 = 20;
-        $s21 = 21; $s22 = 22; $s23 = 23; $s24 = 24; $s25 = 25;
-        $s26 = 26; $s27 = 27; $s28 = 28; $s29 = 29; $s30 = 30;
-        $s31 = 31; $s32 = 32; $s33 = 33; $s34 = 34; $s35 = 35;
-        $s36 = 36; $s37 = 37; $s38 = 38; $s39 = 39; $s40 = 40;
-        $s41 = 41; $s42 = 42; $s43 = 43; $s44 = 44; $s45 = 45;
-        $s46 = 46; $s47 = 47;
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Services/Service.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-    }
-
-    #[Test]
-    public function test_counts_while_loops(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Services;
-
-class Service
-{
-    public function process($condition)
-    {
-        while ($condition) {
-            $a = 1;
-            $b = 2;
-            $c = 3;
-        }
-        // Total: 1 (while) + 3 (a,b,c) = 4 statements
-        // Need 47+ more to exceed threshold
-        $s1 = 1; $s2 = 2; $s3 = 3; $s4 = 4; $s5 = 5;
-        $s6 = 6; $s7 = 7; $s8 = 8; $s9 = 9; $s10 = 10;
-        $s11 = 11; $s12 = 12; $s13 = 13; $s14 = 14; $s15 = 15;
-        $s16 = 16; $s17 = 17; $s18 = 18; $s19 = 19; $s20 = 20;
-        $s21 = 21; $s22 = 22; $s23 = 23; $s24 = 24; $s25 = 25;
-        $s26 = 26; $s27 = 27; $s28 = 28; $s29 = 29; $s30 = 30;
-        $s31 = 31; $s32 = 32; $s33 = 33; $s34 = 34; $s35 = 35;
-        $s36 = 36; $s37 = 37; $s38 = 38; $s39 = 39; $s40 = 40;
-        $s41 = 41; $s42 = 42; $s43 = 43; $s44 = 44; $s45 = 45;
-        $s46 = 46; $s47 = 47;
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Services/Service.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-    }
-
-    #[Test]
-    public function test_counts_switch_statements(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Services;
-
-class Service
-{
-    public function process($value)
-    {
-        switch ($value) {
-            case 1:
-                $a = 1;
-                $b = 2;
-                break;
-            case 2:
-                $c = 3;
-                $d = 4;
-                break;
-            default:
-                $e = 5;
-        }
-        // Total: 1 (switch) + 3 (a,b,break) + 3 (c,d,break) + 1 (e) = 8 statements
-        // Need 43+ more to exceed threshold
-        $s1 = 1; $s2 = 2; $s3 = 3; $s4 = 4; $s5 = 5;
-        $s6 = 6; $s7 = 7; $s8 = 8; $s9 = 9; $s10 = 10;
-        $s11 = 11; $s12 = 12; $s13 = 13; $s14 = 14; $s15 = 15;
-        $s16 = 16; $s17 = 17; $s18 = 18; $s19 = 19; $s20 = 20;
-        $s21 = 21; $s22 = 22; $s23 = 23; $s24 = 24; $s25 = 25;
-        $s26 = 26; $s27 = 27; $s28 = 28; $s29 = 29; $s30 = 30;
-        $s31 = 31; $s32 = 32; $s33 = 33; $s34 = 34; $s35 = 35;
-        $s36 = 36; $s37 = 37; $s38 = 38; $s39 = 39; $s40 = 40;
-        $s41 = 41; $s42 = 42; $s43 = 43;
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Services/Service.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-    }
-
-    #[Test]
-    public function test_counts_try_catch_statements(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Services;
-
-class Service
-{
-    public function process()
-    {
-        try {
-            $a = 1;
-            $b = 2;
-            $c = 3;
-        } catch (\Exception $e) {
-            $d = 4;
-            $e = 5;
-        } finally {
-            $f = 6;
-        }
-        // Add statements to exceed threshold
-        $s1 = 1; $s2 = 2; $s3 = 3; $s4 = 4; $s5 = 5;
-        $s6 = 6; $s7 = 7; $s8 = 8; $s9 = 9; $s10 = 10;
-        $s11 = 11; $s12 = 12; $s13 = 13; $s14 = 14; $s15 = 15;
-        $s16 = 16; $s17 = 17; $s18 = 18; $s19 = 19; $s20 = 20;
-        $s21 = 21; $s22 = 22; $s23 = 23; $s24 = 24; $s25 = 25;
-        $s26 = 26; $s27 = 27; $s28 = 28; $s29 = 29; $s30 = 30;
-        $s31 = 31; $s32 = 32; $s33 = 33; $s34 = 34; $s35 = 35;
-        $s36 = 36; $s37 = 37; $s38 = 38; $s39 = 39; $s40 = 40;
-        $s41 = 41; $s42 = 42; $s43 = 43; $s44 = 44; $s45 = 45;
-        $s46 = 46; $s47 = 47; $s48 = 48; $s49 = 49; $s50 = 50;
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Services/Service.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-    }
-
-    #[Test]
     public function test_handles_abstract_methods(): void
     {
         $code = <<<'PHP'
@@ -772,11 +607,201 @@ PHP;
         $this->assertCount(1, $issues);
 
         $metadata = $issues[0]->metadata;
-        $this->assertArrayHasKey('method', $metadata);
+        $this->assertArrayHasKey('name', $metadata);
+        $this->assertArrayHasKey('type', $metadata);
         $this->assertArrayHasKey('lines', $metadata);
         $this->assertArrayHasKey('threshold', $metadata);
-        $this->assertSame('process', $metadata['method']);
+        $this->assertSame('process', $metadata['name']);
+        $this->assertSame('method', $metadata['type']);
         $this->assertSame(50, $metadata['threshold']);
+    }
+
+    #[Test]
+    public function test_recommendation_uses_configured_threshold(): void
+    {
+        $statements = str_repeat('        $var = "value";'."\n", 80);
+
+        $code = <<<PHP
+<?php
+
+namespace App\Services;
+
+class Service
+{
+    public function process()
+    {
+{$statements}
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'method-length' => [
+                'threshold' => 75,
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        // Verify recommendation includes the configured threshold (75), not hardcoded "30-50 lines"
+        $this->assertStringContainsString('Maximum recommended length: 75 lines', $issues[0]->recommendation);
+    }
+
+    #[Test]
+    public function test_recommendation_uses_default_threshold(): void
+    {
+        $statements = str_repeat('        $var = "value";'."\n", 60);
+
+        $code = <<<PHP
+<?php
+
+namespace App\Services;
+
+class Service
+{
+    public function process()
+    {
+{$statements}
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/Service.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        // Verify recommendation includes the default threshold (50 lines)
+        $this->assertStringContainsString('Maximum recommended length: 50 lines', $issues[0]->recommendation);
+    }
+
+    #[Test]
+    public function test_differentiates_functions_from_methods(): void
+    {
+        $statements = str_repeat('    $var = "value";'."\n", 60);
+
+        // Test with a global function
+        $code = <<<PHP
+<?php
+
+function processData(\$data)
+{
+{$statements}
+}
+
+class Service
+{
+    public function processOrder(\$order)
+    {
+{$statements}
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/helpers.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+
+        // Check global function uses "Function" wording
+        $functionIssue = collect($issues)->first(fn ($issue) => $issue->metadata['type'] === 'function');
+        $this->assertNotNull($functionIssue);
+        $this->assertStringContainsString("Function 'processData'", $functionIssue->message);
+        $this->assertStringContainsString('This function has', $functionIssue->recommendation);
+
+        // Check class method uses "Method" wording
+        $methodIssue = collect($issues)->first(fn ($issue) => $issue->metadata['type'] === 'method');
+        $this->assertNotNull($methodIssue);
+        $this->assertStringContainsString("Method 'processOrder'", $methodIssue->message);
+        $this->assertStringContainsString('This method has', $methodIssue->recommendation);
+    }
+
+    #[Test]
+    public function test_respects_custom_simple_accessor_max_lines_configuration(): void
+    {
+        // Create a getter with 8 physical lines (method declaration to closing brace)
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    private $user;
+
+    public function getUser()
+    {
+        // Some comment
+        $value = $this->user;
+        // Another comment
+
+        return $value;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        // Test with low main threshold (5) and strict accessor threshold (3)
+        // The 8-line getter should be flagged (exceeds main threshold and accessor threshold)
+        $analyzer = $this->createAnalyzer([
+            'method-length' => [
+                'threshold' => 5,
+                'simple_accessor_max_lines' => 3,
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('getUser', $result);
+
+        // Test with low main threshold (5) but lenient accessor threshold (10)
+        // The 8-line getter should be excluded (matches pattern and <= 10 lines)
+        $analyzer = $this->createAnalyzer([
+            'method-length' => [
+                'threshold' => 5,
+                'simple_accessor_max_lines' => 10,
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
     }
 
     #[Test]

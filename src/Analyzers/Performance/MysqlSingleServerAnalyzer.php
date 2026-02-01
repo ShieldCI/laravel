@@ -24,7 +24,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * Uses Laravel's ConfigRepository for proper configuration access.
  *
  * Environment Relevance:
- * - Production/Staging: Important (Unix sockets provide up to 50% performance improvement)
+ * - Production/Staging: Important (Unix sockets provide measurable performance improvement)
  * - Local/Development: Not relevant (TCP is acceptable for local development)
  * - Testing: Not relevant (tests typically use SQLite or don't need socket optimization)
  */
@@ -203,7 +203,7 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
             }
 
             return $this->createIssue(
-                message: "MySQL connection '{$connectionName}' uses TCP on localhost instead of Unix socket",
+                message: "MySQL connection '{$connectionName}' uses TCP on localhost; if MySQL runs on the same host, Unix sockets can improve performance",
                 location: new Location($this->getRelativePath($configFile), $lineNumber),
                 severity: $severity,
                 recommendation: $this->getRecommendation($connectionName),
@@ -343,7 +343,7 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
     private function getRecommendation(string $connectionName): string
     {
         return sprintf(
-            'When MySQL runs on the same server as your application, use Unix sockets instead of TCP for up to 50%% performance improvement (Percona benchmark). '.
+            'When MySQL runs on the same server as your application, use Unix sockets instead of TCP for measurable performance improvement. '.
             "Add 'unix_socket' => env('DB_SOCKET', '/var/run/mysqld/mysqld.sock') to the '%s' connection config, ".
             'then set DB_SOCKET in your .env file with the path to your MySQL socket file. Common paths: '.
             '/var/run/mysqld/mysqld.sock (Ubuntu/Debian), /tmp/mysql.sock (macOS), /var/lib/mysql/mysql.sock (RHEL/CentOS).',

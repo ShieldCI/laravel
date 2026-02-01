@@ -22,6 +22,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
     {
         $tempDir = $this->createTempDirectory([
             'storage/framework/.gitkeep' => '',
+            '.env' => 'APP_ENV=production',
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -39,6 +40,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
     {
         $tempDir = $this->createTempDirectory([
             'storage/framework/down' => '',
+            '.env' => 'APP_ENV=production',
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -53,7 +55,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $this->assertCount(1, $issues);
 
         $issue = $issues[0];
-        $this->assertSame('Application is currently down for maintenance', $issue->message);
+        $this->assertStringContainsString('maintenance', strtolower($issue->message));
         $this->assertSame(Severity::High, $issue->severity);
         $this->assertStringContainsString('php artisan up', $issue->recommendation);
     }
@@ -70,6 +72,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
 
         $tempDir = $this->createTempDirectory([
             'storage/framework/down' => $maintenanceData,
+            '.env' => 'APP_ENV=production',
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -87,6 +90,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
     {
         $tempDir = $this->createTempDirectory([
             'storage/framework/down' => '',
+            '.env' => 'APP_ENV=production',
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -101,6 +105,8 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $this->assertTrue($metadata['is_down']);
         $this->assertIsString($metadata['maintenance_file']);
         $this->assertStringContainsString('storage/framework/down', $metadata['maintenance_file']);
+        $this->assertArrayHasKey('environment', $metadata);
+        $this->assertSame('production', $metadata['environment']);
     }
 
     #[Test]
@@ -108,6 +114,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
     {
         $tempDir = $this->createTempDirectory([
             'storage/framework/down' => '',
+            '.env' => 'APP_ENV=production',
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -129,6 +136,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
     {
         $tempDir = $this->createTempDirectory([
             'storage/framework/down' => '',
+            '.env' => 'APP_ENV=production',
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -138,10 +146,9 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $issue = $issues[0];
-        $location = $issue->location;
 
-        $this->assertStringContainsString('storage/framework/down', $location->file);
-        $this->assertNull($location->line);
+        $this->assertNull($issue->location);
+        $this->assertEquals('storage/framework/down', $issue->metadata['detected_via']);
     }
 
     #[Test]
@@ -149,6 +156,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
     {
         $tempDir = $this->createTempDirectory([
             'storage/framework/down' => '',
+            '.env' => 'APP_ENV=production',
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -184,6 +192,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
     {
         $tempDir = $this->createTempDirectory([
             'storage/framework/down' => '',
+            '.env' => 'APP_ENV=production',
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -197,5 +206,125 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $this->assertFailed($result1);
         $this->assertFailed($result2);
         $this->assertSame($result1->getMessage(), $result2->getMessage());
+    }
+
+    // =========================================================================
+    // Environment Relevance Tests
+    // =========================================================================
+
+    #[Test]
+    public function it_runs_in_production_environment(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/framework/down' => '',
+            '.env' => 'APP_ENV=production',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertTrue($analyzer->shouldRun());
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $issue = $issues[0];
+
+        // Production should get High severity - users affected
+        $this->assertSame(Severity::High, $issue->severity);
+        $this->assertSame('production', $issue->metadata['environment']);
+        $this->assertStringContainsString('users are affected', $issue->message);
+        $this->assertStringContainsString('affects real users', $issue->recommendation);
+    }
+
+    #[Test]
+    public function it_runs_in_staging_environment(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/framework/down' => '',
+            '.env' => 'APP_ENV=staging',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertTrue($analyzer->shouldRun());
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $issue = $issues[0];
+
+        // Staging should get High severity - users affected
+        $this->assertSame(Severity::High, $issue->severity);
+        $this->assertSame('staging', $issue->metadata['environment']);
+        $this->assertStringContainsString('users are affected', $issue->message);
+    }
+
+    #[Test]
+    public function it_skips_in_development_environment(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/framework/down' => '',
+            '.env' => 'APP_ENV=development',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertStringContainsString("Not relevant in 'development' environment", $analyzer->getSkipReason());
+        $this->assertStringContainsString('production, staging', $analyzer->getSkipReason());
+    }
+
+    #[Test]
+    public function it_skips_in_local_environment(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/framework/down' => '',
+            '.env' => 'APP_ENV=local',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertStringContainsString("Not relevant in 'local' environment", $analyzer->getSkipReason());
+    }
+
+    #[Test]
+    public function it_skips_in_testing_environment(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/framework/down' => '',
+            '.env' => 'APP_ENV=testing',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertStringContainsString("Not relevant in 'testing' environment", $analyzer->getSkipReason());
+    }
+
+    #[Test]
+    public function it_includes_production_language_in_recommendations(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/framework/down' => '',
+            '.env' => 'APP_ENV=production',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $result = $analyzer->analyze();
+        $recommendation = $result->getIssues()[0]->recommendation;
+
+        // Should have urgent, production-focused language
+        $this->assertStringContainsString('immediately', $recommendation);
+        $this->assertStringContainsString('affects real users', $recommendation);
+        $this->assertStringContainsString('php artisan up', $recommendation);
     }
 }

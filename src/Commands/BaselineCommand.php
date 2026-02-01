@@ -112,8 +112,8 @@ class BaselineCommand extends Command
             foreach ($issues as $issue) {
                 $issueData = [
                     'type' => 'hash',
-                    'path' => $issue->location->file ?? 'unknown',
-                    'line' => $issue->location->line,
+                    'path' => $issue->location?->file ?? 'unknown',
+                    'line' => $issue->location?->line ?? 0,
                     'message' => $issue->message,
                     'hash' => $this->generateHash($issue),
                 ];
@@ -173,8 +173,8 @@ class BaselineCommand extends Command
     private function generateHash(Issue $issue): string
     {
         $data = [
-            'file' => $issue->location->file ?? 'unknown',
-            'line' => $issue->location->line,
+            'file' => $issue->location?->file ?? 'unknown',
+            'line' => $issue->location?->line ?? 0,
             'message' => $issue->message,
         ];
 

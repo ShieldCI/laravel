@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Validates that the application encryption key is properly configured.
@@ -130,10 +131,9 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
 
                 // Detect multiple APP_KEY definitions
                 if ($appKeyCount > 1) {
-                    $issues[] = $this->createIssueWithSnippet(
+                    $issues[] = $this->createIssue(
                         message: sprintf('Multiple APP_KEY definitions found (first at line %d, duplicate at line %d)', $firstKeyLine + 1, $lineNumber + 1),
-                        filePath: $envFile,
-                        lineNumber: $lineNumber + 1,
+                        location: new Location($this->getRelativePath($envFile), $lineNumber + 1),
                         severity: Severity::High,
                         recommendation: 'Remove duplicate APP_KEY definitions. Only one APP_KEY should be defined per file.',
                         metadata: ['duplicate_count' => $appKeyCount]
@@ -146,10 +146,9 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
 
                 // Check if APP_KEY is empty or whitespace
                 if ($normalizedValue === '') {
-                    $issues[] = $this->createIssueWithSnippet(
+                    $issues[] = $this->createIssue(
                         message: 'APP_KEY is not set or is empty',
-                        filePath: $envFile,
-                        lineNumber: $lineNumber + 1,
+                        location: new Location($this->getRelativePath($envFile), $lineNumber + 1),
                         severity: Severity::Critical,
                         recommendation: 'Run "php artisan key:generate" to generate a secure application key',
                         metadata: ['file' => basename($envFile)]
@@ -157,10 +156,9 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                 }
                 // Check if APP_KEY is a placeholder (case-insensitive)
                 elseif ($this->isPlaceholderValue($appKeyValue)) {
-                    $issues[] = $this->createIssueWithSnippet(
+                    $issues[] = $this->createIssue(
                         message: 'APP_KEY is set to a placeholder/example value',
-                        filePath: $envFile,
-                        lineNumber: $lineNumber + 1,
+                        location: new Location($this->getRelativePath($envFile), $lineNumber + 1),
                         severity: Severity::Critical,
                         recommendation: 'Run "php artisan key:generate" to generate a secure application key',
                         metadata: [
@@ -171,10 +169,9 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                 }
                 // Validate APP_KEY format and strength
                 elseif (! $this->isValidAppKey($appKeyValue)) {
-                    $issues[] = $this->createIssueWithSnippet(
+                    $issues[] = $this->createIssue(
                         message: 'APP_KEY does not follow the expected format or is too short',
-                        filePath: $envFile,
-                        lineNumber: $lineNumber + 1,
+                        location: new Location($this->getRelativePath($envFile), $lineNumber + 1),
                         severity: Severity::High,
                         recommendation: 'Ensure APP_KEY is properly generated with "php artisan key:generate". Valid keys must be at least 32 characters or use base64: prefix with properly encoded content (minimum 16 bytes decoded).',
                         metadata: [
@@ -189,10 +186,9 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
 
         // Flag missing APP_KEY
         if (! $hasAppKey) {
-            $issues[] = $this->createIssueWithSnippet(
+            $issues[] = $this->createIssue(
                 message: 'APP_KEY is not defined in .env file',
-                filePath: $envFile,
-                lineNumber: null,
+                location: new Location($this->getRelativePath($envFile)),
                 severity: Severity::Critical,
                 recommendation: 'Add APP_KEY to your .env file and run "php artisan key:generate"',
                 metadata: ['file' => basename($envFile)]

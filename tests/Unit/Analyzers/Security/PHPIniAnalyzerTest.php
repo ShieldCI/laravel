@@ -278,6 +278,7 @@ class PHPIniAnalyzerTest extends AnalyzerTestCase
         $this->assertNotNull($allowUrlFopenIssue, 'Should have an issue for allow_url_fopen');
 
         // Check that it points to php.ini
+        $this->assertNotNull($allowUrlFopenIssue->location);
         $this->assertStringContainsString('php.ini', $allowUrlFopenIssue->location->file);
 
         // Check that recommendation mentions the file
@@ -398,6 +399,7 @@ class PHPIniAnalyzerTest extends AnalyzerTestCase
         }
 
         $this->assertNotNull($allowUrlFopenIssue);
+        $this->assertNotNull($allowUrlFopenIssue->location);
 
         // Verify it points to the php.ini file
         $this->assertStringContainsString('php.ini', $allowUrlFopenIssue->location->file);

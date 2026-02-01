@@ -15,6 +15,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Support\DatabaseConnectionChecker;
 use ShieldCI\Support\DatabaseConnectionResult;
+use ShieldCI\Support\MessageHelper;
 
 /**
  * Checks that database connections are accessible.
@@ -68,18 +69,20 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
             $configLocation = $this->getDatabaseConfigLocation($connectionName);
 
             if (! $result->successful) {
+                $severity = $this->determineSeverity($connectionName, $defaultConnection, $result);
+
                 $issues[] = $this->createIssue(
                     message: $result->message ?? "Cannot connect to database '{$connectionName}'",
                     location: $configLocation,
-                    severity: Severity::Critical,
+                    severity: $severity,
                     recommendation: $this->buildRecommendation($connectionName, $result),
                     code: $configLocation->line ? FileParser::getCodeSnippet($configLocation->file, $configLocation->line) : null,
                     metadata: [
                         'connection' => $connectionName,
                         'driver' => $this->getConnectionDriver($connectionName),
-                        'host' => $this->getConnectionHost($connectionName),
-                        'database' => $this->getConnectionDatabase($connectionName),
                         'exception' => $result->exceptionClass,
+                        'is_default' => $connectionName === $defaultConnection,
+                        // Note: host and database omitted to prevent infrastructure exposure in logs/reports
                     ]
                 );
             }
@@ -127,23 +130,131 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Determine the severity of a database connection failure.
+     *
+     * Factors considered:
+     * - Default vs non-default connection
+     * - Transient vs persistent error type
+     */
+    private function determineSeverity(
+        string $connectionName,
+        string $defaultConnection,
+        DatabaseConnectionResult $result
+    ): Severity {
+        $isDefault = $connectionName === $defaultConnection;
+        $isTransient = $this->isTransientError($result);
+
+        // Default connection failures are more severe
+        if ($isDefault) {
+            // Default connection with persistent error = Critical
+            // Default connection with transient error = High
+            return $isTransient ? Severity::High : Severity::Critical;
+        }
+
+        // Non-default connection failures are less severe
+        // Non-default with persistent error = High
+        // Non-default with transient error = Medium
+        return $isTransient ? Severity::Medium : Severity::High;
+    }
+
+    /**
+     * Determine if an error is likely transient (temporary/recoverable).
+     *
+     * Uses exception class as the primary signal, falling back to message patterns.
+     *
+     * Transient errors include:
+     * - Connection timeouts
+     * - Connection refused (server restarting)
+     * - DNS resolution failures
+     * - Network unreachable
+     *
+     * Persistent errors include:
+     * - Access denied (wrong credentials)
+     * - Unknown database (doesn't exist)
+     * - Missing driver
+     */
+    private function isTransientError(DatabaseConnectionResult $result): bool
+    {
+        // Check exception class first (more reliable than string parsing)
+        if ($result->exceptionClass !== null) {
+            $exceptionClass = $result->exceptionClass;
+
+            // Persistent exceptions (configuration/authentication issues)
+            $persistentExceptions = [
+                'Doctrine\DBAL\Exception\DriverException',
+                'Doctrine\DBAL\Exception\InvalidArgumentException',
+                'Doctrine\DBAL\Exception\SyntaxErrorException',
+            ];
+
+            // If it's a known persistent exception, it's definitely not transient
+            foreach ($persistentExceptions as $persistentClass) {
+                if ($exceptionClass === $persistentClass || (class_exists($exceptionClass) && is_subclass_of($exceptionClass, $persistentClass))) {
+                    return false;
+                }
+            }
+
+            // For PDOException and other generic exceptions, we need to check the message
+            // (PDOException covers both transient and persistent errors)
+        }
+
+        // Check message patterns (fallback or refinement for PDOException)
+        $message = $result->message ?? '';
+
+        // Persistent error patterns (explicit non-transient signals - check first)
+        $persistentPatterns = [
+            'Access denied',
+            'Unknown database',
+            'could not find driver',
+            'No such file or directory', // SQLite file not found
+        ];
+
+        foreach ($persistentPatterns as $pattern) {
+            if (stripos($message, $pattern) !== false) {
+                return false;
+            }
+        }
+
+        // Transient network/connectivity issues
+        $transientPatterns = [
+            'Connection refused',
+            'Connection timed out',
+            'Timeout',
+            'timed out',
+            'Network is unreachable',
+            'No route to host',
+            'Temporary failure in name resolution',
+            'Name or service not known',
+        ];
+
+        foreach ($transientPatterns as $pattern) {
+            if (stripos($message, $pattern) !== false) {
+                return true;
+            }
+        }
+
+        // Default to persistent for safety (don't downgrade severity incorrectly)
+        return false;
+    }
+
+    /**
      * Get recommendation message for database connection failure.
      */
     private function buildRecommendation(string $connection, DatabaseConnectionResult $result): string
     {
         $driver = $this->getConnectionDriver($connection);
         $errorMsg = $result->message ?? '';
-        $sanitizedError = $this->sanitizeErrorMessage($errorMsg);
+        $error = strtolower($errorMsg);
+        $sanitizedError = MessageHelper::sanitizeErrorMessage($errorMsg);
 
         $recommendation = "Database connection '{$connection}' failed: {$sanitizedError}. ";
 
         // Provide specific recommendations based on error and driver
-        if (str_contains($errorMsg, 'Access denied')) {
+        if (str_contains($error, 'access denied')) {
             $recommendation .= 'Check database username and password in your .env file. ';
-        } elseif (str_contains($errorMsg, 'Connection refused') || str_contains($errorMsg, 'could not find driver')) {
-            $driverText = is_string($driver) ? $driver : 'database';
-            $recommendation .= "Ensure the database server is running and the PHP {$driverText} extension is installed. ";
-        } elseif (str_contains($errorMsg, 'Unknown database')) {
+        } elseif (str_contains($error, 'connection refused') || str_contains($error, 'could not find driver')) {
+            $extension = $this->getPhpExtensionName($driver);
+            $recommendation .= "Ensure the database server is running and the {$extension} PHP extension is installed. ";
+        } elseif (str_contains($error, 'unknown database')) {
             $recommendation .= 'The specified database does not exist. Create it or check the DB_DATABASE value in .env. ';
         } else {
             $recommendation .= 'Common issues: 1) Database server not running, 2) Incorrect credentials, 3) Firewall blocking connection, 4) Wrong host/port. ';
@@ -152,6 +263,25 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
         $recommendation .= "Verify settings in .env and config/database.php for the '{$connection}' connection.";
 
         return $recommendation;
+    }
+
+    /**
+     * Map Laravel database driver names to actual PHP extension names.
+     */
+    private function getPhpExtensionName(?string $driver): string
+    {
+        if ($driver === null) {
+            return 'PDO';
+        }
+
+        $extensionMap = [
+            'mysql' => 'pdo_mysql',
+            'pgsql' => 'pdo_pgsql',
+            'sqlsrv' => 'pdo_sqlsrv',
+            'sqlite' => 'pdo_sqlite',
+        ];
+
+        return $extensionMap[$driver] ?? 'PDO';
     }
 
     /**
@@ -177,18 +307,12 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
         $configFile = $this->getDatabaseConfigPath();
 
         if (file_exists($configFile)) {
-            // Try to find the connection line number
-            $lineNumber = ConfigFileHelper::findNestedKeyLine(
+            // Find the connection name as a key within the 'connections' array
+            $lineNumber = ConfigFileHelper::findKeyLine(
                 $configFile,
-                'connections',
-                'driver',
-                $connectionName
+                $connectionName,
+                'connections'
             );
-
-            if ($lineNumber < 1) {
-                // Fallback to finding the connection name
-                $lineNumber = ConfigFileHelper::findKeyLine($configFile, $connectionName, 'connections');
-            }
 
             return new Location($this->getRelativePath($configFile), $lineNumber < 1 ? null : $lineNumber);
         }
@@ -212,35 +336,5 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
     private function getConnectionDriver(string $connectionName): ?string
     {
         return $this->getConnectionConfig($connectionName, 'driver');
-    }
-
-    /**
-     * Get the host for a database connection.
-     */
-    private function getConnectionHost(string $connectionName): ?string
-    {
-        return $this->getConnectionConfig($connectionName, 'host');
-    }
-
-    /**
-     * Get the database name for a database connection.
-     */
-    private function getConnectionDatabase(string $connectionName): ?string
-    {
-        return $this->getConnectionConfig($connectionName, 'database');
-    }
-
-    /**
-     * Sanitize error message for display in recommendations.
-     */
-    private function sanitizeErrorMessage(string $error): string
-    {
-        // Limit error message length to prevent overly long recommendations
-        $maxLength = 200;
-        if (strlen($error) > $maxLength) {
-            return substr($error, 0, $maxLength).'...';
-        }
-
-        return $error;
     }
 }

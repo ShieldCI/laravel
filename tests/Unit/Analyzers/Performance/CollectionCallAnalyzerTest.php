@@ -31,27 +31,12 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
                 ->andReturnSelf();
 
             /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
-            $phpStan->shouldReceive('parseAnalysis')
-                ->with('could have been retrieved as a query')
+            $phpStan->shouldReceive('pregMatch')
+                ->with('/could\s+have\s+been\s+retrieved\s+as\s+a\s+query|called\s+.*\s+on\s+.*collection/i')
                 ->andReturn($phpstanResult);
         }
 
         return new CollectionCallAnalyzer($phpStan);
-    }
-
-    public function test_skips_when_larastan_not_installed(): void
-    {
-        // Create analyzer with real PHPStan instance (not mocked)
-        // This will check for actual Larastan installation
-        $phpStan = new PHPStan;
-        $analyzer = new CollectionCallAnalyzer($phpStan);
-
-        // In test environment, Larastan won't be installed by default
-        $this->assertFalse($analyzer->shouldRun());
-
-        if (method_exists($analyzer, 'getSkipReason')) {
-            $this->assertStringContainsString('Larastan', $analyzer->getSkipReason());
-        }
     }
 
     public function test_passes_when_no_collection_issues_found(): void
@@ -158,7 +143,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ->andReturnSelf();
 
         /** @phpstan-ignore-next-line */
-        $phpStan->shouldReceive('parseAnalysis')
+        $phpStan->shouldReceive('pregMatch')
             ->andReturn([]);
 
         $analyzer = new CollectionCallAnalyzer($phpStan);
@@ -186,7 +171,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ->andReturnSelf();
 
         /** @phpstan-ignore-next-line */
-        $phpStan->shouldReceive('parseAnalysis')
+        $phpStan->shouldReceive('pregMatch')
             ->andReturn([]);
 
         $analyzer = new CollectionCallAnalyzer($phpStan);
@@ -216,7 +201,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ->andReturnSelf();
 
         /** @phpstan-ignore-next-line */
-        $phpStan->shouldReceive('parseAnalysis')
+        $phpStan->shouldReceive('pregMatch')
             ->andReturn([]);
 
         $analyzer = new CollectionCallAnalyzer($phpStan);
@@ -242,7 +227,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ->andReturnSelf();
 
         /** @phpstan-ignore-next-line */
-        $phpStan->shouldReceive('parseAnalysis')
+        $phpStan->shouldReceive('pregMatch')
             ->andReturn([]);
 
         $analyzer = new CollectionCallAnalyzer($phpStan);
@@ -276,7 +261,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ->andReturnSelf();
 
         /** @phpstan-ignore-next-line */
-        $phpStan->shouldReceive('parseAnalysis')
+        $phpStan->shouldReceive('pregMatch')
             ->andReturn($phpstanResult);
 
         $analyzer = new CollectionCallAnalyzer($phpStan);
@@ -314,7 +299,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ->andReturnSelf();
 
         /** @phpstan-ignore-next-line */
-        $phpStan->shouldReceive('parseAnalysis')
+        $phpStan->shouldReceive('pregMatch')
             ->andReturn($phpstanResult);
 
         $analyzer = new CollectionCallAnalyzer($phpStan);
@@ -443,7 +428,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ->andReturnSelf();
 
         /** @phpstan-ignore-next-line */
-        $phpStan->shouldReceive('parseAnalysis')
+        $phpStan->shouldReceive('pregMatch')
             ->andThrow(new \RuntimeException('Failed to parse PHPStan output'));
 
         $analyzer = new CollectionCallAnalyzer($phpStan);
@@ -577,33 +562,6 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('performance', strtolower($recommendation));
     }
 
-    public function test_skip_reason_mentions_larastan(): void
-    {
-        // Use real PHPStan (not mocked) so it checks for actual Larastan
-        $phpStan = new PHPStan;
-        $analyzer = new CollectionCallAnalyzer($phpStan);
-
-        if (! $analyzer->shouldRun()) {
-            $skipReason = $analyzer->getSkipReason();
-            $this->assertStringContainsString('Larastan', $skipReason);
-            $this->assertStringContainsString('required', $skipReason);
-        } else {
-            // If Larastan is actually installed, test passes
-            $this->assertTrue(true);
-        }
-    }
-
-    public function test_mock_detection_works_for_mockery(): void
-    {
-        /** @var PHPStan&\Mockery\MockInterface $phpStan */
-        $phpStan = Mockery::mock(PHPStan::class);
-
-        $analyzer = new CollectionCallAnalyzer($phpStan);
-
-        // Should detect Mockery mock and return true for hasLarastan
-        $this->assertTrue($analyzer->shouldRun());
-    }
-
     public function test_different_collection_methods_detected(): void
     {
         $phpstanResult = [
@@ -649,6 +607,112 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('count', implode(' ', $messages));
         $this->assertStringContainsString('sum', implode(' ', $messages));
         $this->assertStringContainsString('avg', implode(' ', $messages));
+    }
+
+    public function test_flexible_regex_matches_message_variations(): void
+    {
+        // Test that the regex pattern is flexible enough to match various Larastan message formats
+        $phpstanResult = [
+            [
+                'path' => '/app/Services/Service1.php',
+                'line' => 10,
+                // Standard format with single quotes
+                'message' => "Called 'count' on Laravel collection, but could have been retrieved as a query.",
+            ],
+            [
+                'path' => '/app/Services/Service2.php',
+                'line' => 20,
+                // Different wording but still matches pattern
+                'message' => 'This operation could have been retrieved as a query instead.',
+            ],
+            [
+                'path' => '/app/Services/Service3.php',
+                'line' => 30,
+                // Variation with double quotes
+                'message' => 'Called "sum" on Eloquent collection, but could have been retrieved as a query.',
+            ],
+            [
+                'path' => '/app/Services/Service4.php',
+                'line' => 40,
+                // Extra whitespace variation
+                'message' => 'Called avg on   collection  but could  have  been  retrieved  as  a  query.',
+            ],
+        ];
+
+        $analyzer = $this->createAnalyzer($phpstanResult);
+        $analyzer->setBasePath('/');
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        // All 4 message variations should be detected
+        $this->assertCount(4, $issues);
+    }
+
+    public function test_uses_config_paths_when_paths_not_set(): void
+    {
+        // Mock config to return custom paths
+        config(['shieldci.paths.analyze' => ['app', 'packages', 'modules', 'config', 'database']]);
+
+        /** @var PHPStan&\Mockery\MockInterface $phpStan */
+        $phpStan = Mockery::mock(PHPStan::class);
+
+        /** @phpstan-ignore-next-line */
+        $phpStan->shouldReceive('setRootPath')
+            ->andReturnSelf();
+
+        /** @phpstan-ignore-next-line */
+        $phpStan->shouldReceive('start')
+            // Should filter out 'config' and 'database', keeping only code directories
+            ->with(['app', 'packages', 'modules'])
+            ->once()
+            ->andReturnSelf();
+
+        /** @phpstan-ignore-next-line */
+        $phpStan->shouldReceive('pregMatch')
+            ->andReturn([]);
+
+        $analyzer = new CollectionCallAnalyzer($phpStan);
+        $analyzer->setBasePath('/');
+        // Don't set paths - should use config
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_filters_non_code_directories_from_config(): void
+    {
+        // Config has only non-code paths
+        config(['shieldci.paths.analyze' => ['config', 'database', 'resources/views', 'routes']]);
+
+        /** @var PHPStan&\Mockery\MockInterface $phpStan */
+        $phpStan = Mockery::mock(PHPStan::class);
+
+        /** @phpstan-ignore-next-line */
+        $phpStan->shouldReceive('setRootPath')
+            ->andReturnSelf();
+
+        /** @phpstan-ignore-next-line */
+        $phpStan->shouldReceive('start')
+            // Should fallback to ['app'] when all config paths are filtered
+            ->with(['app'])
+            ->once()
+            ->andReturnSelf();
+
+        /** @phpstan-ignore-next-line */
+        $phpStan->shouldReceive('pregMatch')
+            ->andReturn([]);
+
+        $analyzer = new CollectionCallAnalyzer($phpStan);
+        $analyzer->setBasePath('/');
+        // Don't set paths
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
     }
 
     protected function tearDown(): void

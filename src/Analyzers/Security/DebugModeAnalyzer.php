@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Detects debug mode and debugging-related security issues.
@@ -34,6 +35,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
         'var_export',
         'debug_backtrace',
         'debug_print_backtrace',
+        'debug_zval_dump',
         'ray',
     ];
 
@@ -115,27 +117,35 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
         // Get APP_DEBUG
         $debugValue = $this->getEnvValue($lines, 'APP_DEBUG');
 
-        // Check for APP_DEBUG=true
-        foreach ($lines as $lineNumber => $line) {
-            if (! is_string($line)) {
-                continue;
+        // Check for APP_DEBUG=true - only report on the actual line where it's set
+        if ($debugValue !== null && in_array(strtolower($debugValue), ['true', '1', 'yes', 'on'], true)) {
+            // Find the line number where APP_DEBUG is set
+            $debugLineNumber = null;
+            foreach ($lines as $lineNumber => $line) {
+                if (! is_string($line)) {
+                    continue;
+                }
+
+                // Match: APP_DEBUG=true or APP_DEBUG="true" or APP_DEBUG='true'
+                if (preg_match('/^APP_DEBUG\s*=\s*["\']?(true|1|yes|on)["\']?/i', trim($line))) {
+                    $debugLineNumber = $lineNumber + 1;
+                    break;
+                }
             }
 
-            if ($debugValue !== null && in_array(strtolower($debugValue), ['true', '1', 'yes', 'on'], true)) {
-                $issues[] = $this->createIssueWithSnippet(
-                    message: 'Debug mode is enabled (APP_DEBUG=true) in '.($appEnv ?: 'unknown').' environment',
-                    filePath: $envFile,
-                    lineNumber: $lineNumber + 1,
-                    severity: Severity::Critical,
-                    recommendation: 'Set APP_DEBUG=false in production/staging environments to prevent information disclosure',
-                    metadata: [
-                        'file' => basename($envFile),
-                        'env_var' => 'APP_DEBUG',
-                        'value' => 'true',
-                        'app_env' => $appEnv,
-                    ]
-                );
-            }
+            // Create issue only once for the line where APP_DEBUG is actually set
+            $issues[] = $this->createIssue(
+                message: 'Debug mode is enabled (APP_DEBUG=true) in '.($appEnv ?: 'unknown').' environment',
+                location: new Location($this->getRelativePath($envFile), $debugLineNumber ?? 1),
+                severity: Severity::Critical,
+                recommendation: 'Set APP_DEBUG=false in production/staging environments to prevent information disclosure',
+                metadata: [
+                    'file' => basename($envFile),
+                    'env_var' => 'APP_DEBUG',
+                    'value' => 'true',
+                    'app_env' => $appEnv,
+                ]
+            );
         }
     }
 

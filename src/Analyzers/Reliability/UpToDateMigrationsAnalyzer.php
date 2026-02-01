@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\Reliability;
 
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Schema;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -26,9 +27,35 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
      */
     public static bool $runInCI = false;
 
-    // Pattern to match pending migrations in migrate:status --pending output
-    // Format: "  2025_12_10_052419_test_pending_migration ......................... Pending  "
-    private const PENDING_MIGRATION_PATTERN = '/^\s*(.+?)\s+\.+\s+Pending\s*$/i';
+    public function shouldRun(): bool
+    {
+        // Check if Artisan facade is available
+        if (! class_exists(Artisan::class)) {
+            return false;
+        }
+
+        // Check if Schema facade is available
+        if (! class_exists(Schema::class)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    public function getSkipReason(): string
+    {
+        // Check if Artisan facade is available
+        if (! class_exists(Artisan::class)) {
+            return 'Laravel Artisan facade not available. Ensure Laravel is properly bootstrapped.';
+        }
+
+        // Check if Schema facade is available
+        if (! class_exists(Schema::class)) {
+            return 'Laravel Schema facade not available. Ensure Laravel is properly bootstrapped.';
+        }
+
+        return 'Unknown reason';
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -48,27 +75,28 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
     {
         $migrationsPath = $this->getMigrationsPath();
 
-        // Check if Artisan facade is available
-        if (! class_exists(Artisan::class)) {
-            return $this->warning(
-                'Laravel Artisan facade not available',
-                [$this->createIssueWithSnippet(
-                    message: 'Cannot check migration status - Artisan facade not found',
-                    filePath: $migrationsPath,
-                    lineNumber: null,
-                    severity: Severity::Medium,
-                    recommendation: 'Ensure Laravel is properly bootstrapped. Migration status checks require the Artisan facade to be available.',
-                    column: null,
-                    contextLines: null,
-                    code: 'artisan-unavailable',
-                    metadata: []
-                )]
-            );
-        }
-
         try {
+            // Check if migrations table exists
+            if (! Schema::hasTable('migrations')) {
+                return $this->failed(
+                    'Migrations table does not exist',
+                    [$this->createIssueWithSnippet(
+                        message: 'The migrations table has not been created yet',
+                        filePath: $migrationsPath,
+                        lineNumber: null,
+                        severity: Severity::High,
+                        recommendation: 'This appears to be a new installation. Run "php artisan migrate:install" to create the migrations table, then run "php artisan migrate" to execute all migrations.',
+                        code: 'migrations-table-missing',
+                        metadata: [
+                            'table' => 'migrations',
+                            'exists' => false,
+                        ]
+                    )]
+                );
+            }
+
             // Run migrations with --pending flag to check if there are any pending
-            Artisan::call('migrate:status', ['--pending' => true]);
+            Artisan::call('migrate:status', ['--pending' => true, '--no-interaction' => true]);
 
             $output = Artisan::output();
 
@@ -98,8 +126,6 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                     lineNumber: null,
                     severity: Severity::High,
                     recommendation: $this->getPendingMigrationsRecommendation($pendingMigrations),
-                    column: null,
-                    contextLines: null,
                     code: 'pending-migrations',
                     metadata: [
                         'pending_count' => count($pendingMigrations),
@@ -120,8 +146,6 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                         lineNumber: null,
                         severity: Severity::High,
                         recommendation: $this->getDatabaseErrorRecommendation($e),
-                        column: null,
-                        contextLines: null,
                         code: 'database-error',
                         metadata: [
                             'exception' => get_class($e),
@@ -177,17 +201,26 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
     private function parsePendingMigrations(string $output): array
     {
         $migrations = [];
-        $lines = explode("\n", $output);
 
-        foreach ($lines as $line) {
-            // Look for lines that indicate pending migrations
-            // Format: "  2025_12_10_052419_migration_name .................... Pending  "
-            if (preg_match(self::PENDING_MIGRATION_PATTERN, $line, $matches)) {
-                // $matches[1] is guaranteed to exist after successful preg_match with capture group
-                $migration = trim($matches[1]);
-                if ($migration !== '') {
-                    $migrations[] = $migration;
-                }
+        if (! str_contains($output, 'Pending')) {
+            return [];
+        }
+
+        foreach (explode("\n", $output) as $line) {
+            if (! str_contains($line, 'Pending')) {
+                continue;
+            }
+
+            // Skip header lines
+            if (str_contains($line, 'Migration') || str_contains($line, 'Batch')) {
+                continue;
+            }
+
+            // Extract migration name (first column)
+            $migration = trim(strtok($line, " \t"));
+
+            if ($migration !== '') {
+                $migrations[] = $migration;
             }
         }
 

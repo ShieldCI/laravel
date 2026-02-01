@@ -594,4 +594,276 @@ PHP;
         $this->assertArrayHasKey('cache_driver', $metadata);
         $this->assertEquals('redis', $metadata['cache_driver']);
     }
+
+    // =========================================================================
+    // Ephemeral Cache Driver Tests
+    // =========================================================================
+
+    public function test_warns_when_using_array_driver_in_production(): void
+    {
+        $cacheConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'array',
+    'stores' => [
+        'array' => [
+            'driver' => 'array',
+            'serialize' => false,
+        ],
+    ],
+];
+PHP;
+
+        $envFile = <<<'ENV'
+APP_ENV=production
+ENV;
+
+        $tempDir = $this->createTempDirectory([
+            'config/cache.php' => $cacheConfig,
+            '.env' => $envFile,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        config(['cache.default' => 'array']);
+        config(['cache.stores.array.driver' => 'array']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('does not persist data across requests', $result);
+        $this->assertHasIssueContaining('array', $result);
+    }
+
+    public function test_fails_when_using_null_driver_in_production(): void
+    {
+        $cacheConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'null',
+    'stores' => [
+        'null' => [
+            'driver' => 'null',
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/cache.php' => $cacheConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        config(['cache.default' => 'null']);
+        config(['cache.stores.null.driver' => 'null']);
+        config(['app.env' => 'production']);
+
+        $result = $analyzer->analyze();
+
+        // null driver doesn't actually store anything, so it fails the cache test
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('write/read test failed', $result);
+    }
+
+    public function test_warns_when_using_array_driver_in_staging(): void
+    {
+        $cacheConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'array',
+    'stores' => [
+        'array' => [
+            'driver' => 'array',
+            'serialize' => false,
+        ],
+    ],
+];
+PHP;
+
+        $envFile = <<<'ENV'
+APP_ENV=staging
+ENV;
+
+        $tempDir = $this->createTempDirectory([
+            'config/cache.php' => $cacheConfig,
+            '.env' => $envFile,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        config(['cache.default' => 'array']);
+        config(['cache.stores.array.driver' => 'array']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('does not persist data across requests', $result);
+    }
+
+    public function test_passes_when_using_array_driver_in_testing(): void
+    {
+        $cacheConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'array',
+    'stores' => [
+        'array' => [
+            'driver' => 'array',
+            'serialize' => false,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/cache.php' => $cacheConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        config(['cache.default' => 'array']);
+        config(['cache.stores.array.driver' => 'array']);
+        config(['app.env' => 'testing']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass in testing environment
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_using_array_driver_in_local(): void
+    {
+        $cacheConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'array',
+    'stores' => [
+        'array' => [
+            'driver' => 'array',
+            'serialize' => false,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/cache.php' => $cacheConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        config(['cache.default' => 'array']);
+        config(['cache.stores.array.driver' => 'array']);
+        config(['app.env' => 'local']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass in local environment
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_using_redis_driver_in_production(): void
+    {
+        $cacheConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'redis',
+    'stores' => [
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => 'cache',
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/cache.php' => $cacheConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        config(['cache.default' => 'redis']);
+        config(['cache.stores.redis.driver' => 'redis']);
+        config(['app.env' => 'production']);
+
+        $testValue = null;
+        Cache::shouldReceive('put')
+            ->once()
+            ->andReturnUsing(function ($key, $value) use (&$testValue) {
+                $testValue = $value;
+
+                return true;
+            });
+
+        Cache::shouldReceive('get')
+            ->once()
+            ->andReturnUsing(function () use (&$testValue) {
+                return $testValue;
+            });
+
+        Cache::shouldReceive('forget')->once()->andReturnTrue();
+
+        $result = $analyzer->analyze();
+
+        // Should pass - redis is persistent
+        $this->assertPassed($result);
+    }
+
+    public function test_ephemeral_warning_includes_environment_metadata(): void
+    {
+        $cacheConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'array',
+    'stores' => [
+        'array' => [
+            'driver' => 'array',
+            'serialize' => false,
+        ],
+    ],
+];
+PHP;
+
+        $envFile = <<<'ENV'
+APP_ENV=production
+ENV;
+
+        $tempDir = $this->createTempDirectory([
+            'config/cache.php' => $cacheConfig,
+            '.env' => $envFile,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        config(['cache.default' => 'array']);
+        config(['cache.stores.array.driver' => 'array']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        $metadata = $issues[0]->metadata;
+        $this->assertArrayHasKey('cache_driver', $metadata);
+        $this->assertArrayHasKey('environment', $metadata);
+        $this->assertEquals('array', $metadata['cache_driver']);
+        $this->assertEquals('production', $metadata['environment']);
+    }
 }

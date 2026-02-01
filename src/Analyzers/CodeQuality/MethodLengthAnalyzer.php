@@ -17,12 +17,14 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 
 /**
- * Flags methods exceeding recommended line count.
+ * Flags methods and functions exceeding recommended line count.
  *
  * Checks for:
- * - Methods with > threshold lines (default: 50)
- * - Counts logical lines (excluding comments/whitespace)
- * - Excludes simple getter/setter methods
+ * - Methods and functions with > threshold lines (default: 50)
+ * - Counts physical lines (from declaration to closing brace)
+ * - Excludes simple getter/setter patterns (get*, set*, is*, has*) only if ≤ 10 lines
+ * - Large methods matching exclude patterns are still flagged (prevents hiding real problems)
+ * - Differentiates between global functions and class methods in messaging
  */
 class MethodLengthAnalyzer extends AbstractFileAnalyzer
 {
@@ -31,10 +33,18 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
     /** @var array<string> */
     public const DEFAULT_EXCLUDED_PATTERNS = ['get*', 'set*', 'is*', 'has*'];
 
+    /**
+     * Maximum lines for a method/function to be considered a "simple" getter/setter.
+     * Methods matching exclude patterns but exceeding this will still be flagged.
+     */
+    public const SIMPLE_ACCESSOR_MAX_LINES = 10;
+
     private int $threshold;
 
     /** @var array<string> */
     private array $excludedPatterns;
+
+    private int $simpleAccessorMaxLines;
 
     public function __construct(
         private ParserInterface $parser,
@@ -61,13 +71,15 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
         $analyzerConfig = $this->config->get('shieldci.analyzers.code-quality.method-length', []);
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
-        $this->threshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;
+        $this->threshold = (int) ($analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD);
         $excludePatterns = $analyzerConfig['exclude_patterns'] ?? null;
         $this->excludedPatterns = is_array($excludePatterns) ? $excludePatterns : self::DEFAULT_EXCLUDED_PATTERNS;
+        $this->simpleAccessorMaxLines = (int) ($analyzerConfig['simple_accessor_max_lines'] ?? self::SIMPLE_ACCESSOR_MAX_LINES);
 
         $issues = [];
         $threshold = $this->threshold;
         $excludePatterns = $this->excludedPatterns;
+        $simpleAccessorMaxLines = $this->simpleAccessorMaxLines;
 
         foreach ($this->getPhpFiles() as $file) {
             $ast = $this->parser->parseFile($file);
@@ -76,23 +88,25 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $visitor = new MethodLengthVisitor($threshold, $excludePatterns);
+            $visitor = new MethodLengthVisitor($threshold, $excludePatterns, $simpleAccessorMaxLines);
             $traverser = new NodeTraverser;
             $traverser->addVisitor($visitor);
             $traverser->traverse($ast);
 
             foreach ($visitor->getIssues() as $issue) {
+                $type = ucfirst($issue['type']); // 'function' -> 'Function', 'method' -> 'Method'
                 $issues[] = $this->createIssueWithSnippet(
-                    message: "Method '{$issue['method']}' has {$issue['lines']} lines (threshold: {$threshold})",
+                    message: "{$type} '{$issue['name']}' has {$issue['lines']} lines (threshold: {$threshold})",
                     filePath: $file,
                     lineNumber: $issue['line'],
                     severity: $this->getSeverityForLength($issue['lines'], $threshold),
-                    recommendation: $this->getRecommendation($issue['lines'], $threshold),
+                    recommendation: $this->getRecommendation($issue['lines'], $threshold, $issue['type']),
                     column: null,
                     contextLines: null,
-                    code: $issue['method'],
+                    code: $issue['name'],
                     metadata: [
-                        'method' => $issue['method'],
+                        'name' => $issue['name'],
+                        'type' => $issue['type'],
                         'lines' => $issue['lines'],
                         'threshold' => $threshold,
                         'file' => $file,
@@ -102,13 +116,13 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
         }
 
         if (empty($issues)) {
-            return $this->passed('No methods exceeding length threshold detected');
+            return $this->passed('No methods or functions exceeding length threshold detected');
         }
 
         $totalIssues = count($issues);
 
         return $this->failed(
-            "Found {$totalIssues} method(s) exceeding recommended length",
+            "Found {$totalIssues} method(s) or function(s) exceeding recommended length",
             $issues
         );
     }
@@ -118,8 +132,12 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
      */
     private function getSeverityForLength(int $lines, int $threshold): Severity
     {
+        $threshold = max(1, $threshold);
         $ratio = $lines / $threshold;
 
+        if ($ratio >= 3.0) {
+            return Severity::High;
+        }
         if ($ratio >= 2.0) {
             return Severity::Medium;
         }
@@ -128,13 +146,14 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Get recommendation based on method length.
+     * Get recommendation based on function/method length.
      */
-    private function getRecommendation(int $lines, int $threshold): string
+    private function getRecommendation(int $lines, int $threshold, string $type): string
     {
         $excess = $lines - $threshold;
+        $typeLabel = $type === 'function' ? 'function' : 'method';
 
-        $base = "This method has {$excess} lines above the recommended threshold. ";
+        $base = "This {$typeLabel} has {$excess} lines above the recommended threshold. ";
 
         $recommendations = [
             'Extract logical steps into separate, well-named methods',
@@ -148,48 +167,51 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
             $base .= 'This is excessively long and should be refactored. ';
         }
 
-        return $base.'Recommended actions: '.implode('; ', $recommendations).'. Maximum recommended length: 30-50 lines.';
+        return $base.'Recommended actions: '.implode('; ', $recommendations).". Maximum recommended length: {$threshold} lines.";
     }
 }
 
 /**
- * Visitor to count method lines.
+ * Visitor to count method and function lines.
  */
 class MethodLengthVisitor extends NodeVisitorAbstract
 {
     /**
-     * @var array<int, array{method: string, lines: int, line: int}>
+     * @var array<int, array{name: string, lines: int, line: int, type: string}>
      */
     private array $issues = [];
 
     /**
      * @param  array<string>  $excludePatterns
+     * @param  int  $simpleAccessorMaxLines  Maximum lines for a method to be considered a simple accessor
      */
     public function __construct(
         private int $threshold,
-        private array $excludePatterns = []
+        private array $excludePatterns = [],
+        private int $simpleAccessorMaxLines = MethodLengthAnalyzer::SIMPLE_ACCESSOR_MAX_LINES
     ) {}
 
     public function enterNode(Node $node)
     {
         if ($node instanceof Stmt\Function_ || $node instanceof Stmt\ClassMethod) {
-            $methodName = $node->name->toString();
+            $name = $node->name->toString();
+            $type = $node instanceof Stmt\Function_ ? 'function' : 'method';
+            $startLine = $node->getStartLine();
 
-            // Check if method matches exclude patterns
-            if ($this->shouldExclude($methodName)) {
+            // Count physical lines (from start to end)
+            $physicalLines = $this->countPhysicalLines($node);
+
+            // Only exclude if it matches pattern AND is small (simple accessor)
+            if ($this->shouldExclude($name, $physicalLines)) {
                 return null;
             }
 
-            $startLine = $node->getStartLine();
-
-            // Count logical lines (statements)
-            $logicalLines = $this->countLogicalLines($node);
-
-            if ($logicalLines > $this->threshold) {
+            if ($physicalLines > $this->threshold) {
                 $this->issues[] = [
-                    'method' => $methodName,
-                    'lines' => $logicalLines,
+                    'name' => $name,
+                    'lines' => $physicalLines,
                     'line' => $startLine,
+                    'type' => $type,
                 ];
             }
         }
@@ -198,15 +220,26 @@ class MethodLengthVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Check if method name matches exclude patterns.
+     * Check if function/method should be excluded.
+     *
+     * Only excludes if:
+     * 1. Name matches exclude patterns (get*, set*, is*, has*)
+     * 2. AND is small enough to be a simple accessor (configurable threshold)
+     *
+     * This prevents large methods like getUsersWithComplexFiltering() from being excluded.
      */
-    private function shouldExclude(string $methodName): bool
+    private function shouldExclude(string $name, int $lines): bool
     {
+        // If it's large, never exclude it (even if it matches a pattern)
+        if ($lines > $this->simpleAccessorMaxLines) {
+            return false;
+        }
+
         foreach ($this->excludePatterns as $pattern) {
             // Convert glob pattern to regex (escape special chars, then replace * with .*)
             $escaped = preg_quote($pattern, '/');
             $regex = '/^'.str_replace('\\*', '.*', $escaped).'$/i';
-            if (preg_match($regex, $methodName)) {
+            if (preg_match($regex, $name)) {
                 return true;
             }
         }
@@ -215,73 +248,28 @@ class MethodLengthVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Count logical lines (statements) in method.
+     * Count physical lines in function or method.
+     *
+     * Counts the actual number of lines from the declaration
+     * to the closing brace, matching what developers see in their editor.
      */
-    private function countLogicalLines(Node $node): int
+    private function countPhysicalLines(Node $node): int
     {
         if (! $node instanceof Stmt\Function_ && ! $node instanceof Stmt\ClassMethod) {
             return 0;
         }
 
-        $stmts = $node->stmts;
-        if ($stmts === null) {
-            return 0;
-        }
+        $startLine = $node->getStartLine();
+        $endLine = $node->getEndLine();
 
-        return $this->countStatements($stmts);
-    }
-
-    /**
-     * Recursively count statements.
-     *
-     * @param  array<Node\Stmt>  $stmts
-     */
-    private function countStatements(array $stmts): int
-    {
-        $count = 0;
-
-        foreach ($stmts as $stmt) {
-            $count++; // Count this statement
-
-            // Count nested statements
-            if ($stmt instanceof Stmt\If_) {
-                $count += $this->countStatements($stmt->stmts);
-                foreach ($stmt->elseifs as $elseif) {
-                    $count += $this->countStatements($elseif->stmts);
-                }
-                if ($stmt->else !== null) {
-                    $count += $this->countStatements($stmt->else->stmts);
-                }
-            } elseif ($stmt instanceof Stmt\While_) {
-                $count += $this->countStatements($stmt->stmts);
-            } elseif ($stmt instanceof Stmt\Do_) {
-                $count += $this->countStatements($stmt->stmts);
-            } elseif ($stmt instanceof Stmt\For_) {
-                $count += $this->countStatements($stmt->stmts);
-            } elseif ($stmt instanceof Stmt\Foreach_) {
-                $count += $this->countStatements($stmt->stmts);
-            } elseif ($stmt instanceof Stmt\Switch_) {
-                foreach ($stmt->cases as $case) {
-                    $count += $this->countStatements($case->stmts);
-                }
-            } elseif ($stmt instanceof Stmt\TryCatch) {
-                $count += $this->countStatements($stmt->stmts);
-                foreach ($stmt->catches as $catch) {
-                    $count += $this->countStatements($catch->stmts);
-                }
-                if ($stmt->finally !== null) {
-                    $count += $this->countStatements($stmt->finally->stmts);
-                }
-            }
-        }
-
-        return $count;
+        // Return the number of lines (inclusive)
+        return $endLine - $startLine + 1;
     }
 
     /**
      * Get collected issues.
      *
-     * @return array<int, array{method: string, lines: int, line: int}>
+     * @return array<int, array{name: string, lines: int, line: int, type: string}>
      */
     public function getIssues(): array
     {

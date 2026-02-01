@@ -311,6 +311,7 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertStringContainsString('database server is running', $issues[0]->recommendation);
+        $this->assertStringContainsString('pdo_mysql', $issues[0]->recommendation);
     }
 
     public function test_unknown_database_error_recommendation(): void
@@ -381,7 +382,7 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $this->assertSame('mysql', $issues[0]->metadata['driver']);
     }
 
-    public function test_includes_host_in_metadata(): void
+    public function test_does_not_expose_host_in_metadata(): void
     {
         $tempDir = $this->createTempDirectory([
             'config/database.php' => $this->databaseConfig(),
@@ -399,11 +400,11 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertArrayHasKey('host', $issues[0]->metadata);
-        $this->assertSame('127.0.0.1', $issues[0]->metadata['host']);
+        // Host should not be exposed to prevent infrastructure disclosure
+        $this->assertArrayNotHasKey('host', $issues[0]->metadata);
     }
 
-    public function test_includes_database_name_in_metadata(): void
+    public function test_does_not_expose_database_name_in_metadata(): void
     {
         $tempDir = $this->createTempDirectory([
             'config/database.php' => $this->databaseConfig(),
@@ -421,8 +422,8 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertArrayHasKey('database', $issues[0]->metadata);
-        $this->assertSame('test', $issues[0]->metadata['database']);
+        // Database name should not be exposed to prevent infrastructure disclosure
+        $this->assertArrayNotHasKey('database', $issues[0]->metadata);
     }
 
     public function test_includes_exception_class_in_metadata(): void
@@ -492,6 +493,472 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    // =========================================================================
+    // PHP Extension Mapping Tests
+    // =========================================================================
+
+    public function test_maps_mysql_driver_to_pdo_mysql_extension(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'could not find driver'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('pdo_mysql PHP extension', $issues[0]->recommendation);
+    }
+
+    public function test_maps_pgsql_driver_to_pdo_pgsql_extension(): void
+    {
+        $connections = [
+            'pgsql' => [
+                'driver' => 'pgsql',
+                'host' => '127.0.0.1',
+                'database' => 'test',
+            ],
+        ];
+
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig($connections),
+        ]);
+
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('database.default', 'pgsql');
+        $config->set('database.connections', $connections);
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'could not find driver'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('pdo_pgsql PHP extension', $issues[0]->recommendation);
+    }
+
+    public function test_maps_sqlsrv_driver_to_pdo_sqlsrv_extension(): void
+    {
+        $connections = [
+            'sqlsrv' => [
+                'driver' => 'sqlsrv',
+                'host' => '127.0.0.1',
+                'database' => 'test',
+            ],
+        ];
+
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig($connections),
+        ]);
+
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('database.default', 'sqlsrv');
+        $config->set('database.connections', $connections);
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'could not find driver'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('pdo_sqlsrv PHP extension', $issues[0]->recommendation);
+    }
+
+    public function test_maps_sqlite_driver_to_pdo_sqlite_extension(): void
+    {
+        $connections = [
+            'sqlite' => [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+            ],
+        ];
+
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig($connections),
+        ]);
+
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('database.default', 'sqlite');
+        $config->set('database.connections', $connections);
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'could not find driver'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('pdo_sqlite PHP extension', $issues[0]->recommendation);
+    }
+
+    public function test_defaults_to_pdo_for_unknown_driver(): void
+    {
+        $connections = [
+            'custom' => [
+                'driver' => 'custom',
+                'host' => '127.0.0.1',
+            ],
+        ];
+
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig($connections),
+        ]);
+
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('database.default', 'custom');
+        $config->set('database.connections', $connections);
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'could not find driver'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('PDO PHP extension', $issues[0]->recommendation);
+    }
+
+    // =========================================================================
+    // Exception Class Detection Tests
+    // =========================================================================
+
+    public function test_doctrine_driver_exception_is_persistent(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        // Doctrine DriverException with connection refused message
+        $checker->shouldReceive('check')->andReturn(
+            new DatabaseConnectionResult(false, 'Connection refused', 'Doctrine\DBAL\Exception\DriverException')
+        );
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        // Should be persistent (Critical) even though message says "Connection refused"
+        $this->assertSame('critical', $issues[0]->severity->value);
+    }
+
+    public function test_pdoexception_with_access_denied_is_persistent(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        // PDOException with access denied (persistent error)
+        $checker->shouldReceive('check')->andReturn(
+            new DatabaseConnectionResult(false, 'Access denied for user', 'PDOException')
+        );
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        // Should be persistent (Critical)
+        $this->assertSame('critical', $issues[0]->severity->value);
+    }
+
+    public function test_pdoexception_with_connection_refused_is_transient(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        // PDOException with connection refused (transient error)
+        $checker->shouldReceive('check')->andReturn(
+            new DatabaseConnectionResult(false, 'Connection refused', 'PDOException')
+        );
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        // Should be transient (High)
+        $this->assertSame('high', $issues[0]->severity->value);
+    }
+
+    public function test_null_exception_class_falls_back_to_message_parsing(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        // No exception class, transient message
+        $checker->shouldReceive('check')->andReturn(
+            new DatabaseConnectionResult(false, 'Connection timed out', null)
+        );
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        // Should detect as transient from message
+        $this->assertSame('high', $issues[0]->severity->value);
+    }
+
+    public function test_unknown_database_is_persistent_regardless_of_exception(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        // Generic exception but persistent error message
+        $checker->shouldReceive('check')->andReturn(
+            new DatabaseConnectionResult(false, 'Unknown database "test_db"', 'PDOException')
+        );
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        // Should be persistent (Critical)
+        $this->assertSame('critical', $issues[0]->severity->value);
+    }
+
+    public function test_could_not_find_driver_is_persistent(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        // Driver missing is a persistent issue
+        $checker->shouldReceive('check')->andReturn(
+            new DatabaseConnectionResult(false, 'could not find driver', 'PDOException')
+        );
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        // Should be persistent (Critical)
+        $this->assertSame('critical', $issues[0]->severity->value);
+    }
+
+    // =========================================================================
+    // Dynamic Severity Tests
+    // =========================================================================
+
+    public function test_default_connection_persistent_error_is_critical(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        // Persistent error: Access denied
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'Access denied for user'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertSame('critical', $issues[0]->severity->value);
+        $this->assertTrue($issues[0]->metadata['is_default']);
+    }
+
+    public function test_default_connection_transient_error_is_high(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        // Transient error: Connection refused
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'Connection refused'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertSame('high', $issues[0]->severity->value);
+        $this->assertTrue($issues[0]->metadata['is_default']);
+    }
+
+    public function test_non_default_connection_persistent_error_is_high(): void
+    {
+        $connections = [
+            'sqlite' => [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+                'prefix' => '',
+                'foreign_key_constraints' => true,
+            ],
+        ];
+
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig($connections),
+        ]);
+
+        $this->applyDatabaseConfig($connections);
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('shieldci.database.connections', ['sqlite']);
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        /** @phpstan-ignore-next-line */
+        $checker->shouldReceive('check')->with('mysql')->andReturn(new DatabaseConnectionResult(true));
+        // Persistent error on non-default connection
+        /** @phpstan-ignore-next-line */
+        $checker->shouldReceive('check')->with('sqlite')->andReturn(new DatabaseConnectionResult(false, 'Unknown database'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('high', $issues[0]->severity->value);
+        $this->assertFalse($issues[0]->metadata['is_default']);
+    }
+
+    public function test_non_default_connection_transient_error_is_medium(): void
+    {
+        $connections = [
+            'sqlite' => [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+                'prefix' => '',
+                'foreign_key_constraints' => true,
+            ],
+        ];
+
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig($connections),
+        ]);
+
+        $this->applyDatabaseConfig($connections);
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('shieldci.database.connections', ['sqlite']);
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        /** @phpstan-ignore-next-line */
+        $checker->shouldReceive('check')->with('mysql')->andReturn(new DatabaseConnectionResult(true));
+        // Transient error on non-default connection
+        /** @phpstan-ignore-next-line */
+        $checker->shouldReceive('check')->with('sqlite')->andReturn(new DatabaseConnectionResult(false, 'Connection timed out'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('medium', $issues[0]->severity->value);
+        $this->assertFalse($issues[0]->metadata['is_default']);
+    }
+
+    public function test_recognizes_various_transient_error_patterns(): void
+    {
+        $transientErrors = [
+            'Connection refused',
+            'Connection timed out',
+            'Timeout occurred',
+            'Network is unreachable',
+            'No route to host',
+            'Temporary failure in name resolution',
+            'Name or service not known',
+        ];
+
+        foreach ($transientErrors as $errorMessage) {
+            $tempDir = $this->createTempDirectory([
+                'config/database.php' => $this->databaseConfig(),
+            ]);
+
+            $this->applyDatabaseConfig();
+
+            $checker = Mockery::mock(DatabaseConnectionChecker::class);
+            $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, $errorMessage));
+
+            $analyzer = $this->createAnalyzer($checker);
+            $analyzer->setBasePath($tempDir);
+
+            $result = $analyzer->analyze();
+
+            $this->assertFailed($result);
+            $issues = $result->getIssues();
+            $this->assertSame('high', $issues[0]->severity->value, "Failed for error: {$errorMessage}");
+        }
     }
 
     /**

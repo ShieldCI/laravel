@@ -54,17 +54,6 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
         );
     }
 
-    public function shouldRun(): bool
-    {
-        // Check if PHPStan and Larastan are available
-        return $this->hasLarastan();
-    }
-
-    public function getSkipReason(): string
-    {
-        return 'Larastan package not installed (required for collection call analysis)';
-    }
-
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
@@ -79,17 +68,42 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
         // Run PHPStan on configured paths
         $paths = $this->paths;
         if (! is_array($paths) || empty($paths)) {
-            $paths = ['app'];
+            // Use paths from config, filtering to code directories only
+            // PHPStan should analyze code, not configs/views/migrations
+            $configPaths = config('shieldci.paths.analyze', ['app']);
+
+            if (is_array($configPaths)) {
+                $paths = array_values(array_filter($configPaths, function ($path) {
+                    // Only analyze code directories, not configs, views, migrations, etc.
+                    if (! is_string($path)) {
+                        return false;
+                    }
+
+                    return ! str_starts_with($path, 'config')
+                        && ! str_starts_with($path, 'database')
+                        && ! str_starts_with($path, 'resources')
+                        && ! str_starts_with($path, 'routes');
+                }));
+            } else {
+                $paths = ['app'];
+            }
+
+            // Fallback to 'app' if filtering removed everything
+            if (empty($paths)) {
+                $paths = ['app'];
+            }
         }
 
         try {
             $this->phpStan->start($paths);
 
             // Parse results for collection call issues
-            // Larastan reports these with "could have been retrieved as a query"
-            $this->parsePHPStanAnalysis(
+            // Use regex pattern for flexibility across Larastan versions
+            // Matches variations of "could have been retrieved as a query"
+            // or "Called X on collection" patterns
+            $this->pregMatchPHPStanAnalysis(
                 $this->phpStan,
-                'could have been retrieved as a query',
+                '/could\s+have\s+been\s+retrieved\s+as\s+a\s+query|called\s+.*\s+on\s+.*collection/i',
                 $issues
             );
         } catch (\Throwable $e) {
@@ -111,54 +125,5 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             sprintf('Found %d inefficient collection operation(s) that should be database queries', count($issues)),
             $issues
         );
-    }
-
-    /**
-     * Check if Larastan is installed.
-     */
-    protected function hasLarastan(): bool
-    {
-        // For testing: check if PHPStan is mocked
-        if ($this->isMockedPHPStan()) {
-            return true; // Assume Larastan is available when using mocked PHPStan
-        }
-
-        // Check actual Larastan installation
-        $basePath = $this->getBasePath();
-
-        // Check multiple possible Larastan paths (current and legacy package names)
-        $possiblePaths = [
-            $basePath.DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR.'larastan'.DIRECTORY_SEPARATOR.'larastan'.DIRECTORY_SEPARATOR.'extension.neon',
-            $basePath.DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR.'nunomaduro'.DIRECTORY_SEPARATOR.'larastan'.DIRECTORY_SEPARATOR.'extension.neon',
-        ];
-
-        foreach ($possiblePaths as $path) {
-            if (file_exists($path)) {
-                return true;
-            }
-        }
-
-        // Fallback: check if Larastan class exists
-        return class_exists('Larastan\\Larastan\\ApplicationServiceProvider');
-    }
-
-    /**
-     * Check if PHPStan instance is a mock (for testing).
-     */
-    private function isMockedPHPStan(): bool
-    {
-        // Check for Mockery mock
-        if (interface_exists('Mockery\MockInterface') && $this->phpStan instanceof \Mockery\MockInterface) {
-            return true;
-        }
-
-        // Check for PHPUnit mock (starts with "Mock_")
-        $className = get_class($this->phpStan);
-        if (str_starts_with($className, 'Mock_')) {
-            return true;
-        }
-
-        // Fallback: check class name for common mock patterns
-        return str_contains($className, 'Mockery') || str_contains($className, 'Mock');
     }
 }

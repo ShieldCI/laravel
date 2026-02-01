@@ -9,9 +9,9 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
+use ShieldCI\AnalyzersCore\Support\PackageDetector;
+use ShieldCI\AnalyzersCore\Support\PlatformDetector;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Analyzes whether Laravel Horizon is installed when using Redis queues.
@@ -25,6 +25,11 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  *
  * This analyzer recommends Horizon for any application using Redis queues
  * in production environments for better queue management and visibility.
+ *
+ * Note: Laravel Horizon is incompatible with Laravel Vapor due to Vapor's
+ * serverless architecture. Vapor uses AWS Lambda which cannot support the
+ * long-running processes required by Horizon. This analyzer skips when
+ * Vapor is detected.
  */
 class HorizonSuggestionAnalyzer extends AbstractAnalyzer
 {
@@ -50,6 +55,11 @@ class HorizonSuggestionAnalyzer extends AbstractAnalyzer
 
     public function shouldRun(): bool
     {
+        // Skip if Laravel Vapor is detected (incompatible with Horizon)
+        if (PlatformDetector::isLaravelVapor($this->getBasePath())) {
+            return false;
+        }
+
         // Only run if the default queue connection uses Redis
         $defaultConnection = $this->config->get('queue.default');
 
@@ -64,6 +74,11 @@ class HorizonSuggestionAnalyzer extends AbstractAnalyzer
 
     public function getSkipReason(): string
     {
+        // Check Vapor first
+        if (PlatformDetector::isLaravelVapor($this->getBasePath())) {
+            return 'Laravel Vapor detected - Horizon is incompatible with Vapor\'s serverless architecture (AWS Lambda cannot support long-running processes)';
+        }
+
         $defaultConnection = $this->config->get('queue.default');
 
         if (! is_string($defaultConnection)) {
@@ -77,37 +92,46 @@ class HorizonSuggestionAnalyzer extends AbstractAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        // Check if Horizon is installed
-        if (class_exists(\Laravel\Horizon\Horizon::class)) {
-            return $this->passed('Laravel Horizon is installed for Redis queue management');
+        // Check if Horizon is installed and configured
+        if (PackageDetector::isHorizonConfigured($this->getBasePath())) {
+            return $this->passed('Laravel Horizon is configured for Redis queue management');
         }
 
         $basePath = $this->getBasePath();
-        $configPath = ConfigFileHelper::getConfigPath(
-            $basePath,
-            'queue.php',
-            fn ($file) => function_exists('config_path') ? config_path($file) : null
-        );
-
-        // Fallback to buildPath if ConfigFileHelper returns empty string
-        if ($configPath === '' || ! file_exists($configPath)) {
-            $configPath = $this->buildPath('config', 'queue.php');
-        }
-
         $defaultConnection = $this->config->get('queue.default');
-        $lineNumber = ConfigFileHelper::findKeyLine($configPath, 'default');
 
-        $issues[] = $this->createIssue(
-            message: 'Laravel Horizon is not installed for Redis queue management',
-            location: new Location($this->getRelativePath($configPath), $lineNumber),
-            severity: Severity::Low,
-            recommendation: 'Install Laravel Horizon for Redis queue management. Horizon provides a beautiful dashboard for monitoring queues and jobs, configurable provisioning plans for workers, load balancing strategies, and advanced memory management features. Install with: composer require laravel/horizon && php artisan horizon:install',
-            metadata: [
-                'queue_driver' => 'redis',
-                'default_connection' => $defaultConnection,
-                'horizon_installed' => false,
-            ]
-        );
+        $issues = [];
+
+        // Check if Horizon is installed but not configured
+        if (PackageDetector::hasHorizon($basePath)) {
+            $issues[] = $this->createIssue(
+                message: 'Laravel Horizon is installed but not configured',
+                location: null,
+                severity: Severity::Low,
+                recommendation: 'Configure Laravel Horizon by running: php artisan horizon:install. This will publish the configuration file, create the service provider, and register it in your application.',
+                metadata: [
+                    'queue_driver' => 'redis',
+                    'default_connection' => $defaultConnection,
+                    'horizon_installed' => true,
+                    'horizon_configured' => false,
+                    'detected_via' => 'config/queue.php',
+                ]
+            );
+        } else {
+            $issues[] = $this->createIssue(
+                message: 'Laravel Horizon is not installed for Redis queue management',
+                location: null,
+                severity: Severity::Low,
+                recommendation: 'Install Laravel Horizon for Redis queue management. Horizon provides a beautiful dashboard for monitoring queues and jobs, configurable provisioning plans for workers, load balancing strategies, and advanced memory management features. Install with: composer require laravel/horizon && php artisan horizon:install',
+                metadata: [
+                    'queue_driver' => 'redis',
+                    'default_connection' => $defaultConnection,
+                    'horizon_installed' => false,
+                    'horizon_configured' => false,
+                    'detected_via' => 'config/queue.php',
+                ]
+            );
+        }
 
         return $this->resultBySeverity(
             'Laravel Horizon is recommended for Redis queue management',

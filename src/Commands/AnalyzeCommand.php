@@ -10,7 +10,6 @@ use ShieldCI\AnalyzerManager;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Support\FileParser;
-use ShieldCI\Contracts\ClientInterface;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\ValueObjects\AnalysisReport;
 
@@ -21,7 +20,6 @@ class AnalyzeCommand extends Command
                             {--category= : Run analyzers in category}
                             {--format=console : Output format (console|json)}
                             {--output= : Save report to file}
-                            {--no-send : Do not send results to ShieldCI API}
                             {--baseline : Compare against baseline and only report new issues}';
 
     protected $description = 'Run ShieldCI security and code quality analysis';
@@ -29,7 +27,6 @@ class AnalyzeCommand extends Command
     public function handle(
         AnalyzerManager $manager,
         ReporterInterface $reporter,
-        ClientInterface $client,
     ): int {
         // Validate options
         if (! $this->validateOptions($manager)) {
@@ -128,11 +125,6 @@ class AnalyzeCommand extends Command
 
         if ($output && is_string($output)) {
             $this->saveReport($report, $reporter, $output);
-        }
-
-        // Send to API if enabled
-        if ($this->shouldSendToApi()) {
-            $this->sendToApi($report, $client);
         }
 
         // Determine exit code
@@ -618,16 +610,16 @@ class AnalyzeCommand extends Command
         // Header
         $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';
 
-        // Build header row
-        $statusCell = str_pad(' Status', 16);
-        $categoryCells = array_map(fn ($c) => str_pad(' '.$c, 16), $categories);
-        $totalCell = str_pad('     Total', 12);
+        // Build header row with green color
+        $statusCell = $this->color(str_pad(' Status', 16), 'bright_green');
+        $categoryCells = array_map(fn ($c) => $this->color(str_pad(' '.$c, 16), 'bright_green'), $categories);
+        $totalCell = $this->color(str_pad('     Total', 12), 'bright_green');
 
         $table[] = '|'.$statusCell.'|'.implode('|', $categoryCells).'|'.$totalCell.'|';
         $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';
 
-        // Passed row
-        $passedRow = '| Passed         |';
+        // Passed row with green color
+        $passedRow = '| '.$this->color('Passed        ', 'green').' |';
         $totalPassed = 0;
         foreach ($categories as $category) {
             $passed = $stats[$category]['passed'];
@@ -640,8 +632,8 @@ class AnalyzeCommand extends Command
         $passedRow .= str_pad(" {$totalPassed}  ({$totalPct}%)", 12).'|';
         $table[] = $passedRow;
 
-        // Failed row
-        $failedRow = '| Failed         |';
+        // Failed row with red color
+        $failedRow = '| '.$this->color('Failed        ', 'red').' |';
         $totalFailed = 0;
         foreach ($categories as $category) {
             $failed = $stats[$category]['failed'];
@@ -654,8 +646,8 @@ class AnalyzeCommand extends Command
         $failedRow .= str_pad("  {$totalFailed}  ({$totalPct}%)", 12).'|';
         $table[] = $failedRow;
 
-        // Warning row
-        $warningRow = '| Warning        |';
+        // Warning row with yellow color
+        $warningRow = '| '.$this->color('Warning       ', 'yellow').' |';
         $totalWarnings = 0;
         foreach ($categories as $category) {
             $warnings = $stats[$category]['warning'];
@@ -668,8 +660,8 @@ class AnalyzeCommand extends Command
         $warningRow .= str_pad("  {$totalWarnings}  ({$totalPct}%)", 12).'|';
         $table[] = $warningRow;
 
-        // Not Applicable row
-        $skippedRow = '| Not Applicable |';
+        // Not Applicable row with gray color
+        $skippedRow = '| '.$this->color('Not Applicable', 'gray').' |';
         $totalSkipped = 0;
         foreach ($categories as $category) {
             $skipped = $stats[$category]['skipped'];
@@ -682,8 +674,8 @@ class AnalyzeCommand extends Command
         $skippedRow .= str_pad("  {$totalSkipped}   ({$totalPct}%)", 12).'|';
         $table[] = $skippedRow;
 
-        // Error row
-        $errorRow = '| Error          |';
+        // Error row with bright red color
+        $errorRow = '| '.$this->color('Error         ', 'bright_red').' |';
         $totalErrors = 0;
         foreach ($categories as $category) {
             $errors = $stats[$category]['error'];
@@ -709,6 +701,13 @@ class AnalyzeCommand extends Command
     {
         $colors = [
             'bright_yellow' => '1;33',
+            'green' => '0;32',
+            'bright_green' => '1;32',
+            'red' => '0;31',
+            'bright_red' => '1;31',
+            'yellow' => '0;33',
+            'gray' => '0;37',
+            'dim' => '2',
         ];
 
         if (! isset($colors[$color])) {
@@ -733,7 +732,7 @@ class AnalyzeCommand extends Command
 
     protected function determineExitCode(AnalysisReport $report): int
     {
-        $failOn = config('shieldci.fail_on', 'critical');
+        $failOn = config('shieldci.fail_on', 'high');
 
         if ($failOn === 'never') {
             return self::SUCCESS;
@@ -769,19 +768,71 @@ class AnalyzeCommand extends Command
             }
         }
 
-        // Check severity levels
-        $hasCritical = $criticalResults->some(function ($result) {
+        // Check severity levels based on fail_on configuration
+        $shouldFail = $criticalResults->some(function ($result) use ($failOn) {
             $issues = $result->getIssues();
             foreach ($issues as $issue) {
-                if ($issue->severity->value === 'critical') {
-                    return true;
+                $severity = $issue->severity->value;
+
+                // Fail based on configured threshold
+                switch ($failOn) {
+                    case 'low':
+                        // Fail on any severity (low, medium, high, critical)
+                        return true;
+                    case 'medium':
+                        // Fail on medium, high, or critical
+                        if (in_array($severity, ['medium', 'high', 'critical'], true)) {
+                            return true;
+                        }
+                        break;
+                    case 'high':
+                        // Fail on high or critical
+                        if (in_array($severity, ['high', 'critical'], true)) {
+                            return true;
+                        }
+                        break;
+                    case 'critical':
+                        // Fail only on critical
+                        if ($severity === 'critical') {
+                            return true;
+                        }
+                        break;
                 }
             }
 
             return false;
         });
 
-        if ($hasCritical && in_array($failOn, ['critical', 'high', 'medium', 'low'])) {
+        // Also check warnings if fail_on includes lower severities
+        if (in_array($failOn, ['low', 'medium'], true)) {
+            $warningResults = $report->warnings()->filter(function ($result) use ($dontReport) {
+                return ! in_array($result->getAnalyzerId(), $dontReport, true);
+            });
+
+            $shouldFailOnWarnings = $warningResults->some(function ($result) use ($failOn) {
+                $issues = $result->getIssues();
+                foreach ($issues as $issue) {
+                    $severity = $issue->severity->value;
+
+                    if ($failOn === 'low') {
+                        // Fail on any severity (including low in warnings)
+                        return true;
+                    }
+                    if ($failOn === 'medium' && $severity === 'medium') {
+                        // Fail on medium severity in warnings
+                        return true;
+                    }
+                }
+
+                return false;
+            });
+
+            if ($shouldFailOnWarnings) {
+                return self::FAILURE;
+            }
+        }
+
+        if ($shouldFail) {
             return self::FAILURE;
         }
 
@@ -1035,7 +1086,6 @@ class AnalyzeCommand extends Command
 
         // Return new report with filtered results
         return new AnalysisReport(
-            projectId: $report->projectId,
             laravelVersion: $report->laravelVersion,
             packageVersion: $report->packageVersion,
             results: $filteredResults,
@@ -1158,7 +1208,6 @@ class AnalyzeCommand extends Command
 
         // Return new report with filtered results
         return new AnalysisReport(
-            projectId: $report->projectId,
             laravelVersion: $report->laravelVersion,
             packageVersion: $report->packageVersion,
             results: $filteredResults,
@@ -1349,8 +1398,8 @@ class AnalyzeCommand extends Command
     private function generateIssueHash(\ShieldCI\AnalyzersCore\ValueObjects\Issue $issue): string
     {
         $data = [
-            'file' => $issue->location->file ?? 'unknown',
-            'line' => $issue->location->line,
+            'file' => $issue->location?->file ?? 'unknown',
+            'line' => $issue->location?->line ?? 0,
             'message' => $issue->message,
         ];
 
@@ -1600,41 +1649,5 @@ class AnalyzeCommand extends Command
         }
 
         return true;
-    }
-
-    protected function shouldSendToApi(): bool
-    {
-        if ($this->option('no-send')) {
-            return false;
-        }
-
-        if (! config('shieldci.report.send_to_api')) {
-            return false;
-        }
-
-        if (! config('shieldci.token')) {
-            $this->warn('ShieldCI token not configured. Skipping API upload.');
-
-            return false;
-        }
-
-        return true;
-    }
-
-    protected function sendToApi(AnalysisReport $report, ClientInterface $client): void
-    {
-        $this->info('Sending results to ShieldCI API...');
-
-        try {
-            $success = $client->sendReport($report);
-
-            if ($success) {
-                $this->info('✓ Results sent successfully!');
-            } else {
-                $this->error('✗ Failed to send results.');
-            }
-        } catch (\Exception $e) {
-            $this->error("✗ Error sending results: {$e->getMessage()}");
-        }
     }
 }

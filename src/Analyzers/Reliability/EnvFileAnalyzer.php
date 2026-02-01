@@ -51,8 +51,6 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                     lineNumber: null,
                     severity: Severity::Critical,
                     recommendation: sprintf('Fix the broken symlink. Target: %s', $target ?: 'unknown'),
-                    column: null,
-                    contextLines: null,
                     code: 'broken-symlink',
                     metadata: [
                         'env_path' => $envPath,
@@ -78,9 +76,7 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                     filePath: $envPath,
                     lineNumber: null,
                     severity: Severity::Critical,
-                    recommendation: 'Fix file permissions to make .env readable. Run: chmod 644 .env',
-                    column: null,
-                    contextLines: null,
+                    recommendation: 'Fix file permissions to make .env readable. Run: chmod 600 .env',
                     code: 'not-readable',
                     metadata: [
                         'env_path' => $envPath,
@@ -91,15 +87,15 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
         }
 
         // Check if .env is empty
-        $fileSize = @filesize($envPath);
-        if ($fileSize !== false && $fileSize === 0) {
+        $stat = @stat($envPath);
+        if ($stat !== false && $stat['size'] === 0) {
             return $this->failed(
                 'Application .env file is empty',
                 [$this->createIssueWithSnippet(
                     message: 'The .env file exists but contains no configuration',
                     filePath: $envPath,
                     lineNumber: null,
-                    severity: Severity::High,
+                    severity: Severity::Critical,
                     recommendation: 'Add environment variables to your .env file. At minimum, configure: APP_KEY, APP_ENV, APP_DEBUG, DB_CONNECTION',
                     code: 'empty-file',
                     metadata: [
@@ -129,8 +125,6 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                 lineNumber: null,
                 severity: Severity::Critical,
                 recommendation: $this->buildRecommendation($envExampleExists),
-                column: null,
-                contextLines: null,
                 code: 'missing-file',
                 metadata: [
                     'env_path' => $envPath,
@@ -190,13 +184,7 @@ RECOMMENDATION,
         }
 
         return <<<'RECOMMENDATION'
-Create a .env file in your application root directory.
-
-1. Create a new file named ".env" in your application root
-2. Add your environment variables in the format: KEY=value
-3. Include at minimum: APP_KEY, APP_ENV, APP_DEBUG, DB_CONNECTION, DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME, DB_PASSWORD
-
-Without a .env file, your application cannot load configuration and will fail to run.
+Create a .env file in your application root directory. Without a .env file, your application cannot load configuration and will fail to run.
 
 Note: Consider creating a .env.example file as a template for your team members.
 RECOMMENDATION;

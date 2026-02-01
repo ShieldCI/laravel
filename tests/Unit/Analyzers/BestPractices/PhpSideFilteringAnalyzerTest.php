@@ -1740,6 +1740,37 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_ignores_generic_suffix_properties(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function process($user)
+    {
+        // These should NOT be flagged - generic suffixes, not relationships
+        // profile_data, shipping_info, custom_attributes are JSON columns
+        $user->profile_data->filter(fn($d) => $d->valid);
+        $user->shipping_info->reject(fn($i) => $i->empty);
+        $user->custom_attributes->whereIn('key', ['a', 'b']);
+        $user->profileMetadata->filter(fn($m) => $m->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_relationship_issues_have_medium_severity(): void
     {
         $code = <<<'PHP'
@@ -2621,5 +2652,310 @@ PHP;
         // get() should still have the memory warning
         $recommendation = $issues[0]->recommendation;
         $this->assertStringContainsString('loads all data into memory', $recommendation);
+    }
+
+    // ========================================================================
+    // POSITIVE RELATIONSHIP NAMING TESTS
+    // ========================================================================
+
+    public function test_detects_plural_relationship_names(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function filterRelationships($user)
+    {
+        // Plural names - should be detected as relationships
+        $user->posts->filter(fn($p) => $p->active);
+        $user->comments->reject(fn($c) => $c->deleted);
+        $user->users->whereIn('status', ['active']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(3, $issues);
+    }
+
+    public function test_detects_camelcase_plural_relationships(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class OrderService
+{
+    public function filterItems($order)
+    {
+        // CamelCase plural names - should be detected
+        $order->orderItems->filter(fn($i) => $i->shipped);
+        $order->lineItems->reject(fn($i) => $i->cancelled);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+    }
+
+    public function test_detects_known_relationship_names(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class CommentService
+{
+    public function filterRelationships($comment)
+    {
+        // Known singular relationship names - should be detected
+        $comment->parent->filter(fn($p) => $p->visible);
+        $comment->author->reject(fn($a) => $a->banned);
+        $comment->owner->whereIn('status', ['active']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/CommentService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(3, $issues);
+    }
+
+    public function test_detects_irregular_plural_relationships(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class CategoryService
+{
+    public function filterRelationships($category)
+    {
+        // Irregular plurals - should be detected
+        $category->children->filter(fn($c) => $c->active);
+        $category->people->reject(fn($p) => $p->inactive);
+        $category->media->whereIn('type', ['image']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/CategoryService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(3, $issues);
+    }
+
+    public function test_ignores_short_property_names(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DataService
+{
+    public function process($obj)
+    {
+        // Short names (less than 4 chars) - should NOT be flagged
+        $obj->ids->filter(fn($i) => $i > 0);
+        $obj->abc->reject(fn($a) => $a->empty);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DataService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_status_like_words(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ReportService
+{
+    public function process($report)
+    {
+        // Words ending in 's' but not plural relationships
+        $report->status->filter(fn($s) => $s->current);
+        $report->news->reject(fn($n) => $n->old);
+        $report->analysis->whereIn('type', ['quick']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ReportService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_snake_case_plural_relationships(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function filterRelationships($user)
+    {
+        // Snake case plural names - should be detected
+        $user->user_roles->filter(fn($r) => $r->active);
+        $user->order_items->reject(fn($i) => $i->cancelled);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+    }
+
+    public function test_ignores_non_plural_generic_names(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class EntityService
+{
+    public function process($entity)
+    {
+        // Generic non-plural names - should NOT be flagged
+        $entity->payload->filter(fn($p) => $p->valid);
+        $entity->extra->reject(fn($e) => $e->empty);
+        $entity->detail->whereIn('type', ['main']);
+        $entity->result->filter(fn($r) => $r->success);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/EntityService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_ies_plural_relationships(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ProductService
+{
+    public function filterRelationships($product)
+    {
+        // -ies plural pattern - should be detected
+        $product->categories->filter(fn($c) => $c->active);
+        $product->entries->reject(fn($e) => $e->deleted);
+        $product->companies->whereIn('status', ['active']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ProductService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(3, $issues);
+    }
+
+    public function test_detects_es_plural_relationships(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class WarehouseService
+{
+    public function filterRelationships($warehouse)
+    {
+        // -es plural pattern - should be detected
+        $warehouse->boxes->filter(fn($b) => $b->full);
+        $warehouse->batches->reject(fn($b) => $b->expired);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/WarehouseService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
     }
 }

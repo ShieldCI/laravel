@@ -591,7 +591,9 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     /**
      * Check if property name looks like an Eloquent relationship.
      *
-     * Uses heuristic exclusion patterns from EloquentNPlusOneAnalyzer.
+     * Uses POSITIVE IDENTIFICATION: only returns true for patterns that
+     * strongly indicate a relationship (plural names, known relationship names).
+     * This prevents false positives for custom JSON columns like profile_data.
      */
     private function looksLikeRelationship(string $name): bool
     {
@@ -643,8 +645,155 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // Assume it's a relationship (heuristic)
-        return true;
+        // POSITIVE IDENTIFICATION: Must look like a relationship
+        return $this->hasRelationshipNaming($name);
+    }
+
+    /**
+     * Check if a property name has relationship-like naming patterns.
+     *
+     * Laravel relationships typically follow naming conventions:
+     * - Plural names for hasMany/belongsToMany: posts, comments, users
+     * - CamelCase plural for compound names: orderItems, userRoles
+     * - Known singular relationship names: parent, owner, author
+     */
+    private function hasRelationshipNaming(string $name): bool
+    {
+        // Convert camelCase/snake_case to words for analysis
+        $words = $this->splitCamelCase($name);
+        $lastWordRaw = end($words);
+
+        // If splitting failed or returned empty, use the original name
+        if ($lastWordRaw === false || $lastWordRaw === '') {
+            $lastWord = strtolower($name);
+        } else {
+            $lastWord = strtolower($lastWordRaw);
+        }
+
+        // If the last word is a known non-relationship property, skip it
+        // This handles cases like custom_attributes, profile_metadata
+        if (in_array($lastWord, self::EXCLUDED_PROPERTIES, true)) {
+            return false;
+        }
+
+        // Rule 1: Last word should be plural (Laravel convention for hasMany/belongsToMany)
+        // posts, comments, items, users, roles, permissions
+        if ($this->isPlural($lastWord)) {
+            return true;
+        }
+
+        // Rule 2: Single word that's a known relationship name
+        // e.g., 'parent', 'children', 'owner', 'author'
+        if ($this->isKnownRelationshipName($lastWord)) {
+            return true;
+        }
+
+        // Default: NOT a relationship (conservative approach)
+        return false;
+    }
+
+    /**
+     * Split a property name into words (handles camelCase and snake_case).
+     *
+     * Examples:
+     * - orderItems -> ['order', 'Items'] -> ['order', 'items']
+     * - user_roles -> ['user', 'roles']
+     * - posts -> ['posts']
+     *
+     * @return array<string>
+     */
+    private function splitCamelCase(string $name): array
+    {
+        // Handle snake_case first
+        if (str_contains($name, '_')) {
+            return array_filter(explode('_', $name));
+        }
+
+        // Handle camelCase: orderItems -> ['order', 'Items']
+        $parts = preg_split('/(?=[A-Z])/', $name, -1, PREG_SPLIT_NO_EMPTY);
+        if ($parts === false) {
+            return [$name];
+        }
+
+        return array_filter($parts);
+    }
+
+    /**
+     * Check if a word is plural (common English plural patterns).
+     *
+     * Focuses on patterns commonly used in Laravel relationship naming.
+     */
+    private function isPlural(string $word): bool
+    {
+        // Skip very short words - often not relationships
+        // (e.g., 'id', 'ids' - ids is technically plural but unlikely relationship)
+        if (strlen($word) < 4) {
+            return false;
+        }
+
+        // Irregular plurals that are common relationships
+        $irregularPlurals = ['children', 'people', 'media', 'criteria', 'data'];
+        if (in_array($word, $irregularPlurals, true)) {
+            // 'data' is common but often not a relationship - exclude it
+            return $word !== 'data';
+        }
+
+        // Words ending in common non-relationship suffixes despite looking plural
+        // These often end in 's' but are not plural relationship names
+        $falsePositiveSuffixes = ['status', 'news', 'series', 'species', 'analysis'];
+        if (in_array($word, $falsePositiveSuffixes, true)) {
+            return false;
+        }
+
+        // Regular plural patterns:
+        // -ies: categories, entries, companies (but not 'series')
+        if (preg_match('/[^aeiou]ies$/', $word) === 1) {
+            return true;
+        }
+
+        // -es: boxes, matches, statuses (but need to be careful)
+        // Only match common -es patterns: -shes, -ches, -xes, -zes, -ses
+        if (preg_match('/(sh|ch|x|z|ss)es$/', $word) === 1) {
+            return true;
+        }
+
+        // -s: posts, users, items, comments, orders
+        // But exclude words that naturally end in 's' without being plural
+        if (str_ends_with($word, 's') && ! str_ends_with($word, 'ss')) {
+            // Additional check: word without 's' should be reasonable length
+            $singular = rtrim($word, 's');
+            if (strlen($singular) >= 3) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a word is a known singular relationship name.
+     *
+     * These are common names for belongsTo/hasOne relationships
+     * that don't follow plural naming.
+     */
+    private function isKnownRelationshipName(string $word): bool
+    {
+        // Common singular relationship names (belongsTo/hasOne patterns)
+        $knownNames = [
+            // Hierarchical relationships
+            'parent', 'owner', 'author', 'creator', 'updater',
+            // Role-based relationships
+            'manager', 'assignee', 'reviewer', 'approver', 'editor',
+            // Common singular relations
+            'user', 'admin', 'member', 'subscriber', 'customer',
+            'profile', 'account', 'organization', 'company', 'team',
+            // Document/content relationships
+            'document', 'attachment', 'image', 'thumbnail', 'avatar',
+            // Location relationships
+            'address', 'location', 'country', 'region', 'city',
+        ];
+
+        return in_array($word, $knownNames, true);
     }
 
     /**

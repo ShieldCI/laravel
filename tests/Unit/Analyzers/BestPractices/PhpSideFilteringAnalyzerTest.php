@@ -754,7 +754,7 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_ignores_variable_filter(): void
+    public function test_ignores_variable_filter_without_fetch(): void
     {
         $code = <<<'PHP'
 <?php
@@ -765,7 +765,7 @@ class CollectionProcessor
 {
     public function process($collection)
     {
-        // Cannot determine type - should not flag
+        // No fetch method in chain - cannot determine if Eloquent, should not flag
         return $collection->filter(fn($item) => $item->active);
     }
 }
@@ -780,6 +780,182 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    public function test_detects_variable_with_fetch_and_filter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getActiveUsers($query)
+    {
+        // Variable with get() + filter() - likely Eloquent query
+        return $query->get()->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('filter', $result);
+    }
+
+    public function test_detects_variable_with_all_and_filter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getActiveUsers($query)
+    {
+        // Variable with all() + filter() - likely Eloquent query
+        return $query->all()->filter(fn($u) => $u->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('filter', $result);
+    }
+
+    public function test_detects_variable_with_get_and_reject(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getActiveUsers($query)
+    {
+        // Variable with get() + reject() - likely Eloquent query
+        return $query->get()->reject(fn($u) => $u->inactive);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('reject', $result);
+    }
+
+    public function test_detects_variable_with_paginate_and_wherein(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function filterUsers($query, array $ids)
+    {
+        // Variable with paginate() + whereIn() - likely Eloquent query
+        return $query->paginate(10)->whereIn('id', $ids);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('whereIn', $result);
+    }
+
+    public function test_ignores_variable_with_only_fetch(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getUsers($query)
+    {
+        // Variable with only get() - no filter method, should pass
+        return $query->get();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_stored_query_variable_pattern(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function getActiveAdmins()
+    {
+        $query = User::where('active', true);
+        // Later in code: variable with get() + filter()
+        return $query->get()->filter(fn($u) => $u->isAdmin());
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('filter', $result);
     }
 
     public function test_detects_model_in_models_namespace(): void

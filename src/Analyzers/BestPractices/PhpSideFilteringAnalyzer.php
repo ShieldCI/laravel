@@ -319,7 +319,7 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
 
         // Skip if root is not an Eloquent source (false positive prevention)
         $root = $this->getRootExpression($node);
-        if (! $this->isEloquentSource($root)) {
+        if (! $this->isEloquentSource($root, $chain)) {
             return;
         }
 
@@ -362,8 +362,10 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
      * Uses POSITIVE IDENTIFICATION: only returns true for patterns we can
      * confidently identify as Eloquent sources. This prevents false positives
      * for API clients, services, and other non-Eloquent sources.
+     *
+     * @param  array<string>  $chain  Method chain for heuristic detection
      */
-    private function isEloquentSource(Node\Expr $expr): bool
+    private function isEloquentSource(Node\Expr $expr, array $chain = []): bool
     {
         // Case 1: Static call - check if it's a model-like class
         if ($expr instanceof Node\Expr\StaticCall && $expr->class instanceof Node\Name) {
@@ -387,15 +389,16 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // Case 4: Variable - cannot determine type without static analysis
-        // $collection->filter() - could be anything
+        // Case 4: Variable - use heuristic: if chain has BOTH fetch and filter,
+        // it's likely an Eloquent query being filtered in PHP
+        // e.g., $query->get()->filter() where $query = User::where(...)
         if ($expr instanceof Node\Expr\Variable) {
-            return false;
+            return $this->hasLikelyEloquentPattern($chain);
         }
 
         // Case 5: Method call as root - check if it originates from model-like static call
         if ($expr instanceof Node\Expr\MethodCall) {
-            return $this->chainStartsWithModel($expr);
+            return $this->chainStartsWithModel($expr, $chain);
         }
 
         // Default: Cannot determine source type - don't flag
@@ -450,9 +453,39 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Traverse method chain to check if it starts with a model-like static call.
+     * Check if method chain has both fetch and filter methods (Eloquent heuristic).
+     *
+     * When a variable is used as the root (e.g., $query->get()->filter()),
+     * we can't know the variable's type. However, if the chain contains
+     * BOTH a fetch method (get, all, paginate, etc.) AND a filter method
+     * (filter, reject, whereIn, whereNotIn), it strongly indicates an
+     * Eloquent query being filtered in PHP.
+     *
+     * @param  array<string>  $chain
      */
-    private function chainStartsWithModel(Node\Expr\MethodCall $expr): bool
+    private function hasLikelyEloquentPattern(array $chain): bool
+    {
+        $hasFetch = false;
+        $hasFilter = false;
+
+        foreach ($chain as $method) {
+            if (in_array($method, self::FETCH_METHODS, true)) {
+                $hasFetch = true;
+            }
+            if (in_array($method, self::FILTER_METHODS, true)) {
+                $hasFilter = true;
+            }
+        }
+
+        return $hasFetch && $hasFilter;
+    }
+
+    /**
+     * Traverse method chain to check if it starts with a model-like static call.
+     *
+     * @param  array<string>  $chain  Method chain for heuristic detection when variable is found
+     */
+    private function chainStartsWithModel(Node\Expr\MethodCall $expr, array $chain = []): bool
     {
         $current = $expr;
         while ($current instanceof Node\Expr\MethodCall) {
@@ -461,6 +494,11 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
 
         if ($current instanceof Node\Expr\StaticCall && $current->class instanceof Node\Name) {
             return $this->looksLikeModel($current->class);
+        }
+
+        // Variable at root of subchain - use heuristic
+        if ($current instanceof Node\Expr\Variable) {
+            return $this->hasLikelyEloquentPattern($chain);
         }
 
         return false;

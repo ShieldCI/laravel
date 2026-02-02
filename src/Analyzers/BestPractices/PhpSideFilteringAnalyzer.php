@@ -147,6 +147,142 @@ class PhpSideFilteringAnalyzer extends AbstractFileAnalyzer
  */
 class PhpFilteringVisitor extends NodeVisitorAbstract
 {
+    /**
+     * Methods that fetch data from the database (trigger query execution).
+     *
+     * @var array<string>
+     */
+    private const FETCH_METHODS = [
+        'get',
+        'all',
+        'paginate',
+        'simplePaginate',
+        'cursorPaginate',
+        'cursor',
+        'pluck',
+        'findMany',
+    ];
+
+    /**
+     * Methods that filter collections in PHP (after database fetch).
+     *
+     * @var array<string>
+     */
+    private const FILTER_METHODS = [
+        'filter',
+        'reject',
+        'whereIn',
+        'whereNotIn',
+    ];
+
+    /**
+     * Classes that are NOT Eloquent models and should be excluded.
+     * These are common Laravel/PHP classes that have similar method names.
+     *
+     * @var array<string>
+     */
+    private const EXCLUDED_CLASSES = [
+        // Laravel Collections
+        'Collection',
+        'LazyCollection',
+        'EloquentCollection',
+        // Laravel Support
+        'Arr',
+        'Str',
+        'Stringable',
+        // Carbon/DateTime
+        'Carbon',
+        'CarbonImmutable',
+        'DateTime',
+        'DateTimeImmutable',
+        // Laravel Facades & Services
+        'Config',
+        'Session',
+        'Request',
+        'Cache',
+        'Cookie',
+        'Http',
+        'Response',
+        'Log',
+        'DB',
+        'File',
+        'Storage',
+        'Queue',
+        'Mail',
+        'Notification',
+        'Event',
+        'Gate',
+        'Auth',
+        'Validator',
+        'View',
+        'URL',
+        'Route',
+        'Redirect',
+        'Crypt',
+        'Hash',
+        'Password',
+        'RateLimiter',
+        'Bus',
+        'Artisan',
+        'App',
+        // Common utility classes
+        'Builder',
+        'Factory',
+        'Faker',
+        'Client',
+        'GuzzleHttp',
+    ];
+
+    /**
+     * Properties that are NOT relationships (common scalar/object properties).
+     *
+     * @var array<string>
+     */
+    private const EXCLUDED_PROPERTIES = [
+        'id',
+        'name',
+        'title',
+        'status',
+        'type',
+        'data',
+        'value',
+        'key',
+        'config',
+        'options',
+        'settings',
+        'attributes',
+        'service',
+        'client',
+        'http',
+        'response',
+        'request',
+        'cache',
+        'session',
+        'connection',
+        'driver',
+        'handler',
+        'manager',
+        'factory',
+        'builder',
+        'query',
+        'result',
+        'output',
+        'input',
+        'error',
+        'message',
+        'content',
+        'body',
+        'headers',
+        'params',
+        'args',
+        'context',
+        'container',
+        'app',
+        'instance',
+        'logger',
+        'validator',
+    ];
+
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
 
@@ -172,6 +308,14 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     {
         // Get the full chain of methods
         $chain = $this->getMethodChain($node);
+
+        // Get the root expression (source of the chain)
+        $root = $this->getRootExpression($node);
+
+        // Skip if root is not an Eloquent source (prevents false positives)
+        if (! $this->isEloquentSource($root, $chain)) {
+            return;
+        }
 
         // Check for problematic patterns
         if ($this->hasPhpSideFiltering($chain)) {
@@ -213,6 +357,233 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
         }
 
         return $chain;
+    }
+
+    /**
+     * Get the root expression of a method chain.
+     *
+     * Traverses back through the chain to find the originating expression.
+     * For example: User::where()->get()->filter() returns the StaticCall to User.
+     */
+    private function getRootExpression(Node\Expr\MethodCall $node): Node\Expr
+    {
+        $current = $node;
+
+        while ($current instanceof Node\Expr\MethodCall) {
+            $current = $current->var;
+        }
+
+        return $current;
+    }
+
+    /**
+     * Determine if the root expression is likely an Eloquent source.
+     *
+     * Uses positive identification (conservative approach) to reduce false positives.
+     * Only flags patterns where we're confident the source is an Eloquent query.
+     *
+     * @param  array<string>  $chain
+     */
+    private function isEloquentSource(Node\Expr $expr, array $chain): bool
+    {
+        // Case 1: Static call - check if model-like class (e.g., User::get())
+        if ($expr instanceof Node\Expr\StaticCall && $expr->class instanceof Node\Name) {
+            return $this->looksLikeModel($expr->class);
+        }
+
+        // Case 2: Function call - always non-Eloquent (collect(), request(), etc.)
+        if ($expr instanceof Node\Expr\FuncCall) {
+            return false;
+        }
+
+        // Case 3: Property fetch - check if relationship (e.g., $user->posts)
+        if ($expr instanceof Node\Expr\PropertyFetch) {
+            if ($expr->name instanceof Node\Identifier) {
+                return $this->looksLikeRelationship($expr->name->toString());
+            }
+
+            return false;
+        }
+
+        // Case 4: Variable - require BOTH fetch AND filter in chain
+        // This handles: $query->get()->filter() where $query is likely a query builder
+        if ($expr instanceof Node\Expr\Variable) {
+            return $this->hasLikelyEloquentPattern($chain);
+        }
+
+        // Case 5: Method call as root - traverse to find origin
+        // This handles nested cases like $obj->query()->get()->filter()
+        if ($expr instanceof Node\Expr\MethodCall) {
+            return $this->chainStartsWithModel($expr, $chain);
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a class name looks like an Eloquent model.
+     *
+     * Uses conservative heuristics to identify model classes:
+     * - Class is in App\Models namespace
+     * - Class contains \Models\ in path (DDD patterns)
+     * - Class ends with Model suffix
+     * - NOT in the excluded classes list
+     */
+    private function looksLikeModel(Node\Name $name): bool
+    {
+        $parts = $name->getParts();
+
+        if ($parts === []) {
+            return false;
+        }
+
+        $lastPart = $parts[array_key_last($parts)];
+
+        // Check against excluded classes (facades, utilities, etc.)
+        if (in_array($lastPart, self::EXCLUDED_CLASSES, true)) {
+            return false;
+        }
+
+        // Fully qualified names: check for Models namespace
+        if (count($parts) > 1) {
+            $namespace = implode('\\', array_slice($parts, 0, -1));
+
+            // App\Models\User, App\Model\User
+            if (str_starts_with($namespace, 'App\\Models') || str_starts_with($namespace, 'App\\Model')) {
+                return true;
+            }
+
+            // DDD patterns: Domain\Models\User, Modules\Users\Models\User
+            if (str_contains($namespace, '\\Models')) {
+                return true;
+            }
+        }
+
+        // Single class name: assume it's a model if PascalCase and not excluded
+        // This handles imported classes like: use App\Models\User; ... User::get()
+        if (count($parts) === 1 && $lastPart !== '' && ctype_upper($lastPart[0])) {
+            // Likely a model if it's a simple PascalCase name
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a property name looks like an Eloquent relationship.
+     *
+     * Uses heuristics to identify relationship properties:
+     * - Plural names (posts, comments, users)
+     * - Known relationship terms (parent, owner, children)
+     * - NOT in excluded properties list
+     */
+    private function looksLikeRelationship(string $name): bool
+    {
+        // Check against excluded properties
+        if (in_array($name, self::EXCLUDED_PROPERTIES, true)) {
+            return false;
+        }
+
+        // Known relationship terms
+        $relationshipTerms = [
+            'parent',
+            'owner',
+            'children',
+            'author',
+            'creator',
+            'members',
+            'followers',
+            'following',
+            'friends',
+            'roles',
+            'permissions',
+            'tags',
+            'categories',
+            'items',
+            'entries',
+            'records',
+        ];
+
+        if (in_array($name, $relationshipTerms, true)) {
+            return true;
+        }
+
+        // Check for plural forms (simple heuristic: ends with 's' and length > 3)
+        // This catches: posts, comments, users, orders, products, etc.
+        if (strlen($name) > 3 && str_ends_with($name, 's') && ! str_ends_with($name, 'ss')) {
+            // Avoid words that commonly end in 's' but aren't plurals
+            $nonPluralEndings = ['status', 'class', 'address', 'access', 'process', 'success', 'progress'];
+            if (! in_array($name, $nonPluralEndings, true)) {
+                return true;
+            }
+        }
+
+        // Check for 'ies' plural (categories, entries, etc.)
+        if (strlen($name) > 4 && str_ends_with($name, 'ies')) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a method chain has both fetch and filter methods.
+     *
+     * For variable roots (e.g., $query->get()->filter()), we require
+     * BOTH a fetch method AND a filter method in the chain.
+     * This reduces false positives from non-Eloquent variables.
+     *
+     * @param  array<string>  $chain
+     */
+    private function hasLikelyEloquentPattern(array $chain): bool
+    {
+        $hasFetch = false;
+        $hasFilter = false;
+
+        foreach ($chain as $method) {
+            if (in_array($method, self::FETCH_METHODS, true)) {
+                $hasFetch = true;
+            }
+            if (in_array($method, self::FILTER_METHODS, true)) {
+                $hasFilter = true;
+            }
+        }
+
+        return $hasFetch && $hasFilter;
+    }
+
+    /**
+     * Check if a method chain starts with what looks like a model.
+     *
+     * Traverses nested method calls to find the ultimate origin.
+     * Handles patterns like: $obj->query()->get()->filter()
+     *
+     * @param  array<string>  $chain
+     */
+    private function chainStartsWithModel(Node\Expr\MethodCall $expr, array $chain): bool
+    {
+        // Traverse to find the ultimate root
+        $current = $expr;
+        while ($current instanceof Node\Expr\MethodCall) {
+            $current = $current->var;
+        }
+
+        // If we found a static call, check if it's a model
+        if ($current instanceof Node\Expr\StaticCall && $current->class instanceof Node\Name) {
+            return $this->looksLikeModel($current->class);
+        }
+
+        // If it's a property fetch, check if it looks like a relationship
+        if ($current instanceof Node\Expr\PropertyFetch && $current->name instanceof Node\Identifier) {
+            return $this->looksLikeRelationship($current->name->toString());
+        }
+
+        // For variables, require the chain pattern
+        if ($current instanceof Node\Expr\Variable) {
+            return $this->hasLikelyEloquentPattern($chain);
+        }
+
+        return false;
     }
 
     /**

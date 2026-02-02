@@ -377,8 +377,15 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
             return;
         }
 
+        // Track if root is a relationship (PropertyFetch that looks like relationship)
+        // This is used to prevent false positives in hasPhpSideFiltering() for patterns
+        // like User::filter() or $service->filter() where there's no fetch method
+        $isRelationshipRoot = $root instanceof Node\Expr\PropertyFetch
+            && $root->name instanceof Node\Identifier
+            && $this->looksLikeRelationship($root->name->toString());
+
         // Check for problematic patterns
-        if ($this->hasPhpSideFiltering($chain, $hasFindWithArray)) {
+        if ($this->hasPhpSideFiltering($chain, $hasFindWithArray, $isRelationshipRoot)) {
             $pattern = implode('->', $chain);
             $severity = $this->determineSeverity($chain, $hasFindWithArray);
             $severityLabel = $severity === Severity::Critical ? 'CRITICAL' : 'WARNING';
@@ -895,8 +902,9 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
      *
      * @param  array<string>  $chain
      * @param  bool  $hasFindWithArray  Whether the chain contains find() with an array argument
+     * @param  bool  $isRelationshipRoot  Whether the root is a PropertyFetch that looks like a relationship
      */
-    private function hasPhpSideFiltering(array $chain, bool $hasFindWithArray = false): bool
+    private function hasPhpSideFiltering(array $chain, bool $hasFindWithArray = false, bool $isRelationshipRoot = false): bool
     {
         $fetchIndex = $this->findLastFetchMethod($chain);
 
@@ -927,10 +935,14 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
         }
 
         // Relationship pattern: $model->relationship->filter()
-        // No fetch method, but has filter method
-        foreach ($chain as $method) {
-            if (in_array($method, self::FILTER_METHODS, true)) {
-                return true;
+        // ONLY trigger when root is actually a PropertyFetch that looks like a relationship
+        // This prevents false positives for User::filter() or $service->filter()
+        // where there's no fetch method but the source isn't a relationship
+        if ($isRelationshipRoot) {
+            foreach ($chain as $method) {
+                if (in_array($method, self::FILTER_METHODS, true)) {
+                    return true;
+                }
             }
         }
 

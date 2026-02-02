@@ -179,7 +179,10 @@ abstract class AnalyzerTestCase extends TestCase
         foreach ($files as $file) {
             $path = $dir.'/'.$file;
 
-            if (is_dir($path)) {
+            // Handle symlinks first (is_link check before is_dir)
+            if (is_link($path)) {
+                unlink($path);
+            } elseif (is_dir($path)) {
                 $this->removeDirectory($path);
             } else {
                 unlink($path);

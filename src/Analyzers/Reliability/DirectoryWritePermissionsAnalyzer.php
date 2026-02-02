@@ -13,12 +13,14 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
- * Checks write permissions for critical Laravel directories.
+ * Checks write permissions for critical Laravel directories and symlinks.
  *
  * Checks for:
  * - storage/ directory is writable
  * - bootstrap/cache/ directory is writable
  * - Configurable via shieldci.writable_directories
+ * - Storage symlinks from config('filesystems.links') are valid
+ * - Configurable via shieldci.check_symlinks
  */
 class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
 {
@@ -31,10 +33,10 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
         return new AnalyzerMetadata(
             id: 'directory-write-permissions',
             name: 'Directory Write Permissions Analyzer',
-            description: 'Ensures critical Laravel directories have proper write permissions',
+            description: 'Ensures critical Laravel directories have proper write permissions and storage symlinks are valid',
             category: Category::Reliability,
             severity: Severity::Critical,
-            tags: ['permissions', 'filesystem', 'reliability', 'deployment'],
+            tags: ['permissions', 'filesystem', 'reliability', 'deployment', 'symlinks'],
             docsUrl: 'https://docs.shieldci.com/analyzers/reliability/directory-write-permissions',
             timeToFix: 10
         );
@@ -50,17 +52,32 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
         // Find directories that are missing or not writable
         ['missing' => $missingDirs, 'non_writable' => $nonWritableDirs] = $this->findDirectoryIssues($directoriesToCheck);
 
-        if (empty($missingDirs) && empty($nonWritableDirs)) {
-            return $this->passed('All critical directories exist and have proper write permissions');
+        // Check symlinks if enabled (default: true)
+        $brokenSymlinks = $this->isSymlinkCheckEnabled() ? $this->checkSymlinks() : [];
+
+        $hasDirectoryIssues = ! empty($missingDirs) || ! empty($nonWritableDirs);
+        $hasSymlinkIssues = ! empty($brokenSymlinks);
+
+        if (! $hasDirectoryIssues && ! $hasSymlinkIssues) {
+            return $this->passed('All critical directories exist and have proper write permissions, and all symlinks are valid');
         }
 
-        // Create issues for failed directories
-        $issues = $this->createIssuesForFailedDirectories($missingDirs, $nonWritableDirs, $basePath);
+        $issues = [];
 
-        $totalIssues = count($missingDirs) + count($nonWritableDirs);
+        // Create issues for failed directories
+        if ($hasDirectoryIssues) {
+            $issues = array_merge($issues, $this->createIssuesForFailedDirectories($missingDirs, $nonWritableDirs, $basePath));
+        }
+
+        // Create issues for broken symlinks
+        if ($hasSymlinkIssues) {
+            $issues = array_merge($issues, $this->createIssuesForBrokenSymlinks($brokenSymlinks, $basePath));
+        }
+
+        $totalIssues = count($missingDirs) + count($nonWritableDirs) + count($brokenSymlinks);
 
         return $this->failed(
-            sprintf('Found %d directory permission issue(s)', $totalIssues),
+            sprintf('Found %d filesystem issue(s)', $totalIssues),
             $issues
         );
     }
@@ -343,6 +360,190 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
         } catch (\Throwable $e) {
             return $default;
         }
+    }
+
+    /**
+     * Check if symlink checking is enabled.
+     */
+    private function isSymlinkCheckEnabled(): bool
+    {
+        $enabled = $this->safeExecute(
+            fn () => config('shieldci.check_symlinks', true),
+            true
+        );
+
+        return is_bool($enabled) ? $enabled : true;
+    }
+
+    /**
+     * Get symlinks to check from Laravel's filesystems config.
+     *
+     * @return array<string, string> Map of link path => target path
+     */
+    private function getSymlinksToCheck(): array
+    {
+        $basePath = $this->getBasePath();
+
+        // Try to get from Laravel config
+        $links = $this->safeExecute(
+            fn () => config('filesystems.links'),
+            null
+        );
+
+        if (is_array($links) && ! empty($links)) {
+            // Filter to ensure we have string keys and values
+            $validLinks = [];
+            foreach ($links as $link => $target) {
+                if (is_string($link) && is_string($target)) {
+                    $validLinks[$link] = $target;
+                }
+            }
+
+            return $validLinks;
+        }
+
+        // Default: public/storage -> storage/app/public
+        $publicStorageLink = function_exists('public_path')
+            ? $this->safeExecute(fn () => public_path('storage'), '')
+            : $this->buildPath($basePath, 'public', 'storage');
+
+        $storageAppPublic = function_exists('storage_path')
+            ? $this->safeExecute(fn () => storage_path('app/public'), '')
+            : $this->buildPath($basePath, 'storage', 'app', 'public');
+
+        if ($publicStorageLink !== '' && $storageAppPublic !== '') {
+            return [$publicStorageLink => $storageAppPublic];
+        }
+
+        return [];
+    }
+
+    /**
+     * Check symlinks and return broken ones.
+     *
+     * @return array<int, array{link: string, target: string, reason: string}>
+     */
+    private function checkSymlinks(): array
+    {
+        $brokenSymlinks = [];
+
+        foreach ($this->getSymlinksToCheck() as $link => $target) {
+            if (! is_link($link)) {
+                // Symlink doesn't exist
+                $brokenSymlinks[] = [
+                    'link' => $link,
+                    'target' => $target,
+                    'reason' => 'missing',
+                ];
+            } elseif (! file_exists($link)) {
+                // Symlink exists but target doesn't (broken symlink)
+                $brokenSymlinks[] = [
+                    'link' => $link,
+                    'target' => $target,
+                    'reason' => 'broken',
+                ];
+            } elseif (! is_dir($link)) {
+                // Target exists but isn't a directory
+                $brokenSymlinks[] = [
+                    'link' => $link,
+                    'target' => $target,
+                    'reason' => 'not_directory',
+                ];
+            }
+        }
+
+        return $brokenSymlinks;
+    }
+
+    /**
+     * Create issues for broken symlinks.
+     *
+     * @param  array<int, array{link: string, target: string, reason: string}>  $brokenSymlinks
+     * @return array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>
+     */
+    private function createIssuesForBrokenSymlinks(array $brokenSymlinks, string $basePath): array
+    {
+        $issues = [];
+
+        $formattedSymlinks = array_map(function ($symlink) use ($basePath) {
+            return [
+                'link' => $this->formatPath($symlink['link'], $basePath),
+                'target' => $this->formatPath($symlink['target'], $basePath),
+                'reason' => $symlink['reason'],
+            ];
+        }, $brokenSymlinks);
+
+        // Build message based on symlink issues
+        $message = $this->buildSymlinkMessage($brokenSymlinks);
+
+        // Use the first broken symlink for location
+        $locationPath = $brokenSymlinks[0]['link'];
+
+        $issues[] = $this->createIssue(
+            message: $message,
+            location: new Location($this->getRelativePath($locationPath)),
+            severity: Severity::Critical,
+            recommendation: $this->buildSymlinkRecommendation($formattedSymlinks),
+            code: null,
+            metadata: [
+                'broken_symlinks' => $formattedSymlinks,
+                'broken_symlink_count' => count($brokenSymlinks),
+            ]
+        );
+
+        return $issues;
+    }
+
+    /**
+     * Build message for symlink issues.
+     *
+     * @param  array<int, array{link: string, target: string, reason: string}>  $brokenSymlinks
+     */
+    private function buildSymlinkMessage(array $brokenSymlinks): string
+    {
+        $count = count($brokenSymlinks);
+        $reasons = array_unique(array_column($brokenSymlinks, 'reason'));
+
+        if (count($reasons) === 1) {
+            return match ($reasons[0]) {
+                'missing' => sprintf('%d storage %s missing', $count, $count === 1 ? 'symlink is' : 'symlinks are'),
+                'broken' => sprintf('%d storage %s broken (target does not exist)', $count, $count === 1 ? 'symlink is' : 'symlinks are'),
+                'not_directory' => sprintf('%d storage %s invalid (target is not a directory)', $count, $count === 1 ? 'symlink is' : 'symlinks are'),
+                default => sprintf('%d storage %s invalid', $count, $count === 1 ? 'symlink is' : 'symlinks are'),
+            };
+        }
+
+        return sprintf('%d storage %s invalid', $count, $count === 1 ? 'symlink is' : 'symlinks are');
+    }
+
+    /**
+     * Build recommendation for symlink issues.
+     *
+     * @param  array<int, array{link: string, target: string, reason: string}>  $formattedSymlinks
+     */
+    private function buildSymlinkRecommendation(array $formattedSymlinks): string
+    {
+        $recommendations = [];
+
+        $recommendations[] = 'Run `php artisan storage:link` to create missing symlinks.';
+
+        $linkDetails = [];
+        foreach ($formattedSymlinks as $symlink) {
+            $reasonText = match ($symlink['reason']) {
+                'missing' => 'does not exist',
+                'broken' => 'exists but target is missing',
+                'not_directory' => 'target is not a directory',
+                default => 'is invalid',
+            };
+            $linkDetails[] = sprintf('  - %s → %s (%s)', $symlink['link'], $symlink['target'], $reasonText);
+        }
+
+        $recommendations[] = "Broken symlinks:\n".implode("\n", $linkDetails);
+
+        $rec = implode("\n\n", $recommendations);
+        $rec .= "\n\nStorage symlinks are required for serving publicly accessible files (uploads, images, etc.).";
+
+        return $rec;
     }
 
     /**

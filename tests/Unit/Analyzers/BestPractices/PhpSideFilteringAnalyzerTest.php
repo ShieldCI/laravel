@@ -1014,7 +1014,7 @@ PHP;
         $this->assertHasIssueContaining('filter', $result);
     }
 
-    public function test_ignores_short_class_name_without_fqn(): void
+    public function test_detects_short_class_name_as_potential_model(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1027,8 +1027,8 @@ class OrderService
 {
     public function getPendingOrders()
     {
-        // Short class name (no namespace in call) - NOT detected to avoid false positives
-        // Use FQN (\App\Models\Order) or configure model_namespaces for detection
+        // Short class name (no namespace in call) - IS detected as potential model
+        // This handles the common Laravel pattern: `use App\Models\Order;` then `Order::get()`
         return Order::get()->filter(fn($o) => $o->status === 'pending');
     }
 }
@@ -1042,7 +1042,39 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Short names without FQN are NOT detected to avoid false positives
+        // Short model names ARE detected as potential models (unless they look like services)
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('filter', $result);
+    }
+
+    public function test_ignores_short_class_name_with_service_suffix(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Services\DataService;
+
+class DataProcessor
+{
+    public function processData()
+    {
+        // Short class name with Service suffix - NOT detected (looks like a service)
+        return DataService::get()->filter(fn($item) => $item->active);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DataProcessor.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Service-suffixed short names should NOT be flagged
         $this->assertPassed($result);
     }
 

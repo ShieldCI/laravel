@@ -386,7 +386,7 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
 
         // Check for problematic patterns
         if ($this->hasPhpSideFiltering($chain, $hasFindWithArray, $isRelationshipRoot)) {
-            $pattern = implode('->', $chain);
+            $pattern = $this->formatChain($chain);
             $severity = $this->determineSeverity($chain, $hasFindWithArray);
             $severityLabel = $severity === Severity::Critical ? 'CRITICAL' : 'WARNING';
 
@@ -475,8 +475,9 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
      * - Domain\*\Models\* namespace (DDD patterns)
      * - *Model suffix
      *
-     * Conservative for short names (no namespace): won't flag unless users configure
-     * model_namespaces, to avoid false positives on services/clients.
+     * Conservative for short names (no namespace): accepts them as potential models
+     * unless they have service/client-like suffixes. This handles the common Laravel
+     * pattern where models are imported via `use App\Models\User;`.
      */
     private function looksLikeModel(Node\Name $name): bool
     {
@@ -508,17 +509,11 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
             return true;
         }
 
-        // POSITIVE CHECK 4: Short name only (no namespace) - use conservative heuristics
-        // Without namespace info, we cannot determine if it's a model or a service/client
+        // POSITIVE CHECK 4: Short name only (no namespace) - accept as potential model
+        // This handles the common Laravel pattern: `use App\Models\User;` then `User::get()`
+        // Reject common non-model patterns (services, clients, etc.), accept others
         if (! str_contains($normalized, '\\')) {
-            // Reject common non-model patterns (services, clients, etc.)
-            if ($this->looksLikeServiceOrClient($shortName)) {
-                return false;
-            }
-
-            // For remaining short names, we cannot reliably determine - don't flag
-            // Users should configure model_namespaces if they want short name detection
-            return false;
+            return ! $this->looksLikeServiceOrClient($shortName);
         }
 
         // Cannot determine - default to NOT a model
@@ -1058,11 +1053,39 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     }
 
     /**
+     * Format method chain for display.
+     *
+     * Converts array chain to readable string:
+     * - ['User', 'where', 'get', 'filter'] => 'User::where()->get()->filter()'
+     * - ['where', 'get', 'filter'] => 'where()->get()->filter()'
+     *
+     * @param  array<string>  $chain
+     */
+    private function formatChain(array $chain): string
+    {
+        if (empty($chain)) {
+            return '';
+        }
+
+        // Check if first element is a class name (starts with uppercase)
+        if (isset($chain[0]) && $chain[0] !== '' && ctype_upper($chain[0][0])) {
+            $root = array_shift($chain);
+            if (empty($chain)) {
+                return $root;
+            }
+
+            return $root.'::'.implode('()->', $chain).'()';
+        }
+
+        return implode('()->', $chain).'()';
+    }
+
+    /**
      * @param  array<string>  $chain
      */
     private function getRecommendation(array $chain): string
     {
-        $pattern = implode('->', $chain);
+        $pattern = $this->formatChain($chain);
         $fetchMethod = $this->getFetchMethod($chain);
 
         // Relationship pattern (no fetch method means direct property access)

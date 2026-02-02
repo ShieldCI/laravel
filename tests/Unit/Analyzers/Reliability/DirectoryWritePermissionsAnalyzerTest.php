@@ -32,11 +32,14 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
             'bootstrap/cache/.gitkeep' => '',
         ]);
 
-        // Configure to check these specific directories
-        config(['shieldci.writable_directories' => [
-            $tempDir.'/storage',
-            $tempDir.'/bootstrap/cache',
-        ]]);
+        // Configure to check these specific directories (disable symlink check for this test)
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -53,10 +56,13 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $tempDir = $this->createTempDirectory([]);
 
         // Configure to check non-existent directories
-        config(['shieldci.writable_directories' => [
-            $tempDir.'/storage',
-            $tempDir.'/bootstrap/cache',
-        ]]);
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -77,9 +83,12 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         // Make directory read-only
         chmod($tempDir.'/storage', 0555);
 
-        config(['shieldci.writable_directories' => [
-            $tempDir.'/storage',
-        ]]);
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -97,11 +106,14 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
     {
         $tempDir = $this->createTempDirectory([]);
 
-        config(['shieldci.writable_directories' => [
-            $tempDir.'/storage',
-            $tempDir.'/bootstrap/cache',
-            $tempDir.'/custom/cache',
-        ]]);
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+                $tempDir.'/custom/cache',
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -109,7 +121,7 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertStringContainsString('3 directory permission issue(s)', $result->getMessage());
+        $this->assertStringContainsString('3 filesystem issue(s)', $result->getMessage());
 
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
@@ -131,9 +143,12 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
             'custom/path/.gitkeep' => '',
         ]);
 
-        config(['shieldci.writable_directories' => [
-            $tempDir.'/custom/path',
-        ]]);
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/custom/path',
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -150,7 +165,10 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
             'bootstrap/cache/.gitkeep' => '',
         ]);
 
-        config(['shieldci.writable_directories' => []]);
+        config([
+            'shieldci.writable_directories' => [],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -169,7 +187,10 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         ]);
 
         // Set invalid config (not an array)
-        config(['shieldci.writable_directories' => 'not-an-array']);
+        config([
+            'shieldci.writable_directories' => 'not-an-array',
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -186,13 +207,16 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
             'storage/.gitkeep' => '',
         ]);
 
-        config(['shieldci.writable_directories' => [
-            $tempDir.'/storage',
-            null,
-            123,
-            '',
-            ['nested' => 'array'],
-        ]]);
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+                null,
+                123,
+                '',
+                ['nested' => 'array'],
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -212,11 +236,14 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         ]);
 
         // Use relative paths like in the real config
-        config(['shieldci.writable_directories' => [
-            'storage',
-            'bootstrap/cache',
-            'custom/dir',
-        ]]);
+        config([
+            'shieldci.writable_directories' => [
+                'storage',
+                'bootstrap/cache',
+                'custom/dir',
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -235,10 +262,13 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         ]);
 
         // Mix of absolute and relative paths
-        config(['shieldci.writable_directories' => [
-            $tempDir.'/storage', // Absolute
-            'cache',              // Relative
-        ]]);
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage', // Absolute
+                'cache',              // Relative
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -257,9 +287,12 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
     {
         $tempDir = $this->createTempDirectory([]);
 
-        config(['shieldci.writable_directories' => [
-            $tempDir.'/storage',
-        ]]);
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -280,10 +313,13 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
     {
         $tempDir = $this->createTempDirectory([]);
 
-        config(['shieldci.writable_directories' => [
-            $tempDir.'/storage',
-            $tempDir.'/bootstrap/cache',
-        ]]);
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -305,9 +341,12 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
     {
         $tempDir = $this->createTempDirectory([]);
 
-        config(['shieldci.writable_directories' => [
-            $tempDir.'/storage',
-        ]]);
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -339,10 +378,13 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         // Make storage read-only
         chmod($tempDir.'/storage', 0555);
 
-        config(['shieldci.writable_directories' => [
-            $tempDir.'/storage',        // exists but not writable
-            $tempDir.'/bootstrap/cache', // missing
-        ]]);
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',        // exists but not writable
+                $tempDir.'/bootstrap/cache', // missing
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -375,9 +417,12 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
     {
         $tempDir = $this->createTempDirectory([]);
 
-        config(['shieldci.writable_directories' => [
-            $tempDir.'/storage',
-        ]]);
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -402,9 +447,12 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         // Make read-only
         chmod($tempDir.'/storage', 0555);
 
-        config(['shieldci.writable_directories' => [
-            $tempDir.'/storage',
-        ]]);
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -431,10 +479,13 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 
         chmod($tempDir.'/storage', 0555);
 
-        config(['shieldci.writable_directories' => [
-            $tempDir.'/storage',
-            $tempDir.'/cache',
-        ]]);
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/cache',
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -461,10 +512,13 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 
         chmod($tempDir.'/storage', 0555);
 
-        config(['shieldci.writable_directories' => [
-            $tempDir.'/storage',
-            $tempDir.'/cache',
-        ]]);
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/cache',
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -495,9 +549,12 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
             $this->markTestSkipped('Cannot create symlinks on this system');
         }
 
-        config(['shieldci.writable_directories' => [
-            $symlinkPath,
-        ]]);
+        config([
+            'shieldci.writable_directories' => [
+                $symlinkPath,
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -513,11 +570,358 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath('');
 
-        config(['shieldci.writable_directories' => null]);
+        config([
+            'shieldci.writable_directories' => null,
+            'shieldci.check_symlinks' => false,
+        ]);
 
         $result = $analyzer->analyze();
 
         // Should not crash, even with empty basepath
         $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+    }
+
+    // =========================================================================
+    // Symlink Verification Tests
+    // =========================================================================
+
+    public function test_passes_when_symlinks_exist_and_valid(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/app/public/.gitkeep' => '',
+            'storage/.gitkeep' => '',
+            'bootstrap/cache/.gitkeep' => '',
+        ]);
+
+        // Create the public directory and symlink
+        mkdir($tempDir.'/public', 0755, true);
+        if (! @symlink($tempDir.'/storage/app/public', $tempDir.'/public/storage')) {
+            $this->markTestSkipped('Cannot create symlinks on this system');
+        }
+
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'filesystems.links' => [
+                $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
+            ],
+            'shieldci.check_symlinks' => true,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString('symlinks are valid', $result->getMessage());
+    }
+
+    public function test_fails_when_symlink_missing(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/app/public/.gitkeep' => '',
+            'storage/.gitkeep' => '',
+            'bootstrap/cache/.gitkeep' => '',
+            'public/.gitkeep' => '',
+        ]);
+
+        // Don't create the symlink
+
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'filesystems.links' => [
+                $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
+            ],
+            'shieldci.check_symlinks' => true,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('symlink', $result);
+
+        $issues = $result->getIssues();
+        // Find the symlink issue
+        $symlinkIssue = null;
+        foreach ($issues as $issue) {
+            if (isset($issue->metadata['broken_symlinks'])) {
+                $symlinkIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($symlinkIssue);
+        $this->assertEquals('missing', $symlinkIssue->metadata['broken_symlinks'][0]['reason']);
+    }
+
+    public function test_fails_when_symlink_target_missing(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/.gitkeep' => '',
+            'bootstrap/cache/.gitkeep' => '',
+        ]);
+
+        // Create public directory and a broken symlink (target doesn't exist)
+        mkdir($tempDir.'/public', 0755, true);
+        if (! @symlink($tempDir.'/storage/app/public', $tempDir.'/public/storage')) {
+            $this->markTestSkipped('Cannot create symlinks on this system');
+        }
+
+        // Note: storage/app/public doesn't exist, so symlink is broken
+
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'filesystems.links' => [
+                $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
+            ],
+            'shieldci.check_symlinks' => true,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $symlinkIssue = null;
+        foreach ($issues as $issue) {
+            if (isset($issue->metadata['broken_symlinks'])) {
+                $symlinkIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($symlinkIssue);
+        $this->assertEquals('broken', $symlinkIssue->metadata['broken_symlinks'][0]['reason']);
+    }
+
+    public function test_fails_when_symlink_target_not_directory(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/app/public' => 'this is a file, not a directory',
+            'storage/.gitkeep' => '',
+            'bootstrap/cache/.gitkeep' => '',
+        ]);
+
+        // Create public directory and symlink to a file
+        mkdir($tempDir.'/public', 0755, true);
+        if (! @symlink($tempDir.'/storage/app/public', $tempDir.'/public/storage')) {
+            $this->markTestSkipped('Cannot create symlinks on this system');
+        }
+
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'filesystems.links' => [
+                $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
+            ],
+            'shieldci.check_symlinks' => true,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $symlinkIssue = null;
+        foreach ($issues as $issue) {
+            if (isset($issue->metadata['broken_symlinks'])) {
+                $symlinkIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($symlinkIssue);
+        $this->assertEquals('not_directory', $symlinkIssue->metadata['broken_symlinks'][0]['reason']);
+    }
+
+    public function test_uses_default_storage_symlink(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/.gitkeep' => '',
+            'bootstrap/cache/.gitkeep' => '',
+            'public/.gitkeep' => '',
+        ]);
+
+        // No symlink created, and no filesystems.links config
+        // Should use default public/storage -> storage/app/public
+
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'filesystems.links' => null,
+            'shieldci.check_symlinks' => true,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should fail because default symlink doesn't exist
+        $this->assertFailed($result);
+    }
+
+    public function test_uses_custom_symlinks_from_config(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/app/public/.gitkeep' => '',
+            'storage/app/uploads/.gitkeep' => '',
+            'storage/.gitkeep' => '',
+            'bootstrap/cache/.gitkeep' => '',
+        ]);
+
+        // Create public directory with both symlinks
+        mkdir($tempDir.'/public', 0755, true);
+        if (! @symlink($tempDir.'/storage/app/public', $tempDir.'/public/storage')) {
+            $this->markTestSkipped('Cannot create symlinks on this system');
+        }
+        if (! @symlink($tempDir.'/storage/app/uploads', $tempDir.'/public/uploads')) {
+            $this->markTestSkipped('Cannot create symlinks on this system');
+        }
+
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'filesystems.links' => [
+                $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
+                $tempDir.'/public/uploads' => $tempDir.'/storage/app/uploads',
+            ],
+            'shieldci.check_symlinks' => true,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_symlink_check_can_be_disabled(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/.gitkeep' => '',
+            'bootstrap/cache/.gitkeep' => '',
+            'public/.gitkeep' => '',
+        ]);
+
+        // No symlink created, but check is disabled
+
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'filesystems.links' => [
+                $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
+            ],
+            'shieldci.check_symlinks' => false,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because symlink check is disabled
+        $this->assertPassed($result);
+    }
+
+    public function test_symlink_recommendation_includes_artisan_command(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/.gitkeep' => '',
+            'bootstrap/cache/.gitkeep' => '',
+            'public/.gitkeep' => '',
+        ]);
+
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'filesystems.links' => [
+                $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
+            ],
+            'shieldci.check_symlinks' => true,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $symlinkIssue = null;
+        foreach ($issues as $issue) {
+            if (isset($issue->metadata['broken_symlinks'])) {
+                $symlinkIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($symlinkIssue);
+        $this->assertStringContainsString('php artisan storage:link', $symlinkIssue->recommendation);
+    }
+
+    public function test_symlink_metadata_includes_count(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/.gitkeep' => '',
+            'bootstrap/cache/.gitkeep' => '',
+            'public/.gitkeep' => '',
+        ]);
+
+        config([
+            'shieldci.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'filesystems.links' => [
+                $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
+                $tempDir.'/public/uploads' => $tempDir.'/storage/app/uploads',
+            ],
+            'shieldci.check_symlinks' => true,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $symlinkIssue = null;
+        foreach ($issues as $issue) {
+            if (isset($issue->metadata['broken_symlink_count'])) {
+                $symlinkIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($symlinkIssue);
+        $this->assertEquals(2, $symlinkIssue->metadata['broken_symlink_count']);
     }
 }

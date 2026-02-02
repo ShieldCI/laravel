@@ -239,12 +239,59 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
             $tokens = token_get_all($code);
             $tokenCount = count($tokens);
+            $isConsoleCommand = $this->isConsoleCommand($file);
 
             for ($i = 0; $i < $tokenCount; $i++) {
                 $token = $tokens[$i];
 
-                // Only interested in identifiers (function names)
-                if (! is_array($token) || $token[0] !== T_STRING) {
+                if (! is_array($token)) {
+                    continue;
+                }
+
+                // Check for exit/die (T_EXIT token - they're language constructs, not functions)
+                if ($token[0] === T_EXIT) {
+                    // Skip in Console Commands (exit codes are legitimate)
+                    if ($isConsoleCommand) {
+                        continue;
+                    }
+
+                    // Ignore function/method definitions: function exit() {} or public function exit()
+                    $prev = $this->previousMeaningfulToken($tokens, $i);
+                    if ($prev !== null && is_array($prev) && $prev[0] === T_FUNCTION) {
+                        continue;
+                    }
+
+                    // Ignore static method calls: self::exit(), static::exit(), ClassName::exit()
+                    if ($prev !== null && is_array($prev) && $prev[0] === T_DOUBLE_COLON) {
+                        continue;
+                    }
+
+                    // Note: $obj->exit() uses T_STRING (not T_EXIT), so no need to check T_OBJECT_OPERATOR
+
+                    // Determine if it's exit or die based on the token text
+                    $functionName = strtolower($token[1]);
+
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: sprintf(
+                            'Script termination function %s() found in production code',
+                            $functionName
+                        ),
+                        filePath: $file,
+                        lineNumber: $token[2],
+                        severity: Severity::Medium,
+                        recommendation: 'Use abort() for web requests or return early. For CLI commands, use proper exit codes via Command::FAILURE/Command::SUCCESS.',
+                        metadata: [
+                            'function' => $functionName,
+                            'file' => basename($file),
+                            'type' => 'termination',
+                        ]
+                    );
+
+                    continue;
+                }
+
+                // Only interested in identifiers (function names) for debug functions
+                if ($token[0] !== T_STRING) {
                     continue;
                 }
 
@@ -271,6 +318,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
+                // Debug function issue
                 $severity = match ($functionName) {
                     'ray' => Severity::High,
                     default => in_array($functionName, self::HIGH_SEVERITY_FUNCTIONS, true)
@@ -477,5 +525,15 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                str_contains($file, '/database/factories/') ||
                str_contains($file, 'Seeder.php') ||
                str_contains($file, 'Factory.php');
+    }
+
+    /**
+     * Check if file is a Console Command (where exit codes are legitimate).
+     */
+    private function isConsoleCommand(string $file): bool
+    {
+        return str_contains($file, '/Console/Commands/') ||
+               str_contains($file, '/app/Console/Commands/') ||
+               str_contains($file, '\\Console\\Commands\\');
     }
 }

@@ -1029,4 +1029,292 @@ JSON;
             $this->assertArrayHasKey('file', $issue->metadata);
         }
     }
+
+    // =================================================================
+    // Script Termination Function Tests (exit/die)
+    // =================================================================
+
+    public function test_detects_exit_function_in_code(): void
+    {
+        $code = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+
+class TestController
+{
+    public function index()
+    {
+        if ($error) {
+            exit('Error occurred');
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/TestController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('exit()', $result);
+        $issues = $result->getIssues();
+        $this->assertEquals('termination', $issues[0]->metadata['type']);
+    }
+
+    public function test_detects_die_function_in_code(): void
+    {
+        $code = <<<'PHP'
+<?php
+namespace App\Services;
+
+class PaymentService
+{
+    public function process()
+    {
+        die('Fatal error');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/PaymentService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('die()', $result);
+        $issues = $result->getIssues();
+        $this->assertEquals('termination', $issues[0]->metadata['type']);
+    }
+
+    public function test_ignores_exit_in_console_commands(): void
+    {
+        $code = <<<'PHP'
+<?php
+namespace App\Console\Commands;
+
+use Illuminate\Console\Command;
+
+class ImportData extends Command
+{
+    public function handle()
+    {
+        if (!$this->validate()) {
+            exit(1);
+        }
+        exit(0);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Console/Commands/ImportData.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - exit codes in Console Commands are legitimate
+        $this->assertPassed($result);
+    }
+
+    public function test_exit_severity_is_medium(): void
+    {
+        $code = <<<'PHP'
+<?php
+exit('error');
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/test.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+    }
+
+    public function test_die_severity_is_medium(): void
+    {
+        $code = <<<'PHP'
+<?php
+die('error');
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/test.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+    }
+
+    public function test_ignores_method_calls_named_exit(): void
+    {
+        $code = <<<'PHP'
+<?php
+namespace App\Services;
+
+class GameService
+{
+    public function process()
+    {
+        $this->exit();
+        $game->exit();
+        self::exit();
+        GameHelper::exit();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/GameService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - these are method calls, not the exit() function
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_exit_function_definitions(): void
+    {
+        $code = <<<'PHP'
+<?php
+namespace App\Services;
+
+class GameService
+{
+    public function exit()
+    {
+        // This is a method definition, not a function call
+        return $this->cleanup();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/GameService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - this is a function definition
+        $this->assertPassed($result);
+    }
+
+    public function test_exit_recommendation_suggests_abort(): void
+    {
+        $code = <<<'PHP'
+<?php
+exit('error');
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/test.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('abort()', $issues[0]->recommendation);
+        $this->assertStringContainsString('Command::FAILURE', $issues[0]->recommendation);
+    }
+
+    public function test_detects_both_exit_and_die_in_same_file(): void
+    {
+        $code = <<<'PHP'
+<?php
+if ($error1) {
+    exit('Error 1');
+}
+if ($error2) {
+    die('Error 2');
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/test.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+
+        $functions = array_map(fn ($i) => $i->metadata['function'], $issues);
+        $this->assertContains('exit', $functions);
+        $this->assertContains('die', $functions);
+    }
+
+    public function test_ignores_exit_in_test_files(): void
+    {
+        $code = <<<'PHP'
+<?php
+namespace Tests\Unit;
+
+class ExitTest
+{
+    public function testExit()
+    {
+        exit(1);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'tests/Unit/ExitTest.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['tests']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

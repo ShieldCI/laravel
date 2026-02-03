@@ -51,6 +51,15 @@ class ServiceContainerResolutionAnalyzerTest extends AnalyzerTestCase
                     '*Service',
                     '*Repository',
                 ],
+                'manual_instantiation_exclude_patterns' => $config['manual_instantiation_exclude_patterns'] ?? [
+                    '*DTO',
+                    '*Data',
+                    '*ValueObject',
+                    '*Request',
+                    '*Response',
+                    '*Entity',
+                    '*Model',
+                ],
             ],
         ];
 
@@ -588,12 +597,13 @@ PHP;
 
     public function test_severity_by_argument_type_class(): void
     {
+        // Using a non-escalated namespace (App\Models) to test base severity
         $code = <<<'PHP'
 <?php
 
-namespace App\Services;
+namespace App\Models;
 
-class UserService
+class User
 {
     public function fetch()
     {
@@ -604,7 +614,7 @@ class UserService
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Services/UserService.php' => $code,
+            'app/Models/User.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -654,12 +664,13 @@ PHP;
 
     public function test_severity_by_argument_type_variable(): void
     {
+        // Using a non-escalated namespace (App\Helpers) to test base severity
         $code = <<<'PHP'
 <?php
 
-namespace App\Services;
+namespace App\Helpers;
 
-class DynamicService
+class DynamicHelper
 {
     public function resolve($serviceName)
     {
@@ -670,7 +681,7 @@ class DynamicService
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Services/DynamicService.php' => $code,
+            'app/Helpers/DynamicHelper.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -848,7 +859,8 @@ PHP;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertSame('OrderService::processOrder', $issues[0]->metadata['location']);
+        // Location now includes FQN
+        $this->assertSame('App\\Services\\OrderService::processOrder', $issues[0]->metadata['location']);
         $this->assertSame('OrderService', $issues[0]->metadata['class']);
     }
 
@@ -1370,8 +1382,9 @@ class OrderService
 {
     public function process()
     {
-        $repo = new OrderRepository();
-        return $repo->all();
+        // Using PaymentHandler which matches *Handler and is not excluded
+        $handler = new PaymentHandler();
+        return $handler->process();
     }
 }
 PHP;
@@ -1382,7 +1395,8 @@ PHP;
 
         $analyzer = $this->createAnalyzer([
             'detect_manual_instantiation' => true,
-            'manual_instantiation_patterns' => ['*Repository'],
+            'manual_instantiation_patterns' => ['*Handler'],
+            'manual_instantiation_exclude_patterns' => [], // Clear exclusions for this test
         ]);
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['app']);
@@ -1390,7 +1404,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('new OrderRepository()', $result);
+        $this->assertHasIssueContaining('new PaymentHandler()', $result);
     }
 
     public function test_manual_instantiation_skips_non_matching_patterns(): void
@@ -1694,5 +1708,643 @@ PHP;
         // Should fail because app() is outside the closure
         $this->assertFailed($result);
         $this->assertHasIssueContaining('app()', $result);
+    }
+
+    // ============================================================
+    // TESTS FOR IMPROVED SERVICE PROVIDER DETECTION (Issue 1 & 2)
+    // ============================================================
+
+    public function test_does_not_skip_fake_service_provider(): void
+    {
+        // PaymentServiceProviderFake extends PaymentServiceProvider (NOT a Laravel SP)
+        $code = <<<'PHP'
+<?php
+
+namespace Tests\Fakes;
+
+use App\Providers\PaymentServiceProvider;
+
+class PaymentServiceProviderFake extends PaymentServiceProvider
+{
+    public function handle()
+    {
+        // This should be detected - it's not a real ServiceProvider
+        $repo = app(PaymentRepository::class);
+        return $repo->charge();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'tests/Fakes/PaymentServiceProviderFake.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'whitelist_dirs' => [], // Don't skip tests dir for this test
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['tests']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - PaymentServiceProviderFake doesn't extend Illuminate ServiceProvider
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('app()', $result);
+    }
+
+    public function test_correctly_skips_real_service_provider_with_use(): void
+    {
+        // Real service provider with use statement
+        $code = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\ServiceProvider;
+
+class PaymentServiceProvider extends ServiceProvider
+{
+    public function register()
+    {
+        $this->app->bind(PaymentInterface::class, StripePayment::class);
+    }
+
+    public function boot()
+    {
+        $gateway = app(PaymentGateway::class);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/PaymentServiceProvider.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - this is a real ServiceProvider
+        $this->assertPassed($result);
+    }
+
+    // ============================================================
+    // TESTS FOR FQN IN LOCATION (Issue 5)
+    // ============================================================
+
+    public function test_location_includes_full_namespace(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Api\V2;
+
+class UserController
+{
+    public function index()
+    {
+        $repo = app(UserRepository::class);
+        return $repo->all();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/Api/V2/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        // Should contain full namespace, not just 'UserController::index'
+        $location = $issues[0]->metadata['location'];
+        $this->assertIsString($location);
+        $this->assertStringContainsString('App\\Http\\Controllers\\Api\\V2\\UserController::index', $location);
+    }
+
+    // ============================================================
+    // TESTS FOR STRICT CONTAINER MATCHING (Issue 6)
+    // ============================================================
+
+    public function test_does_not_flag_custom_container_helper(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Helpers;
+
+class MyContainerHelper
+{
+    public static function getInstance(): self
+    {
+        return new self();
+    }
+
+    public function make($class)
+    {
+        return new $class();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Helpers/MyContainerHelper.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - MyContainerHelper is not Laravel's Container
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_data_container_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Data;
+
+class DataContainer
+{
+    public static function getInstance(): self
+    {
+        return new self();
+    }
+
+    public function resolve($key)
+    {
+        return $this->data[$key] ?? null;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Data/DataContainer.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - DataContainer is not Laravel's Container
+        $this->assertPassed($result);
+    }
+
+    // ============================================================
+    // TESTS FOR SEVERITY ESCALATION (Issue 7)
+    // ============================================================
+
+    public function test_severity_escalated_in_controllers(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        // Class-based resolution normally gets Medium, but in Controllers gets High
+        $repo = app(UserRepository::class);
+        return $repo->all();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        // Should be High severity (escalated from Medium)
+        $this->assertSame(Severity::High, $issues[0]->severity);
+    }
+
+    public function test_severity_escalated_in_services_namespace(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class OrderService
+{
+    public function process()
+    {
+        $repo = app(OrderRepository::class);
+        return $repo->find(1);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/OrderService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        // Should be High severity (escalated from Medium)
+        $this->assertSame(Severity::High, $issues[0]->severity);
+    }
+
+    public function test_severity_not_escalated_in_models(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class User
+{
+    public function sendNotification()
+    {
+        // Models are not in the high-severity list
+        $notifier = app(NotificationService::class);
+        return $notifier->send($this);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        // Should remain Medium severity (not escalated)
+        $this->assertSame(Severity::Medium, $issues[0]->severity);
+    }
+
+    public function test_string_based_resolution_stays_high_everywhere(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class User
+{
+    public function getCacheDriver()
+    {
+        // String-based resolution is already High, stays High
+        return app('cache.store');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        // String-based resolution is always High
+        $this->assertSame(Severity::High, $issues[0]->severity);
+    }
+
+    // ============================================================
+    // TESTS FOR NEW DETECTION PATTERNS (Issue 8)
+    // ============================================================
+
+    public function test_detects_this_app_make(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class PaymentService
+{
+    public function process()
+    {
+        // Non-ServiceProvider class using $this->app->make()
+        $gateway = $this->app->make(PaymentGateway::class);
+        return $gateway->charge();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/PaymentService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('$this->app->make()', $result);
+    }
+
+    public function test_detects_this_app_resolve(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function fetch()
+    {
+        $repo = $this->app->resolve(UserRepository::class);
+        return $repo->all();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('$this->app->resolve()', $result);
+    }
+
+    public function test_detects_this_app_bind_outside_provider(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class SetupService
+{
+    public function init()
+    {
+        // $this->app->bind() outside ServiceProvider
+        $this->app->bind(CacheInterface::class, RedisCache::class);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/SetupService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('$this->app->bind()', $result);
+        $issues = $result->getIssues();
+        $this->assertSame(Severity::High, $issues[0]->severity);
+    }
+
+    public function test_detects_container_variable_make(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ContainerService
+{
+    public function resolve($container)
+    {
+        return $container->make(SomeService::class);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/ContainerService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('$container->make()', $result);
+    }
+
+    public function test_detects_app_variable_make(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class AppService
+{
+    public function resolve($app)
+    {
+        return $app->make(SomeService::class);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/AppService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('$app->make()', $result);
+    }
+
+    public function test_skips_this_app_make_in_closures(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class EventService
+{
+    public function register()
+    {
+        Event::listen(function () {
+            // Closures don't support DI, so this is legitimate
+            $handler = $this->app->make(EventHandler::class);
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/EventService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - resolution in closure is skipped
+        $this->assertPassed($result);
+    }
+
+    // ============================================================
+    // TESTS FOR MANUAL INSTANTIATION EXCLUSIONS (Issue 4)
+    // ============================================================
+
+    public function test_manual_instantiation_excludes_dto(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function createUser(array $data)
+    {
+        // UserDTO matches *DTO exclusion pattern
+        $dto = new UserDTO($data);
+        return $this->repository->create($dto);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/UserService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'detect_manual_instantiation' => true,
+            'manual_instantiation_patterns' => ['*Service', '*DTO'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - UserDTO matches *DTO exclusion pattern
+        $this->assertPassed($result);
+    }
+
+    public function test_manual_instantiation_excludes_value_object(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class PricingService
+{
+    public function calculatePrice(int $amount)
+    {
+        // MoneyValueObject matches *ValueObject exclusion pattern
+        return new MoneyValueObject($amount, 'USD');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/PricingService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'detect_manual_instantiation' => true,
+            'manual_instantiation_patterns' => ['*Service', '*ValueObject'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - MoneyValueObject matches *ValueObject exclusion pattern
+        $this->assertPassed($result);
+    }
+
+    public function test_manual_instantiation_detects_service_not_matching_exclusions(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function store()
+    {
+        // PaymentService matches *Service but not any exclusion pattern
+        $service = new PaymentService();
+        return $service->charge();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'detect_manual_instantiation' => true,
+            'manual_instantiation_patterns' => ['*Service'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - PaymentService matches *Service and no exclusion
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('new PaymentService()', $result);
     }
 }

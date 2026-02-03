@@ -9,6 +9,7 @@ use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Stmt;
 use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -40,7 +41,10 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - Middleware: Conditional resolution based on request context
  * - Observers: Model observers with dynamic dependencies
  * - Handlers: Various handler classes
- * - Closures: Don't support constructor DI (resolution only, binding still flagged)
+ * - Closures: Support parameter-level DI but not constructor DI. Resolution is skipped
+ *   because most closure contexts (collection callbacks, event listeners, queue jobs)
+ *   don't support automatic injection, and distinguishing route closures from other
+ *   closures is unreliable. Note: Binding inside closures is still flagged as it's always wrong.
  * - Route files: Use closures without DI support
  *
  * Configuration:
@@ -84,6 +88,9 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
 
     /** @var array<string> */
     private array $manualInstantiationPatterns = [];
+
+    /** @var array<string> */
+    private array $manualInstantiationExcludePatterns = [];
 
     public function __construct(
         private ParserInterface $parser,
@@ -234,6 +241,18 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             '*Handler',
         ]);
         $this->manualInstantiationPatterns = is_array($instantiationPatterns) ? $instantiationPatterns : [];
+
+        // Load manual_instantiation_exclude_patterns (reduces false positives)
+        $excludePatterns = $this->config->get("{$baseKey}.manual_instantiation_exclude_patterns", [
+            '*DTO',
+            '*Data',
+            '*ValueObject',
+            '*Request',
+            '*Response',
+            '*Entity',
+            '*Model',
+        ]);
+        $this->manualInstantiationExcludePatterns = is_array($excludePatterns) ? $excludePatterns : [];
     }
 
     protected function runAnalysis(): ResultInterface
@@ -271,7 +290,8 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
                 $this->whitelistServices,
                 $this->detectPsrGet,
                 $this->detectManualInstantiation,
-                $this->manualInstantiationPatterns
+                $this->manualInstantiationPatterns,
+                $this->manualInstantiationExcludePatterns
             );
             $traverser = new NodeTraverser;
             $traverser->addVisitor($visitor);
@@ -327,11 +347,27 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
     /**
      * Check if AST represents a service provider by checking class extends.
      *
+     * Uses PhpParser's NameResolver to resolve all class names to FQN before
+     * checking, ensuring accurate detection even when using short names like
+     * `extends ServiceProvider` with a `use` statement.
+     *
+     * Important: We clone the AST before applying NameResolver because it modifies
+     * nodes in-place, which would break pattern matching in subsequent analysis.
+     *
      * @param  array<Node>  $ast
      */
     private function isServiceProviderFromAst(array $ast, string $file): bool
     {
-        foreach ($ast as $node) {
+        // Clone the AST before applying NameResolver (it modifies nodes in-place)
+        /** @var array<Node> $clonedAst */
+        $clonedAst = unserialize(serialize($ast));
+
+        // Resolve all names to FQN first for accurate detection
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor(new NameResolver);
+        $resolvedAst = $traverser->traverse($clonedAst);
+
+        foreach ($resolvedAst as $node) {
             if ($node instanceof Stmt\Namespace_) {
                 foreach ($node->stmts as $stmt) {
                     if ($stmt instanceof Stmt\Class_) {
@@ -347,12 +383,19 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        // Fallback to filename check
+        // Fallback to filename check for edge cases (no class found, etc.)
         return str_ends_with($file, 'ServiceProvider.php');
     }
 
     /**
      * Check if class extends a ServiceProvider.
+     *
+     * After NameResolver has been applied, parent class names should be FQN.
+     * We check against known ServiceProvider FQNs and Illuminate namespace patterns.
+     *
+     * Note: This does NOT use a simple suffix check like `str_ends_with('ServiceProvider')`
+     * because that would incorrectly skip classes like `PaymentServiceProviderFake`
+     * that extend a custom `PaymentServiceProvider` (which is NOT a Laravel ServiceProvider).
      */
     private function extendsServiceProvider(Stmt\Class_ $class): bool
     {
@@ -360,17 +403,21 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        $parent = $class->extends->toString();
+        $parent = ltrim($class->extends->toString(), '\\');
 
-        // Check against known ServiceProvider FQNs
-        foreach (self::SERVICE_PROVIDER_CLASSES as $spClass) {
-            if ($parent === $spClass || str_ends_with($parent, '\\'.basename(str_replace('\\', '/', $spClass)))) {
-                return true;
-            }
+        // Direct FQN match against known ServiceProvider classes
+        if (in_array($parent, self::SERVICE_PROVIDER_CLASSES, true)) {
+            return true;
         }
 
-        // Check short name pattern (for unresolved names)
-        if (str_ends_with($parent, 'ServiceProvider')) {
+        // FQN ends with \ServiceProvider (namespace separator required to avoid false positives)
+        // This catches custom ServiceProvider base classes in user namespaces
+        if (str_ends_with($parent, '\\ServiceProvider')) {
+            return true;
+        }
+
+        // Illuminate namespace service providers (catches any Illuminate-based provider)
+        if (str_starts_with($parent, 'Illuminate\\') && str_ends_with($parent, 'ServiceProvider')) {
             return true;
         }
 
@@ -453,10 +500,23 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     private int $closureDepth = 0;
 
     /**
+     * Namespaces where severity should be escalated to High.
+     * These classes are fully DI-capable and manual resolution is almost always wrong.
+     *
+     * @var array<string>
+     */
+    private array $highSeverityNamespaces = [
+        'App\\Http\\Controllers',
+        'App\\Services',
+        'App\\Repositories',
+    ];
+
+    /**
      * @param  array<string>  $whitelistClasses
      * @param  array<string>  $whitelistMethods
      * @param  array<string>  $whitelistServices
      * @param  array<string>  $manualInstantiationPatterns
+     * @param  array<string>  $manualInstantiationExcludePatterns
      */
     public function __construct(
         private array $whitelistClasses = [],
@@ -464,7 +524,8 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         private array $whitelistServices = [],
         private bool $detectPsrGet = false,
         private bool $detectManualInstantiation = false,
-        private array $manualInstantiationPatterns = []
+        private array $manualInstantiationPatterns = [],
+        private array $manualInstantiationExcludePatterns = []
     ) {}
 
     public function enterNode(Node $node)
@@ -529,7 +590,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                     $this->addIssue(
                         pattern: "app()->{$methodName}()",
                         line: $node->getStartLine(),
-                        severity: $this->getSeverityByArgumentType($argumentType),
+                        severity: $this->getSeverityForContext($argumentType),
                         argumentType: $argumentType
                     );
                 }
@@ -549,7 +610,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
             // Detect Container::getInstance()->make()
             if ($node->var instanceof Expr\StaticCall &&
                 $node->var->class instanceof Node\Name &&
-                str_contains($node->var->class->toString(), 'Container') &&
+                $this->isContainerClass($node->var->class) &&
                 $node->var->name instanceof Node\Identifier &&
                 $node->var->name->toString() === 'getInstance') {
 
@@ -571,7 +632,83 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                         $this->addIssue(
                             pattern: "Container::getInstance()->{$methodName}()",
                             line: $node->getStartLine(),
-                            severity: $this->getSeverityByArgumentType($argumentType),
+                            severity: $this->getSeverityForContext($argumentType),
+                            argumentType: $argumentType
+                        );
+                    }
+                }
+            }
+
+            // Detect $this->app->make() pattern (common in ServiceProviders but flagged elsewhere)
+            if ($node->var instanceof Expr\PropertyFetch &&
+                $node->var->var instanceof Expr\Variable &&
+                $node->var->var->name === 'this' &&
+                $node->var->name instanceof Node\Identifier &&
+                $node->var->name->toString() === 'app') {
+
+                if ($node->name instanceof Node\Identifier) {
+                    $methodName = $node->name->toString();
+
+                    // Skip whitelisted methods
+                    if (in_array($methodName, $this->whitelistMethods, true)) {
+                        return null;
+                    }
+
+                    $resolutionMethods = ['make', 'makeWith', 'resolve'];
+                    if ($this->detectPsrGet) {
+                        $resolutionMethods[] = 'get';
+                    }
+
+                    if (in_array($methodName, $resolutionMethods, true)) {
+                        if ($this->closureDepth > 0) {
+                            return null;
+                        }
+
+                        $argumentType = $this->getArgumentType($node->args);
+                        $this->addIssue(
+                            pattern: "\$this->app->{$methodName}()",
+                            line: $node->getStartLine(),
+                            severity: $this->getSeverityForContext($argumentType),
+                            argumentType: $argumentType
+                        );
+                    }
+
+                    // Detect $this->app->bind() etc. outside service providers
+                    if (in_array($methodName, ['bind', 'singleton', 'instance', 'scoped'], true)) {
+                        $this->addIssue(
+                            pattern: "\$this->app->{$methodName}()",
+                            line: $node->getStartLine(),
+                            severity: Severity::High,
+                            argumentType: 'binding'
+                        );
+                    }
+                }
+            }
+
+            // Detect $container->make() / $app->make() variable patterns
+            if ($node->var instanceof Expr\Variable &&
+                is_string($node->var->name) &&
+                in_array($node->var->name, ['container', 'app'], true)) {
+
+                if ($node->name instanceof Node\Identifier) {
+                    $methodName = $node->name->toString();
+
+                    $resolutionMethods = ['make', 'makeWith', 'resolve'];
+                    if ($this->detectPsrGet) {
+                        $resolutionMethods[] = 'get';
+                    }
+
+                    if (in_array($methodName, $resolutionMethods, true)) {
+                        if ($this->closureDepth > 0) {
+                            return null;
+                        }
+
+                        $argumentType = $this->getArgumentType($node->args);
+                        $varName = $node->var->name;
+                        $this->addIssue(
+                            pattern: "\${$varName}->{$methodName}()",
+                            line: $node->getStartLine(),
+                            severity: $this->getSeverityForContext($argumentType),
                             argumentType: $argumentType
                         );
                     }
@@ -603,7 +740,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                         $this->addIssue(
                             pattern: "App::{$methodName}()",
                             line: $node->getStartLine(),
-                            severity: $this->getSeverityByArgumentType($argumentType),
+                            severity: $this->getSeverityForContext($argumentType),
                             argumentType: $argumentType
                         );
                     }
@@ -627,7 +764,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                     $this->addIssue(
                         pattern: 'resolve()',
                         line: $node->getStartLine(),
-                        severity: $this->getSeverityByArgumentType($argumentType),
+                        severity: $this->getSeverityForContext($argumentType),
                         argumentType: $argumentType
                     );
                 }
@@ -653,7 +790,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                     $this->addIssue(
                         pattern: 'app()',
                         line: $node->getStartLine(),
-                        severity: $this->getSeverityByArgumentType($argumentType),
+                        severity: $this->getSeverityForContext($argumentType),
                         argumentType: $argumentType
                     );
                 }
@@ -806,6 +943,22 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     }
 
     /**
+     * Check if a class name refers to Laravel's Container.
+     *
+     * Strictly checks for Container, Illuminate\Container\Container,
+     * or any class ending with \Container (namespace separator required).
+     * This avoids false positives like MyContainerHelper.
+     */
+    private function isContainerClass(Node\Name $name): bool
+    {
+        $className = ltrim($name->toString(), '\\');
+
+        return $className === 'Container'
+            || $className === 'Illuminate\\Container\\Container'
+            || str_ends_with($className, '\\Container');
+    }
+
+    /**
      * Get argument type from function/method args.
      *
      * @param  array<Node\Arg|Node\VariadicPlaceholder>  $args
@@ -856,16 +1009,45 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Get current location string.
+     * Get severity for the current context, escalating to High for Controllers/Services.
+     *
+     * Classes in Controllers, Services, and Repositories namespaces are fully DI-capable,
+     * so using manual resolution is almost always a mistake and deserves higher severity.
+     */
+    private function getSeverityForContext(string $argumentType): Severity
+    {
+        $baseSeverity = $this->getSeverityByArgumentType($argumentType);
+
+        // Don't escalate if already High or Critical
+        if ($baseSeverity !== Severity::Medium) {
+            return $baseSeverity;
+        }
+
+        // Escalate to High for Controllers, Services, and Repositories
+        if ($this->currentNamespace !== null) {
+            foreach ($this->highSeverityNamespaces as $ns) {
+                if (str_starts_with($this->currentNamespace, $ns)) {
+                    return Severity::High;
+                }
+            }
+        }
+
+        return $baseSeverity;
+    }
+
+    /**
+     * Get current location string with fully qualified class name.
      */
     private function getLocation(): string
     {
         if ($this->currentMethod !== null) {
-            return ($this->currentClass ?? 'Unknown').'::'.$this->currentMethod;
+            $fqcn = $this->getFullyQualifiedClassName() ?? $this->currentClass ?? 'Unknown';
+
+            return $fqcn.'::'.$this->currentMethod;
         }
 
         if ($this->currentClass !== null) {
-            return $this->currentClass;
+            return $this->getFullyQualifiedClassName() ?? $this->currentClass;
         }
 
         return 'global scope';
@@ -873,9 +1055,20 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
 
     /**
      * Check if class name matches manual instantiation patterns.
+     *
+     * Checks exclusion patterns first to avoid false positives for DTOs,
+     * value objects, and other legitimate instantiations.
      */
     private function matchesManualInstantiationPattern(string $className): bool
     {
+        // Check exclusions first - if it matches an exclusion, don't flag it
+        foreach ($this->manualInstantiationExcludePatterns as $pattern) {
+            if ($this->matchesPattern($className, $pattern)) {
+                return false;
+            }
+        }
+
+        // Then check inclusion patterns
         foreach ($this->manualInstantiationPatterns as $pattern) {
             if ($this->matchesPattern($className, $pattern)) {
                 return true;

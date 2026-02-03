@@ -1071,7 +1071,7 @@ PHP;
     // NEW TESTS FOR IMPROVED FEATURES
     // ============================================================
 
-    public function test_skips_resolution_in_closures(): void
+    public function test_reports_resolution_in_closures_as_low_severity(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1083,7 +1083,7 @@ class EventService
     public function register()
     {
         Event::listen(function () {
-            // Closures don't support constructor DI, this is legitimate
+            // Closures don't support constructor DI - reported at Low severity
             $handler = app(EventHandler::class);
             $handler->handle();
         });
@@ -1101,8 +1101,11 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass because resolution in closures is legitimate
-        $this->assertPassed($result);
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::Low, $issues[0]->severity);
+        $this->assertHasIssueContaining('app()', $result);
     }
 
     public function test_detects_binding_in_closures(): void
@@ -1479,7 +1482,7 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_skips_resolution_in_arrow_functions(): void
+    public function test_reports_resolution_in_arrow_functions_as_low_severity(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1505,11 +1508,14 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass because arrow functions also don't support constructor DI
-        $this->assertPassed($result);
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::Low, $issues[0]->severity);
+        $this->assertHasIssueContaining('app()', $result);
     }
 
-    public function test_skips_route_service_provider(): void
+    public function test_route_service_provider_closure_resolution_reported_as_low(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1540,11 +1546,14 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass because it extends RouteServiceProvider
-        $this->assertPassed($result);
+        // Resolution in closure is now Low severity (bindings still skipped for service providers)
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::Low, $issues[0]->severity);
     }
 
-    public function test_skips_event_service_provider(): void
+    public function test_event_service_provider_closure_resolution_reported_as_low(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1577,8 +1586,11 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass: bindings are skipped (service provider), resolution is in closure (closure exemption)
-        $this->assertPassed($result);
+        // Bindings are skipped (service provider), resolution in closure is Low severity
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::Low, $issues[0]->severity);
     }
 
     public function test_detects_scoped_binding_outside_provider(): void
@@ -1644,7 +1656,7 @@ PHP;
         $this->assertHasIssueContaining('app()->instance()', $result);
     }
 
-    public function test_resolve_in_nested_closures_is_skipped(): void
+    public function test_reports_resolution_in_nested_closures_as_low_severity(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1657,7 +1669,7 @@ class EventService
     {
         Event::listen(function () {
             collect([1, 2, 3])->each(function ($item) {
-                // Nested closure - still should be skipped
+                // Nested closure - reported at Low severity
                 $handler = resolve(ItemHandler::class);
                 $handler->handle($item);
             });
@@ -1676,8 +1688,11 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass because resolution in nested closures is also legitimate
-        $this->assertPassed($result);
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::Low, $issues[0]->severity);
+        $this->assertHasIssueContaining('resolve()', $result);
     }
 
     public function test_resolve_after_closure_is_detected(): void
@@ -1692,10 +1707,10 @@ class EventService
     public function register()
     {
         Event::listen(function () {
-            // This is inside closure - skipped
+            // This is inside closure - reported at Low severity
         });
 
-        // This is OUTSIDE closure - should be detected
+        // This is OUTSIDE closure - should be detected at normal severity
         $service = app(SomeService::class);
     }
 }
@@ -1714,6 +1729,10 @@ PHP;
         // Should fail because app() is outside the closure
         $this->assertFailed($result);
         $this->assertHasIssueContaining('app()', $result);
+        // The outside-closure issue should have normal severity (High for Services namespace)
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::High, $issues[0]->severity);
     }
 
     // ============================================================
@@ -1834,7 +1853,7 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_service_provider_resolution_in_closure_still_skipped(): void
+    public function test_service_provider_resolution_in_closure_reported_as_low(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1848,7 +1867,7 @@ class AppServiceProvider extends ServiceProvider
     public function boot()
     {
         $this->app->resolving(SomeService::class, function ($service) {
-            // Resolution inside closure is still skipped (closure exemption)
+            // Resolution inside closure is reported at Low severity
             $config = app(ConfigManager::class);
             $service->setConfig($config);
         });
@@ -1866,8 +1885,11 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass - resolution inside closure still gets the closure exemption
-        $this->assertPassed($result);
+        // Resolution inside closure is now reported at Low severity
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::Low, $issues[0]->severity);
     }
 
     // ============================================================
@@ -2286,7 +2308,7 @@ PHP;
         $this->assertHasIssueContaining('$app->make()', $result);
     }
 
-    public function test_skips_this_app_make_in_closures(): void
+    public function test_reports_this_app_make_in_closures_as_low_severity(): void
     {
         $code = <<<'PHP'
 <?php
@@ -2298,7 +2320,7 @@ class EventService
     public function register()
     {
         Event::listen(function () {
-            // Closures don't support DI, so this is legitimate
+            // Closures don't support DI - reported at Low severity
             $handler = $this->app->make(EventHandler::class);
         });
     }
@@ -2315,8 +2337,11 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass - resolution in closure is skipped
-        $this->assertPassed($result);
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::Low, $issues[0]->severity);
+        $this->assertHasIssueContaining('$this->app->make()', $result);
     }
 
     // ============================================================
@@ -2390,6 +2415,41 @@ PHP;
 
         // Should pass - MoneyValueObject matches *ValueObject exclusion pattern
         $this->assertPassed($result);
+    }
+
+    public function test_closure_resolution_has_closure_aware_recommendation(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class EventService
+{
+    public function register()
+    {
+        Event::listen(function () {
+            $handler = app(EventHandler::class);
+            $handler->handle();
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/EventService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertStringContainsString('acceptable when dependency injection is unavailable', $issues[0]->recommendation);
+        $this->assertStringContainsString('extracting to an injectable class', $issues[0]->recommendation);
     }
 
     public function test_manual_instantiation_detects_service_not_matching_exclusions(): void

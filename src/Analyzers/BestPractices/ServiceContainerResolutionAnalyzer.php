@@ -43,10 +43,10 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - Middleware: Conditional resolution based on request context
  * - Observers: Model observers with dynamic dependencies
  * - Handlers: Various handler classes
- * - Closures: Support parameter-level DI but not constructor DI. Resolution is skipped
- *   because most closure contexts (collection callbacks, event listeners, queue jobs)
- *   don't support automatic injection, and distinguishing route closures from other
- *   closures is unreliable. Note: Binding inside closures is still flagged as it's always wrong.
+ * - Closures: Support parameter-level DI but not constructor DI. Resolution is reported
+ *   at Low severity because most closure contexts (collection callbacks, event listeners,
+ *   queue jobs) don't support automatic injection. A closure-aware recommendation is
+ *   provided. Note: Binding inside closures is still flagged at High severity as it's always wrong.
  * - Route files: Use closures without DI support
  *
  * Configuration:
@@ -303,7 +303,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
                     message: "Manual service resolution in '{$issue['location']}': {$issue['pattern']}",
                     location: new Location($file, $issue['line']),
                     severity: $issue['severity'],
-                    recommendation: $this->getRecommendation($issue['pattern'], $issue['location'], $issue['argument_type'] ?? 'unknown'),
+                    recommendation: $this->getRecommendation($issue['pattern'], $issue['location'], $issue['argument_type'] ?? 'unknown', $issue['in_closure']),
                     metadata: [
                         'pattern' => $issue['pattern'],
                         'location' => $issue['location'],
@@ -425,7 +425,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
     /**
      * Get recommendation for container resolution.
      */
-    private function getRecommendation(string $pattern, string $location, string $argumentType): string
+    private function getRecommendation(string $pattern, string $location, string $argumentType, bool $inClosure = false): string
     {
         $base = "Manual service container resolution detected using '{$pattern}' in '{$location}'. ";
 
@@ -440,10 +440,21 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
 
         // Manual instantiation recommendation
         if (str_contains($pattern, 'new ')) {
+            if ($inClosure) {
+                return $base.'Manual instantiation inside closures is acceptable when dependency injection is unavailable, '
+                    .'but consider extracting to an injectable class if this closure grows in complexity.';
+            }
+
             return $base."Consider using constructor injection to let Laravel's container manage dependencies:\n\n"
                 ."public function __construct(\n"
                 ."    private readonly YourService \$service\n"
                 .') {}';
+        }
+
+        // Closure-context resolution recommendation
+        if ($inClosure) {
+            return $base.'Resolution inside closures is acceptable when dependency injection is unavailable, '
+                .'but consider extracting to an injectable class if this closure grows in complexity.';
         }
 
         // Resolution recommendation with examples
@@ -466,7 +477,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
 class ServiceContainerVisitor extends NodeVisitorAbstract
 {
     /**
-     * @var array<int, array{pattern: string, location: string, class: string, line: int, severity: Severity, argument_type: string}>
+     * @var array<int, array{pattern: string, location: string, class: string, line: int, severity: Severity, argument_type: string, in_closure: bool}>
      */
     private array $issues = [];
 
@@ -580,8 +591,16 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                 }
 
                 if (in_array($methodName, $resolutionMethods, true)) {
-                    // Skip resolution calls inside closures (closures don't support DI)
                     if ($this->closureDepth > 0) {
+                        $argumentType = $this->getArgumentType($node->args);
+                        $this->addIssue(
+                            pattern: "app()->{$methodName}()",
+                            line: $node->getStartLine(),
+                            severity: Severity::Low,
+                            argumentType: $argumentType,
+                            inClosure: true
+                        );
+
                         return null;
                     }
 
@@ -623,8 +642,16 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                     }
 
                     if (in_array($methodName, $resolutionMethods, true)) {
-                        // Skip resolution calls inside closures
                         if ($this->closureDepth > 0) {
+                            $argumentType = $this->getArgumentType($node->args);
+                            $this->addIssue(
+                                pattern: "Container::getInstance()->{$methodName}()",
+                                line: $node->getStartLine(),
+                                severity: Severity::Low,
+                                argumentType: $argumentType,
+                                inClosure: true
+                            );
+
                             return null;
                         }
 
@@ -661,6 +688,15 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
 
                     if (in_array($methodName, $resolutionMethods, true)) {
                         if ($this->closureDepth > 0) {
+                            $argumentType = $this->getArgumentType($node->args);
+                            $this->addIssue(
+                                pattern: "\$this->app->{$methodName}()",
+                                line: $node->getStartLine(),
+                                severity: Severity::Low,
+                                argumentType: $argumentType,
+                                inClosure: true
+                            );
+
                             return null;
                         }
 
@@ -700,12 +736,22 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                     }
 
                     if (in_array($methodName, $resolutionMethods, true)) {
+                        $varName = $node->var->name;
+
                         if ($this->closureDepth > 0) {
+                            $argumentType = $this->getArgumentType($node->args);
+                            $this->addIssue(
+                                pattern: "\${$varName}->{$methodName}()",
+                                line: $node->getStartLine(),
+                                severity: Severity::Low,
+                                argumentType: $argumentType,
+                                inClosure: true
+                            );
+
                             return null;
                         }
 
                         $argumentType = $this->getArgumentType($node->args);
-                        $varName = $node->var->name;
                         $this->addIssue(
                             pattern: "\${$varName}->{$methodName}()",
                             line: $node->getStartLine(),
@@ -732,8 +778,16 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                     }
 
                     if (in_array($methodName, $resolutionMethods, true)) {
-                        // Skip resolution calls inside closures
                         if ($this->closureDepth > 0) {
+                            $argumentType = $this->getArgumentType($node->args);
+                            $this->addIssue(
+                                pattern: "App::{$methodName}()",
+                                line: $node->getStartLine(),
+                                severity: Severity::Low,
+                                argumentType: $argumentType,
+                                inClosure: true
+                            );
+
                             return null;
                         }
 
@@ -756,8 +810,16 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
 
                 // Detect resolve(Something::class)
                 if ($functionName === 'resolve') {
-                    // Skip resolution calls inside closures
                     if ($this->closureDepth > 0) {
+                        $argumentType = $this->getArgumentType($node->args);
+                        $this->addIssue(
+                            pattern: 'resolve()',
+                            line: $node->getStartLine(),
+                            severity: Severity::Low,
+                            argumentType: $argumentType,
+                            inClosure: true
+                        );
+
                         return null;
                     }
 
@@ -772,8 +834,26 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
 
                 // Detect app(Something::class) - shorthand for app()->make()
                 if ($functionName === 'app' && ! empty($node->args)) {
-                    // Skip resolution calls inside closures
                     if ($this->closureDepth > 0) {
+                        // Still skip whitelisted service aliases in closures
+                        $firstArg = $node->args[0];
+                        if (! $firstArg instanceof Node\VariadicPlaceholder &&
+                            $firstArg->value instanceof Node\Scalar\String_) {
+                            $serviceName = $firstArg->value->value;
+                            if (in_array($serviceName, $this->whitelistServices, true)) {
+                                return null;
+                            }
+                        }
+
+                        $argumentType = $this->getArgumentType($node->args);
+                        $this->addIssue(
+                            pattern: 'app()',
+                            line: $node->getStartLine(),
+                            severity: Severity::Low,
+                            argumentType: $argumentType,
+                            inClosure: true
+                        );
+
                         return null;
                     }
 
@@ -803,8 +883,15 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
             if ($node->class instanceof Node\Name) {
                 $className = $node->class->toString();
                 if ($this->matchesManualInstantiationPattern($className)) {
-                    // Skip if inside closures (no DI available)
                     if ($this->closureDepth > 0) {
+                        $this->addIssue(
+                            pattern: "new {$className}()",
+                            line: $node->getStartLine(),
+                            severity: Severity::Low,
+                            argumentType: 'instantiation',
+                            inClosure: true
+                        );
+
                         return null;
                     }
 
@@ -849,7 +936,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     /**
      * Add an issue with deduplication.
      */
-    private function addIssue(string $pattern, int $line, Severity $severity, string $argumentType): void
+    private function addIssue(string $pattern, int $line, Severity $severity, string $argumentType, bool $inClosure = false): void
     {
         $key = "{$line}:{$pattern}";
 
@@ -866,6 +953,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
             'line' => $line,
             'severity' => $severity,
             'argument_type' => $argumentType,
+            'in_closure' => $inClosure,
         ];
     }
 
@@ -1082,7 +1170,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     /**
      * Get collected issues.
      *
-     * @return array<int, array{pattern: string, location: string, class: string, line: int, severity: Severity, argument_type: string}>
+     * @return array<int, array{pattern: string, location: string, class: string, line: int, severity: Severity, argument_type: string, in_closure: bool}>
      */
     public function getIssues(): array
     {

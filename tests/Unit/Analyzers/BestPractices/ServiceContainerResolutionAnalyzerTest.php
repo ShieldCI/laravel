@@ -1546,11 +1546,11 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Resolution in closure is now Low severity (bindings still skipped for service providers)
+        // Resolution in closure with string argument gets Medium severity
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertSame(Severity::Low, $issues[0]->severity);
+        $this->assertSame(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_event_service_provider_closure_resolution_reported_as_low(): void
@@ -1586,11 +1586,48 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Bindings are skipped (service provider), resolution in closure is Low severity
+        // Bindings are skipped (service provider), resolution in closure with string arg is Medium
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertSame(Severity::Low, $issues[0]->severity);
+        $this->assertSame(Severity::Medium, $issues[0]->severity);
+    }
+
+    public function test_closure_string_resolution_gets_medium_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class NotificationService
+{
+    public function register()
+    {
+        Event::listen(function () {
+            // String-based resolution in closure gets Medium severity
+            $mailer = app('mailer');
+            $mailer->send('hello');
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/NotificationService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::Medium, $issues[0]->severity);
+        $this->assertSame('string', $issues[0]->metadata['argument_type']);
     }
 
     public function test_detects_scoped_binding_outside_provider(): void
@@ -2448,7 +2485,7 @@ PHP;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertStringContainsString('acceptable when dependency injection is unavailable', $issues[0]->recommendation);
+        $this->assertStringContainsString('sometimes necessary when dependency injection is unavailable', $issues[0]->recommendation);
         $this->assertStringContainsString('extracting to an injectable class', $issues[0]->recommendation);
     }
 

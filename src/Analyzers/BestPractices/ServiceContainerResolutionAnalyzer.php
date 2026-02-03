@@ -359,7 +359,9 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
      */
     private function isServiceProviderFromAst(array $ast, string $file): bool
     {
-        // Use CloningVisitor to clone nodes before NameResolver modifies them
+        // PHP arrays are copy-on-write, so $ast is not mutated by traverse().
+        // CloningVisitor clones individual nodes so NameResolver modifies
+        // clones only, preserving original AST for ServiceContainerVisitor.
         $traverser = new NodeTraverser;
         $traverser->addVisitor(new CloningVisitor);
         $traverser->addVisitor(new NameResolver);
@@ -441,7 +443,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
         // Manual instantiation recommendation
         if (str_contains($pattern, 'new ')) {
             if ($inClosure) {
-                return $base.'Manual instantiation inside closures is acceptable when dependency injection is unavailable, '
+                return $base.'Manual instantiation inside closures is sometimes necessary when dependency injection is unavailable, '
                     .'but consider extracting to an injectable class if this closure grows in complexity.';
             }
 
@@ -453,7 +455,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
 
         // Closure-context resolution recommendation
         if ($inClosure) {
-            return $base.'Resolution inside closures is acceptable when dependency injection is unavailable, '
+            return $base.'Resolution inside closures is sometimes necessary when dependency injection is unavailable, '
                 .'but consider extracting to an injectable class if this closure grows in complexity.';
         }
 
@@ -535,7 +537,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         private bool $detectManualInstantiation = false,
         private array $manualInstantiationPatterns = [],
         private array $manualInstantiationExcludePatterns = [],
-        private bool $skipBindingDetection = false
+        private bool $isServiceProvider = false
     ) {}
 
     public function enterNode(Node $node)
@@ -584,11 +586,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                     return null;
                 }
 
-                // Build resolution methods list based on config
-                $resolutionMethods = ['make', 'makeWith', 'resolve'];
-                if ($this->detectPsrGet) {
-                    $resolutionMethods[] = 'get';
-                }
+                $resolutionMethods = $this->getResolutionMethods();
 
                 if (in_array($methodName, $resolutionMethods, true)) {
                     if ($this->closureDepth > 0) {
@@ -596,7 +594,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                         $this->addIssue(
                             pattern: "app()->{$methodName}()",
                             line: $node->getStartLine(),
-                            severity: Severity::Low,
+                            severity: $this->getSeverityForClosureContext($argumentType),
                             argumentType: $argumentType,
                             inClosure: true
                         );
@@ -615,7 +613,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
 
                 // Detect app()->bind() / singleton() outside service providers
                 // These are ALWAYS problematic, even in closures
-                if (! $this->skipBindingDetection &&
+                if (! $this->isServiceProvider &&
                     in_array($methodName, ['bind', 'singleton', 'instance', 'scoped'], true)) {
                     $this->addIssue(
                         pattern: "app()->{$methodName}()",
@@ -636,10 +634,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                 if ($node->name instanceof Node\Identifier) {
                     $methodName = $node->name->toString();
 
-                    $resolutionMethods = ['make', 'makeWith', 'resolve'];
-                    if ($this->detectPsrGet) {
-                        $resolutionMethods[] = 'get';
-                    }
+                    $resolutionMethods = $this->getResolutionMethods();
 
                     if (in_array($methodName, $resolutionMethods, true)) {
                         if ($this->closureDepth > 0) {
@@ -647,7 +642,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                             $this->addIssue(
                                 pattern: "Container::getInstance()->{$methodName}()",
                                 line: $node->getStartLine(),
-                                severity: Severity::Low,
+                                severity: $this->getSeverityForClosureContext($argumentType),
                                 argumentType: $argumentType,
                                 inClosure: true
                             );
@@ -681,10 +676,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                         return null;
                     }
 
-                    $resolutionMethods = ['make', 'makeWith', 'resolve'];
-                    if ($this->detectPsrGet) {
-                        $resolutionMethods[] = 'get';
-                    }
+                    $resolutionMethods = $this->getResolutionMethods();
 
                     if (in_array($methodName, $resolutionMethods, true)) {
                         if ($this->closureDepth > 0) {
@@ -692,7 +684,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                             $this->addIssue(
                                 pattern: "\$this->app->{$methodName}()",
                                 line: $node->getStartLine(),
-                                severity: Severity::Low,
+                                severity: $this->getSeverityForClosureContext($argumentType),
                                 argumentType: $argumentType,
                                 inClosure: true
                             );
@@ -710,7 +702,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                     }
 
                     // Detect $this->app->bind() etc. outside service providers
-                    if (! $this->skipBindingDetection &&
+                    if (! $this->isServiceProvider &&
                         in_array($methodName, ['bind', 'singleton', 'instance', 'scoped'], true)) {
                         $this->addIssue(
                             pattern: "\$this->app->{$methodName}()",
@@ -730,10 +722,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                 if ($node->name instanceof Node\Identifier) {
                     $methodName = $node->name->toString();
 
-                    $resolutionMethods = ['make', 'makeWith', 'resolve'];
-                    if ($this->detectPsrGet) {
-                        $resolutionMethods[] = 'get';
-                    }
+                    $resolutionMethods = $this->getResolutionMethods();
 
                     if (in_array($methodName, $resolutionMethods, true)) {
                         $varName = $node->var->name;
@@ -743,7 +732,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                             $this->addIssue(
                                 pattern: "\${$varName}->{$methodName}()",
                                 line: $node->getStartLine(),
-                                severity: Severity::Low,
+                                severity: $this->getSeverityForClosureContext($argumentType),
                                 argumentType: $argumentType,
                                 inClosure: true
                             );
@@ -772,10 +761,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                     $node->name instanceof Node\Identifier) {
                     $methodName = $node->name->toString();
 
-                    $resolutionMethods = ['make', 'makeWith', 'resolve'];
-                    if ($this->detectPsrGet) {
-                        $resolutionMethods[] = 'get';
-                    }
+                    $resolutionMethods = $this->getResolutionMethods();
 
                     if (in_array($methodName, $resolutionMethods, true)) {
                         if ($this->closureDepth > 0) {
@@ -783,7 +769,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                             $this->addIssue(
                                 pattern: "App::{$methodName}()",
                                 line: $node->getStartLine(),
-                                severity: Severity::Low,
+                                severity: $this->getSeverityForClosureContext($argumentType),
                                 argumentType: $argumentType,
                                 inClosure: true
                             );
@@ -815,7 +801,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                         $this->addIssue(
                             pattern: 'resolve()',
                             line: $node->getStartLine(),
-                            severity: Severity::Low,
+                            severity: $this->getSeverityForClosureContext($argumentType),
                             argumentType: $argumentType,
                             inClosure: true
                         );
@@ -849,7 +835,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                         $this->addIssue(
                             pattern: 'app()',
                             line: $node->getStartLine(),
-                            severity: Severity::Low,
+                            severity: $this->getSeverityForClosureContext($argumentType),
                             argumentType: $argumentType,
                             inClosure: true
                         );
@@ -1140,6 +1126,36 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         }
 
         return 'global scope';
+    }
+
+    /**
+     * Get severity for resolution inside a closure context.
+     *
+     * String-based resolution (e.g., app('router')) is more fragile than class-based
+     * resolution, so it gets Medium severity even in closures. All other argument types
+     * get Low severity since closures lack constructor DI support.
+     */
+    private function getSeverityForClosureContext(string $argumentType): Severity
+    {
+        return match ($argumentType) {
+            'string' => Severity::Medium,
+            default => Severity::Low,
+        };
+    }
+
+    /**
+     * Get the list of resolution methods to detect.
+     *
+     * @return array<string>
+     */
+    private function getResolutionMethods(): array
+    {
+        $methods = ['make', 'makeWith', 'resolve'];
+        if ($this->detectPsrGet) {
+            $methods[] = 'get';
+        }
+
+        return $methods;
     }
 
     /**

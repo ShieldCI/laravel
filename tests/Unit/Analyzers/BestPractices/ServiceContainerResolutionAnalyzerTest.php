@@ -376,7 +376,7 @@ PHP;
         $this->assertSame(Severity::High, $issues[0]->severity);
     }
 
-    public function test_skips_actual_service_provider(): void
+    public function test_service_provider_skips_binding_but_flags_resolution(): void
     {
         $code = <<<'PHP'
 <?php
@@ -406,7 +406,11 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        // Bindings (bind, singleton) should be skipped, but resolution (app()->make()) should be flagged
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertHasIssueContaining('app()->make()', $result);
     }
 
     public function test_skips_whitelisted_directory_tests(): void
@@ -1553,9 +1557,11 @@ class EventServiceProvider extends ServiceProvider
 {
     public function boot()
     {
-        $events = app('events');
-        $events->listen('*', function ($event) {
-            // ...
+        $this->app->singleton('event.dispatcher', EventDispatcher::class);
+
+        Event::listen('*', function ($event) {
+            $events = app('events');
+            $events->dispatch($event);
         });
     }
 }
@@ -1571,7 +1577,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass because it extends EventServiceProvider
+        // Should pass: bindings are skipped (service provider), resolution is in closure (closure exemption)
         $this->assertPassed($result);
     }
 
@@ -1786,7 +1792,81 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass - this is a real ServiceProvider
+        // Binding in register() should be skipped, but app() resolution in boot() should be flagged
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertHasIssueContaining('app()', $result);
+    }
+
+    public function test_service_provider_with_only_bindings_passes(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\ServiceProvider;
+
+class RepositoryServiceProvider extends ServiceProvider
+{
+    public function register()
+    {
+        $this->app->bind(UserRepositoryInterface::class, EloquentUserRepository::class);
+        $this->app->singleton(CacheManager::class, RedisCacheManager::class);
+        app()->instance(AppConfig::class, new AppConfig());
+        app()->scoped(RequestContext::class, fn () => new RequestContext());
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/RepositoryServiceProvider.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - only bindings, no resolution anti-patterns
+        $this->assertPassed($result);
+    }
+
+    public function test_service_provider_resolution_in_closure_still_skipped(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\ServiceProvider;
+
+class AppServiceProvider extends ServiceProvider
+{
+    public function boot()
+    {
+        $this->app->resolving(SomeService::class, function ($service) {
+            // Resolution inside closure is still skipped (closure exemption)
+            $config = app(ConfigManager::class);
+            $service->setConfig($config);
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - resolution inside closure still gets the closure exemption
         $this->assertPassed($result);
     }
 

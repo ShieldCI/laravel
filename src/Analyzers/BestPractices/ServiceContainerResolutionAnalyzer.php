@@ -36,7 +36,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - Seeders: Often need dynamic service resolution
  * - Factories: May need service resolution for test data
  * - Commands: Sometimes need conditional service resolution
- * - Service Providers: Legitimate container binding location
+ * - Service Providers: Bindings (bind/singleton/instance/scoped) are skipped as legitimate;
+ *   resolution (make/resolve/app()) is still flagged as a code smell
  * - Jobs: Queued jobs may need conditional resolution
  * - Listeners: Event listeners with conditional dependencies
  * - Middleware: Conditional resolution based on request context
@@ -280,10 +281,8 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            // Check if service provider using already-parsed AST (avoids double parsing)
-            if ($this->isServiceProviderFromAst($ast, $file)) {
-                continue;
-            }
+            // Service providers: skip binding detection (legitimate) but still flag resolution
+            $isServiceProvider = $this->isServiceProviderFromAst($ast, $file);
 
             $visitor = new ServiceContainerVisitor(
                 $this->whitelistClasses,
@@ -292,7 +291,8 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
                 $this->detectPsrGet,
                 $this->detectManualInstantiation,
                 $this->manualInstantiationPatterns,
-                $this->manualInstantiationExcludePatterns
+                $this->manualInstantiationExcludePatterns,
+                $isServiceProvider
             );
             $traverser = new NodeTraverser;
             $traverser->addVisitor($visitor);
@@ -523,7 +523,8 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         private bool $detectPsrGet = false,
         private bool $detectManualInstantiation = false,
         private array $manualInstantiationPatterns = [],
-        private array $manualInstantiationExcludePatterns = []
+        private array $manualInstantiationExcludePatterns = [],
+        private bool $skipBindingDetection = false
     ) {}
 
     public function enterNode(Node $node)
@@ -595,7 +596,8 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
 
                 // Detect app()->bind() / singleton() outside service providers
                 // These are ALWAYS problematic, even in closures
-                if (in_array($methodName, ['bind', 'singleton', 'instance', 'scoped'], true)) {
+                if (! $this->skipBindingDetection &&
+                    in_array($methodName, ['bind', 'singleton', 'instance', 'scoped'], true)) {
                     $this->addIssue(
                         pattern: "app()->{$methodName}()",
                         line: $node->getStartLine(),
@@ -672,7 +674,8 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                     }
 
                     // Detect $this->app->bind() etc. outside service providers
-                    if (in_array($methodName, ['bind', 'singleton', 'instance', 'scoped'], true)) {
+                    if (! $this->skipBindingDetection &&
+                        in_array($methodName, ['bind', 'singleton', 'instance', 'scoped'], true)) {
                         $this->addIssue(
                             pattern: "\$this->app->{$methodName}()",
                             line: $node->getStartLine(),

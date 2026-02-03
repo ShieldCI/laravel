@@ -9,6 +9,7 @@ use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Stmt;
 use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\CloningVisitor;
 use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
@@ -351,21 +352,18 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
      * checking, ensuring accurate detection even when using short names like
      * `extends ServiceProvider` with a `use` statement.
      *
-     * Important: We clone the AST before applying NameResolver because it modifies
-     * nodes in-place, which would break pattern matching in subsequent analysis.
+     * Uses CloningVisitor to clone nodes before NameResolver modifies them,
+     * preserving the original AST for subsequent pattern matching in analysis.
      *
      * @param  array<Node>  $ast
      */
     private function isServiceProviderFromAst(array $ast, string $file): bool
     {
-        // Clone the AST before applying NameResolver (it modifies nodes in-place)
-        /** @var array<Node> $clonedAst */
-        $clonedAst = unserialize(serialize($ast));
-
-        // Resolve all names to FQN first for accurate detection
+        // Use CloningVisitor to clone nodes before NameResolver modifies them
         $traverser = new NodeTraverser;
+        $traverser->addVisitor(new CloningVisitor);
         $traverser->addVisitor(new NameResolver);
-        $resolvedAst = $traverser->traverse($clonedAst);
+        $resolvedAst = $traverser->traverse($ast);
 
         foreach ($resolvedAst as $node) {
             if ($node instanceof Stmt\Namespace_) {

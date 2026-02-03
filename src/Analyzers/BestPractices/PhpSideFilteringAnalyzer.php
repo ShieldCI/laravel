@@ -829,6 +829,11 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
             }
         }
 
+        // Include property name for relationship patterns like $user->posts->filter()
+        if ($current instanceof Node\Expr\PropertyFetch && $current->name instanceof Node\Identifier) {
+            array_unshift($chain, $current->name->toString());
+        }
+
         return $chain;
     }
 
@@ -1057,7 +1062,8 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
      *
      * Converts array chain to readable string:
      * - ['User', 'where', 'get', 'filter'] => 'User::where()->get()->filter()'
-     * - ['where', 'get', 'filter'] => 'where()->get()->filter()'
+     * - ['posts', 'filter'] => 'posts->filter()' (relationship patterns)
+     * - ['filter'] => 'filter()' (single method)
      *
      * @param  array<string>  $chain
      */
@@ -1075,6 +1081,15 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
             }
 
             return $root.'::'.implode('()->', $chain).'()';
+        }
+
+        // Check if first element is a property (from PropertyFetch - relationship access)
+        // Properties are accessed without (), methods have ()
+        if (count($chain) > 1 && ! in_array($chain[0], self::FETCH_METHODS, true) && ! in_array($chain[0], self::FILTER_METHODS, true)) {
+            $property = array_shift($chain);
+
+            // Format: property->method1()->method2()
+            return $property.'->'.implode('()->', $chain).'()';
         }
 
         return implode('()->', $chain).'()';
@@ -1175,8 +1190,8 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
         $recommendations = [
             'filter' => 'Replace filter() with where() clauses before get()/all() to filter at database level. For complex filtering logic, consider database computed columns or raw where clauses.',
             'reject' => 'Replace reject() with where() or whereNot() clauses before get()/all() to filter at database level. The inverse logic can be expressed with whereNot() or negative where conditions.',
-            'whereIn' => 'Replace whereIn() with whereIn() in the query builder before get()/all(). Move this filtering to the database query.',
-            'whereNotIn' => 'Replace whereNotIn() with whereNotIn() in the query builder before get()/all(). Move this filtering to the database query.',
+            'whereIn' => 'Move whereIn() into the query builder before get()/all(). Example: User::whereIn(...)->get() instead of User::get()->whereIn(...).',
+            'whereNotIn' => 'Move whereNotIn() into the query builder before get()/all(). Example: User::whereNotIn(...)->get() instead of User::get()->whereNotIn(...).',
         ];
 
         // Find which filter method is being used

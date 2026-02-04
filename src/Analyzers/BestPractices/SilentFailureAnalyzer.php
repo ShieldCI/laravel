@@ -167,6 +167,8 @@ class SilentFailureVisitor extends NodeVisitorAbstract
 
     private ?string $currentClass = null;
 
+    private int $whitelistedClassDepth = 0;
+
     /**
      * @param  array<string>  $whitelistClasses
      * @param  array<string>  $whitelistExceptions
@@ -180,13 +182,17 @@ class SilentFailureVisitor extends NodeVisitorAbstract
 
     public function enterNode(Node $node): ?Node
     {
-        // Track current class name
+        // Track current class name and whitelisted depth
         if ($node instanceof Node\Stmt\Class_) {
             $this->currentClass = $node->name?->toString();
+
+            if ($this->whitelistedClassDepth > 0 || $this->isWhitelistedClass($this->currentClass)) {
+                $this->whitelistedClassDepth++;
+            }
         }
 
-        // Skip whitelisted classes
-        if ($this->isWhitelistedClass($this->currentClass)) {
+        // Skip whitelisted classes (depth > 0 means we're inside a whitelisted class, including nested anonymous classes)
+        if ($this->whitelistedClassDepth > 0) {
             return null;
         }
 
@@ -276,6 +282,9 @@ class SilentFailureVisitor extends NodeVisitorAbstract
     public function leaveNode(Node $node): ?Node
     {
         if ($node instanceof Node\Stmt\Class_) {
+            if ($this->whitelistedClassDepth > 0) {
+                $this->whitelistedClassDepth--;
+            }
             $this->currentClass = null;
         }
 

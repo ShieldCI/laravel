@@ -457,7 +457,7 @@ class PaymentTest
         try {
             // Test code
         } catch (\Exception $e) {
-            // Empty catch in test - acceptable
+            // Empty catch in test
         }
     }
 }
@@ -1041,7 +1041,7 @@ class UserServiceTest
         try {
             // Test code - should be whitelisted
         } catch (\Exception $e) {
-            // Empty catch in test class - acceptable
+            // Empty catch in test class
         }
     }
 }
@@ -1498,5 +1498,135 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    public function test_skips_anonymous_class_inside_whitelisted_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class PaymentServiceTest
+{
+    public function test_something()
+    {
+        $handler = new class {
+            public function handle()
+            {
+                try {
+                    // do work
+                } catch (\Exception $e) {
+                }
+            }
+        };
+
+        try {
+            // outer try
+        } catch (\Exception $e) {
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/PaymentServiceTest.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_anonymous_class_inside_non_whitelisted_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class PaymentService
+{
+    public function process()
+    {
+        $handler = new class {
+            public function handle()
+            {
+                try {
+                    // do work
+                } catch (\Exception $e) {
+                }
+            }
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/PaymentService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Empty catch block', $result);
+    }
+
+    public function test_flags_class_after_whitelisted_class_with_anonymous_inner(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class OrderServiceTest
+{
+    public function test_order()
+    {
+        $mock = new class {
+            public function execute()
+            {
+                try {
+                    // mock work
+                } catch (\Exception $e) {
+                }
+            }
+        };
+
+        try {
+            // test code
+        } catch (\Exception $e) {
+        }
+    }
+}
+
+class OrderService
+{
+    public function process()
+    {
+        try {
+            // production code
+        } catch (\Exception $e) {
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderMulti.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Only OrderService's catch should be flagged (not anything in OrderServiceTest)
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
     }
 }

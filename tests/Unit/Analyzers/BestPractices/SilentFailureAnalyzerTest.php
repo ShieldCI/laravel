@@ -1235,4 +1235,268 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    public function test_passes_when_catch_uses_continue(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class BatchService
+{
+    public function processBatch(array $items)
+    {
+        foreach ($items as $item) {
+            try {
+                $this->processItem($item);
+            } catch (\Exception $e) {
+                continue;
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/BatchService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_catch_uses_break(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class RetryService
+{
+    public function retryUntilSuccess(array $servers)
+    {
+        foreach ($servers as $server) {
+            try {
+                $this->connect($server);
+            } catch (\Exception $e) {
+                break;
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/RetryService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_catch_uses_void_return(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class CleanupService
+{
+    public function cleanup(): void
+    {
+        try {
+            $this->removeTemporaryFiles();
+        } catch (\Exception $e) {
+            return;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/CleanupService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_logging_nested_in_if(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Log;
+
+class ConditionalLogService
+{
+    private bool $verbose;
+
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\Exception $e) {
+            if ($this->verbose) {
+                Log::warning('Work failed', ['error' => $e->getMessage()]);
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ConditionalLogService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_rethrow_nested_in_if(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ConditionalRethrowService
+{
+    private bool $strict;
+
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\Exception $e) {
+            if ($this->strict) {
+                throw $e;
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ConditionalRethrowService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_fallback_nested_in_if(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ConditionalFallbackService
+{
+    public function fetchData(bool $useFallback)
+    {
+        try {
+            return $this->fetchFromApi();
+        } catch (\Exception $e) {
+            if ($useFallback) {
+                return $this->getDefault();
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ConditionalFallbackService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_empty_catch_has_swallow_comment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class SwallowService
+{
+    public function optionalCleanup()
+    {
+        try {
+            $this->cleanup();
+        } catch (\Exception $e) {
+            // Swallow exception — cleanup is best-effort
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/SwallowService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_empty_catch_has_silently_comment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class SilentService
+{
+    public function tryOptionalAction()
+    {
+        try {
+            $this->doOptionalAction();
+        } catch (\Exception $e) {
+            // Silently ignore — this action is not critical
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/SilentService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

@@ -228,32 +228,15 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                         continue;
                     }
 
-                    // Check if catch block has logging, reporting, or rethrow
-                    $hasLogging = false;
-                    $hasRethrow = false;
+                    // Recursively check if catch block has logging, reporting, fallback, or rethrow
+                    $hasLogging = $this->subtreeContainsMatch($catch->stmts, function (Node $n): bool {
+                        return $this->isLoggingOrReportingStatement($n) || $this->hasGracefulFallback($n);
+                    });
 
-                    foreach ($catch->stmts as $stmt) {
-                        // Check for logging or error reporting
-                        if ($this->isLoggingOrReportingStatement($stmt)) {
-                            $hasLogging = true;
-                        }
-
-                        // Check for rethrow (statement form)
-                        if ($stmt instanceof Node\Stmt\Throw_) {
-                            $hasRethrow = true;
-                        }
-
-                        // Check for rethrow (expression form in PHP 8)
-                        if ($stmt instanceof Node\Stmt\Expression &&
-                            $stmt->expr instanceof Node\Expr\Throw_) {
-                            $hasRethrow = true;
-                        }
-
-                        // Check for return/continue/break with value (graceful fallback)
-                        if ($this->hasGracefulFallback($stmt)) {
-                            $hasLogging = true; // Treat as handled
-                        }
-                    }
+                    $hasRethrow = $this->subtreeContainsMatch($catch->stmts, function (Node $n): bool {
+                        return $n instanceof Node\Stmt\Throw_
+                            || ($n instanceof Node\Stmt\Expression && $n->expr instanceof Node\Expr\Throw_);
+                    });
 
                     if (! $hasLogging && ! $hasRethrow) {
                         $this->issues[] = [
@@ -385,6 +368,13 @@ class SilentFailureVisitor extends NodeVisitorAbstract
             '@ignore',
             'phpstan-ignore',
             'psalm-suppress',
+            'silently',
+            'swallow',
+            'don\'t care',
+            'doesn\'t matter',
+            'not important',
+            'fallback',
+            'graceful',
         ];
 
         foreach ($intentionalPatterns as $pattern) {
@@ -436,6 +426,38 @@ class SilentFailureVisitor extends NodeVisitorAbstract
             } elseif (is_array($subNode)) {
                 foreach ($subNode as $child) {
                     if ($child instanceof Node && $this->nodeContainsVariable($child, $varName)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Recursively check if any node in the subtree satisfies the predicate.
+     *
+     * @param  array<Node|mixed>  $nodes
+     * @param  callable(Node): bool  $predicate
+     */
+    private function subtreeContainsMatch(array $nodes, callable $predicate): bool
+    {
+        foreach ($nodes as $node) {
+            if (! $node instanceof Node) {
+                continue;
+            }
+            if ($predicate($node)) {
+                return true;
+            }
+            foreach ($node->getSubNodeNames() as $name) {
+                $subNode = $node->$name;
+                if ($subNode instanceof Node) {
+                    if ($this->subtreeContainsMatch([$subNode], $predicate)) {
+                        return true;
+                    }
+                } elseif (is_array($subNode)) {
+                    if ($this->subtreeContainsMatch($subNode, $predicate)) {
                         return true;
                     }
                 }
@@ -580,8 +602,18 @@ class SilentFailureVisitor extends NodeVisitorAbstract
 
     private function hasGracefulFallback(Node $stmt): bool
     {
-        // Check for return with a value (graceful fallback)
-        if ($stmt instanceof Node\Stmt\Return_ && $stmt->expr !== null) {
+        // Check for return (with or without value — void return is a valid early exit)
+        if ($stmt instanceof Node\Stmt\Return_) {
+            return true;
+        }
+
+        // Check for continue (common in loops wrapping try/catch)
+        if ($stmt instanceof Node\Stmt\Continue_) {
+            return true;
+        }
+
+        // Check for break (common in loops wrapping try/catch)
+        if ($stmt instanceof Node\Stmt\Break_) {
             return true;
         }
 

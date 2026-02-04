@@ -169,6 +169,22 @@ class SilentFailureVisitor extends NodeVisitorAbstract
 
     private int $whitelistedClassDepth = 0;
 
+    /** @var array<string> Variable name patterns that indicate fallback intent */
+    private array $fallbackVariablePatterns = [
+        'default', 'fallback', 'backup', 'cached', 'empty', 'placeholder', 'alternative',
+    ];
+
+    /** @var array<string> Method name patterns that indicate fallback intent */
+    private array $fallbackMethodPatterns = [
+        'default', 'fallback', 'backup', 'empty', 'cached',
+        'retry', 'attempt', 'recover', 'restore',
+    ];
+
+    /** @var array<string> Static class names commonly used for fallback operations */
+    private array $fallbackStaticClasses = [
+        'Cache', 'Config', 'Session', 'Storage', 'Redis',
+    ];
+
     /**
      * @param  array<string>  $whitelistClasses
      * @param  array<string>  $whitelistExceptions
@@ -620,13 +636,182 @@ class SilentFailureVisitor extends NodeVisitorAbstract
             return true;
         }
 
-        // Check for assignment (setting a default value)
+        // Check for assignment — NEW: require semantic intent for fallback
         if ($stmt instanceof Node\Stmt\Expression &&
             $stmt->expr instanceof Node\Expr\Assign) {
+            return $this->isSemanticFallbackAssignment($stmt->expr);
+        }
+
+        return false;
+    }
+
+    /**
+     * Determine if an assignment represents a semantic fallback (not just arbitrary assignment).
+     *
+     * Passes: $default = new GuestUser(); $config = $this->getDefaultConfig(); $val = Cache::get('key', $default);
+     * Fails: $x = true; $hasError = true; $data = [];
+     */
+    private function isSemanticFallbackAssignment(Node\Expr\Assign $assign): bool
+    {
+        $var = $assign->var;
+        $expr = $assign->expr;
+
+        // 1. Variable name indicates fallback (e.g., $default, $fallback, $cached)
+        if ($var instanceof Node\Expr\Variable && is_string($var->name)) {
+            if ($this->isFallbackVariableName($var->name)) {
+                return true;
+            }
+        }
+
+        // 2. RHS is method call with fallback semantics (e.g., $this->getDefaultConfig())
+        if ($expr instanceof Node\Expr\MethodCall) {
+            return $this->isFallbackMethodCall($expr);
+        }
+
+        // 3. RHS is static call (Cache::get with default, Config::get, etc.)
+        if ($expr instanceof Node\Expr\StaticCall) {
+            return $this->isFallbackStaticCall($expr);
+        }
+
+        // 4. RHS is function call with fallback semantics
+        if ($expr instanceof Node\Expr\FuncCall) {
+            return $this->isFallbackFunctionCall($expr);
+        }
+
+        // 5. RHS is null coalescing with meaningful alternative
+        if ($expr instanceof Node\Expr\BinaryOp\Coalesce) {
+            return $this->isSemanticCoalesce($expr);
+        }
+
+        // 6. RHS is ternary with meaningful alternative
+        if ($expr instanceof Node\Expr\Ternary) {
+            return $this->isSemanticTernary($expr);
+        }
+
+        // 7. RHS is new instance (factory pattern)
+        if ($expr instanceof Node\Expr\New_) {
+            return true;
+        }
+
+        // FAIL: Simple scalars, empty arrays, arbitrary expressions
+        return false;
+    }
+
+    /**
+     * Check if variable name indicates fallback intent.
+     */
+    private function isFallbackVariableName(string $name): bool
+    {
+        $lowerName = strtolower($name);
+        foreach ($this->fallbackVariablePatterns as $pattern) {
+            if (str_contains($lowerName, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if method call has fallback semantics (method name contains fallback patterns).
+     */
+    private function isFallbackMethodCall(Node\Expr\MethodCall $call): bool
+    {
+        if (! $call->name instanceof Node\Identifier) {
+            return false;
+        }
+        $methodName = strtolower($call->name->toString());
+        foreach ($this->fallbackMethodPatterns as $pattern) {
+            if (str_contains($methodName, strtolower($pattern))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if static call represents a fallback pattern.
+     *
+     * Examples: Cache::get('key', $default), Cache::remember(), Config::get()
+     */
+    private function isFallbackStaticCall(Node\Expr\StaticCall $call): bool
+    {
+        if (! $call->class instanceof Node\Name || ! $call->name instanceof Node\Identifier) {
+            return false;
+        }
+
+        $className = $call->class->toString();
+        $shortName = str_contains($className, '\\')
+            ? substr($className, strrpos($className, '\\') + 1)
+            : $className;
+
+        if (! in_array($shortName, $this->fallbackStaticClasses, true)) {
+            return false;
+        }
+
+        $methodName = $call->name->toString();
+
+        // Cache::get with default parameter (2+ args)
+        if ($methodName === 'get' && count($call->args) >= 2) {
+            return true;
+        }
+
+        // Cache::remember, rememberForever always have fallback
+        if (in_array($methodName, ['remember', 'rememberForever', 'pull'], true)) {
             return true;
         }
 
         return false;
+    }
+
+    /**
+     * Check if function call has fallback semantics.
+     */
+    private function isFallbackFunctionCall(Node\Expr\FuncCall $call): bool
+    {
+        if (! $call->name instanceof Node\Name) {
+            return false;
+        }
+        $funcName = strtolower($call->name->toString());
+        foreach ($this->fallbackMethodPatterns as $pattern) {
+            if (str_contains($funcName, strtolower($pattern))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if null coalescing has a meaningful alternative (not just a scalar).
+     *
+     * Passes: $cached ?? $this->compute(); $data ?? new EmptyCollection();
+     * Fails: $data ?? [];
+     */
+    private function isSemanticCoalesce(Node\Expr\BinaryOp\Coalesce $coalesce): bool
+    {
+        $right = $coalesce->right;
+
+        // Meaningful: method call, static call, function call, new instance
+        return $right instanceof Node\Expr\MethodCall
+            || $right instanceof Node\Expr\StaticCall
+            || $right instanceof Node\Expr\FuncCall
+            || $right instanceof Node\Expr\New_;
+    }
+
+    /**
+     * Check if ternary has a meaningful alternative in else branch.
+     */
+    private function isSemanticTernary(Node\Expr\Ternary $ternary): bool
+    {
+        // Check else branch has meaningful alternative
+        $else = $ternary->else;
+
+        return $else instanceof Node\Expr\MethodCall
+            || $else instanceof Node\Expr\StaticCall
+            || $else instanceof Node\Expr\FuncCall
+            || $else instanceof Node\Expr\New_;
     }
 
     private function isWhitelistedErrorSuppression(Node $expr): bool

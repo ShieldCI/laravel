@@ -1800,4 +1800,465 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    // ========================================================================
+    // SEMANTIC FALLBACK DETECTION TESTS
+    // ========================================================================
+
+    public function test_passes_with_cache_get_fallback(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache;
+
+class CacheService
+{
+    public function getData($key)
+    {
+        try {
+            return $this->fetchFromApi($key);
+        } catch (\Exception $e) {
+            $data = Cache::get($key, $this->getDefault());
+            return $data;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/CacheService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_fallback_variable_name(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function getUser($id)
+    {
+        try {
+            return $this->fetchUser($id);
+        } catch (\Exception $e) {
+            $default = new GuestUser();
+            return $default;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_null_coalescing_method_call(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ConfigService
+{
+    public function getConfig($key)
+    {
+        try {
+            return $this->loadFromFile($key);
+        } catch (\Exception $e) {
+            $value = $this->cached ?? $this->computeDefault();
+            return $value;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ConfigService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_new_instance_in_catch(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class CollectionService
+{
+    public function getItems()
+    {
+        try {
+            return $this->fetchItems();
+        } catch (\Exception $e) {
+            $items = new EmptyCollection();
+            return $items;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/CollectionService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_cache_remember(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache;
+
+class DataService
+{
+    public function getData()
+    {
+        try {
+            return $this->fetchFromApi();
+        } catch (\Exception $e) {
+            $data = Cache::remember('fallback', 60, fn() => []);
+            return $data;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DataService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_retry_method_call(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    public function callApi()
+    {
+        try {
+            return $this->makeRequest();
+        } catch (\Exception $e) {
+            $result = $this->retryWithBackoff();
+            return $result;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_with_simple_scalar_assignment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ProcessService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\Exception $e) {
+            $x = true;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ProcessService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('does not log', $result);
+    }
+
+    public function test_fails_with_boolean_flag_assignment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class FlagService
+{
+    private bool $hasError = false;
+
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\Exception $e) {
+            $this->hasError = true;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/FlagService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('does not log', $result);
+    }
+
+    public function test_fails_with_empty_array_assignment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DataService
+{
+    public function getData()
+    {
+        try {
+            return $this->fetchData();
+        } catch (\Exception $e) {
+            $data = [];
+        }
+        return $data;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DataService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('does not log', $result);
+    }
+
+    public function test_fails_with_arbitrary_string_assignment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class MessageService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\Exception $e) {
+            $msg = 'error occurred';
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/MessageService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('does not log', $result);
+    }
+
+    public function test_fails_with_counter_increment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class CounterService
+{
+    private int $errorCount = 0;
+
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\Exception $e) {
+            $count = $this->errorCount + 1;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/CounterService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('does not log', $result);
+    }
+
+    public function test_passes_with_ternary_method_call_fallback(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class TernaryService
+{
+    public function getData($condition)
+    {
+        try {
+            return $this->fetchData();
+        } catch (\Exception $e) {
+            $data = $condition ? $this->primary() : $this->fallbackMethod();
+            return $data;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/TernaryService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_backup_variable_name(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class BackupService
+{
+    public function getConfig()
+    {
+        try {
+            return $this->loadConfig();
+        } catch (\Exception $e) {
+            $backup = [];
+            return $backup;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/BackupService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_cached_variable_name(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class CachedService
+{
+    public function getValue()
+    {
+        try {
+            return $this->fetchValue();
+        } catch (\Exception $e) {
+            $cached = 'default_value';
+            return $cached;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/CachedService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

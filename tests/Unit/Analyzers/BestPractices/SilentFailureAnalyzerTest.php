@@ -1629,4 +1629,175 @@ PHP;
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
     }
+
+    public function test_skips_union_type_when_first_type_is_whitelisted(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+
+class UserService
+{
+    public function findUser($id)
+    {
+        try {
+            return User::findOrFail($id);
+        } catch (ModelNotFoundException|\RuntimeException $e) {
+            // ModelNotFoundException is whitelisted, so entire catch should be skipped
+            return null;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_union_type_when_second_type_is_whitelisted(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+
+class UserService
+{
+    public function findUser($id)
+    {
+        try {
+            return User::findOrFail($id);
+        } catch (\RuntimeException|ModelNotFoundException $e) {
+            // ModelNotFoundException is whitelisted (second in union), so entire catch should be skipped
+            return null;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_union_type_when_no_types_are_whitelisted(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DataService
+{
+    public function processData($data)
+    {
+        try {
+            $this->parse($data);
+        } catch (\RuntimeException|\InvalidArgumentException $e) {
+            // Neither type is whitelisted, should be flagged
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DataService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Empty catch block', $result);
+    }
+
+    public function test_skips_union_type_when_all_types_are_whitelisted(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Validation\ValidationException;
+
+class UserService
+{
+    public function findOrValidate($id, $data)
+    {
+        try {
+            $user = User::findOrFail($id);
+            $this->validate($data);
+            return $user;
+        } catch (ModelNotFoundException|ValidationException $e) {
+            // Both types are whitelisted
+            return null;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_union_type_with_three_types_when_middle_is_whitelisted(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+
+class MultiService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\RuntimeException|ModelNotFoundException|\LogicException $e) {
+            // ModelNotFoundException (middle type) is whitelisted
+            return null;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/MultiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

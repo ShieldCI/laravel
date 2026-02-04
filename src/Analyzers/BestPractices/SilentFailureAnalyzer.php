@@ -199,14 +199,8 @@ class SilentFailureVisitor extends NodeVisitorAbstract
         // Check for empty catch blocks
         if ($node instanceof Node\Stmt\TryCatch) {
             foreach ($node->catches as $catch) {
-                // Get exception type
-                $exceptionType = null;
-                if (! empty($catch->types)) {
-                    $exceptionType = $catch->types[0]->toString();
-                }
-
-                // Skip whitelisted exception types
-                if ($exceptionType && $this->isWhitelistedException($exceptionType)) {
+                // Skip if any exception type in the union is whitelisted
+                if ($this->hasWhitelistedExceptionType($catch->types)) {
                     continue;
                 }
 
@@ -675,6 +669,28 @@ class SilentFailureVisitor extends NodeVisitorAbstract
 
         foreach ($this->whitelistClasses as $pattern) {
             if ($this->matchesPattern($className, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if any exception type in the catch is whitelisted.
+     *
+     * For union types like `catch (ModelNotFoundException|RuntimeException $e)`,
+     * if ANY type is whitelisted, we skip the entire catch block. This is because
+     * whitelisted exceptions are expected exceptions that can be safely caught,
+     * and if a developer intentionally catches a whitelisted exception alongside
+     * others, the entire catch is intentional.
+     *
+     * @param  array<Node\Name>  $types
+     */
+    private function hasWhitelistedExceptionType(array $types): bool
+    {
+        foreach ($types as $type) {
+            if ($this->isWhitelistedException($type->toString())) {
                 return true;
             }
         }

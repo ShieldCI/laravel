@@ -359,9 +359,9 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
      */
     private function isServiceProviderFromAst(array $ast, string $file): bool
     {
-        // PHP arrays are copy-on-write, so $ast is not mutated by traverse().
-        // CloningVisitor clones individual nodes so NameResolver modifies
-        // clones only, preserving original AST for ServiceContainerVisitor.
+        // Note: PHP arrays are copy-on-write, but AST nodes are objects.
+        // CloningVisitor ensures NameResolver only mutates cloned nodes,
+        // preserving the original AST for analysis.
         $traverser = new NodeTraverser;
         $traverser->addVisitor(new CloningVisitor);
         $traverser->addVisitor(new NameResolver);

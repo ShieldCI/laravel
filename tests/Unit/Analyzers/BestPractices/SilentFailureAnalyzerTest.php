@@ -799,7 +799,7 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_passes_when_catch_dispatches_event(): void
+    public function test_fails_when_catch_only_dispatches_event(): void
     {
         $code = <<<'PHP'
 <?php
@@ -813,7 +813,8 @@ class OrderService
         try {
             $this->processPayment($order);
         } catch (\Exception $e) {
-            event(new OrderFailed($order, $e));
+            // Dispatching an event is NOT logging - the exception details are lost
+            event(new OrderFailed($order));
         }
     }
 }
@@ -827,10 +828,12 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        // Event dispatching doesn't count as logging - should be flagged
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
     }
 
-    public function test_passes_when_catch_dispatches_job(): void
+    public function test_fails_when_catch_only_dispatches_job(): void
     {
         $code = <<<'PHP'
 <?php
@@ -844,7 +847,8 @@ class NotificationService
         try {
             $this->sendEmail($user);
         } catch (\Exception $e) {
-            dispatch(new RetryNotificationJob($user, $e));
+            // Dispatching a job is NOT logging - the exception details are lost
+            dispatch(new RetryNotificationJob($user));
         }
     }
 }
@@ -858,7 +862,9 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        // Job dispatching doesn't count as logging - should be flagged
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
     }
 
     public function test_passes_when_catch_sends_notification(): void
@@ -1073,7 +1079,7 @@ PHP;
         $this->assertCount(1, $issues);
     }
 
-    public function test_passes_when_catch_uses_static_event_dispatch(): void
+    public function test_fails_when_catch_only_uses_static_event_dispatch(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1089,7 +1095,8 @@ class EventService
         try {
             $this->doSomething();
         } catch (\Exception $e) {
-            Event::dispatch(new ProcessFailed($e));
+            // Event::dispatch is NOT logging - the exception details are lost
+            Event::dispatch(new ProcessFailed());
         }
     }
 }
@@ -1103,10 +1110,12 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        // Static event dispatching doesn't count as logging - should be flagged
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
     }
 
-    public function test_passes_when_catch_broadcasts(): void
+    public function test_fails_when_catch_only_broadcasts(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1120,7 +1129,8 @@ class BroadcastService
         try {
             $this->doSomething();
         } catch (\Exception $e) {
-            broadcast(new ErrorOccurred($e));
+            // broadcast() is NOT logging - the exception details are lost
+            broadcast(new ErrorOccurred());
         }
     }
 }
@@ -1134,7 +1144,9 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        // Broadcasting doesn't count as logging - should be flagged
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
     }
 
     public function test_passes_when_catch_calls_log_method_on_this(): void

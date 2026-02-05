@@ -502,11 +502,6 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                 return true;
             }
 
-            // Event::dispatch(), Bus::dispatch(), Notification::send(), Mail::send()
-            if (in_array($className, ['Event', 'Bus', 'Queue', 'Notification', 'Mail'], true)) {
-                return true;
-            }
-
             // DB::rollback()
             if ($className === 'DB' && $expr->name instanceof Node\Identifier && $expr->name->toString() === 'rollback') {
                 return true;
@@ -534,11 +529,6 @@ class SilentFailureVisitor extends NodeVisitorAbstract
 
             // Laravel error reporting helpers
             if (in_array($functionName, ['logger', 'report', 'rescue'], true)) {
-                return true;
-            }
-
-            // Event/job dispatching helpers
-            if (in_array($functionName, ['event', 'dispatch', 'broadcast'], true)) {
                 return true;
             }
 

@@ -43,6 +43,17 @@ class SilentFailureAnalyzerTest extends AnalyzerTestCase
                     'mkdir',
                     'rmdir',
                 ],
+                'whitelist_error_suppression_static_methods' => $config['whitelist_error_suppression_static_methods'] ?? [
+                    'Storage::delete',
+                    'Storage::deleteDirectory',
+                    'File::delete',
+                    'File::deleteDirectory',
+                ],
+                'whitelist_error_suppression_instance_methods' => $config['whitelist_error_suppression_instance_methods'] ?? [
+                    'delete',
+                    'close',
+                    'unlink',
+                ],
             ],
         ];
 
@@ -2264,6 +2275,356 @@ class CachedService
 PHP;
 
         $tempDir = $this->createTempDirectory(['Services/CachedService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    // ========================================================================
+    // ERROR SUPPRESSION WHITELIST - EXTENDED CALL TYPE TESTS
+    // ========================================================================
+
+    public function test_ignores_whitelisted_namespaced_function_calls(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class FileService
+{
+    public function deleteFile($path)
+    {
+        @\unlink($path);
+    }
+
+    public function openFile($path)
+    {
+        $handle = @\fopen($path, 'r');
+        return $handle;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/FileService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_whitelisted_static_method_calls(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Storage;
+
+class StorageService
+{
+    public function deleteFile($path)
+    {
+        @Storage::delete($path);
+    }
+
+    public function deleteDirectory($path)
+    {
+        @Storage::deleteDirectory($path);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/StorageService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_whitelisted_static_method_calls_with_wildcard(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Storage;
+
+class StorageService
+{
+    public function deleteFile($path)
+    {
+        @Storage::delete($path);
+    }
+
+    public function exists($path)
+    {
+        return @Storage::exists($path);
+    }
+
+    public function get($path)
+    {
+        return @Storage::get($path);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/StorageService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([
+            'whitelist_error_suppression_static_methods' => ['Storage::*'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_whitelisted_instance_method_calls(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ResourceService
+{
+    public function cleanup($file, $handle)
+    {
+        @$file->delete();
+        @$handle->close();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ResourceService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_whitelisted_instance_method_calls_with_wildcard(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class CleanupService
+{
+    public function cleanup($resource)
+    {
+        @$resource->remove();
+        @$resource->removeAll();
+        @$resource->removeTemporary();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/CleanupService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([
+            'whitelist_error_suppression_instance_methods' => ['remove*'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_dynamic_function_calls(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DynamicService
+{
+    public function callFunction($func, $path)
+    {
+        // Dynamic function call - should always be flagged
+        @$func($path);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DynamicService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('suppression', $result);
+    }
+
+    public function test_flags_dynamic_static_method_calls(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DynamicService
+{
+    public function callStaticMethod($class, $path)
+    {
+        // Dynamic class - should always be flagged
+        @$class::delete($path);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DynamicService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('suppression', $result);
+    }
+
+    public function test_flags_dynamic_instance_method_calls(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DynamicService
+{
+    public function callMethod($obj, $method)
+    {
+        // Dynamic method - should always be flagged
+        @$obj->$method();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DynamicService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('suppression', $result);
+    }
+
+    public function test_flags_non_whitelisted_static_method_calls(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class CacheService
+{
+    public function clearCache()
+    {
+        // Cache::flush is not in the whitelist
+        @Cache::flush();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/CacheService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('suppression', $result);
+    }
+
+    public function test_flags_non_whitelisted_instance_method_calls(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class NetworkService
+{
+    public function connect($client)
+    {
+        // send is not in the default whitelist
+        @$client->send();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/NetworkService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('suppression', $result);
+    }
+
+    public function test_ignores_whitelisted_file_facade_calls(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\File;
+
+class FileService
+{
+    public function deleteFile($path)
+    {
+        @File::delete($path);
+    }
+
+    public function deleteDirectory($path)
+    {
+        @File::deleteDirectory($path);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/FileService.php' => $code]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);

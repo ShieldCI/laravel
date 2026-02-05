@@ -33,6 +33,12 @@ class SilentFailureAnalyzer extends AbstractFileAnalyzer
     /** @var array<string> */
     private array $whitelistErrorSuppressionFunctions = [];
 
+    /** @var array<string> */
+    private array $whitelistErrorSuppressionStaticMethods = [];
+
+    /** @var array<string> */
+    private array $whitelistErrorSuppressionInstanceMethods = [];
+
     public function __construct(
         private ParserInterface $parser,
         private Config $config
@@ -79,6 +85,23 @@ class SilentFailureAnalyzer extends AbstractFileAnalyzer
             'rmdir',
         ]);
         $this->whitelistErrorSuppressionFunctions = is_array($configFunctions) ? $configFunctions : [];
+
+        // Load whitelisted static methods for error suppression (e.g., @Storage::delete())
+        $configStaticMethods = $this->config->get("{$baseKey}.whitelist_error_suppression_static_methods", [
+            'Storage::delete',
+            'Storage::deleteDirectory',
+            'File::delete',
+            'File::deleteDirectory',
+        ]);
+        $this->whitelistErrorSuppressionStaticMethods = is_array($configStaticMethods) ? $configStaticMethods : [];
+
+        // Load whitelisted instance methods for error suppression (e.g., @$file->delete())
+        $configInstanceMethods = $this->config->get("{$baseKey}.whitelist_error_suppression_instance_methods", [
+            'delete',
+            'close',
+            'unlink',
+        ]);
+        $this->whitelistErrorSuppressionInstanceMethods = is_array($configInstanceMethods) ? $configInstanceMethods : [];
     }
 
     protected function metadata(): AnalyzerMetadata
@@ -130,7 +153,9 @@ class SilentFailureAnalyzer extends AbstractFileAnalyzer
                 $visitor = new SilentFailureVisitor(
                     $this->whitelistClasses,
                     $this->whitelistExceptions,
-                    $this->whitelistErrorSuppressionFunctions
+                    $this->whitelistErrorSuppressionFunctions,
+                    $this->whitelistErrorSuppressionStaticMethods,
+                    $this->whitelistErrorSuppressionInstanceMethods
                 );
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor($visitor);
@@ -189,11 +214,15 @@ class SilentFailureVisitor extends NodeVisitorAbstract
      * @param  array<string>  $whitelistClasses
      * @param  array<string>  $whitelistExceptions
      * @param  array<string>  $whitelistErrorSuppressionFunctions
+     * @param  array<string>  $whitelistErrorSuppressionStaticMethods
+     * @param  array<string>  $whitelistErrorSuppressionInstanceMethods
      */
     public function __construct(
         private array $whitelistClasses = [],
         private array $whitelistExceptions = [],
-        private array $whitelistErrorSuppressionFunctions = []
+        private array $whitelistErrorSuppressionFunctions = [],
+        private array $whitelistErrorSuppressionStaticMethods = [],
+        private array $whitelistErrorSuppressionInstanceMethods = []
     ) {}
 
     public function enterNode(Node $node): ?Node
@@ -804,20 +833,103 @@ class SilentFailureVisitor extends NodeVisitorAbstract
             || $else instanceof Node\Expr\New_;
     }
 
+    /**
+     * Check if the suppressed expression is whitelisted.
+     *
+     * Supports:
+     * - Function calls: @unlink(), @\unlink()
+     * - Static method calls: @Storage::delete()
+     * - Instance method calls: @$file->delete()
+     * - Does NOT whitelist dynamic calls: @$func() (always flagged)
+     */
     private function isWhitelistedErrorSuppression(Node $expr): bool
     {
-        if (! $expr instanceof Node\Expr\FuncCall) {
-            return false;
+        if ($expr instanceof Node\Expr\FuncCall) {
+            return $this->isWhitelistedFunctionCall($expr);
         }
 
+        if ($expr instanceof Node\Expr\StaticCall) {
+            return $this->isWhitelistedStaticMethodCall($expr);
+        }
+
+        if ($expr instanceof Node\Expr\MethodCall) {
+            return $this->isWhitelistedInstanceMethodCall($expr);
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a function call is whitelisted (handles both simple and namespaced).
+     */
+    private function isWhitelistedFunctionCall(Node\Expr\FuncCall $expr): bool
+    {
         if (! $expr->name instanceof Node\Name) {
+            // Dynamic function call like @$func() - not whitelisted
             return false;
         }
 
         $functionName = $expr->name->toString();
+        $shortName = str_contains($functionName, '\\')
+            ? substr($functionName, strrpos($functionName, '\\') + 1)
+            : $functionName;
 
-        foreach ($this->whitelistErrorSuppressionFunctions as $allowed) {
-            if ($functionName === $allowed) {
+        foreach ($this->whitelistErrorSuppressionFunctions as $pattern) {
+            if ($this->matchesPattern($functionName, $pattern) ||
+                $this->matchesPattern($shortName, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a static method call is whitelisted (e.g., Storage::delete).
+     */
+    private function isWhitelistedStaticMethodCall(Node\Expr\StaticCall $expr): bool
+    {
+        if (! $expr->class instanceof Node\Name) {
+            // Dynamic class like @$class::method() - not whitelisted
+            return false;
+        }
+
+        if (! $expr->name instanceof Node\Identifier) {
+            // Dynamic method like @Storage::$method() - not whitelisted
+            return false;
+        }
+
+        $fullClassName = $expr->class->toString();
+        $shortClassName = $expr->class->getLast();
+        $methodName = $expr->name->toString();
+
+        $fullPattern = $fullClassName.'::'.$methodName;
+        $shortPattern = $shortClassName.'::'.$methodName;
+
+        foreach ($this->whitelistErrorSuppressionStaticMethods as $pattern) {
+            if ($this->matchesPattern($fullPattern, $pattern) ||
+                $this->matchesPattern($shortPattern, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if an instance method call is whitelisted (matches by method name only).
+     */
+    private function isWhitelistedInstanceMethodCall(Node\Expr\MethodCall $expr): bool
+    {
+        if (! $expr->name instanceof Node\Identifier) {
+            // Dynamic method like @$obj->$method() - not whitelisted
+            return false;
+        }
+
+        $methodName = $expr->name->toString();
+
+        foreach ($this->whitelistErrorSuppressionInstanceMethods as $pattern) {
+            if ($this->matchesPattern($methodName, $pattern)) {
                 return true;
             }
         }

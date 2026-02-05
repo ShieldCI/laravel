@@ -416,13 +416,10 @@ class SilentFailureVisitor extends NodeVisitorAbstract
             '@ignore',
             'phpstan-ignore',
             'psalm-suppress',
-            'silently',
             'swallow',
             'don\'t care',
             'doesn\'t matter',
             'not important',
-            'fallback',
-            'graceful',
         ];
 
         foreach ($intentionalPatterns as $pattern) {

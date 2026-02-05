@@ -1492,7 +1492,7 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_passes_when_empty_catch_has_silently_comment(): void
+    public function test_passes_when_empty_catch_has_suppress_comment(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1506,7 +1506,7 @@ class SilentService
         try {
             $this->doOptionalAction();
         } catch (\Exception $e) {
-            // Silently ignore — this action is not critical
+            // @suppress — this action is not critical
         }
     }
 }

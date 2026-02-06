@@ -194,8 +194,6 @@ class SilentFailureVisitor extends NodeVisitorAbstract
 
     private int $whitelistedClassDepth = 0;
 
-    private int $catchBlockDepth = 0;
-
     /** @var array<string> Exception types too broad to whitelist in unions */
     private array $broadExceptionTypes = ['Throwable', 'Exception', 'Error'];
 
@@ -246,14 +244,11 @@ class SilentFailureVisitor extends NodeVisitorAbstract
             return null;
         }
 
-        // Track catch block entry for error suppression severity
-        if ($node instanceof Node\Stmt\Catch_) {
-            $this->catchBlockDepth++;
-        }
-
         // Check for empty catch blocks
         if ($node instanceof Node\Stmt\TryCatch) {
             foreach ($node->catches as $catch) {
+                // Mark ErrorSuppress nodes inside this catch for later severity detection
+                $this->markErrorSuppressionsInCatch($catch);
                 // Check for non-whitelisted types in union
                 $nonWhitelisted = $this->getNonWhitelistedExceptionTypes($catch->types);
 
@@ -348,9 +343,10 @@ class SilentFailureVisitor extends NodeVisitorAbstract
             }
 
             // Bug 5: Severity differentiation for error suppression
+            $isInCatch = (bool) $node->getAttribute('shieldci_in_catch', false);
             $severity = $this->getErrorSuppressionSeverity($node);
             $this->issues[] = [
-                'message' => $this->getErrorSuppressionMessage($severity),
+                'message' => $this->getErrorSuppressionMessage($severity, $isInCatch),
                 'line' => $node->getLine(),
                 'severity' => $severity,
                 'recommendation' => $severity === Severity::High
@@ -373,11 +369,6 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                 $this->whitelistedClassDepth--;
             }
             $this->currentClass = null;
-        }
-
-        // Track catch block exit for error suppression severity
-        if ($node instanceof Node\Stmt\Catch_) {
-            $this->catchBlockDepth--;
         }
 
         return null;
@@ -566,6 +557,25 @@ class SilentFailureVisitor extends NodeVisitorAbstract
         }
 
         return false;
+    }
+
+    /**
+     * Mark all ErrorSuppress nodes inside a catch block with an attribute.
+     *
+     * This is needed because the normal enterNode/leaveNode traversal for Catch_ nodes
+     * is unreliable - the whitelist check returns early, and Catch_ nodes are array
+     * elements inside TryCatch->catches. By marking nodes during TryCatch processing,
+     * we ensure the "inside catch" context is preserved.
+     */
+    private function markErrorSuppressionsInCatch(Node\Stmt\Catch_ $catch): void
+    {
+        $this->subtreeContainsMatch($catch->stmts, function (Node $n): bool {
+            if ($n instanceof Node\Expr\ErrorSuppress) {
+                $n->setAttribute('shieldci_in_catch', true);
+            }
+
+            return false; // Continue searching, don't short-circuit
+        });
     }
 
     private function isLoggingOrReportingStatement(Node $stmt): bool
@@ -1109,8 +1119,8 @@ class SilentFailureVisitor extends NodeVisitorAbstract
     {
         $expr = $node->expr;
 
-        // Inside catch = double silencing = High
-        if ($this->catchBlockDepth > 0) {
+        // Inside catch = double silencing = High (detected via attribute set during TryCatch processing)
+        if ($node->getAttribute('shieldci_in_catch', false)) {
             return Severity::High;
         }
 
@@ -1135,9 +1145,9 @@ class SilentFailureVisitor extends NodeVisitorAbstract
     /**
      * Bug 5: Get appropriate message for error suppression based on severity.
      */
-    private function getErrorSuppressionMessage(Severity $severity): string
+    private function getErrorSuppressionMessage(Severity $severity, bool $isInCatch): string
     {
-        if ($this->catchBlockDepth > 0) {
+        if ($isInCatch) {
             return 'Error suppression operator (@) inside catch block creates double silencing';
         }
         if ($severity === Severity::High) {

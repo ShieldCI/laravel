@@ -305,6 +305,8 @@ class SilentFailureVisitor extends NodeVisitorAbstract
 
                     // Bug 3: Flag broad exception types even with logging (unless rethrowing)
                     // This check happens BEFORE the exception variable check to ensure we always warn
+                    // Track if we added a broad exception issue to avoid duplicate warnings
+                    $addedBroadIssue = false;
                     $broadInfo = $this->getBroadExceptionInfo($catch->types);
                     if ($broadInfo['isBroad'] && ! $hasRethrow) {
                         $broadTypeStr = implode('|', $broadInfo['types']);
@@ -315,6 +317,7 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                             'recommendation' => "Catch specific exception types instead of {$broadTypeStr}. Broad catches hide programming errors like TypeError, ArgumentCountError",
                             'code' => null,
                         ];
+                        $addedBroadIssue = true;
                     }
 
                     // Check if exception variable is used (indicates it's being handled)
@@ -322,7 +325,9 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                         continue;
                     }
 
-                    if (! $hasLogging && ! $hasRethrow) {
+                    // Skip no-logging warning if we already flagged broad exception
+                    // (broad catch is the root cause - fixing it naturally leads to better error handling)
+                    if (! $hasLogging && ! $hasRethrow && ! $addedBroadIssue) {
                         $this->issues[] = [
                             'message' => 'Catch block does not log exception or rethrow',
                             'line' => $catch->getLine(),

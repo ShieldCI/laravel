@@ -135,6 +135,7 @@ PHP;
 
     public function test_detects_catch_without_logging_or_rethrow(): void
     {
+        // Use specific exception type to test "does not log" without triggering broad exception warning
         $code = <<<'PHP'
 <?php
 
@@ -148,7 +149,7 @@ class OrderService
     {
         try {
             // Create order
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             // Silent failure - no logging or rethrow, just counting
             $this->silentCount++;
         }
@@ -2070,6 +2071,7 @@ PHP;
 
     public function test_fails_with_simple_scalar_assignment(): void
     {
+        // Use specific exception type to test "does not log" without triggering broad exception warning
         $code = <<<'PHP'
 <?php
 
@@ -2081,7 +2083,7 @@ class ProcessService
     {
         try {
             $this->doWork();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $x = true;
         }
     }
@@ -2102,6 +2104,7 @@ PHP;
 
     public function test_fails_with_boolean_flag_assignment(): void
     {
+        // Use specific exception type to test "does not log" without triggering broad exception warning
         $code = <<<'PHP'
 <?php
 
@@ -2115,7 +2118,7 @@ class FlagService
     {
         try {
             $this->doWork();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $this->hasError = true;
         }
     }
@@ -2136,6 +2139,7 @@ PHP;
 
     public function test_fails_with_empty_array_assignment(): void
     {
+        // Use specific exception type to test "does not log" without triggering broad exception warning
         $code = <<<'PHP'
 <?php
 
@@ -2147,7 +2151,7 @@ class DataService
     {
         try {
             return $this->fetchData();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $data = [];
         }
         return $data;
@@ -2169,6 +2173,7 @@ PHP;
 
     public function test_fails_with_arbitrary_string_assignment(): void
     {
+        // Use specific exception type to test "does not log" without triggering broad exception warning
         $code = <<<'PHP'
 <?php
 
@@ -2180,7 +2185,7 @@ class MessageService
     {
         try {
             $this->doWork();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $msg = 'error occurred';
         }
     }
@@ -2201,6 +2206,7 @@ PHP;
 
     public function test_fails_with_counter_increment(): void
     {
+        // Use specific exception type to test "does not log" without triggering broad exception warning
         $code = <<<'PHP'
 <?php
 
@@ -2214,7 +2220,7 @@ class CounterService
     {
         try {
             $this->doWork();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $count = $this->errorCount + 1;
         }
     }
@@ -2327,6 +2333,110 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    // ========================================================================
+    // ISSUE DEDUPLICATION TESTS
+    // ========================================================================
+
+    public function test_broad_exception_catch_produces_single_issue_not_duplicate(): void
+    {
+        // When a catch block uses a broad exception type (Throwable/Exception) and has no logging,
+        // we should only report the "broad exception" warning, not both that AND "does not log".
+        // The broad catch is the root cause - fixing it naturally leads to better error handling.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class BroadCatchService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\Throwable $e) {
+            // No logging, no rethrow - but we should only get ONE issue (broad exception)
+            $x = true;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/BroadCatchService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        // Should have the broad exception issue
+        $this->assertHasIssueContaining('overly broad', $result);
+
+        // Should NOT have the "does not log" issue (deduplicated)
+        $issues = $result->getIssues();
+        $hasNoLogIssue = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'does not log')) {
+                $hasNoLogIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasNoLogIssue, 'Should not have "does not log" issue when broad exception is already flagged');
+
+        // Should have exactly 1 issue for this catch block
+        $this->assertCount(1, $issues);
+    }
+
+    public function test_specific_exception_without_logging_produces_no_log_issue(): void
+    {
+        // When a catch block uses a specific exception type and has no logging,
+        // we should report the "does not log" warning (not the broad exception warning).
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class SpecificCatchService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\RuntimeException $e) {
+            // No logging, no rethrow - should get "does not log" issue
+            $x = true;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/SpecificCatchService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        // Should have the "does not log" issue
+        $this->assertHasIssueContaining('does not log', $result);
+
+        // Should NOT have the "overly broad" issue
+        $issues = $result->getIssues();
+        $hasBroadIssue = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'overly broad')) {
+                $hasBroadIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasBroadIssue, 'Should not have "overly broad" issue for specific exception type');
     }
 
     // ========================================================================

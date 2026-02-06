@@ -315,8 +315,9 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                         $addedBroadIssue = true;
                     }
 
-                    // Check if exception variable is used (indicates it's being handled)
-                    if ($this->usesExceptionVariable($catch->stmts, $exceptionVarName)) {
+                    // Exception variable usage only counts as "handling" when combined with logging/rethrow/fallback
+                    // Just inspecting $e (e.g., $e instanceof TimeoutException) without proper handling is still a silent failure
+                    if ($this->usesExceptionVariable($catch->stmts, $exceptionVarName) && ($hasLogging || $hasRethrow)) {
                         continue;
                     }
 

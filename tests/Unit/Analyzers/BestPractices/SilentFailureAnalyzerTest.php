@@ -1045,6 +1045,76 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_detects_exception_variable_used_without_handling(): void
+    {
+        // Bug fix: Exception variable usage alone should NOT suppress warning
+        // Just inspecting $e (e.g., instanceof check) without logging/rethrow is still silent failure
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class RetryService
+{
+    public function execute()
+    {
+        try {
+            $this->doWork();
+        } catch (\RuntimeException $e) {
+            $isRetryable = $e instanceof \App\Exceptions\TimeoutException;
+            // No logging, no rethrow, no fallback - just inspection
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/RetryService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('does not log', $result);
+    }
+
+    public function test_passes_exception_variable_with_logging(): void
+    {
+        // Exception variable used AND has logging = proper handling
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Log;
+
+class TypedErrorService
+{
+    public function process()
+    {
+        try {
+            $this->execute();
+        } catch (\RuntimeException $e) {
+            $type = get_class($e);
+            Log::error("Failed with type: {$type}");
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/TypedErrorService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_handles_multiple_classes_in_file(): void
     {
         $code = <<<'PHP'

@@ -194,6 +194,11 @@ class SilentFailureVisitor extends NodeVisitorAbstract
 
     private int $whitelistedClassDepth = 0;
 
+    private int $catchBlockDepth = 0;
+
+    /** @var array<string> Exception types too broad to whitelist in unions */
+    private array $broadExceptionTypes = ['Throwable', 'Exception', 'Error'];
+
     /** @var array<string> Variable name patterns that indicate fallback intent */
     private array $fallbackVariablePatterns = [
         'default', 'fallback', 'backup', 'cached', 'empty', 'placeholder', 'alternative',
@@ -241,6 +246,11 @@ class SilentFailureVisitor extends NodeVisitorAbstract
             return null;
         }
 
+        // Track catch block entry for error suppression severity
+        if ($node instanceof Node\Stmt\Catch_) {
+            $this->catchBlockDepth++;
+        }
+
         // Check for empty catch blocks
         if ($node instanceof Node\Stmt\TryCatch) {
             foreach ($node->catches as $catch) {
@@ -268,11 +278,6 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                     $exceptionVar = $catch->var?->name;
                     $exceptionVarName = is_string($exceptionVar) ? $exceptionVar : null;
 
-                    // Check if exception variable is used (indicates it's being handled)
-                    if ($this->usesExceptionVariable($catch->stmts, $exceptionVarName)) {
-                        continue;
-                    }
-
                     // Recursively check if catch block has logging, reporting, fallback, or rethrow
                     $hasLogging = $this->subtreeContainsMatch($catch->stmts, function (Node $n): bool {
                         return $this->isLoggingOrReportingStatement($n) || $this->hasGracefulFallback($n);
@@ -282,6 +287,25 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                         return $n instanceof Node\Stmt\Throw_
                             || ($n instanceof Node\Stmt\Expression && $n->expr instanceof Node\Expr\Throw_);
                     });
+
+                    // Bug 3: Flag broad exception types even with logging (unless rethrowing)
+                    // This check happens BEFORE the exception variable check to ensure we always warn
+                    $broadInfo = $this->getBroadExceptionInfo($catch->types);
+                    if ($broadInfo['isBroad'] && ! $hasRethrow) {
+                        $broadTypeStr = implode('|', $broadInfo['types']);
+                        $this->issues[] = [
+                            'message' => "Catching {$broadTypeStr} is overly broad and can mask fatal errors",
+                            'line' => $catch->getLine(),
+                            'severity' => Severity::High,
+                            'recommendation' => "Catch specific exception types instead of {$broadTypeStr}. Broad catches hide programming errors like TypeError, ArgumentCountError",
+                            'code' => null,
+                        ];
+                    }
+
+                    // Check if exception variable is used (indicates it's being handled)
+                    if ($this->usesExceptionVariable($catch->stmts, $exceptionVarName)) {
+                        continue;
+                    }
 
                     if (! $hasLogging && ! $hasRethrow) {
                         $this->issues[] = [
@@ -303,11 +327,15 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                 return null;
             }
 
+            // Bug 5: Severity differentiation for error suppression
+            $severity = $this->getErrorSuppressionSeverity($node);
             $this->issues[] = [
-                'message' => 'Error suppression operator (@) hides errors',
+                'message' => $this->getErrorSuppressionMessage($severity),
                 'line' => $node->getLine(),
-                'severity' => Severity::Medium,
-                'recommendation' => 'Avoid using @ operator. Handle errors explicitly with try-catch or check return values. Error suppression makes debugging difficult',
+                'severity' => $severity,
+                'recommendation' => $severity === Severity::High
+                    ? 'Dynamic or nested error suppression is highly discouraged. Use explicit try-catch with logging'
+                    : 'Avoid using @ operator. Handle errors explicitly with try-catch or check return values',
                 'code' => null,
             ];
         }
@@ -325,6 +353,11 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                 $this->whitelistedClassDepth--;
             }
             $this->currentClass = null;
+        }
+
+        // Track catch block exit for error suppression severity
+        if ($node instanceof Node\Stmt\Catch_) {
+            $this->catchBlockDepth--;
         }
 
         return null;
@@ -389,15 +422,18 @@ class SilentFailureVisitor extends NodeVisitorAbstract
     {
         $lowerText = strtolower($commentText);
 
-        // Patterns that indicate intentional ignoring
+        // Bug 4: Tightened patterns - removed vague 'expected' and 'acceptable'
+        // Added more specific patterns instead
         $intentionalPatterns = [
             'intentional',
+            'intentionally',
             'deliberately',
             'on purpose',
-            'expected',
-            'acceptable',
+            'expected to fail',      // More specific than 'expected'
+            'expected exception',    // More specific than 'expected'
             'safe to ignore',
             'safely ignore',
+            'safely ignored',
             'can be ignored',
             'may be ignored',
             'optional',
@@ -553,14 +589,24 @@ class SilentFailureVisitor extends NodeVisitorAbstract
         if ($expr instanceof Node\Expr\FuncCall && $expr->name instanceof Node\Name) {
             $functionName = $expr->name->toString();
 
+            // Bug 1: Removed 'rescue' from this list - it's a fallback, not logging
             // Laravel error reporting helpers
-            if (in_array($functionName, ['logger', 'report', 'rescue'], true)) {
+            if (in_array($functionName, ['logger', 'report'], true)) {
                 return true;
             }
 
             // Laravel abort helpers
             if (in_array($functionName, ['abort', 'abort_if', 'abort_unless'], true)) {
                 return true;
+            }
+
+            // Bug 1: rescue() with third parameter = true reports exceptions
+            if ($functionName === 'rescue' && count($expr->args) >= 3) {
+                $thirdArg = $expr->args[2]->value ?? null;
+                if ($thirdArg instanceof Node\Expr\ConstFetch &&
+                    strtolower($thirdArg->name->toString()) === 'true') {
+                    return true;
+                }
             }
         }
 
@@ -656,6 +702,14 @@ class SilentFailureVisitor extends NodeVisitorAbstract
         if ($stmt instanceof Node\Stmt\Expression &&
             $stmt->expr instanceof Node\Expr\Assign) {
             return $this->isSemanticFallbackAssignment($stmt->expr);
+        }
+
+        // Bug 1: rescue() function call is a fallback mechanism
+        if ($stmt instanceof Node\Stmt\Expression &&
+            $stmt->expr instanceof Node\Expr\FuncCall &&
+            $stmt->expr->name instanceof Node\Name &&
+            $stmt->expr->name->toString() === 'rescue') {
+            return true;
         }
 
         return false;
@@ -969,10 +1023,18 @@ class SilentFailureVisitor extends NodeVisitorAbstract
      * and if a developer intentionally catches a whitelisted exception alongside
      * others, the entire catch is intentional.
      *
+     * Bug 2: However, broad types (Throwable/Exception/Error) cannot be whitelisted
+     * in unions because catching them is always dangerous.
+     *
      * @param  array<Node\Name>  $types
      */
     private function hasWhitelistedExceptionType(array $types): bool
     {
+        // Bug 2: Broad types (Throwable/Exception/Error) cannot be whitelisted
+        if ($this->containsBroadExceptionType($types)) {
+            return false;
+        }
+
         foreach ($types as $type) {
             if ($this->isWhitelistedException($type->toString())) {
                 return true;
@@ -980,6 +1042,50 @@ class SilentFailureVisitor extends NodeVisitorAbstract
         }
 
         return false;
+    }
+
+    /**
+     * Check if any exception type in the array is a broad exception type.
+     *
+     * @param  array<Node\Name>  $types
+     */
+    private function containsBroadExceptionType(array $types): bool
+    {
+        foreach ($types as $type) {
+            $typeName = $type->toString();
+            $shortName = str_contains($typeName, '\\')
+                ? substr($typeName, strrpos($typeName, '\\') + 1)
+                : $typeName;
+
+            if (in_array($shortName, $this->broadExceptionTypes, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Get information about broad exception types in the catch.
+     *
+     * @param  array<Node\Name>  $types
+     * @return array{isBroad: bool, types: array<string>}
+     */
+    private function getBroadExceptionInfo(array $types): array
+    {
+        $broadTypes = [];
+        foreach ($types as $type) {
+            $typeName = $type->toString();
+            $shortName = str_contains($typeName, '\\')
+                ? substr($typeName, strrpos($typeName, '\\') + 1)
+                : $typeName;
+
+            if (in_array($shortName, $this->broadExceptionTypes, true)) {
+                $broadTypes[] = $shortName;
+            }
+        }
+
+        return ['isBroad' => ! empty($broadTypes), 'types' => $broadTypes];
     }
 
     private function isWhitelistedException(string $exceptionType): bool
@@ -991,6 +1097,51 @@ class SilentFailureVisitor extends NodeVisitorAbstract
         }
 
         return false;
+    }
+
+    /**
+     * Bug 5: Determine severity for error suppression based on context.
+     */
+    private function getErrorSuppressionSeverity(Node\Expr\ErrorSuppress $node): Severity
+    {
+        $expr = $node->expr;
+
+        // Inside catch = double silencing = High
+        if ($this->catchBlockDepth > 0) {
+            return Severity::High;
+        }
+
+        // Dynamic function @$func() = High
+        if ($expr instanceof Node\Expr\FuncCall && ! $expr->name instanceof Node\Name) {
+            return Severity::High;
+        }
+
+        // Dynamic static @$class::method() = High
+        if ($expr instanceof Node\Expr\StaticCall && ! $expr->class instanceof Node\Name) {
+            return Severity::High;
+        }
+
+        // Dynamic instance @$obj->$method() = High
+        if ($expr instanceof Node\Expr\MethodCall && ! $expr->name instanceof Node\Identifier) {
+            return Severity::High;
+        }
+
+        return Severity::Medium;
+    }
+
+    /**
+     * Bug 5: Get appropriate message for error suppression based on severity.
+     */
+    private function getErrorSuppressionMessage(Severity $severity): string
+    {
+        if ($this->catchBlockDepth > 0) {
+            return 'Error suppression operator (@) inside catch block creates double silencing';
+        }
+        if ($severity === Severity::High) {
+            return 'Dynamic error suppression is particularly dangerous';
+        }
+
+        return 'Error suppression operator (@) hides errors';
     }
 
     public function getIssues(): array

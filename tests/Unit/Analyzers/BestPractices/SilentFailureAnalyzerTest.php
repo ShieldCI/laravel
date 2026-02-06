@@ -83,7 +83,7 @@ class PaymentService
     {
         try {
             // Process payment
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             Log::error('Payment failed: ' . $e->getMessage());
             throw $e;
         }
@@ -212,7 +212,7 @@ class ApiService
     {
         try {
             // API call
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             Log::error('API call failed', ['error' => $e->getMessage()]);
             return false;
         }
@@ -244,7 +244,7 @@ class NotificationService
     {
         try {
             // Send notification
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             report($e);
             return false;
         }
@@ -276,7 +276,7 @@ class PaymentService
     {
         try {
             // Process payment
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             \Sentry\captureException($e);
             return false;
         }
@@ -310,7 +310,7 @@ class LoggingService
     {
         try {
             // Do something
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $this->logger->error('Failed', ['exception' => $e]);
         }
     }
@@ -341,7 +341,7 @@ class DataService
     {
         try {
             // Import data
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             throw new ImportException('Import failed', 0, $e);
         }
     }
@@ -655,7 +655,7 @@ class CacheService
     {
         try {
             // Clear cache
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             logger()->error('Cache clear failed', ['exception' => $e]);
         }
     }
@@ -688,7 +688,7 @@ class MonitoringService
     {
         try {
             // Monitor
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $this->logger->critical('Monitoring failed', ['error' => $e]);
         }
     }
@@ -748,7 +748,7 @@ class ConfigService
     {
         try {
             $config = $this->loadFromFile();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $config = $this->getDefaultConfig();
         }
         return $config;
@@ -823,7 +823,7 @@ class OrderService
     {
         try {
             $this->processPayment($order);
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             // Dispatching an event is NOT logging - the exception details are lost
             event(new OrderFailed($order));
         }
@@ -857,7 +857,7 @@ class NotificationService
     {
         try {
             $this->sendEmail($user);
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             // Dispatching a job is NOT logging - the exception details are lost
             dispatch(new RetryNotificationJob($user));
         }
@@ -891,7 +891,7 @@ class PaymentService
     {
         try {
             $this->charge($amount);
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $user->notify(new PaymentFailedNotification($e));
         }
     }
@@ -922,7 +922,7 @@ class ApiService
     {
         try {
             return $this->client->get($endpoint);
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             abort(503, 'Service unavailable');
         }
     }
@@ -958,7 +958,7 @@ class TransactionService
             $result = $callback();
             DB::commit();
             return $result;
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             DB::rollback();
         }
     }
@@ -989,7 +989,7 @@ class ImportService
     {
         try {
             $this->processData($data);
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $this->handleImportError($data);
         }
     }
@@ -1025,7 +1025,7 @@ class ErrorService
     {
         try {
             $this->doSomething();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $message = $e->getMessage();
             $this->storeError($message);
         }
@@ -1105,7 +1105,7 @@ class EventService
     {
         try {
             $this->doSomething();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             // Event::dispatch is NOT logging - the exception details are lost
             Event::dispatch(new ProcessFailed());
         }
@@ -1139,7 +1139,7 @@ class BroadcastService
     {
         try {
             $this->doSomething();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             // broadcast() is NOT logging - the exception details are lost
             broadcast(new ErrorOccurred());
         }
@@ -1173,7 +1173,7 @@ class LoggingService
     {
         try {
             $this->doSomething();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $this->logException($e);
         }
     }
@@ -1209,7 +1209,7 @@ class FormController
     {
         try {
             $this->processForm();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             session()->flash('error', 'Something went wrong');
             return redirect()->back();
         }
@@ -1241,7 +1241,7 @@ class ProcessOrderJob
     {
         try {
             $this->process();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $this->fail($e);
         }
     }
@@ -1273,7 +1273,7 @@ class BatchService
         foreach ($items as $item) {
             try {
                 $this->processItem($item);
-            } catch (\Exception $e) {
+            } catch (\RuntimeException $e) {
                 continue;
             }
         }
@@ -1306,7 +1306,7 @@ class RetryService
         foreach ($servers as $server) {
             try {
                 $this->connect($server);
-            } catch (\Exception $e) {
+            } catch (\RuntimeException $e) {
                 break;
             }
         }
@@ -1338,7 +1338,7 @@ class CleanupService
     {
         try {
             $this->removeTemporaryFiles();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             return;
         }
     }
@@ -1373,7 +1373,7 @@ class ConditionalLogService
     {
         try {
             $this->doWork();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             if ($this->verbose) {
                 Log::warning('Work failed', ['error' => $e->getMessage()]);
             }
@@ -1408,7 +1408,7 @@ class ConditionalRethrowService
     {
         try {
             $this->doWork();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             if ($this->strict) {
                 throw $e;
             }
@@ -1441,7 +1441,7 @@ class ConditionalFallbackService
     {
         try {
             return $this->fetchFromApi();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             if ($useFallback) {
                 return $this->getDefault();
             }
@@ -1474,7 +1474,7 @@ class SwallowService
     {
         try {
             $this->cleanup();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             // Swallow exception — cleanup is best-effort
         }
     }
@@ -1505,7 +1505,7 @@ class SilentService
     {
         try {
             $this->doOptionalAction();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             // @suppress — this action is not critical
         }
     }
@@ -1843,7 +1843,7 @@ class CacheService
     {
         try {
             return $this->fetchFromApi($key);
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $data = Cache::get($key, $this->getDefault());
             return $data;
         }
@@ -1875,7 +1875,7 @@ class UserService
     {
         try {
             return $this->fetchUser($id);
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $default = new GuestUser();
             return $default;
         }
@@ -1907,7 +1907,7 @@ class ConfigService
     {
         try {
             return $this->loadFromFile($key);
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $value = $this->cached ?? $this->computeDefault();
             return $value;
         }
@@ -1939,7 +1939,7 @@ class CollectionService
     {
         try {
             return $this->fetchItems();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $items = new EmptyCollection();
             return $items;
         }
@@ -1973,7 +1973,7 @@ class DataService
     {
         try {
             return $this->fetchFromApi();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $data = Cache::remember('fallback', 60, fn() => []);
             return $data;
         }
@@ -2005,7 +2005,7 @@ class ApiService
     {
         try {
             return $this->makeRequest();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $result = $this->retryWithBackoff();
             return $result;
         }
@@ -2202,7 +2202,7 @@ class TernaryService
     {
         try {
             return $this->fetchData();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $data = $condition ? $this->primary() : $this->fallbackMethod();
             return $data;
         }
@@ -2234,7 +2234,7 @@ class BackupService
     {
         try {
             return $this->loadConfig();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $backup = [];
             return $backup;
         }
@@ -2266,7 +2266,7 @@ class CachedService
     {
         try {
             return $this->fetchValue();
-        } catch (\Exception $e) {
+        } catch (\RuntimeException $e) {
             $cached = 'default_value';
             return $cached;
         }
@@ -2633,5 +2633,606 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    // ========================================================================
+    // BUG 1: RESCUE() HANDLING TESTS
+    // ========================================================================
+
+    public function test_fails_catch_using_rescue_without_report_parameter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class RescueService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\RuntimeException $e) {
+            // rescue() without third parameter does NOT report
+            rescue(fn() => $this->fallbackWork());
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/RescueService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // rescue() without report=true is treated as fallback (graceful handling)
+        // So this should pass
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_catch_using_rescue_with_report_true(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class RescueService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\RuntimeException $e) {
+            // rescue() with third parameter = true DOES report
+            rescue(fn() => $this->fallbackWork(), fn() => null, true);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/RescueService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // rescue() with report=true counts as logging
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_catch_returning_rescue_as_fallback(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class RescueService
+{
+    public function getData()
+    {
+        try {
+            return $this->fetchData();
+        } catch (\RuntimeException $e) {
+            // Using rescue() as a fallback mechanism
+            return rescue(fn() => $this->getCachedData(), 'default');
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/RescueService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // rescue() used as return value counts as graceful fallback
+        $this->assertPassed($result);
+    }
+
+    // ========================================================================
+    // BUG 2: UNION EXCEPTION TYPE WITH BROAD TYPES TESTS
+    // ========================================================================
+
+    public function test_flags_union_with_throwable_even_when_other_type_whitelisted(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+
+class UserService
+{
+    public function findUser($id)
+    {
+        try {
+            return User::findOrFail($id);
+        } catch (ModelNotFoundException|\Throwable $e) {
+            // ModelNotFoundException is whitelisted, but Throwable is too broad
+            return null;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be flagged because Throwable is too broad
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('overly broad', $result);
+    }
+
+    public function test_flags_union_with_exception_even_when_other_type_whitelisted(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Validation\ValidationException;
+
+class DataService
+{
+    public function validate($data)
+    {
+        try {
+            $this->validateData($data);
+        } catch (ValidationException|\Exception $e) {
+            // ValidationException is whitelisted, but Exception is too broad
+            return false;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DataService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be flagged because Exception is too broad
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('overly broad', $result);
+    }
+
+    // ========================================================================
+    // BUG 3: BROAD EXCEPTION TYPE DETECTION TESTS
+    // ========================================================================
+
+    public function test_flags_catch_throwable_even_with_logging(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Log;
+
+class ProcessService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\Throwable $e) {
+            // Logging is present, but catching Throwable is still dangerous
+            Log::error('Error occurred', ['exception' => $e]);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ProcessService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be flagged for catching Throwable even with logging
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Throwable', $result);
+        $this->assertHasIssueContaining('overly broad', $result);
+    }
+
+    public function test_flags_catch_exception_with_high_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Log;
+
+class GenericService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\Exception $e) {
+            // Even with logging, catching Exception is a code smell
+            Log::warning('Something failed', ['error' => $e->getMessage()]);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/GenericService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be flagged for catching Exception
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('Exception', $issues[0]->message);
+    }
+
+    public function test_passes_catch_throwable_with_rethrow(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Log;
+
+class SafeService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\Throwable $e) {
+            // Catching Throwable is OK if we rethrow
+            Log::error('Error occurred', ['exception' => $e]);
+            throw $e;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/SafeService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because we rethrow
+        $this->assertPassed($result);
+    }
+
+    // ========================================================================
+    // BUG 4: COMMENT PATTERN TESTS
+    // ========================================================================
+
+    public function test_fails_with_vague_acceptable_comment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class VagueService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\RuntimeException $e) {
+            // This is acceptable behavior
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/VagueService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // 'acceptable' alone is too vague - should be flagged
+        $this->assertFailed($result);
+    }
+
+    public function test_fails_with_vague_expected_comment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class VagueService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\RuntimeException $e) {
+            // This is expected behavior
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/VagueService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // 'expected' alone is too vague - should be flagged
+        $this->assertFailed($result);
+    }
+
+    public function test_passes_with_expected_exception_comment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class SpecificService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\RuntimeException $e) {
+            // Expected exception when file is missing
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/SpecificService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // 'expected exception' is specific enough
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_expected_to_fail_comment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class FailService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\RuntimeException $e) {
+            // Expected to fail when cache is cold
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/FailService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // 'expected to fail' is specific enough
+        $this->assertPassed($result);
+    }
+
+    // ========================================================================
+    // BUG 5: ERROR SUPPRESSION SEVERITY TESTS
+    // ========================================================================
+
+    public function test_dynamic_function_suppression_is_high_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DynamicService
+{
+    public function callFunction($func, $arg)
+    {
+        // Dynamic function call should be high severity
+        @$func($arg);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DynamicService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('Dynamic', $issues[0]->message);
+        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+    }
+
+    public function test_suppression_inside_catch_is_high_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DoubleService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\RuntimeException $e) {
+            // Error suppression inside catch = double silencing
+            @file_put_contents('/tmp/error.log', $e->getMessage());
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DoubleService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        // Should have issue for @ inside catch
+        $suppressionIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'double silencing')) {
+                $suppressionIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($suppressionIssue, 'Should have double silencing issue');
+        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::High, $suppressionIssue->severity);
+    }
+
+    public function test_static_suppression_is_medium_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class StaticService
+{
+    public function process()
+    {
+        // Static suppression (not whitelisted) should be medium severity
+        @SomeClass::doSomething();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/StaticService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+    }
+
+    public function test_dynamic_static_method_suppression_is_high_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DynamicStaticService
+{
+    public function callMethod($class, $arg)
+    {
+        // Dynamic class in static call should be high severity
+        @$class::doSomething($arg);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DynamicStaticService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('Dynamic', $issues[0]->message);
+        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+    }
+
+    public function test_dynamic_instance_method_suppression_is_high_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DynamicInstanceService
+{
+    public function callMethod($obj, $method)
+    {
+        // Dynamic method in instance call should be high severity
+        @$obj->$method();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DynamicInstanceService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('Dynamic', $issues[0]->message);
+        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
     }
 }

@@ -254,9 +254,24 @@ class SilentFailureVisitor extends NodeVisitorAbstract
         // Check for empty catch blocks
         if ($node instanceof Node\Stmt\TryCatch) {
             foreach ($node->catches as $catch) {
-                // Skip if any exception type in the union is whitelisted
-                if ($this->hasWhitelistedExceptionType($catch->types)) {
+                // Check for non-whitelisted types in union
+                $nonWhitelisted = $this->getNonWhitelistedExceptionTypes($catch->types);
+
+                // All types whitelisted → skip
+                if ($nonWhitelisted === null) {
                     continue;
+                }
+
+                // Partial whitelist → flag non-whitelisted types
+                if (count($catch->types) > count($nonWhitelisted)) {
+                    $nonWhitelistedStr = implode('|', $nonWhitelisted);
+                    $this->issues[] = [
+                        'message' => "Catch union includes non-whitelisted type(s): {$nonWhitelistedStr}",
+                        'line' => $catch->getLine(),
+                        'severity' => Severity::Medium,
+                        'recommendation' => "Consider splitting into separate catch blocks: one for whitelisted exceptions, one for {$nonWhitelistedStr}. This makes exception handling intent clearer",
+                        'code' => null,
+                    ];
                 }
 
                 // Check if catch block is empty or only contains comments (Nop statements)
@@ -1015,57 +1030,6 @@ class SilentFailureVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Check if any exception type in the catch is whitelisted.
-     *
-     * For union types like `catch (ModelNotFoundException|RuntimeException $e)`,
-     * if ANY type is whitelisted, we skip the entire catch block. This is because
-     * whitelisted exceptions are expected exceptions that can be safely caught,
-     * and if a developer intentionally catches a whitelisted exception alongside
-     * others, the entire catch is intentional.
-     *
-     * Bug 2: However, broad types (Throwable/Exception/Error) cannot be whitelisted
-     * in unions because catching them is always dangerous.
-     *
-     * @param  array<Node\Name>  $types
-     */
-    private function hasWhitelistedExceptionType(array $types): bool
-    {
-        // Bug 2: Broad types (Throwable/Exception/Error) cannot be whitelisted
-        if ($this->containsBroadExceptionType($types)) {
-            return false;
-        }
-
-        foreach ($types as $type) {
-            if ($this->isWhitelistedException($type->toString())) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Check if any exception type in the array is a broad exception type.
-     *
-     * @param  array<Node\Name>  $types
-     */
-    private function containsBroadExceptionType(array $types): bool
-    {
-        foreach ($types as $type) {
-            $typeName = $type->toString();
-            $shortName = str_contains($typeName, '\\')
-                ? substr($typeName, strrpos($typeName, '\\') + 1)
-                : $typeName;
-
-            if (in_array($shortName, $this->broadExceptionTypes, true)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
      * Get information about broad exception types in the catch.
      *
      * @param  array<Node\Name>  $types
@@ -1097,6 +1061,40 @@ class SilentFailureVisitor extends NodeVisitorAbstract
         }
 
         return false;
+    }
+
+    /**
+     * Get non-whitelisted exception types in a union.
+     *
+     * Returns null if ALL types are whitelisted (skip catch).
+     * Returns array of non-whitelisted type names if SOME are not whitelisted.
+     *
+     * @param  array<Node\Name>  $types
+     * @return array<string>|null
+     */
+    private function getNonWhitelistedExceptionTypes(array $types): ?array
+    {
+        $nonWhitelisted = [];
+
+        foreach ($types as $type) {
+            $typeName = $type->toString();
+            $shortName = str_contains($typeName, '\\')
+                ? substr($typeName, strrpos($typeName, '\\') + 1)
+                : $typeName;
+
+            // Broad types are ALWAYS non-whitelisted
+            if (in_array($shortName, $this->broadExceptionTypes, true)) {
+                $nonWhitelisted[] = $shortName;
+
+                continue;
+            }
+
+            if (! $this->isWhitelistedException($typeName)) {
+                $nonWhitelisted[] = $shortName;
+            }
+        }
+
+        return empty($nonWhitelisted) ? null : $nonWhitelisted;
     }
 
     /**

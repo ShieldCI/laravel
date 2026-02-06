@@ -1653,7 +1653,7 @@ PHP;
         $this->assertCount(1, $issues);
     }
 
-    public function test_skips_union_type_when_first_type_is_whitelisted(): void
+    public function test_flags_union_type_with_partial_whitelist(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1669,7 +1669,8 @@ class UserService
         try {
             return User::findOrFail($id);
         } catch (ModelNotFoundException|\RuntimeException $e) {
-            // ModelNotFoundException is whitelisted, so entire catch should be skipped
+            // ModelNotFoundException is whitelisted, but RuntimeException is not
+            // Should flag the non-whitelisted type
             return null;
         }
     }
@@ -1684,10 +1685,11 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('non-whitelisted type(s): RuntimeException', $result);
     }
 
-    public function test_skips_union_type_when_second_type_is_whitelisted(): void
+    public function test_flags_union_type_with_partial_whitelist_regardless_of_position(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1703,7 +1705,9 @@ class UserService
         try {
             return User::findOrFail($id);
         } catch (\RuntimeException|ModelNotFoundException $e) {
-            // ModelNotFoundException is whitelisted (second in union), so entire catch should be skipped
+            // RuntimeException is first but not whitelisted
+            // ModelNotFoundException is second and whitelisted
+            // Should still flag RuntimeException
             return null;
         }
     }
@@ -1718,7 +1722,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('non-whitelisted type(s): RuntimeException', $result);
     }
 
     public function test_flags_union_type_when_no_types_are_whitelisted(): void
@@ -1790,7 +1795,7 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_skips_union_type_with_three_types_when_middle_is_whitelisted(): void
+    public function test_flags_multiple_non_whitelisted_types_in_union(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1807,6 +1812,7 @@ class MultiService
             $this->doWork();
         } catch (\RuntimeException|ModelNotFoundException|\LogicException $e) {
             // ModelNotFoundException (middle type) is whitelisted
+            // RuntimeException and LogicException are not whitelisted
             return null;
         }
     }
@@ -1821,7 +1827,45 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('non-whitelisted type(s): RuntimeException|LogicException', $result);
+    }
+
+    public function test_still_analyzes_catch_body_after_partial_whitelist_warning(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\ModelNotFoundException;
+
+class WarningService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (ModelNotFoundException|\RuntimeException $e) {
+            // Partial whitelist warning should be issued
+            // But empty catch body should ALSO be flagged
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/WarningService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        // Should have both the partial whitelist warning AND the empty catch warning
+        $this->assertHasIssueContaining('non-whitelisted type(s): RuntimeException', $result);
+        $this->assertHasIssueContaining('Empty catch block', $result);
     }
 
     // ========================================================================

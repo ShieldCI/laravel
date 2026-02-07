@@ -1224,6 +1224,7 @@ class AnalyzeCommand extends Command
      * - If rule specifies 'path_pattern': glob pattern match required
      * - If rule specifies 'message': exact message match required
      * - If rule specifies 'message_pattern': wildcard pattern match required
+     *   (also matches against recommendation field for analyzers like PHPStan)
      * - If rule specifies only path criteria: matches ANY message
      * - If rule specifies only message criteria: matches ANY path
      * - If rule specifies both: BOTH must match
@@ -1293,7 +1294,10 @@ class AnalyzeCommand extends Command
                 $pattern = $ignoreError['message_pattern'];
 
                 // Use Laravel Str::is for wildcard matching
-                $messageMatches = \Illuminate\Support\Str::is($pattern, $issueMessage);
+                // Match against both message AND recommendation (PHPStan errors include details in recommendation)
+                $issueRecommendation = $issue->recommendation ?? '';
+                $messageMatches = \Illuminate\Support\Str::is($pattern, $issueMessage) ||
+                                 \Illuminate\Support\Str::is($pattern, $issueRecommendation);
             }
 
             // Both path and message criteria must match

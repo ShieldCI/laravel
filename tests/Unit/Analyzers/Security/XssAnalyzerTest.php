@@ -1160,4 +1160,199 @@ BLADE;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('src attribute', $result);
     }
+
+    // ==========================================
+    // Safe JavaScript No-Op Pattern Tests
+    // ==========================================
+
+    public function test_does_not_flag_javascript_void_0_noop(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <a href="javascript:void(0)" onclick="handleClick()">Click me</a>
+    <a href="javascript:void(0);">Another link</a>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['noop-void.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // javascript:void(0) is a safe no-op pattern
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_javascript_semicolon_noop(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <a href="javascript:;" onclick="openModal()">Open</a>
+    <a href="javascript:;" class="disabled-link">Disabled</a>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['noop-semicolon.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // javascript:; is a safe no-op pattern
+        $this->assertPassed($result);
+    }
+
+    public function test_still_flags_javascript_with_executable_code(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <a href="javascript:alert('XSS')">Dangerous</a>
+    <a href="javascript:doSomething()">Also dangerous</a>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['js-exec.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should still flag executable javascript: patterns
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('javascript: protocol', $result);
+    }
+
+    // ==========================================
+    // URL-Safe Context Tests (http_build_query, urlencode)
+    // ==========================================
+
+    public function test_does_not_flag_http_build_query_encoded_request(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <a href="/search?{{ http_build_query(request()->all()) }}">Search Results</a>
+    <a href="/filter?{{ http_build_query(request()->only(['sort', 'order'])) }}">Filter</a>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['http-build-query.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // http_build_query() URL-encodes values, making them safe
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_urlencode_in_href(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <a href="/search?q={{ urlencode(request('query')) }}">Search</a>
+    <a href="/profile?name={{ rawurlencode(request('name')) }}">Profile</a>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['urlencode-href.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // urlencode/rawurlencode make user input safe in URL context
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_http_build_query_with_request_facade(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <a href="/api?{{ http_build_query(Request::all()) }}">API Call</a>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['http-build-query-facade.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // http_build_query with Request:: facade is also safe
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_http_build_query_with_superglobals(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <a href="/legacy?{{ http_build_query($_GET) }}">Legacy Link</a>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['http-build-query-superglobal.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // http_build_query with superglobals is also safe
+        $this->assertPassed($result);
+    }
+
+    public function test_still_flags_unencoded_request_in_href(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <a href="/redirect?url={{ request('url') }}">Redirect</a>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['unencoded-request.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should still flag unencoded user input
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('href attribute', $result);
+    }
+
+    public function test_does_not_flag_urlencode_in_src_attribute(): void
+    {
+        $bladeCode = <<<'BLADE'
+<div>
+    <img src="/image?path={{ urlencode(request('path')) }}" alt="Image">
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['urlencode-src.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // urlencode makes user input safe in src attribute
+        $this->assertPassed($result);
+    }
 }

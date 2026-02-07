@@ -13,6 +13,17 @@ use Symfony\Component\Process\Process;
 class PHPStanRunner
 {
     /**
+     * Known false positive patterns to suppress.
+     * These are issues PHPStan reports incorrectly for well-known libraries.
+     *
+     * @var array<string>
+     */
+    private const KNOWN_FALSE_POSITIVES = [
+        // Carbon\CarbonPeriod implements Iterator but PHPStan doesn't recognize it
+        '#Argument of an invalid type Carbon\\\\CarbonPeriod supplied for foreach#',
+    ];
+
+    /**
      * @var array<string, mixed>|null
      */
     private ?array $result = null;
@@ -93,7 +104,26 @@ class PHPStanRunner
             }
         }
 
-        return collect($issues);
+        return $this->filterKnownFalsePositives(collect($issues));
+    }
+
+    /**
+     * Filter out known false positives from issues.
+     *
+     * @param  Collection<int, array{file: string, line: int, message: string}>  $issues
+     * @return Collection<int, array{file: string, line: int, message: string}>
+     */
+    private function filterKnownFalsePositives(Collection $issues): Collection
+    {
+        return $issues->reject(function (array $issue) {
+            foreach (self::KNOWN_FALSE_POSITIVES as $pattern) {
+                if (preg_match($pattern, $issue['message']) === 1) {
+                    return true; // Reject this issue (it's a known false positive)
+                }
+            }
+
+            return false;
+        });
     }
 
     /**

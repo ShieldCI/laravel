@@ -96,8 +96,11 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         // Track variable assignments with ->all() or ->get()
         if ($node instanceof Node\Expr\Assign) {
             if ($node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
-                if ($this->isAllOrGetCall($node->expr)) {
-                    $this->variableAssignments[$node->var->name] = $node->expr;
+                $name = $node->var->name;
+                if ($this->isFetchCollectionCall($node->expr)) {
+                    $this->variableAssignments[$name] = $node->expr;
+                } else {
+                    unset($this->variableAssignments[$name]);
                 }
             }
         }
@@ -107,7 +110,7 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
             $loopIterator = $node->expr;
 
             // Check if iterator is a direct ->all() or ->get() call
-            if ($this->isAllOrGetCall($loopIterator)) {
+            if ($this->isFetchCollectionCall($loopIterator)) {
                 $this->issues[] = [
                     'message' => 'Looping over ->all() or ->get() without chunk() can cause memory issues on large datasets',
                     'line' => $node->getLine(),
@@ -133,7 +136,7 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         return null;
     }
 
-    private function isAllOrGetCall(?Node\Expr $expr): bool
+    private function isFetchCollectionCall(?Node\Expr $expr): bool
     {
         if ($expr === null) {
             return false;
@@ -150,17 +153,51 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // If chain ends with all() or get() and doesn't have chunk/cursor/lazy/lazyById/chunkById
-        $endsWithFetch = in_array(end($methods), ['all', 'get'], true);
-        $safeChunkingMethods = ['chunk', 'cursor', 'lazy', 'lazyById', 'chunkById'];
+        // Check if chain contains all() or get() ANYWHERE (not just at end)
+        // This catches: User::all()->sortBy('name'), User::get()->filter(...)
+        $hasFetchMethod = in_array('all', $methods, true) || in_array('get', $methods, true);
+
+        if (! $hasFetchMethod) {
+            return false;
+        }
+
+        // If single method chain (just 'all' or 'get') and NOT a static call, skip.
+        // This filters out $request->all(), $config->get(), collect()->all(), etc.
+        // Eloquent calls are either static (User::all()) or have query methods (->where()->get())
+        if (count($methods) === 1 && ! $this->isStaticCallChain($expr)) {
+            return false;
+        }
+
+        // Safe chunking/pagination methods that handle memory efficiently
+        $safeChunkingMethods = [
+            'chunk', 'chunkById', 'chunkByIdDesc', 'cursor', 'lazy', 'lazyById', 'lazyByIdDesc',
+            'paginate', 'simplePaginate', 'cursorPaginate',
+        ];
         $hasChunking = ! empty(array_intersect($methods, $safeChunkingMethods));
 
-        // Check if query has explicit limit/take/first (small dataset)
-        $hasSmallDatasetModifier = in_array('limit', $methods, true)
-            || in_array('take', $methods, true)
-            || in_array('first', $methods, true);
+        // Single-record or limited-result methods (small dataset)
+        $smallDatasetMethods = [
+            'limit', 'take', 'first', 'firstOrFail', 'firstWhere',
+            'find', 'findOrFail', 'findOr', 'sole', 'soleOrFail', 'value',
+        ];
+        $hasSmallDatasetModifier = ! empty(array_intersect($methods, $smallDatasetMethods));
 
-        return $endsWithFetch && ! $hasChunking && ! $hasSmallDatasetModifier;
+        return ! $hasChunking && ! $hasSmallDatasetModifier;
+    }
+
+    /**
+     * Check if the expression chain originates from a static call (e.g., User::all()).
+     * This helps distinguish Eloquent calls from instance method calls like $request->all().
+     */
+    private function isStaticCallChain(Node\Expr $expr): bool
+    {
+        $current = $expr;
+
+        while ($current instanceof Node\Expr\MethodCall) {
+            $current = $current->var;
+        }
+
+        return $current instanceof Node\Expr\StaticCall;
     }
 
     private function getMethodChain(Node\Expr $expr): array
@@ -195,22 +232,11 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
     /**
      * Get a code snippet from a node for display purposes.
      */
-    private function getCodeSnippet(Node\Expr $expr): ?string
+    private function getCodeSnippet(Node\Expr $expr): string
     {
-        // Try to get a meaningful code representation
-        if ($expr instanceof Node\Expr\Variable && is_string($expr->name)) {
-            return '$'.$expr->name;
-        }
+        $printer = new \PhpParser\PrettyPrinter\Standard;
 
-        // For method/static calls, try to reconstruct the call
-        if ($expr instanceof Node\Expr\MethodCall || $expr instanceof Node\Expr\StaticCall) {
-            $methods = $this->getMethodChain($expr);
-            if (! empty($methods)) {
-                return implode('->', $methods).'()';
-            }
-        }
-
-        return null;
+        return $printer->prettyPrintExpr($expr);
     }
 
     public function getIssues(): array

@@ -7,6 +7,7 @@ namespace ShieldCI\Analyzers\BestPractices;
 use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -71,10 +72,11 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
         // Only set default paths if not already set (allows tests to override)
         if (empty($this->paths)) {
             $this->setBasePath(base_path());
-            $this->setPaths(['app/Models', 'app']);
+            $this->setPaths(['app/Models']);
         }
 
         $modelFiles = $this->getPhpFiles();
+        $affectedModels = [];
 
         foreach ($modelFiles as $file) {
             try {
@@ -85,6 +87,7 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
 
                 $visitor = new FatModelVisitor($this->methodThreshold, $this->locThreshold, $this->complexityThreshold);
                 $traverser = new NodeTraverser;
+                $traverser->addVisitor(new NameResolver);
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
 
@@ -97,6 +100,7 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
                         recommendation: $issue['recommendation'],
                         code: $issue['code'] ?? null,
                     );
+                    $affectedModels[$file] = true;
                 }
             } catch (\Throwable $e) {
                 // Skip files with parse errors
@@ -109,7 +113,11 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
         }
 
         return $this->failed(
-            sprintf('Found %d fat model(s) that should be refactored', count($issues)),
+            sprintf(
+                'Found %d issue(s) across %d fat model(s) that should be refactored',
+                count($issues),
+                count($affectedModels)
+            ),
             $issues
         );
     }
@@ -128,9 +136,9 @@ class FatModelVisitor extends NodeVisitorAbstract
     private int $classStartLine = 0;
 
     public function __construct(
-        private int $methodThreshold,
-        private int $locThreshold,
-        private int $complexityThreshold
+        private readonly int $methodThreshold,
+        private readonly int $locThreshold,
+        private readonly int $complexityThreshold
     ) {}
 
     public function enterNode(Node $node): ?Node
@@ -161,26 +169,43 @@ class FatModelVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        $parentClass = $class->extends->toString();
+        // Get the fully qualified name from NameResolver
+        // - FullyQualified nodes: use toString() directly
+        // - Unresolved names: check namespacedName attribute (namespace-relative)
+        if ($class->extends instanceof Node\Name\FullyQualified) {
+            $parentClass = $class->extends->toString();
+        } else {
+            $namespacedName = $class->extends->getAttribute('namespacedName');
+            $parentClass = $namespacedName instanceof Node\Name
+                ? $namespacedName->toString()
+                : $class->extends->toString();
+        }
 
         // Standard Eloquent Model
-        if ($parentClass === 'Model'
-            || str_ends_with($parentClass, '\\Model')
-            || $parentClass === 'Illuminate\\Database\\Eloquent\\Model') {
+        if ($parentClass === 'Illuminate\\Database\\Eloquent\\Model') {
             return true;
         }
 
-        // Custom base models (common patterns in Laravel apps)
-        if (str_ends_with($parentClass, 'BaseModel')
-            || str_contains($parentClass, '\\Models\\Base')
-            || preg_match('/Base[A-Z]\w*Model/', $parentClass)) {
+        // Any class ending with "Model" is likely a custom base model
+        if (str_ends_with($parentClass, 'Model')) {
             return true;
         }
 
         // Pivot models
-        if ($parentClass === 'Pivot'
-            || str_ends_with($parentClass, '\\Pivot')
-            || $parentClass === 'Illuminate\\Database\\Eloquent\\Relations\\Pivot') {
+        if ($parentClass === 'Illuminate\\Database\\Eloquent\\Relations\\Pivot'
+            || str_ends_with($parentClass, '\\Pivot')) {
+            return true;
+        }
+
+        // MorphPivot models
+        if ($parentClass === 'Illuminate\\Database\\Eloquent\\Relations\\MorphPivot'
+            || str_ends_with($parentClass, '\\MorphPivot')) {
+            return true;
+        }
+
+        // Authenticatable (User model base)
+        if ($parentClass === 'Illuminate\\Foundation\\Auth\\User'
+            || str_ends_with($parentClass, '\\Authenticatable')) {
             return true;
         }
 
@@ -224,10 +249,10 @@ class FatModelVisitor extends NodeVisitorAbstract
             ];
         }
 
-        // Check lines of code with dynamic severity
-        $loc = $this->countActualLOC($class);
-        if ($loc > $this->locThreshold) {
-            $excess = $loc - $this->locThreshold;
+        // Check statement lines (properties + methods span) with dynamic severity
+        $statementLines = $this->countStatementLines($class);
+        if ($statementLines > $this->locThreshold) {
+            $excess = $statementLines - $this->locThreshold;
             $severity = match (true) {
                 $excess >= 200 => Severity::High,  // 500+ lines (threshold + 200)
                 $excess >= 100 => Severity::Medium, // 400-499 lines (threshold + 100)
@@ -236,9 +261,9 @@ class FatModelVisitor extends NodeVisitorAbstract
 
             $this->issues[] = [
                 'message' => sprintf(
-                    'Model "%s" has %d lines of code (threshold: %d). Model is too large',
+                    'Model "%s" has %d statement lines (threshold: %d). Model is too large',
                     $this->currentClassName,
-                    $loc,
+                    $statementLines,
                     $this->locThreshold
                 ),
                 'line' => $this->classStartLine,
@@ -252,6 +277,13 @@ class FatModelVisitor extends NodeVisitorAbstract
         foreach ($methods as $method) {
             $complexity = $this->calculateComplexity($method);
             if ($complexity > $this->complexityThreshold) {
+                $excess = $complexity - $this->complexityThreshold;
+                $severity = match (true) {
+                    $excess >= 15 => Severity::High,   // 25+ complexity (threshold + 15)
+                    $excess >= 5 => Severity::Medium,  // 15-24 complexity (threshold + 5)
+                    default => Severity::Low,          // 11-14 complexity
+                };
+
                 $this->issues[] = [
                     'message' => sprintf(
                         'Method "%s::%s()" has complexity of %d (threshold: %d)',
@@ -261,7 +293,7 @@ class FatModelVisitor extends NodeVisitorAbstract
                         $this->complexityThreshold
                     ),
                     'line' => $method->getStartLine(),
-                    'severity' => Severity::Low,
+                    'severity' => $severity,
                     'recommendation' => 'Complex methods in models indicate business logic that should be extracted to service classes',
                     'code' => null,
                 ];
@@ -270,9 +302,10 @@ class FatModelVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Count actual lines of code (properties + methods), excluding blank lines and pure comment blocks.
+     * Count statement lines (properties + methods span).
+     * Note: Includes docblocks and comments within the span.
      */
-    private function countActualLOC(Node\Stmt\Class_ $class): int
+    private function countStatementLines(Node\Stmt\Class_ $class): int
     {
         $loc = 0;
 
@@ -293,6 +326,21 @@ class FatModelVisitor extends NodeVisitorAbstract
         $excluded = [
             // Lifecycle hooks
             'boot', 'booting', 'booted',
+            // Casting (Laravel 11+)
+            'casts',
+            // Eloquent customization
+            'newEloquentBuilder', 'newCollection', 'newFactory',
+            // Route model binding (UrlRoutable)
+            'resolveRouteBinding', 'resolveChildRouteBinding',
+            'getRouteKeyName', 'getRouteKey',
+            // Serialization (Arrayable, Jsonable)
+            'toArray', 'toJson',
+            // Broadcasting
+            'broadcastOn', 'broadcastWith', 'broadcastAs',
+            // Prunable
+            'prunable',
+            // Scout searchable
+            'shouldBeSearchable', 'toSearchableArray', 'searchableAs',
         ];
 
         if (in_array($name, $excluded, true)) {
@@ -334,17 +382,22 @@ class FatModelVisitor extends NodeVisitorAbstract
     private function isRelationshipMethod(Node\Stmt\ClassMethod $method): bool
     {
         // Check return type hint first (Laravel 8+)
-        if ($method->returnType instanceof Node\Name) {
-            $returnType = $method->returnType->toString();
+        if ($method->returnType !== null) {
+            $typeNames = $this->extractTypeNames($method->returnType);
             $relationshipTypes = [
+                // Base relation type (common generic type hint)
+                'Relation',
+                // Specific relation types
                 'HasOne', 'HasMany', 'BelongsTo', 'BelongsToMany',
                 'MorphTo', 'MorphOne', 'MorphMany', 'MorphToMany',
-                'HasOneThrough', 'HasManyThrough',
+                'HasOneThrough', 'HasManyThrough', 'MorphedByMany',
             ];
 
-            foreach ($relationshipTypes as $type) {
-                if (str_ends_with($returnType, $type)) {
-                    return true;
+            foreach ($typeNames as $typeName) {
+                foreach ($relationshipTypes as $relationType) {
+                    if (str_ends_with($typeName, $relationType)) {
+                        return true;
+                    }
                 }
             }
         }
@@ -357,7 +410,7 @@ class FatModelVisitor extends NodeVisitorAbstract
         $relationshipMethods = [
             'hasOne', 'hasMany', 'belongsTo', 'belongsToMany',
             'morphTo', 'morphOne', 'morphMany', 'morphToMany',
-            'hasOneThrough', 'hasManyThrough',
+            'hasOneThrough', 'hasManyThrough', 'morphedByMany',
         ];
 
         // Find the last return statement (handles multi-line method bodies)
@@ -368,6 +421,42 @@ class FatModelVisitor extends NodeVisitorAbstract
         }
 
         return false;
+    }
+
+    /**
+     * Extract type names from a type node (handles Name, NullableType, UnionType, FullyQualified).
+     *
+     * @return array<int, string>
+     */
+    private function extractTypeNames(Node $typeNode): array
+    {
+        $names = [];
+
+        if ($typeNode instanceof Node\NullableType) {
+            // ?HasMany -> extract HasMany
+            $names = array_merge($names, $this->extractTypeNames($typeNode->type));
+        } elseif ($typeNode instanceof Node\UnionType) {
+            // HasMany|BelongsTo -> extract both
+            foreach ($typeNode->types as $type) {
+                $names = array_merge($names, $this->extractTypeNames($type));
+            }
+        } elseif ($typeNode instanceof Node\IntersectionType) {
+            // Handle intersection types (PHP 8.1+)
+            foreach ($typeNode->types as $type) {
+                $names = array_merge($names, $this->extractTypeNames($type));
+            }
+        } elseif ($typeNode instanceof Node\Name\FullyQualified) {
+            // \Illuminate\Database\Eloquent\Relations\HasMany
+            $names[] = $typeNode->toString();
+        } elseif ($typeNode instanceof Node\Name) {
+            // HasMany or Illuminate\Database\Eloquent\Relations\HasMany
+            $names[] = $typeNode->toString();
+        } elseif ($typeNode instanceof Node\Identifier) {
+            // Built-in types like string, int, etc. (not relationships)
+            $names[] = $typeNode->toString();
+        }
+
+        return $names;
     }
 
     /**
@@ -451,6 +540,16 @@ class ComplexityVisitor extends NodeVisitorAbstract
             || $node instanceof Node\Expr\BinaryOp\LogicalOr
         ) {
             $this->complexity++;
+        }
+
+        // Null coalesce operator (??)
+        if ($node instanceof Node\Expr\BinaryOp\Coalesce) {
+            $this->complexity++;
+        }
+
+        // PHP 8 match expression - each arm is a branch, complexity = arms - 1
+        if ($node instanceof Node\Expr\Match_) {
+            $this->complexity += max(0, count($node->arms) - 1);
         }
 
         return null;

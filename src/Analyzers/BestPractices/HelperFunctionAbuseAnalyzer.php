@@ -25,12 +25,61 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  * - Threshold violations
  * - Recommends proper dependency injection
  * - Controllers and services primarily affected
+ *
+ * Whitelisted contexts (where helper usage is acceptable):
+ * - Service Providers: Need helpers for bootstrapping
+ * - Console Commands: Often need dynamic resolution
+ * - Tests: Flexibility for testing
+ * - Seeders: Need service resolution for data generation
+ * - Migrations: Don't support constructor DI
+ *
+ * Helper categories:
+ * - DEPENDENCY_HIDING_HELPERS: Counted (hide real dependencies)
+ * - DEBUG_HELPERS: Not counted (handled by DebugModeAnalyzer)
+ * - LOW_PRIORITY_HELPERS: Not counted (simple utilities, rarely abused)
+ *
+ * Note: Utility helpers (collect, tap, value, optional, now, today, etc.)
+ * are intentionally excluded as they don't hide dependencies.
+ *
+ * Note: Helper calls inside closures and arrow functions are counted,
+ * as they still represent hidden dependencies within the class.
  */
 class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
 {
     public const DEFAULT_THRESHOLD = 5;
 
-    /** @var array<string> */
+    /**
+     * Helpers that HIDE dependencies (counted by default).
+     * These create implicit dependencies that make testing difficult.
+     *
+     * @var array<string>
+     */
+    public const DEPENDENCY_HIDING_HELPERS = [
+        'app', 'auth', 'cache', 'config', 'cookie', 'event', 'logger', 'old',
+        'redirect', 'request', 'response', 'route', 'session', 'storage_path',
+        'url', 'view', 'abort', 'abort_if', 'abort_unless', 'dispatch',
+        'info', 'policy', 'resolve', 'validator', 'report',
+    ];
+
+    /**
+     * Debug helpers - handled by DebugModeAnalyzer.
+     *
+     * @var array<string>
+     */
+    public const DEBUG_HELPERS = ['dd', 'dump'];
+
+    /**
+     * Simple crypto/utility helpers - rarely abused.
+     *
+     * @var array<string>
+     */
+    public const LOW_PRIORITY_HELPERS = ['bcrypt'];
+
+    /**
+     * All helpers combined (for backward compatibility).
+     *
+     * @var array<string>
+     */
     public const DEFAULT_HELPER_FUNCTIONS = [
         'app', 'auth', 'cache', 'config', 'cookie', 'event', 'logger', 'old',
         'redirect', 'request', 'response', 'route', 'session', 'storage_path',
@@ -40,10 +89,33 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
         'validator', 'value', 'report',
     ];
 
+    /** @var array<string> Default directories to whitelist */
+    private const DEFAULT_WHITELIST_DIRS = [
+        'tests',
+        'database/migrations',
+        'database/seeders',
+        'database/factories',
+    ];
+
+    /** @var array<string> Default class patterns to whitelist */
+    private const DEFAULT_WHITELIST_CLASSES = [
+        '*ServiceProvider',
+        '*Command',
+        '*Seeder',
+        '*Test',
+        '*TestCase',
+    ];
+
     private int $threshold;
 
     /** @var array<string> */
     private array $helperFunctions;
+
+    /** @var array<string> */
+    private array $whitelistDirs;
+
+    /** @var array<string> */
+    private array $whitelistClasses;
 
     public function __construct(
         private ParserInterface $parser,
@@ -70,24 +142,41 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
         $analyzerConfig = $this->config->get('shieldci.analyzers.best-practices.helper-function-abuse', []);
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
-        $this->threshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;
+        $configThreshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;
+        $this->threshold = is_int($configThreshold) && $configThreshold >= 1
+            ? $configThreshold
+            : self::DEFAULT_THRESHOLD;
+
+        // Load whitelist configuration
+        $configDirs = $analyzerConfig['whitelist_dirs'] ?? self::DEFAULT_WHITELIST_DIRS;
+        $this->whitelistDirs = is_array($configDirs) ? $configDirs : self::DEFAULT_WHITELIST_DIRS;
+
+        $configClasses = $analyzerConfig['whitelist_classes'] ?? self::DEFAULT_WHITELIST_CLASSES;
+        $this->whitelistClasses = is_array($configClasses) ? $configClasses : self::DEFAULT_WHITELIST_CLASSES;
+
+        // Build helper list - backward compatible with custom helper_functions config
         $helperFuncs = $analyzerConfig['helper_functions'] ?? null;
         $this->helperFunctions = (is_array($helperFuncs) && ! empty($helperFuncs))
             ? $helperFuncs
-            : self::DEFAULT_HELPER_FUNCTIONS;
+            : self::DEPENDENCY_HIDING_HELPERS;
 
         $issues = [];
         $threshold = $this->threshold;
         $helpers = $this->helperFunctions;
 
         foreach ($this->getPhpFiles() as $file) {
+            // Skip whitelisted directories
+            if ($this->isWhitelistedDirectory($file)) {
+                continue;
+            }
+
             $ast = $this->parser->parseFile($file);
 
             if (empty($ast)) {
                 continue;
             }
 
-            $visitor = new HelperFunctionVisitor($helpers, $threshold);
+            $visitor = new HelperFunctionVisitor($helpers, $threshold, $this->whitelistClasses);
             $traverser = new NodeTraverser;
             $traverser->addVisitor($visitor);
             $traverser->traverse($ast);
@@ -151,17 +240,42 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
     private function getRecommendation(string $class, array $helpers, int $count): string
     {
         $helperList = [];
+        arsort($helpers);
         foreach ($helpers as $helper => $usageCount) {
             $helperList[] = "{$helper}() ({$usageCount}x)";
         }
         $helperString = implode(', ', $helperList);
 
-        return "Class '{$class}' uses {$count} helper function calls: {$helperString}. While Laravel helpers are convenient, excessive use hides dependencies and makes unit testing difficult. ";
+        return "Class '{$class}' uses {$count} helper function calls: {$helperString}. "
+            .'While Laravel helpers are convenient, excessive use hides dependencies and makes unit testing difficult. '
+            .'Consider injecting dependencies via constructor (e.g., Config, Request, Session contracts) instead of using global helpers.';
+    }
+
+    /**
+     * Check if file is in a whitelisted directory.
+     */
+    private function isWhitelistedDirectory(string $file): bool
+    {
+        $normalizedFile = str_replace('\\', '/', $file);
+
+        foreach ($this->whitelistDirs as $dir) {
+            $normalizedDir = trim(str_replace('\\', '/', $dir), '/');
+
+            // Match complete path segments: /tests/ or starts with tests/ or ends with /tests
+            if (preg_match('#(?:^|/)'.preg_quote($normalizedDir, '#').'(?:/|$)#', $normalizedFile)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
 
 /**
  * Visitor to track helper function usage.
+ *
+ * Uses a class stack pattern to properly handle nested classes (including anonymous classes).
+ * Helper calls inside anonymous classes are attributed to the anonymous class, not the outer class.
  */
 class HelperFunctionVisitor extends NodeVisitorAbstract
 {
@@ -171,57 +285,51 @@ class HelperFunctionVisitor extends NodeVisitorAbstract
     private array $issues = [];
 
     /**
-     * Current class name.
-     */
-    private ?string $currentClass = null;
-
-    /**
-     * Current class start line.
-     */
-    private int $currentClassLine = 0;
-
-    /**
-     * Helper function calls in current class.
+     * Stack to track nested class contexts.
+     * Each entry contains: class name (null for anonymous), start line, and helper counts.
      *
-     * @var array<string, int>
+     * @var array<int, array{class: string|null, line: int, helpers: array<string, int>}>
      */
-    private array $currentHelpers = [];
+    private array $classStack = [];
 
     /**
      * @param  array<string>  $helperFunctions
+     * @param  array<string>  $whitelistClasses
      */
     public function __construct(
         private array $helperFunctions,
-        private int $threshold
+        private int $threshold,
+        private array $whitelistClasses = []
     ) {}
 
     public function enterNode(Node $node)
     {
-        // Track class entry
+        // Track class entry (including anonymous classes)
         if ($node instanceof Stmt\Class_) {
-            // Skip anonymous classes
-            if ($node->name === null) {
-                return null;
-            }
+            $className = $node->name?->toString();  // null for anonymous
 
-            $this->currentClass = $node->name->toString();
-            $this->currentClassLine = $node->getStartLine();
-            $this->currentHelpers = [];
+            $this->classStack[] = [
+                'class' => $className,
+                'line' => $node->getStartLine(),
+                'helpers' => [],
+            ];
 
             return null;
         }
 
         // Track trait entry
         if ($node instanceof Stmt\Trait_) {
-            $this->currentClass = $node->name?->toString();
-            $this->currentClassLine = $node->getStartLine();
-            $this->currentHelpers = [];
+            $this->classStack[] = [
+                'class' => $node->name?->toString(),
+                'line' => $node->getStartLine(),
+                'helpers' => [],
+            ];
 
             return null;
         }
 
-        // Only track inside classes or traits
-        if ($this->currentClass === null) {
+        // Only track helpers inside classes or traits
+        if (empty($this->classStack)) {
             return null;
         }
 
@@ -230,12 +338,13 @@ class HelperFunctionVisitor extends NodeVisitorAbstract
             if ($node->name instanceof Node\Name) {
                 $functionName = $node->name->toString();
 
-                // Check if it's a tracked helper
+                // Check if it's a tracked helper - attribute to innermost class
                 if (in_array($functionName, $this->helperFunctions, true)) {
-                    if (! isset($this->currentHelpers[$functionName])) {
-                        $this->currentHelpers[$functionName] = 0;
+                    $index = array_key_last($this->classStack);
+                    if (! isset($this->classStack[$index]['helpers'][$functionName])) {
+                        $this->classStack[$index]['helpers'][$functionName] = 0;
                     }
-                    $this->currentHelpers[$functionName]++;
+                    $this->classStack[$index]['helpers'][$functionName]++;
                 }
             }
         }
@@ -247,29 +356,63 @@ class HelperFunctionVisitor extends NodeVisitorAbstract
     {
         // Check helper count on class or trait exit
         if ($node instanceof Stmt\Class_ || $node instanceof Stmt\Trait_) {
-            // Skip anonymous classes
-            if ($node instanceof Stmt\Class_ && $node->name === null) {
+            if (empty($this->classStack)) {
                 return null;
             }
 
-            $helperCount = array_sum($this->currentHelpers);
+            $context = array_pop($this->classStack);
+
+            // Skip anonymous classes (class === null)
+            if ($context['class'] === null) {
+                return null;
+            }
+
+            // Skip whitelisted classes (e.g., ServiceProviders, Commands, Tests)
+            if ($this->isWhitelistedClass($context['class'])) {
+                return null;
+            }
+
+            $helperCount = array_sum($context['helpers']);
 
             if ($helperCount > $this->threshold) {
                 $this->issues[] = [
-                    'class' => $this->currentClass ?? 'Unknown',
-                    'helpers' => $this->currentHelpers,
+                    'class' => $context['class'],
+                    'helpers' => $context['helpers'],
                     'count' => $helperCount,
-                    'line' => $this->currentClassLine,
+                    'line' => $context['line'],
                 ];
             }
-
-            // Reset state
-            $this->currentClass = null;
-            $this->currentClassLine = 0;
-            $this->currentHelpers = [];
         }
 
         return null;
+    }
+
+    /**
+     * Check if given class matches a whitelisted pattern.
+     */
+    private function isWhitelistedClass(string $className): bool
+    {
+        foreach ($this->whitelistClasses as $pattern) {
+            if ($this->matchesPattern($className, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if class name matches pattern (supports wildcards).
+     */
+    private function matchesPattern(string $className, string $pattern): bool
+    {
+        // Convert wildcard pattern to regex
+        $pattern = str_replace('*', 'WILDCARD_PLACEHOLDER', $pattern);
+        $pattern = preg_quote($pattern, '/');
+        $pattern = str_replace('WILDCARD_PLACEHOLDER', '.*', $pattern);
+        $regex = '/^'.$pattern.'$/i';
+
+        return (bool) preg_match($regex, $className);
     }
 
     /**

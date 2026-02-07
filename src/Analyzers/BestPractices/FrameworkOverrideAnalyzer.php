@@ -7,6 +7,7 @@ namespace ShieldCI\Analyzers\BestPractices;
 use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -53,9 +54,6 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
         // HTTP Responses
         'Illuminate\\Http\\RedirectResponse',
         'Illuminate\\Http\\JsonResponse',
-
-        // Support
-        'Illuminate\\Support\\Facades\\Facade',
     ];
 
     // Classes that are OK to extend (explicitly documented as safe)
@@ -70,16 +68,17 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
         'Illuminate\\Foundation\\Http\\Middleware\\*',
         'Illuminate\\Routing\\Controller',
         'Illuminate\\Support\\ServiceProvider',
+        'Illuminate\\Support\\Facades\\Facade',
     ];
 
     /** @var array<int, string> */
-    private array $neverExtend;
+    private array $neverExtend = self::NEVER_EXTEND;
 
     /** @var array<int, string> */
-    private array $rarelyExtend;
+    private array $rarelyExtend = self::RARELY_EXTEND;
 
     /** @var array<int, string> */
-    private array $okToExtend;
+    private array $okToExtend = self::OK_TO_EXTEND;
 
     public function __construct(
         private ParserInterface $parser,
@@ -130,7 +129,10 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
                     $this->rarelyExtend,
                     $this->okToExtend
                 );
+
                 $traverser = new NodeTraverser;
+                // NameResolver resolves all class names to fully qualified names
+                $traverser->addVisitor(new NameResolver);
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
 
@@ -184,6 +186,9 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
 
 /**
  * Visitor to detect framework class overrides.
+ *
+ * Note: This visitor expects NameResolver to run first, so all class names
+ * (including $node->extends) are already fully qualified.
  */
 class FrameworkOverrideVisitor extends NodeVisitorAbstract
 {
@@ -205,7 +210,8 @@ class FrameworkOverrideVisitor extends NodeVisitorAbstract
     {
         if ($node instanceof Node\Stmt\Class_) {
             if ($node->extends !== null) {
-                $parentClass = $node->extends->toString();
+                // NameResolver has already resolved extends to fully qualified name
+                $parentClass = ltrim($node->extends->toString(), '\\');
 
                 // Skip if extending an explicitly allowed class
                 if ($this->isOkToExtend($parentClass)) {
@@ -260,27 +266,12 @@ class FrameworkOverrideVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Check if className matches coreClass (handles both short and fully qualified names).
+     * Check if className matches coreClass.
+     * Both names should be fully qualified after NameResolver.
      */
     private function matchesClass(string $className, string $coreClass): bool
     {
-        // Direct match (fully qualified name)
-        if ($className === $coreClass) {
-            return true;
-        }
-
-        // Match short class name
-        $shortName = $this->getShortClassName($coreClass);
-        if ($className === $shortName) {
-            return true;
-        }
-
-        // Match with leading backslash
-        if ($className === '\\'.$coreClass) {
-            return true;
-        }
-
-        return false;
+        return $className === $coreClass;
     }
 
     /**
@@ -347,9 +338,6 @@ class FrameworkOverrideVisitor extends NodeVisitorAbstract
 
             'Illuminate\\Database\\Connection' => 'Extending Connection is extremely risky. Use database events or query macros instead.',
 
-            'Illuminate\\Support\\Facades\\Facade' => 'Create your own facade by extending Facade is discouraged. '.
-                'Use dependency injection or create a helper function instead.',
-
             'Illuminate\\Validation\\Validator' => 'Instead of extending Validator, use custom validation rules via Validator::extend() in a service provider.',
         ];
 
@@ -357,13 +345,6 @@ class FrameworkOverrideVisitor extends NodeVisitorAbstract
             'Avoid extending core framework classes. They frequently change between Laravel versions. '.
             'Use Laravel\'s extension points instead: macros (e.g., Request::macro()), service providers, '.
             'middleware, event listeners, or custom helpers. Extending core classes will cause issues during framework upgrades.';
-    }
-
-    private function getShortClassName(string $fullClassName): string
-    {
-        $parts = explode('\\', $fullClassName);
-
-        return end($parts);
     }
 
     /**

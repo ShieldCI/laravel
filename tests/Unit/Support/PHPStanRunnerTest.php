@@ -1,0 +1,467 @@
+<?php
+
+declare(strict_types=1);
+
+namespace ShieldCI\Tests\Unit\Support;
+
+use PHPUnit\Framework\TestCase;
+use ReflectionClass;
+use ShieldCI\Support\PHPStanRunner;
+
+class PHPStanRunnerTest extends TestCase
+{
+    private string $tempDir;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->tempDir = sys_get_temp_dir().'/phpstan_runner_test_'.uniqid();
+        mkdir($this->tempDir, 0755, true);
+    }
+
+    protected function tearDown(): void
+    {
+        $this->recursiveDelete($this->tempDir);
+        parent::tearDown();
+    }
+
+    private function recursiveDelete(string $dir): void
+    {
+        if (! is_dir($dir)) {
+            return;
+        }
+
+        $items = scandir($dir);
+        if ($items === false) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $path = $dir.'/'.$item;
+            if (is_dir($path)) {
+                $this->recursiveDelete($path);
+            } else {
+                unlink($path);
+            }
+        }
+
+        rmdir($dir);
+    }
+
+    public function test_filters_higher_order_proxy_false_positive(): void
+    {
+        $this->createMockPHPStan([
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 10,
+                'message' => 'Call to an undefined method Illuminate\Support\HigherOrderCollectionProxy::something()',
+            ],
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 15,
+                'message' => 'Undefined variable: $realIssue',
+            ],
+        ]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $issues = $runner->getIssues();
+
+        // Should only have the real issue, not the HigherOrderProxy false positive
+        $this->assertCount(1, $issues);
+        $firstIssue = $issues->first();
+        $this->assertNotNull($firstIssue);
+        $this->assertStringContainsString('Undefined variable', $firstIssue['message']);
+    }
+
+    public function test_filters_higher_order_when_proxy_false_positive(): void
+    {
+        $this->createMockPHPStan([
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 10,
+                'message' => 'Call to an undefined method Illuminate\Support\HigherOrderWhenProxy::doSomething()',
+            ],
+        ]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $issues = $runner->getIssues();
+
+        $this->assertCount(0, $issues);
+    }
+
+    public function test_does_not_filter_real_issues(): void
+    {
+        $this->createMockPHPStan([
+            [
+                'file' => $this->tempDir.'/app/Services/PaymentService.php',
+                'line' => 20,
+                'message' => 'Call to an undefined static method App\Models\Payment::customNonExistentMethod()',
+            ],
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 15,
+                'message' => 'Undefined variable: $realIssue',
+            ],
+        ]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $issues = $runner->getIssues();
+
+        // Both are real issues (not HigherOrderProxy)
+        $this->assertCount(2, $issues);
+    }
+
+    public function test_generates_config_with_larastan_extension(): void
+    {
+        // Create mock Larastan extension
+        $larastanDir = $this->tempDir.'/vendor/larastan/larastan';
+        mkdir($larastanDir, 0755, true);
+        file_put_contents($larastanDir.'/extension.neon', "# Larastan extension\n");
+
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        // Read the captured config from the mock script
+        $capturedConfig = $this->getCapturedConfig();
+
+        $this->assertStringContainsString('includes:', $capturedConfig);
+        $this->assertStringContainsString('larastan/larastan/extension.neon', $capturedConfig);
+    }
+
+    public function test_generates_config_with_carbon_extension(): void
+    {
+        // Create mock Carbon extension
+        $carbonDir = $this->tempDir.'/vendor/nesbot/carbon';
+        mkdir($carbonDir, 0755, true);
+        file_put_contents($carbonDir.'/extension.neon', "# Carbon extension\n");
+
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        // Read the captured config from the mock script
+        $capturedConfig = $this->getCapturedConfig();
+
+        $this->assertStringContainsString('includes:', $capturedConfig);
+        $this->assertStringContainsString('nesbot/carbon/extension.neon', $capturedConfig);
+    }
+
+    public function test_generates_config_with_user_phpstan_neon(): void
+    {
+        // Create user's phpstan.neon
+        file_put_contents($this->tempDir.'/phpstan.neon', "# User config\n");
+
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        // Read the captured config from the mock script
+        $capturedConfig = $this->getCapturedConfig();
+
+        $this->assertStringContainsString('includes:', $capturedConfig);
+        $this->assertStringContainsString('phpstan.neon', $capturedConfig);
+    }
+
+    public function test_generates_config_with_user_phpstan_neon_dist(): void
+    {
+        // Create user's phpstan.neon.dist (without phpstan.neon)
+        file_put_contents($this->tempDir.'/phpstan.neon.dist', "# User config dist\n");
+
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        // Read the captured config from the mock script
+        $capturedConfig = $this->getCapturedConfig();
+
+        $this->assertStringContainsString('includes:', $capturedConfig);
+        $this->assertStringContainsString('phpstan.neon.dist', $capturedConfig);
+    }
+
+    public function test_prefers_phpstan_neon_over_dist(): void
+    {
+        // Create both files
+        file_put_contents($this->tempDir.'/phpstan.neon', "# Primary config\n");
+        file_put_contents($this->tempDir.'/phpstan.neon.dist', "# Dist config\n");
+
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        // Read the captured config from the mock script
+        $capturedConfig = $this->getCapturedConfig();
+
+        // Should only include phpstan.neon, not .dist
+        $this->assertStringContainsString('phpstan.neon', $capturedConfig);
+        $this->assertStringNotContainsString('phpstan.neon.dist', $capturedConfig);
+    }
+
+    public function test_generates_config_without_extensions_when_not_available(): void
+    {
+        // Don't create any extension files
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        // Read the captured config from the mock script
+        $capturedConfig = $this->getCapturedConfig();
+
+        // Should have parameters but no includes
+        $this->assertStringContainsString('parameters:', $capturedConfig);
+        $this->assertStringContainsString('level:', $capturedConfig);
+        $this->assertStringNotContainsString('includes:', $capturedConfig);
+    }
+
+    public function test_config_includes_correct_level(): void
+    {
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app'], 9);
+
+        // Read the captured config from the mock script
+        $capturedConfig = $this->getCapturedConfig();
+
+        $this->assertStringContainsString('level: 9', $capturedConfig);
+    }
+
+    public function test_cleans_up_temp_config_file(): void
+    {
+        $this->createMockPHPStan([]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        // Use reflection to access private property
+        $reflection = new ReflectionClass($runner);
+        $property = $reflection->getProperty('tempConfigFile');
+        $property->setAccessible(true);
+        $tempConfigFile = $property->getValue($runner);
+
+        // Temp config file should be null (cleaned up)
+        $this->assertNull($tempConfigFile);
+    }
+
+    public function test_is_available_returns_true_when_phpstan_exists(): void
+    {
+        $this->createMockPHPStan([]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+
+        $this->assertTrue($runner->isAvailable());
+    }
+
+    public function test_is_available_returns_false_when_phpstan_missing(): void
+    {
+        // Don't create mock PHPStan
+        $runner = new PHPStanRunner($this->tempDir);
+
+        $this->assertFalse($runner->isAvailable());
+    }
+
+    public function test_get_issues_returns_empty_collection_without_analysis(): void
+    {
+        $runner = new PHPStanRunner($this->tempDir);
+
+        $issues = $runner->getIssues();
+
+        $this->assertTrue($issues->isEmpty());
+    }
+
+    public function test_filter_by_pattern_works(): void
+    {
+        $this->createMockPHPStan([
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 10,
+                'message' => 'Undefined variable: $foo',
+            ],
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 15,
+                'message' => 'Method has no return type',
+            ],
+        ]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $issues = $runner->filterByPattern('*variable*');
+
+        $this->assertCount(1, $issues);
+        $firstIssue = $issues->first();
+        $this->assertNotNull($firstIssue);
+        $this->assertStringContainsString('variable', $firstIssue['message']);
+    }
+
+    public function test_filter_by_regex_works(): void
+    {
+        $this->createMockPHPStan([
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 10,
+                'message' => 'Undefined variable: $foo',
+            ],
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 15,
+                'message' => 'Method has no return type',
+            ],
+        ]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $issues = $runner->filterByRegex('/variable.*\$\w+/');
+
+        $this->assertCount(1, $issues);
+    }
+
+    public function test_filter_by_text_works(): void
+    {
+        $this->createMockPHPStan([
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 10,
+                'message' => 'Undefined variable: $foo',
+            ],
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 15,
+                'message' => 'Method has no return type',
+            ],
+        ]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $issues = $runner->filterByText('return type');
+
+        $this->assertCount(1, $issues);
+        $firstIssue = $issues->first();
+        $this->assertNotNull($firstIssue);
+        $this->assertStringContainsString('return type', $firstIssue['message']);
+    }
+
+    /**
+     * Create a mock PHPStan script that returns predefined issues.
+     *
+     * @param  array<array{file: string, line: int, message: string}>  $issues
+     */
+    private function createMockPHPStan(array $issues): void
+    {
+        $vendorBinDir = $this->tempDir.'/vendor/bin';
+        mkdir($vendorBinDir, 0755, true);
+
+        $files = [];
+        foreach ($issues as $issue) {
+            $file = $issue['file'];
+            if (! isset($files[$file])) {
+                $files[$file] = ['messages' => []];
+            }
+
+            $files[$file]['messages'][] = [
+                'message' => $issue['message'],
+                'line' => $issue['line'],
+                'ignorable' => true,
+            ];
+        }
+
+        $output = [
+            'totals' => [
+                'errors' => 0,
+                'file_errors' => count($issues),
+            ],
+            'files' => $files,
+            'errors' => [],
+        ];
+
+        $json = json_encode($output, JSON_PRETTY_PRINT);
+
+        $script = <<<BASH
+#!/bin/bash
+cat <<'EOF'
+{$json}
+EOF
+BASH;
+
+        file_put_contents($vendorBinDir.'/phpstan', $script);
+        chmod($vendorBinDir.'/phpstan', 0755);
+    }
+
+    /**
+     * Create a mock PHPStan script that captures the config file content.
+     */
+    private function createMockPHPStanWithConfigCapture(): void
+    {
+        $vendorBinDir = $this->tempDir.'/vendor/bin';
+        mkdir($vendorBinDir, 0755, true);
+
+        $output = [
+            'totals' => [
+                'errors' => 0,
+                'file_errors' => 0,
+            ],
+            'files' => [],
+            'errors' => [],
+        ];
+
+        $json = json_encode($output, JSON_PRETTY_PRINT);
+        $capturedConfigPath = $this->tempDir.'/captured_config.neon';
+
+        // Script that captures the config file content before outputting JSON
+        $script = <<<BASH
+#!/bin/bash
+
+# Parse the --configuration flag to get the config file path
+for arg in "\$@"; do
+    case \$arg in
+        --configuration=*)
+            CONFIG_FILE="\${arg#*=}"
+            if [ -f "\$CONFIG_FILE" ]; then
+                cp "\$CONFIG_FILE" "{$capturedConfigPath}"
+            fi
+            ;;
+    esac
+done
+
+cat <<'EOF'
+{$json}
+EOF
+BASH;
+
+        file_put_contents($vendorBinDir.'/phpstan', $script);
+        chmod($vendorBinDir.'/phpstan', 0755);
+    }
+
+    /**
+     * Read the captured config file content.
+     */
+    private function getCapturedConfig(): string
+    {
+        $path = $this->tempDir.'/captured_config.neon';
+        $this->assertFileExists($path, 'Captured config file should exist');
+
+        $content = file_get_contents($path);
+        $this->assertIsString($content, 'Captured config file should be readable');
+
+        return $content;
+    }
+}

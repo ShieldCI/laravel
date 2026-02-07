@@ -990,4 +990,719 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('complexity', $result);
     }
+
+    public function test_detects_model_with_alias(): void
+    {
+        $methods = '';
+        for ($i = 1; $i <= 20; $i++) {
+            $methods .= "\n    public function method{$i}() { return 'value'; }\n";
+        }
+
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model as Eloquent;
+
+class Product extends Eloquent
+{
+{$methods}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Product.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('business methods', $result);
+    }
+
+    public function test_detects_authenticatable_model(): void
+    {
+        $methods = '';
+        for ($i = 1; $i <= 20; $i++) {
+            $methods .= "\n    public function method{$i}() { return 'value'; }\n";
+        }
+
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+use Illuminate\Foundation\Auth\User as Authenticatable;
+
+class User extends Authenticatable
+{
+{$methods}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/User.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('business methods', $result);
+    }
+
+    public function test_detects_morph_pivot_model(): void
+    {
+        $methods = '';
+        for ($i = 1; $i <= 20; $i++) {
+            $methods .= "\n    public function method{$i}() { return 'value'; }\n";
+        }
+
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Relations\MorphPivot;
+
+class Taggable extends MorphPivot
+{
+{$methods}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Taggable.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('business methods', $result);
+    }
+
+    public function test_excludes_casts_method(): void
+    {
+        // Model with casts() method (Laravel 11+) and 14 business methods (under threshold)
+        $methods = '';
+        for ($i = 1; $i <= 14; $i++) {
+            $methods .= "\n    public function method{$i}() { return 'value'; }\n";
+        }
+
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class User extends Model
+{
+    protected function casts(): array
+    {
+        return [
+            'email_verified_at' => 'datetime',
+            'password' => 'hashed',
+        ];
+    }
+{$methods}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/User.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result); // 14 business methods (casts excluded), under threshold of 15
+    }
+
+    public function test_excludes_morphed_by_many_relationship(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\MorphedByMany;
+
+class Tag extends Model
+{
+    public function posts(): MorphedByMany
+    {
+        return $this->morphedByMany(Post::class, 'taggable');
+    }
+
+    public function videos(): MorphedByMany
+    {
+        return $this->morphedByMany(Video::class, 'taggable');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Tag.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_nullable_return_type_relationship(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+
+class Post extends Model
+{
+    public function comments(): ?HasMany
+    {
+        return $this->hasMany(Comment::class);
+    }
+
+    public function likes(): ?HasMany
+    {
+        return $this->hasMany(Like::class);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Post.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result); // Nullable relationships should be excluded
+    }
+
+    public function test_detects_union_return_type_relationship(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class Comment extends Model
+{
+    public function author(): HasMany|BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Comment.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result); // Union type relationships should be excluded
+    }
+
+    public function test_complexity_severity_scales_with_excess(): void
+    {
+        // Create a method with very high complexity (26+, which is 16+ over threshold of 10)
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Order extends Model
+{
+    public function extremelyComplexMethod()
+    {
+        $result = 0;
+
+        // 15+ decision points to get to high severity
+        if ($a) { $result++; }
+        if ($b) { $result++; }
+        if ($c) { $result++; }
+        if ($d) { $result++; }
+        if ($e) { $result++; }
+        if ($f) { $result++; }
+        if ($g) { $result++; }
+        if ($h) { $result++; }
+        if ($i) { $result++; }
+        if ($j) { $result++; }
+        if ($k) { $result++; }
+        if ($l) { $result++; }
+        if ($m) { $result++; }
+        if ($n) { $result++; }
+        if ($o) { $result++; }
+        if ($p) { $result++; }
+        if ($q) { $result++; }
+        if ($r) { $result++; }
+        if ($s) { $result++; }
+        if ($t) { $result++; }
+        if ($u) { $result++; }
+        if ($v) { $result++; }
+        if ($w) { $result++; }
+        if ($x) { $result++; }
+        if ($y) { $result++; }
+
+        return $result;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Order.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
+    }
+
+    public function test_counts_coalesce_operator_in_complexity(): void
+    {
+        // Create a method that uses null coalesce operators to increase complexity
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Settings extends Model
+{
+    public function getValue()
+    {
+        // Base complexity: 1
+        // Each ?? adds 1: 12 coalesce operators
+        // Total: 13, exceeds threshold of 10
+        return $this->a ?? $this->b ?? $this->c ?? $this->d ?? $this->e
+            ?? $this->f ?? $this->g ?? $this->h ?? $this->i ?? $this->j
+            ?? $this->k ?? $this->l ?? 'default';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Settings.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('complexity', $result);
+    }
+
+    public function test_counts_match_expression_in_complexity(): void
+    {
+        // Create a method that uses PHP 8 match expression
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Status extends Model
+{
+    public function getLabel()
+    {
+        // Base: 1
+        // match adds: 1
+        // Each arm with condition adds: 1 per condition
+        // 10 arms = 10 complexity points
+        // Total: 12, exceeds threshold of 10
+        return match ($this->status) {
+            'pending' => 'Pending',
+            'processing' => 'Processing',
+            'shipped' => 'Shipped',
+            'delivered' => 'Delivered',
+            'cancelled' => 'Cancelled',
+            'refunded' => 'Refunded',
+            'returned' => 'Returned',
+            'failed' => 'Failed',
+            'on_hold' => 'On Hold',
+            'completed' => 'Completed',
+            default => 'Unknown',
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Status.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('complexity', $result);
+    }
+
+    public function test_result_message_shows_unique_model_count(): void
+    {
+        // Create two fat models with multiple issues each
+        $methods1 = '';
+        for ($i = 1; $i <= 20; $i++) {
+            $methods1 .= "\n    public function method{$i}() { return 'value'; }\n";
+        }
+
+        $methods2 = '';
+        for ($i = 1; $i <= 18; $i++) {
+            $methods2 .= "\n    public function method{$i}() { return 'value'; }\n";
+        }
+
+        $code1 = <<<PHP
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Product extends Model
+{
+{$methods1}
+}
+PHP;
+
+        $code2 = <<<PHP
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Order extends Model
+{
+{$methods2}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/Product.php' => $code1,
+            'Models/Order.php' => $code2,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        // Should show "2 issue(s) across 2 fat model(s)"
+        $this->assertStringContainsString('2 issue(s)', $result->getMessage());
+        $this->assertStringContainsString('2 fat model(s)', $result->getMessage());
+    }
+
+    public function test_excludes_route_model_binding_methods(): void
+    {
+        // Model with route model binding methods (should be excluded)
+        $methods = '';
+        for ($i = 1; $i <= 12; $i++) {
+            $methods .= "\n    public function method{$i}() { return 'value'; }\n";
+        }
+
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class User extends Model
+{
+    public function resolveRouteBinding(\$value, \$field = null)
+    {
+        return \$this->where(\$field ?? 'slug', \$value)->firstOrFail();
+    }
+
+    public function resolveChildRouteBinding(\$childType, \$value, \$field)
+    {
+        return parent::resolveChildRouteBinding(\$childType, \$value, \$field);
+    }
+
+    public function getRouteKeyName()
+    {
+        return 'slug';
+    }
+
+    public function getRouteKey()
+    {
+        return \$this->slug;
+    }
+{$methods}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/User.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result); // 12 business + 4 route methods = 16, but route methods excluded = 12
+    }
+
+    public function test_excludes_serialization_methods(): void
+    {
+        // Model with toArray and toJson (should be excluded)
+        $methods = '';
+        for ($i = 1; $i <= 13; $i++) {
+            $methods .= "\n    public function method{$i}() { return 'value'; }\n";
+        }
+
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class User extends Model
+{
+    public function toArray()
+    {
+        return array_merge(parent::toArray(), ['custom' => 'value']);
+    }
+
+    public function toJson(\$options = 0)
+    {
+        return json_encode(\$this->toArray(), \$options);
+    }
+{$methods}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/User.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result); // 13 business + 2 serialization methods = 15, but serialization excluded = 13
+    }
+
+    public function test_excludes_scout_searchable_methods(): void
+    {
+        // Model with Scout searchable methods (should be excluded)
+        $methods = '';
+        for ($i = 1; $i <= 12; $i++) {
+            $methods .= "\n    public function method{$i}() { return 'value'; }\n";
+        }
+
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Laravel\Scout\Searchable;
+
+class Post extends Model
+{
+    use Searchable;
+
+    public function shouldBeSearchable()
+    {
+        return \$this->isPublished();
+    }
+
+    public function toSearchableArray()
+    {
+        return ['title' => \$this->title, 'content' => \$this->content];
+    }
+
+    public function searchableAs()
+    {
+        return 'posts_index';
+    }
+{$methods}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Post.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result); // 12 business + 3 scout methods = 15, but scout methods excluded = 12
+    }
+
+    public function test_detects_namespace_relative_parent_class(): void
+    {
+        // Model using namespace-relative path like Foundation\Auth\User
+        // where Foundation is imported via `use Illuminate\Foundation`
+        $methods = '';
+        for ($i = 1; $i <= 20; $i++) {
+            $methods .= "\n    public function method{$i}() { return 'value'; }\n";
+        }
+
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+use Illuminate\Foundation;
+
+class User extends Foundation\Auth\User
+{
+{$methods}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/User.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('business methods', $result);
+    }
+
+    public function test_detects_namespace_relative_model_parent(): void
+    {
+        // Model using namespace-relative path like Database\Eloquent\Model
+        // where Database is imported via `use Illuminate\Database`
+        $methods = '';
+        for ($i = 1; $i <= 20; $i++) {
+            $methods .= "\n    public function method{$i}() { return 'value'; }\n";
+        }
+
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database;
+
+class Product extends Database\Eloquent\Model
+{
+{$methods}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Product.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('business methods', $result);
+    }
+
+    public function test_ignores_non_model_user_class(): void
+    {
+        // Class extending a non-model User class should NOT be treated as a model
+        $methods = '';
+        for ($i = 1; $i <= 20; $i++) {
+            $methods .= "\n    public function method{$i}() { return 'value'; }\n";
+        }
+
+        $code = <<<PHP
+<?php
+
+namespace App\Domain;
+
+use App\Domain\User; // Not an Eloquent model
+
+class Invoice extends User
+{
+{$methods}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Domain/Invoice.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result); // Should NOT be flagged as fat model
+    }
+
+    public function test_detects_namespace_local_custom_base_model(): void
+    {
+        // Class extending a namespace-local custom base model without a use statement
+        // e.g., `class User extends TenantModel {}` where TenantModel is in the same namespace
+        $methods = '';
+        for ($i = 1; $i <= 20; $i++) {
+            $methods .= "\n    public function method{$i}() { return 'value'; }\n";
+        }
+
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+// No use statement for TenantModel - it's in the same namespace
+// This tests the heuristic that any class ending with "Model" is treated as a model base
+
+class User extends TenantModel
+{
+{$methods}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/User.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should be detected as a model and flagged for too many business methods
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('business methods', $result);
+    }
 }

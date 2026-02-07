@@ -335,6 +335,40 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_passes_when_load_missing_used(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+        $posts->loadMissing('user');
+
+        foreach ($posts as $post) {
+            echo $post->user->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_handles_parse_errors_gracefully(): void
     {
         $code = <<<'PHP'
@@ -437,5 +471,1614 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    public function test_detects_nested_relationship_n_plus_one(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::with('user')->get();
+
+        foreach ($posts as $post) {
+            // user is eager loaded, but user->team is not
+            echo $post->user->team->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('user.team', $result);
+    }
+
+    public function test_passes_with_dot_notation_eager_loading(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::with('user.team')->get();
+
+        foreach ($posts as $post) {
+            echo $post->user->team->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_partial_eager_loading_missing_nested(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        // Only 'user' is eager loaded, not 'user.profile'
+        $posts = Post::with('user')->get();
+
+        foreach ($posts as $post) {
+            echo $post->user->profile->bio; // N+1 on profile
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('user.profile', $result);
+    }
+
+    public function test_handles_deep_nested_relationships(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            // Deep nesting: 4 levels
+            echo $post->user->team->department->company->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        // Should detect the deepest nested relationship that looks like a relationship
+        $this->assertHasIssueContaining('user.team.department.company', $result);
+    }
+
+    public function test_passes_with_deep_dot_notation_eager_loading(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::with('user.team.department')->get();
+
+        foreach ($posts as $post) {
+            echo $post->user->team->department->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_nested_chain_ending_with_property_is_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::with('user')->get();
+
+        foreach ($posts as $post) {
+            // 'name' is a property, not a relationship
+            echo $post->user->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass because 'user' is eager loaded and 'name' is a property
+        $this->assertPassed($result);
+    }
+
+    public function test_multiple_nested_relationships_detected(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            echo $post->user->team->name;       // N+1 on user.team
+            echo $post->category->parent->name; // N+1 on category.parent
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        // Should detect multiple nested relationship issues
+        $this->assertGreaterThanOrEqual(2, count($issues));
+    }
+
+    public function test_passes_with_relation_loaded_check_in_if_condition(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            if ($post->relationLoaded('user')) {
+                echo $post->user->name;
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - developer checked with relationLoaded()
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_relation_loaded_in_ternary(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            $userName = $post->relationLoaded('user') ? $post->user->name : 'Unknown';
+            echo $userName;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - developer checked with relationLoaded()
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_relation_loaded_early_return(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            if (!$post->relationLoaded('user')) {
+                continue;
+            }
+            echo $post->user->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - developer checked with relationLoaded() before access
+        $this->assertPassed($result);
+    }
+
+    public function test_relation_loaded_does_not_protect_unrelated_relationships(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            if ($post->relationLoaded('user')) {
+                echo $post->user->name;
+            }
+            // Comments is NOT checked with relationLoaded()
+            echo $post->comments->count();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - comments relationship is not protected
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('comments', $result);
+    }
+
+    public function test_relation_loaded_protects_nested_relationships(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            if ($post->relationLoaded('user')) {
+                // Accessing nested relationships is also protected
+                echo $post->user->team->name;
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - the first relationship in chain (user) was checked
+        $this->assertPassed($result);
+    }
+
+    public function test_relation_loaded_check_does_not_leak_between_loops(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+        $comments = Comment::all();
+
+        foreach ($posts as $post) {
+            if ($post->relationLoaded('author')) {
+                echo $post->author->name;
+            }
+        }
+
+        // New loop - relationLoaded check from previous loop should not apply
+        foreach ($comments as $comment) {
+            echo $comment->author->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - the second loop's author access is not protected
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('author', $result);
+    }
+
+    public function test_detects_query_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $orders = Order::where('user_id', $user->id)->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Order::where', $result);
+    }
+
+    public function test_detects_find_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $userIds = [1, 2, 3, 4, 5];
+
+        foreach ($userIds as $userId) {
+            $user = User::find($userId);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('User::find', $result);
+    }
+
+    public function test_detects_first_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class OrderController
+{
+    public function index()
+    {
+        $items = Item::all();
+
+        foreach ($items as $item) {
+            $product = Product::where('sku', $item->sku)->first();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/OrderController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Product::where', $result);
+    }
+
+    public function test_detects_multiple_queries_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class ReportController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $orders = Order::where('user_id', $user->id)->get();
+            $payments = Payment::where('user_id', $user->id)->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/ReportController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertGreaterThanOrEqual(2, count($issues));
+    }
+
+    public function test_passes_when_query_is_outside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+        $allOrders = Order::all(); // Query outside loop is fine
+
+        foreach ($users as $user) {
+            echo $user->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_count_aggregate_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class StatsController
+{
+    public function index()
+    {
+        $categories = Category::all();
+
+        foreach ($categories as $category) {
+            $productCount = Product::where('category_id', $category->id)->count();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/StatsController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Product::where', $result);
+    }
+
+    public function test_passes_with_closure_keyed_eager_loading(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::with([
+            'user' => fn ($q) => $q->select('id', 'name'),
+            'comments.author',
+        ])->get();
+
+        foreach ($posts as $post) {
+            echo $post->user->name;
+            echo $post->comments->first()->author->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_mixed_closure_and_string_eager_loading(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::with([
+            'user' => function ($query) {
+                $query->select('id', 'name', 'email');
+            },
+            'tags',
+            'category' => fn ($q) => $q->withCount('products'),
+        ])->get();
+
+        foreach ($posts as $post) {
+            echo $post->user->email;
+            echo $post->tags->pluck('name');
+            echo $post->category->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_cache_facade_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $cached = Cache::get('user_' . $user->id);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - Cache::get() is not a database query
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_config_facade_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $items = Item::all();
+
+        foreach ($items as $item) {
+            $setting = Config::get('app.timezone');
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - Config::get() is not a database query
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_session_facade_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $data = Session::get('user_data_' . $user->id);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - Session::get() is not a database query
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_query_not_dependent_on_loop_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            // This query doesn't use $user at all - same query repeated
+            $admins = Admin::where('active', true)->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - query doesn't depend on loop variable (wasteful but not N+1)
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_chunk_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            Order::where('user_id', $user->id)->chunk(100, function($orders) {
+                // Process chunk
+            });
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - chunk() is intentional batching
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_cursor_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            foreach (Order::where('user_id', $user->id)->cursor() as $order) {
+                // Process order
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - cursor() is memory-efficient streaming
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_lazy_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $orders = Order::where('user_id', $user->id)->lazy();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - lazy() is memory-efficient streaming
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_query_dependent_on_loop_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $orders = Order::where('user_id', $user->id)->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should FAIL - classic N+1, query depends on $user
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Order::where', $result);
+    }
+
+    public function test_flags_query_with_loop_variable_in_closure(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $orders = Order::where(fn($q) => $q->where('user_id', $user->id))->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should FAIL - closure captures loop variable
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Order::where', $result);
+    }
+
+    public function test_flags_query_with_loop_variable_in_arrow_function(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $orders = Order::whereHas('items', fn($q) => $q->where('buyer_id', $user->id))->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should FAIL - arrow function references loop variable
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Order::whereHas', $result);
+    }
+
+    public function test_does_not_flag_multiple_non_query_facades(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $cached = Cache::get('user_' . $user->id);
+            $setting = Config::get('users.default_role');
+            $session = Session::get('user_pref_' . $user->id);
+            $logged = Log::info('Processing user ' . $user->id);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - none of these are database queries
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_direct_find_with_loop_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $userIds = [1, 2, 3, 4, 5];
+
+        foreach ($userIds as $userId) {
+            $user = User::find($userId);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should FAIL - find() with loop variable is N+1
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('User::find', $result);
+    }
+
+    public function test_does_not_flag_find_without_loop_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $items = Item::all();
+        $adminId = 1;
+
+        foreach ($items as $item) {
+            // Query doesn't depend on $item, uses constant $adminId
+            $admin = User::find($adminId);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - query doesn't depend on loop variable
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_query_when_closure_captures_but_does_not_use_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            // Closure captures $user but doesn't use it - query doesn't depend on $user
+            // This is not a true N+1 pattern (same query every iteration, not loop-dependent)
+            $posts = Post::where('active', true)->get(function($q) use ($user) {
+                $q->where('published', true); // No $user reference
+            });
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - query doesn't depend on loop variable (just captured, not used)
+        // This fixes false positives where closure captures variable but doesn't use it
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_query_when_closure_uses_captured_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            // Closure captures AND uses $user - query depends on $user, legitimate N+1
+            $posts = Post::where(function($q) use ($user) {
+                $q->where('user_id', $user->id); // Actually uses $user
+            })->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail - this is a legitimate N+1 query
+        $this->assertFailed($result);
+    }
+
+    public function test_for_loop_flags_query_using_counter_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $ids = [1, 2, 3, 4, 5];
+
+        for ($i = 0; $i < count($ids); $i++) {
+            // Query uses $i in array access - true N+1 pattern
+            $user = User::find($ids[$i]);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should flag - uses $i (counter variable) in query
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('User::find', $result);
+    }
+
+    public function test_for_loop_ignores_query_not_using_counter(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        for ($i = 0; $i < 10; $i++) {
+            // Same query every iteration - doesn't use $i
+            $admins = User::where('role', 'admin')->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should NOT flag - query doesn't depend on $i
+        $this->assertPassed($result);
+    }
+
+    public function test_while_loop_flags_query_using_condition_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $page = 1;
+        $hasMore = true;
+
+        while ($hasMore && $page < 100) {
+            // Query uses $page - true N+1 pattern
+            $records = Record::where('page', $page)->get();
+            $page++;
+            $hasMore = count($records) > 0;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should flag - uses $page (condition variable) in query
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Record::where', $result);
+    }
+
+    public function test_while_loop_ignores_query_not_using_condition_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $hasMore = true;
+
+        while ($hasMore) {
+            // Same query every iteration - doesn't use $hasMore
+            $config = Config::get('key');
+            $hasMore = someExternalCheck();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should NOT flag - Config::get is not a query, and doesn't use $hasMore
+        $this->assertPassed($result);
+    }
+
+    public function test_do_while_flags_query_using_condition_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $cursor = 0;
+
+        do {
+            // Query uses $cursor - true N+1 pattern
+            $records = Record::where('id', '>', $cursor)->first();
+            $cursor = $records ? $records->id : null;
+        } while ($cursor !== null);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should flag - uses $cursor (condition variable) in query
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Record::where', $result);
+    }
+
+    public function test_do_while_ignores_query_not_using_condition_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $shouldContinue = true;
+
+        do {
+            // Same query every iteration - doesn't use $shouldContinue
+            $settings = Setting::where('key', 'default')->first();
+            $shouldContinue = someCheck();
+        } while ($shouldContinue);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should NOT flag - query doesn't depend on $shouldContinue
+        $this->assertPassed($result);
+    }
+
+    public function test_for_loop_with_no_init_does_not_flag(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $i = 0;
+        // For loop with no init expression
+        for (; $i < 10; $i++) {
+            $admins = User::where('role', 'admin')->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should NOT flag - can't track loop variable when init is empty
+        $this->assertPassed($result);
+    }
+
+    public function test_while_loop_with_method_call_condition_ignores_unrelated_query(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $iterator = new Iterator();
+
+        while ($iterator->hasNext()) {
+            // Query doesn't use iterator
+            $users = User::where('active', true)->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should NOT flag - query doesn't depend on $iterator
+        $this->assertPassed($result);
+    }
+
+    public function test_while_loop_with_method_call_condition_flags_related_query(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $iterator = new Iterator();
+
+        while ($iterator->hasNext()) {
+            // Query uses iterator
+            $record = Record::find($iterator->current());
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should flag - query uses $iterator
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Record::find', $result);
     }
 }

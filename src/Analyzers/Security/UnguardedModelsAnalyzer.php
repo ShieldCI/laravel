@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\Security;
 
 use PhpParser\Node;
+use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\NameResolver;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -87,10 +89,12 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        // Build use statement mapping for alias resolution
-        $useStatements = $this->extractUseStatements($ast);
+        // Resolve all class names using NameResolver
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor(new NameResolver);
+        $ast = $traverser->traverse($ast);
 
-        $this->evaluateStaticCalls($ast, $file, $relativePath, $issues, $useStatements);
+        $this->evaluateStaticCalls($ast, $file, $relativePath, $issues);
     }
 
     /**
@@ -190,10 +194,7 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
         return str_starts_with($normalized, 'vendor/') || str_contains($normalized, '/vendor/');
     }
 
-    /**
-     * @param  array<string, string>  $useStatements
-     */
-    private function evaluateStaticCalls(array $ast, string $file, string $relativePath, array &$issues, array $useStatements): void
+    private function evaluateStaticCalls(array $ast, string $file, string $relativePath, array &$issues): void
     {
         /** @var array<Node\Expr\StaticCall> $staticCalls */
         $staticCalls = $this->parser->findNodes($ast, Node\Expr\StaticCall::class);
@@ -214,11 +215,18 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $method = $call->name->toString();
-            $className = $call->class instanceof Node\Name ? $call->class->toString() : null;
+            // Get fully qualified name from NameResolver
+            if (! $call->class instanceof Node\Name) {
+                continue;
+            }
 
-            // Resolve aliases to fully qualified names
-            $resolvedClassName = $this->resolveClassName($className, $useStatements);
+            $method = $call->name->toString();
+
+            // Get fully qualified name from NameResolver
+            $resolvedName = $call->class->getAttribute('resolvedName');
+            $resolvedClassName = $resolvedName instanceof Node\Name
+                ? $resolvedName->toString()
+                : $call->class->toString();
 
             if (! $this->isEloquentClass($resolvedClassName)) {
                 continue;
@@ -284,73 +292,6 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
                 recommendation: $this->getRecommendationForContext($relativePath)
             );
         }
-    }
-
-    /**
-     * Extract use statements from AST to build alias mapping.
-     *
-     * @return array<string, string> Map of alias => fully qualified name
-     */
-    private function extractUseStatements(array $ast): array
-    {
-        $useStatements = [];
-
-        /** @var array<Node\Stmt\Use_> $uses */
-        $uses = $this->parser->findNodes($ast, Node\Stmt\Use_::class);
-
-        foreach ($uses as $use) {
-            foreach ($use->uses as $useUse) {
-                $fullyQualifiedName = $useUse->name->toString();
-                $alias = $useUse->alias !== null
-                    ? $useUse->alias->toString()
-                    : $useUse->name->getLast();
-
-                $useStatements[$alias] = $fullyQualifiedName;
-            }
-        }
-
-        /** @var array<Node\Stmt\GroupUse> $groupUses */
-        $groupUses = $this->parser->findNodes($ast, Node\Stmt\GroupUse::class);
-
-        foreach ($groupUses as $groupUse) {
-            $prefix = $groupUse->prefix->toString();
-
-            foreach ($groupUse->uses as $useUse) {
-                $fullyQualifiedName = $prefix.'\\'.$useUse->name->toString();
-                $alias = $useUse->alias !== null
-                    ? $useUse->alias->toString()
-                    : $useUse->name->getLast();
-
-                $useStatements[$alias] = $fullyQualifiedName;
-            }
-        }
-
-        return $useStatements;
-    }
-
-    /**
-     * Resolve a class name through use statements.
-     *
-     * @param  array<string, string>  $useStatements
-     */
-    private function resolveClassName(?string $className, array $useStatements): ?string
-    {
-        if ($className === null) {
-            return null;
-        }
-
-        // If it's already fully qualified (starts with \), return as-is
-        if (str_starts_with($className, '\\')) {
-            return ltrim($className, '\\');
-        }
-
-        // Check if it's an alias in use statements
-        if (isset($useStatements[$className])) {
-            return $useStatements[$className];
-        }
-
-        // Return as-is (might be short name like 'Model')
-        return $className;
     }
 
     /**

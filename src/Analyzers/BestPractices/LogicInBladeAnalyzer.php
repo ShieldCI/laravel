@@ -26,19 +26,73 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
 {
     public const DEFAULT_MAX_PHP_BLOCK_LINES = 10;
 
-    /** @var array<string> */
-    private const DB_QUERY_PATTERNS = [
-        '/\bDB::/',                    // DB facade
-        '/::where\s*\(/',              // Eloquent where
-        '/::find\s*\(/',               // Eloquent find
-        '/::all\s*\(/',                // Eloquent all
-        '/::first\s*\(/',              // Eloquent first
-        '/::create\s*\(/',             // Eloquent create
-        '/::update\s*\(/',             // Eloquent update
-        '/::delete\s*\(/',             // Eloquent delete
-        '/::insert\s*\(/',             // Eloquent insert
-        '/::upsert\s*\(/',             // Eloquent upsert
-        '/->query\s*\(/',              // Query builder
+    /** @var array<string> Patterns that are definitely database operations */
+    private const DEFINITE_DB_PATTERNS = [
+        '/\bDB::/',                    // DB facade - always database
+        '/->query\s*\(/',              // Query builder - always database
+    ];
+
+    /**
+     * @var array<string> Self-terminal patterns - the static call IS the final operation.
+     *
+     * These patterns don't need a chained terminal method because they ARE terminal.
+     * Example: User::all(), User::find(1), User::first()
+     * Skipped if class is in NON_ELOQUENT_CLASSES (e.g., Arr::first, Factory::create).
+     */
+    private const SELF_TERMINAL_DB_PATTERNS = [
+        '/::find\s*\(/',               // Model::find(1) - terminal
+        '/::all\s*\(/',                // Model::all() - terminal
+        '/::first\s*\(/',              // Model::first() - terminal (but also Arr::first)
+        '/::create\s*\(/',             // Model::create([]) - terminal (but also Factory/Carbon)
+        '/::update\s*\(/',             // Model::update([]) - terminal
+        '/::delete\s*\(/',             // Model::delete() - terminal
+        '/::insert\s*\(/',             // Model::insert([]) - terminal
+        '/::upsert\s*\(/',             // Model::upsert([]) - terminal
+    ];
+
+    /**
+     * @var array<string> Chain patterns - require terminal method OR FQCN to confirm DB query.
+     *
+     * These patterns start a query chain but don't execute it.
+     * Example: User::where('x', 'y') - needs ->get(), ->first(), etc. to execute
+     * Without terminal, we can't be sure if it's a DB query or a custom class.
+     */
+    private const CHAIN_DB_PATTERNS = [
+        '/::where\s*\(/',              // Could be Eloquent chain or Collection/Arr/custom class
+    ];
+
+    /** @var array<string> Terminal methods that confirm a DB query chain */
+    private const TERMINAL_DB_METHODS = [
+        '->get(',
+        '->first(',
+        '->find(',
+        '->count(',
+        '->exists(',
+        '->pluck(',
+        '->sum(',
+        '->avg(',
+        '->min(',
+        '->max(',
+        '->paginate(',
+    ];
+
+    /** @var array<string> Namespace indicators for Model classes */
+    private const MODEL_NAMESPACE_INDICATORS = [
+        '\\Models\\',
+        '\\Model\\',
+    ];
+
+    /** @var array<string> Variable name patterns that suggest collections, not models */
+    private const COLLECTION_VARIABLE_PATTERNS = [
+        'collection',
+        'items',
+        'list',
+        'array',
+        'data',
+        'results',
+        'rows',
+        'records',
+        'entries',
     ];
 
     /** @var array<string> */
@@ -54,6 +108,101 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         'cache()',
         'request()',
         'cookie()',
+    ];
+
+    /** @var array<string> Extended list of non-database save method variable names */
+    private const NON_DB_SAVE_VARIABLES = [
+        'file',
+        'upload',
+        'image',
+        'photo',
+        'document',
+        'attachment',
+        'pdf',
+        'excel',
+        'csv',
+        'export',
+        'cache',
+        'temp',
+        'storage',
+    ];
+
+    /** @var array<string> Additional collection methods that indicate business logic */
+    private const COLLECTION_MANIPULATION_METHODS = [
+        'pluck',
+        'unique',
+        'chunk',
+        'groupBy',
+        'keyBy',
+        'reverse',
+        'shuffle',
+        'values',
+        'keys',
+    ];
+
+    /** @var array<string> Non-Eloquent classes with DB-like method names */
+    private const NON_ELOQUENT_CLASSES = [
+        'Collection',
+        'Arr',
+        'Carbon',
+        'CarbonImmutable',
+        'DateTime',
+        'DateTimeImmutable',
+        'Factory',
+        'Str',
+        'Validator',
+    ];
+
+    /**
+     * @var array<string> Class name suffixes that are NEVER Eloquent models.
+     *
+     * These suffixes indicate classes that definitively cannot be Eloquent models,
+     * so we skip them unconditionally.
+     */
+    private const DEFINITE_NON_MODEL_SUFFIXES = [
+        'Service',
+        'Repository',
+        'Helper',
+        'Handler',
+        'Provider',
+        'Facade',
+        'Controller',
+        'Middleware',
+        'Policy',
+        'Event',
+        'Listener',
+        'Job',
+        'Mail',
+        'Notification',
+        'Command',
+        'Request',
+        'Rule',
+        'Exception',
+        'Trait',
+        'Interface',
+        'Contract',
+        'Test',
+        'Seeder',
+        'Migration',
+        'Observer',
+        'Scope',
+        'Cast',
+        'Enum',
+        'Factory',
+        'Action',
+    ];
+
+    /**
+     * @var array<string> Class name suffixes that MIGHT be Eloquent models.
+     *
+     * These suffixes are ambiguous - they could be model names like "OrderResource"
+     * or non-model classes like "ApiResource". We only skip them if there's NO
+     * terminal method present. If a terminal method IS present, we flag it.
+     */
+    private const AMBIGUOUS_SUFFIXES = [
+        'Resource',
+        'Manager',
+        'Builder',
     ];
 
     private int $maxPhpBlockLines;
@@ -302,28 +451,225 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        foreach (self::DB_QUERY_PATTERNS as $pattern) {
-            if (preg_match($pattern, $line)) {
+        // Check definite DB patterns first (always flag)
+        foreach (self::DEFINITE_DB_PATTERNS as $pattern) {
+            if (preg_match($pattern, $line, $matches, PREG_OFFSET_CAPTURE)) {
+                if ($this->isInsideStringOrComment($line, $matches[0][1])) {
+                    continue;
+                }
+
                 return true;
             }
         }
 
-        // Check for model save (but exclude file uploads)
-        if (preg_match('/\$\w+->save\s*\(/', $line)) {
-            // Exclude common file upload patterns
-            if (preg_match('/\$(file|upload|image|photo|document|attachment)->save/', $line)) {
+        // Check self-terminal patterns (::all(), ::find(), ::first(), ::create(), etc.)
+        // These ARE terminal operations - they don't need a chained method
+        foreach (self::SELF_TERMINAL_DB_PATTERNS as $pattern) {
+            if (preg_match($pattern, $line, $matches, PREG_OFFSET_CAPTURE)) {
+                if ($this->isInsideStringOrComment($line, $matches[0][1])) {
+                    continue;
+                }
+
+                // Skip known non-Eloquent static calls (Arr::first, Carbon::create, Factory::create, etc.)
+                if ($this->isNonEloquentStaticCall($line, $matches[0][1])) {
+                    continue;
+                }
+
+                // Self-terminal patterns are flagged unless whitelisted
+                return true;
+            }
+        }
+
+        // Check chain patterns (::where() etc.) - require terminal method OR FQCN
+        foreach (self::CHAIN_DB_PATTERNS as $pattern) {
+            if (preg_match($pattern, $line, $matches, PREG_OFFSET_CAPTURE)) {
+                // Check if the match is inside a string or comment
+                if ($this->isInsideStringOrComment($line, $matches[0][1])) {
+                    continue;
+                }
+
+                // Skip known non-Eloquent static calls (Collection::where, Arr::where)
+                if ($this->isNonEloquentStaticCall($line, $matches[0][1])) {
+                    continue;
+                }
+
+                // Check if FQCN contains Models namespace - definitely a model
+                if ($this->isFromModelsNamespace($line, $matches[0][1])) {
+                    return true;
+                }
+
+                // For short class names, require terminal method to confirm it's a DB query
+                if ($this->hasTerminalMethod($line)) {
+                    return true;
+                }
+
+                // Uncertain case: short class name without terminal method
+                // Don't flag to avoid false positives (e.g., SomeQueryBuilder::where('x', 'y'))
+                continue;
+            }
+        }
+
+        // Check for model save (but exclude file uploads and other non-DB patterns)
+        if (preg_match('/\$(\w+)->save\s*\(/', $line, $matches, PREG_OFFSET_CAPTURE)) {
+            // Check if the match is inside a string or comment
+            if ($this->isInsideStringOrComment($line, $matches[0][1])) {
+                return false;
+            }
+
+            // Exclude common non-database save patterns
+            $variableName = $matches[1][0];
+            if (in_array($variableName, self::NON_DB_SAVE_VARIABLES, true)) {
                 return false;
             }
 
             return true; // Likely a model save
         }
 
-        // Check for relationship queries
-        if (preg_match('/\$\w+->(\w+)\(\)->get\(/', $line)) {
-            return true; // Likely $user->posts()->get()
+        // Check for relationship queries with various terminal methods
+        if (preg_match('/\$(\w+)->(\w+)\(\)->(get|first|find|count|exists|pluck|sum|avg|min|max)\s*\(/', $line, $matches, PREG_OFFSET_CAPTURE)) {
+            // Check if the match is inside a string or comment
+            if ($this->isInsideStringOrComment($line, $matches[0][1])) {
+                return false;
+            }
+
+            // Check if variable name suggests a collection, not a model
+            $variableName = strtolower($matches[1][0]);
+            foreach (self::COLLECTION_VARIABLE_PATTERNS as $collectionPattern) {
+                if (str_contains($variableName, $collectionPattern)) {
+                    return false; // Likely a collection, not a model relationship
+                }
+            }
+
+            return true; // Likely $user->posts()->get(), $user->posts()->first(), etc.
         }
 
         return false;
+    }
+
+    /**
+     * Check if the class in a static call comes from a Models namespace.
+     */
+    private function isFromModelsNamespace(string $line, int $matchPosition): bool
+    {
+        $beforeMatch = substr($line, 0, $matchPosition);
+
+        foreach (self::MODEL_NAMESPACE_INDICATORS as $indicator) {
+            if (str_contains($beforeMatch, $indicator)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if the line contains a terminal method that confirms a DB query.
+     */
+    private function hasTerminalMethod(string $line): bool
+    {
+        foreach (self::TERMINAL_DB_METHODS as $terminal) {
+            if (str_contains($line, $terminal)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a static method call is from a non-Eloquent class.
+     *
+     * Classes like Collection, Arr, Carbon have methods (where, first, all, create)
+     * that look like Eloquent queries but are not database operations.
+     */
+    private function isNonEloquentStaticCall(string $line, int $matchPosition): bool
+    {
+        $beforeMatch = substr($line, 0, $matchPosition);
+        $trimmed = rtrim($beforeMatch);
+
+        // Dynamic class resolution - uncertain, so don't flag
+        // e.g., ($foo ? Arr : Model)::where(), $class::where()
+        if (str_ends_with($trimmed, ')') || preg_match('/\$\w+$/', $trimmed)) {
+            return true;
+        }
+
+        // Extract class name from FQCN: \Illuminate\Support\Collection -> Collection
+        // Handles: Collection, \Collection, Some\Namespace\Collection
+        if (preg_match('/\\\\?(?:[A-Za-z_][A-Za-z0-9_]*\\\\)*([A-Za-z_][A-Za-z0-9_]*)$/', $trimmed, $matches)) {
+            $className = $matches[1];
+
+            // Check exact class name match
+            if (in_array($className, self::NON_ELOQUENT_CLASSES, true)) {
+                return true;
+            }
+
+            // Check definite non-model suffixes (always skip)
+            foreach (self::DEFINITE_NON_MODEL_SUFFIXES as $suffix) {
+                if (str_ends_with($className, $suffix)) {
+                    return true;
+                }
+            }
+
+            // Check ambiguous suffixes (only skip if NO terminal method present)
+            // e.g., OrderResource::where('x', 'y')->get() should be FLAGGED
+            // e.g., OrderResource::where('x', 'y') without terminal should NOT be flagged
+            foreach (self::AMBIGUOUS_SUFFIXES as $suffix) {
+                if (str_ends_with($className, $suffix)) {
+                    if ($this->hasTerminalMethod($line)) {
+                        return false; // Has terminal method = likely DB query, DO flag
+                    }
+
+                    return true; // No terminal = uncertain, skip to avoid false positive
+                }
+            }
+
+            return false;
+        }
+
+        // Fallback to original behavior
+        foreach (self::NON_ELOQUENT_CLASSES as $class) {
+            if (str_ends_with($beforeMatch, $class)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a match position is inside a string literal or comment.
+     */
+    private function isInsideStringOrComment(string $line, int $matchPosition): bool
+    {
+        $beforeMatch = substr($line, 0, $matchPosition);
+
+        // Check for single-line comment before match position
+        $singleCommentPos = strpos($beforeMatch, '//');
+        if ($singleCommentPos !== false) {
+            return true;
+        }
+
+        // Check if we're inside a string literal by counting quotes
+        $inSingleQuote = false;
+        $inDoubleQuote = false;
+
+        for ($i = 0; $i < $matchPosition; $i++) {
+            $char = $line[$i];
+            $prevChar = $i > 0 ? $line[$i - 1] : '';
+
+            // Skip escaped quotes
+            if ($prevChar === '\\') {
+                continue;
+            }
+
+            if ($char === "'" && ! $inDoubleQuote) {
+                $inSingleQuote = ! $inSingleQuote;
+            } elseif ($char === '"' && ! $inSingleQuote) {
+                $inDoubleQuote = ! $inDoubleQuote;
+            }
+        }
+
+        return $inSingleQuote || $inDoubleQuote;
     }
 
     private function hasApiCall(string $line): bool
@@ -336,7 +682,12 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         ];
 
         foreach ($patterns as $pattern) {
-            if (preg_match($pattern, $line)) {
+            if (preg_match($pattern, $line, $matches, PREG_OFFSET_CAPTURE)) {
+                // Check if the match is inside a string or comment
+                if ($this->isInsideStringOrComment($line, $matches[0][1])) {
+                    continue;
+                }
+
                 return true;
             }
         }
@@ -361,9 +712,15 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
             return false; // {{ Config::get() }} is acceptable
         }
 
-        // Skip simple single operations (these are often acceptable)
-        if (preg_match('/\{\{\s*\$\w+\s*[\+\-\*\/]\s*\$\w+\s*\}\}/', $line)) {
-            return false; // {{ $price * $quantity }} is acceptable
+        // Skip null coalescing operators ({{ $value ?? 0 }})
+        if (preg_match('/\{\{\s*\$\w+(?:->\w+)?\s*\?\?\s*(?:\d+|[\'"][^\'"]*[\'"]|null)\s*\}\}/', $line)) {
+            return false;
+        }
+
+        // Skip simple single operations including object properties (these are often acceptable)
+        // Matches: {{ $price * $quantity }}, {{ $item->price * $qty }}, {{ $a + $b->value }}
+        if (preg_match('/\{\{\s*\$\w+(?:->\w+)?\s*[\+\-\*\/]\s*\$\w+(?:->\w+)?\s*\}\}/', $line)) {
+            return false; // {{ $price * $quantity }} or {{ $item->price * $qty }} is acceptable
         }
 
         // Detect complex calculations (multiple operations)
@@ -416,9 +773,20 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
             return true; // Sorting in foreach
         }
 
-        // Check for array_* functions (data manipulation)
+        // Check for additional collection methods in foreach
+        $collectionMethods = implode('|', self::COLLECTION_MANIPULATION_METHODS);
+        if (preg_match('/@foreach\s*\(.*->('.$collectionMethods.')\(/', $line)) {
+            return true; // Collection manipulation in foreach
+        }
+
+        // Handle collect() helper with collection methods
+        if (preg_match('/@foreach\s*\(\s*collect\s*\(.*\)->(filter|map|transform|sortBy|'.$collectionMethods.')\(/', $line)) {
+            return true; // collect($items)->filter() in foreach
+        }
+
+        // Check for array_* functions (data manipulation) using word boundary regex
         foreach (self::BUSINESS_LOGIC_FUNCTIONS as $func) {
-            if (str_contains($line, $func)) {
+            if (preg_match('/\b'.preg_quote($func, '/').'\s*\(/', $line)) {
                 return true;
             }
         }

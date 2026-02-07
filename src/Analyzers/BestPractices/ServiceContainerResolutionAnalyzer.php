@@ -9,6 +9,8 @@ use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Stmt;
 use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\CloningVisitor;
+use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -34,15 +36,42 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - Seeders: Often need dynamic service resolution
  * - Factories: May need service resolution for test data
  * - Commands: Sometimes need conditional service resolution
- * - Service Providers: Legitimate container binding location
+ * - Service Providers: Bindings (bind/singleton/instance/scoped) are skipped as legitimate;
+ *   resolution (make/resolve/app()) is still flagged as a code smell
+ * - Jobs: Queued jobs may need conditional resolution
+ * - Listeners: Event listeners with conditional dependencies
+ * - Middleware: Conditional resolution based on request context
+ * - Observers: Model observers with dynamic dependencies
+ * - Handlers: Various handler classes
+ * - Closures: Support parameter-level DI but not constructor DI. Resolution is reported
+ *   at Low severity because most closure contexts (collection callbacks, event listeners,
+ *   queue jobs) don't support automatic injection. A closure-aware recommendation is
+ *   provided. Note: Binding inside closures is still flagged at High severity as it's always wrong.
+ * - Route files: Use closures without DI support
  *
  * Configuration:
- * - whitelist_dirs: Directories to skip (e.g., tests, database/migrations, database/seeders)
- * - whitelist_classes: Class name patterns to skip (e.g., *Command, *Seeder)
- * - whitelist_methods: Methods to skip (e.g., environment, isLocal)
+ * - whitelist_dirs: Directories to skip (e.g., tests, database/migrations, routes)
+ * - whitelist_classes: Class name patterns to skip (e.g., *Command, *Job, *Listener)
+ * - whitelist_methods: Non-resolution methods to skip (e.g., bound, has, call, tagged)
+ * - whitelist_services: Service aliases that are legitimate to resolve (e.g., config, request)
+ * - detect_psr_get: Whether to detect PSR-11 get() method (default: false)
+ * - detect_manual_instantiation: Whether to detect new Class() for service patterns (default: false)
+ * - manual_instantiation_patterns: Class name patterns to flag for manual instantiation
  */
 class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * Known Laravel ServiceProvider FQNs.
+     *
+     * @var array<string>
+     */
+    private const SERVICE_PROVIDER_CLASSES = [
+        'Illuminate\\Support\\ServiceProvider',
+        'Illuminate\\Foundation\\Support\\Providers\\RouteServiceProvider',
+        'Illuminate\\Foundation\\Support\\Providers\\EventServiceProvider',
+        'Illuminate\\Foundation\\Support\\Providers\\AuthServiceProvider',
+    ];
+
     /** @var array<string> */
     private array $whitelistDirs = [];
 
@@ -51,6 +80,19 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
 
     /** @var array<string> */
     private array $whitelistMethods = [];
+
+    /** @var array<string> */
+    private array $whitelistServices = [];
+
+    private bool $detectPsrGet = false;
+
+    private bool $detectManualInstantiation = false;
+
+    /** @var array<string> */
+    private array $manualInstantiationPatterns = [];
+
+    /** @var array<string> */
+    private array $manualInstantiationExcludePatterns = [];
 
     public function __construct(
         private ParserInterface $parser,
@@ -84,6 +126,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             'database/migrations',  // Migrations don't support constructor DI
             'database/seeders',
             'database/factories',
+            'routes',               // Route files use closures without DI support
         ]);
         $this->whitelistDirs = is_array($configDirs) ? $configDirs : [];
 
@@ -92,18 +135,126 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             '*Command',
             '*Seeder',
             'DatabaseSeeder',
+            '*Job',
+            '*Listener',
+            '*Middleware',
+            '*Observer',
+            '*Factory',
+            '*Handler',
         ]);
         $this->whitelistClasses = is_array($configClasses) ? $configClasses : [];
 
-        // Load whitelist_methods
+        // Load whitelist_methods (non-resolution methods that are legitimate)
         $configMethods = $this->config->get("{$baseKey}.whitelist_methods", [
+            // Environment checks
             'environment',
             'isLocal',
             'isProduction',
             'runningInConsole',
             'runningUnitTests',
+            // Container inspection (not resolution)
+            'bound',
+            'has',
+            'resolved',
+            'isShared',
+            'isAlias',
+            // Method injection (legitimate pattern)
+            'call',
+            // Tagged services (legitimate pattern)
+            'tagged',
+            // Contextual binding configuration
+            'when',
+            'needs',
+            'give',
+            'giveTagged',
+            'giveConfig',
+            // Service decoration
+            'extend',
+            'alias',
+            // Lifecycle hooks
+            'terminating',
+            'booted',
+            'booting',
+            // Path helpers
+            'basePath',
+            'configPath',
+            'databasePath',
+            'resourcePath',
+            'storagePath',
+            'publicPath',
+            'langPath',
+            'bootstrapPath',
+            // Locale methods
+            'getLocale',
+            'setLocale',
+            'isLocale',
+            'currentLocale',
+            // App info
+            'version',
+            'name',
+            // Error handling
+            'abort',
+            // Testing/cleanup (usually in tests)
+            'flush',
+            'forgetInstance',
+            'forgetInstances',
+            'forgetScopedInstances',
         ]);
         $this->whitelistMethods = is_array($configMethods) ? $configMethods : [];
+
+        // Load whitelist_services (service aliases that are legitimate to resolve)
+        $configServices = $this->config->get("{$baseKey}.whitelist_services", [
+            'config',
+            'request',
+            'log',
+            'cache',
+            'session',
+            'view',
+            'validator',
+            'translator',
+            'events',
+            'files',
+            'router',
+            'db',
+            'auth',
+            'hash',
+            'cookie',
+            'queue',
+            'mail',
+            'url',
+            'redirect',
+            'blade.compiler',
+            'encrypter',
+        ]);
+        $this->whitelistServices = is_array($configServices) ? $configServices : [];
+
+        // Load detect_psr_get (whether to detect PSR-11 get() method)
+        $detectGet = $this->config->get("{$baseKey}.detect_psr_get", false);
+        $this->detectPsrGet = is_bool($detectGet) ? $detectGet : false;
+
+        // Load detect_manual_instantiation (optional feature, disabled by default)
+        $detectInstantiation = $this->config->get("{$baseKey}.detect_manual_instantiation", false);
+        $this->detectManualInstantiation = is_bool($detectInstantiation) ? $detectInstantiation : false;
+
+        // Load manual_instantiation_patterns
+        $instantiationPatterns = $this->config->get("{$baseKey}.manual_instantiation_patterns", [
+            '*Service',
+            '*Repository',
+            '*Handler',
+        ]);
+        $this->manualInstantiationPatterns = is_array($instantiationPatterns) ? $instantiationPatterns : [];
+
+        // Load manual_instantiation_exclude_patterns (reduces false positives)
+        $excludePatterns = $this->config->get("{$baseKey}.manual_instantiation_exclude_patterns", [
+            '*DTO',
+            '*Data',
+            '*ValueObject',
+            '*Request',
+            '*Response',
+            '*Entity',
+            '*Model',
+        ]);
+        $this->manualInstantiationExcludePatterns = is_array($excludePatterns) ? $excludePatterns : [];
     }
 
     protected function runAnalysis(): ResultInterface
@@ -119,11 +270,6 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            // Skip service providers - they legitimately use container
-            if ($this->isServiceProvider($file)) {
-                continue;
-            }
-
             try {
                 $ast = $this->parser->parseFile($file);
             } catch (\Throwable $e) {
@@ -135,7 +281,19 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $visitor = new ServiceContainerVisitor($this->whitelistClasses, $this->whitelistMethods);
+            // Service providers: skip binding detection (legitimate) but still flag resolution
+            $isServiceProvider = $this->isServiceProviderFromAst($ast, $file);
+
+            $visitor = new ServiceContainerVisitor(
+                $this->whitelistClasses,
+                $this->whitelistMethods,
+                $this->whitelistServices,
+                $this->detectPsrGet,
+                $this->detectManualInstantiation,
+                $this->manualInstantiationPatterns,
+                $this->manualInstantiationExcludePatterns,
+                $isServiceProvider
+            );
             $traverser = new NodeTraverser;
             $traverser->addVisitor($visitor);
             $traverser->traverse($ast);
@@ -145,7 +303,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
                     message: "Manual service resolution in '{$issue['location']}': {$issue['pattern']}",
                     location: new Location($file, $issue['line']),
                     severity: $issue['severity'],
-                    recommendation: $this->getRecommendation($issue['pattern'], $issue['location']),
+                    recommendation: $this->getRecommendation($issue['pattern'], $issue['location'], $issue['argument_type'] ?? 'unknown', $issue['in_closure']),
                     metadata: [
                         'pattern' => $issue['pattern'],
                         'location' => $issue['location'],
@@ -188,41 +346,79 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if file is a service provider by parsing AST and checking extends.
+     * Check if AST represents a service provider by checking class extends.
+     *
+     * Uses PhpParser's NameResolver to resolve all class names to FQN before
+     * checking, ensuring accurate detection even when using short names like
+     * `extends ServiceProvider` with a `use` statement.
+     *
+     * Uses CloningVisitor to clone nodes before NameResolver modifies them,
+     * preserving the original AST for subsequent pattern matching in analysis.
+     *
+     * @param  array<Node>  $ast
      */
-    private function isServiceProvider(string $file): bool
+    private function isServiceProviderFromAst(array $ast, string $file): bool
     {
-        try {
-            $ast = $this->parser->parseFile($file);
-        } catch (\Throwable $e) {
-            // Can't parse, fallback to filename check
-            return str_ends_with($file, 'ServiceProvider.php');
-        }
+        // Note: PHP arrays are copy-on-write, but AST nodes are objects.
+        // CloningVisitor ensures NameResolver only mutates cloned nodes,
+        // preserving the original AST for analysis.
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor(new CloningVisitor);
+        $traverser->addVisitor(new NameResolver);
+        $resolvedAst = $traverser->traverse($ast);
 
-        if (empty($ast)) {
-            return str_ends_with($file, 'ServiceProvider.php');
-        }
-
-        foreach ($ast as $node) {
+        foreach ($resolvedAst as $node) {
             if ($node instanceof Stmt\Namespace_) {
                 foreach ($node->stmts as $stmt) {
                     if ($stmt instanceof Stmt\Class_) {
-                        if ($stmt->extends instanceof Node\Name) {
-                            $parent = $stmt->extends->toString();
-                            if (str_contains($parent, 'ServiceProvider')) {
-                                return true;
-                            }
+                        if ($this->extendsServiceProvider($stmt)) {
+                            return true;
                         }
                     }
                 }
             } elseif ($node instanceof Stmt\Class_) {
-                if ($node->extends instanceof Node\Name) {
-                    $parent = $node->extends->toString();
-                    if (str_contains($parent, 'ServiceProvider')) {
-                        return true;
-                    }
+                if ($this->extendsServiceProvider($node)) {
+                    return true;
                 }
             }
+        }
+
+        // Fallback to filename check for edge cases (no class found, etc.)
+        return str_ends_with($file, 'ServiceProvider.php');
+    }
+
+    /**
+     * Check if class extends a ServiceProvider.
+     *
+     * After NameResolver has been applied, parent class names should be FQN.
+     * We check against known ServiceProvider FQNs and Illuminate namespace patterns.
+     *
+     * Note: This does NOT use a simple suffix check like `str_ends_with('ServiceProvider')`
+     * because that would incorrectly skip classes like `PaymentServiceProviderFake`
+     * that extend a custom `PaymentServiceProvider` (which is NOT a Laravel ServiceProvider).
+     */
+    private function extendsServiceProvider(Stmt\Class_ $class): bool
+    {
+        if ($class->extends === null) {
+            return false;
+        }
+
+        $parent = ltrim($class->extends->toString(), '\\');
+
+        // Direct FQN match against known ServiceProvider classes
+        if (in_array($parent, self::SERVICE_PROVIDER_CLASSES, true)) {
+            return true;
+        }
+
+        // FQN ends with \ServiceProvider (namespace separator required to avoid false positives)
+        // This catches custom ServiceProvider base classes in user namespaces
+        if (str_ends_with($parent, '\\ServiceProvider')) {
+            return true;
+        }
+
+        // Illuminate namespace service providers (catches any Illuminate-based provider)
+        if (str_starts_with($parent, 'Illuminate\\') && str_ends_with($parent, 'ServiceProvider')) {
+            return true;
         }
 
         return false;
@@ -231,9 +427,49 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
     /**
      * Get recommendation for container resolution.
      */
-    private function getRecommendation(string $pattern, string $location): string
+    private function getRecommendation(string $pattern, string $location, string $argumentType, bool $inClosure = false): string
     {
-        return "Found manual service container resolution using '{$pattern}' in '{$location}'. Manual resolution is a service locator anti-pattern that hides dependencies and makes testing difficult. ";
+        $base = "Manual service container resolution detected using '{$pattern}' in '{$location}'. ";
+
+        // Binding-specific recommendation
+        if (str_contains($pattern, 'bind') || str_contains($pattern, 'singleton') ||
+            str_contains($pattern, 'instance') || str_contains($pattern, 'scoped')) {
+            return $base."Container bindings should be registered in a ServiceProvider's register() method. "
+                ."Example:\n\n"
+                ."// In AppServiceProvider::register()\n"
+                .'$this->app->bind(Interface::class, Implementation::class);';
+        }
+
+        // Manual instantiation recommendation
+        if (str_contains($pattern, 'new ')) {
+            if ($inClosure) {
+                return $base.'Manual instantiation inside closures is sometimes necessary when dependency injection is unavailable, '
+                    .'but consider extracting to an injectable class if this closure grows in complexity.';
+            }
+
+            return $base."Consider using constructor injection to let Laravel's container manage dependencies:\n\n"
+                ."public function __construct(\n"
+                ."    private readonly YourService \$service\n"
+                .') {}';
+        }
+
+        // Closure-context resolution recommendation
+        if ($inClosure) {
+            return $base.'Resolution inside closures is sometimes necessary when dependency injection is unavailable, '
+                .'but consider extracting to an injectable class if this closure grows in complexity.';
+        }
+
+        // Resolution recommendation with examples
+        return $base.'Manual resolution is a service locator anti-pattern that hides dependencies and makes testing difficult. '
+            ."Consider using constructor injection instead:\n\n"
+            ."public function __construct(\n"
+            ."    private readonly YourService \$service\n"
+            .") {}\n\n"
+            ."Or use method injection for controller methods:\n\n"
+            ."public function index(YourService \$service): Response\n"
+            ."{\n"
+            ."    // \$service is automatically injected\n"
+            .'}';
     }
 }
 
@@ -243,9 +479,21 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
 class ServiceContainerVisitor extends NodeVisitorAbstract
 {
     /**
-     * @var array<int, array{pattern: string, location: string, class: string, line: int, severity: Severity, argument_type: string}>
+     * @var array<int, array{pattern: string, location: string, class: string, line: int, severity: Severity, argument_type: string, in_closure: bool}>
      */
     private array $issues = [];
+
+    /**
+     * Track seen issues to avoid duplicates (key: "line:pattern").
+     *
+     * @var array<string, bool>
+     */
+    private array $seenIssues = [];
+
+    /**
+     * Current namespace.
+     */
+    private ?string $currentNamespace = null;
 
     /**
      * Current class name.
@@ -258,16 +506,49 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     private ?string $currentMethod = null;
 
     /**
+     * Closure depth (closures don't support constructor DI).
+     */
+    private int $closureDepth = 0;
+
+    /**
+     * Namespaces where severity should be escalated to High.
+     * These classes are fully DI-capable and manual resolution is almost always wrong.
+     *
+     * @var array<string>
+     */
+    private array $highSeverityNamespaces = [
+        'App\\Http\\Controllers',
+        'App\\Services',
+        'App\\Repositories',
+    ];
+
+    /**
      * @param  array<string>  $whitelistClasses
      * @param  array<string>  $whitelistMethods
+     * @param  array<string>  $whitelistServices
+     * @param  array<string>  $manualInstantiationPatterns
+     * @param  array<string>  $manualInstantiationExcludePatterns
      */
     public function __construct(
         private array $whitelistClasses = [],
-        private array $whitelistMethods = []
+        private array $whitelistMethods = [],
+        private array $whitelistServices = [],
+        private bool $detectPsrGet = false,
+        private bool $detectManualInstantiation = false,
+        private array $manualInstantiationPatterns = [],
+        private array $manualInstantiationExcludePatterns = [],
+        private bool $isServiceProvider = false
     ) {}
 
     public function enterNode(Node $node)
     {
+        // Track namespace entry
+        if ($node instanceof Stmt\Namespace_) {
+            $this->currentNamespace = $node->name ? $node->name->toString() : null;
+
+            return null;
+        }
+
         // Track class entry
         if ($node instanceof Stmt\Class_) {
             $this->currentClass = $node->name ? $node->name->toString() : 'Anonymous';
@@ -278,6 +559,13 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         // Track method entry
         if ($node instanceof Stmt\ClassMethod) {
             $this->currentMethod = $node->name->toString();
+
+            return null;
+        }
+
+        // Track closure entry (closures don't support constructor DI)
+        if ($node instanceof Expr\Closure || $node instanceof Expr\ArrowFunction) {
+            $this->closureDepth++;
 
             return null;
         }
@@ -298,50 +586,167 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                     return null;
                 }
 
-                if (in_array($methodName, ['make', 'makeWith', 'resolve', 'get'], true)) {
+                $resolutionMethods = $this->getResolutionMethods();
+
+                if (in_array($methodName, $resolutionMethods, true)) {
+                    if ($this->closureDepth > 0) {
+                        $argumentType = $this->getArgumentType($node->args);
+                        $this->addIssue(
+                            pattern: "app()->{$methodName}()",
+                            line: $node->getStartLine(),
+                            severity: $this->getSeverityForClosureContext($argumentType),
+                            argumentType: $argumentType,
+                            inClosure: true
+                        );
+
+                        return null;
+                    }
+
                     $argumentType = $this->getArgumentType($node->args);
-                    $this->issues[] = [
-                        'pattern' => "app()->{$methodName}()",
-                        'location' => $this->getLocation(),
-                        'class' => $this->currentClass ?? 'Unknown',
-                        'line' => $node->getStartLine(),
-                        'severity' => $this->getSeverityByArgumentType($argumentType),
-                        'argument_type' => $argumentType,
-                    ];
+                    $this->addIssue(
+                        pattern: "app()->{$methodName}()",
+                        line: $node->getStartLine(),
+                        severity: $this->getSeverityForContext($argumentType),
+                        argumentType: $argumentType
+                    );
                 }
 
                 // Detect app()->bind() / singleton() outside service providers
-                if (in_array($methodName, ['bind', 'singleton', 'instance', 'scoped'], true)) {
-                    $this->issues[] = [
-                        'pattern' => "app()->{$methodName}()",
-                        'location' => $this->getLocation(),
-                        'class' => $this->currentClass ?? 'Unknown',
-                        'line' => $node->getStartLine(),
-                        'severity' => Severity::High,
-                        'argument_type' => 'binding',
-                    ];
+                // These are ALWAYS problematic, even in closures
+                if (! $this->isServiceProvider &&
+                    in_array($methodName, ['bind', 'singleton', 'instance', 'scoped'], true)) {
+                    $this->addIssue(
+                        pattern: "app()->{$methodName}()",
+                        line: $node->getStartLine(),
+                        severity: Severity::High,
+                        argumentType: 'binding'
+                    );
                 }
             }
 
             // Detect Container::getInstance()->make()
             if ($node->var instanceof Expr\StaticCall &&
                 $node->var->class instanceof Node\Name &&
-                str_contains($node->var->class->toString(), 'Container') &&
+                $this->isContainerClass($node->var->class) &&
                 $node->var->name instanceof Node\Identifier &&
                 $node->var->name->toString() === 'getInstance') {
 
                 if ($node->name instanceof Node\Identifier) {
                     $methodName = $node->name->toString();
-                    if (in_array($methodName, ['make', 'makeWith', 'resolve', 'get'], true)) {
+
+                    $resolutionMethods = $this->getResolutionMethods();
+
+                    if (in_array($methodName, $resolutionMethods, true)) {
+                        if ($this->closureDepth > 0) {
+                            $argumentType = $this->getArgumentType($node->args);
+                            $this->addIssue(
+                                pattern: "Container::getInstance()->{$methodName}()",
+                                line: $node->getStartLine(),
+                                severity: $this->getSeverityForClosureContext($argumentType),
+                                argumentType: $argumentType,
+                                inClosure: true
+                            );
+
+                            return null;
+                        }
+
                         $argumentType = $this->getArgumentType($node->args);
-                        $this->issues[] = [
-                            'pattern' => "Container::getInstance()->{$methodName}()",
-                            'location' => $this->getLocation(),
-                            'class' => $this->currentClass ?? 'Unknown',
-                            'line' => $node->getStartLine(),
-                            'severity' => $this->getSeverityByArgumentType($argumentType),
-                            'argument_type' => $argumentType,
-                        ];
+                        $this->addIssue(
+                            pattern: "Container::getInstance()->{$methodName}()",
+                            line: $node->getStartLine(),
+                            severity: $this->getSeverityForContext($argumentType),
+                            argumentType: $argumentType
+                        );
+                    }
+                }
+            }
+
+            // Detect $this->app->make() pattern (common in ServiceProviders but flagged elsewhere)
+            if ($node->var instanceof Expr\PropertyFetch &&
+                $node->var->var instanceof Expr\Variable &&
+                $node->var->var->name === 'this' &&
+                $node->var->name instanceof Node\Identifier &&
+                $node->var->name->toString() === 'app') {
+
+                if ($node->name instanceof Node\Identifier) {
+                    $methodName = $node->name->toString();
+
+                    // Skip whitelisted methods
+                    if (in_array($methodName, $this->whitelistMethods, true)) {
+                        return null;
+                    }
+
+                    $resolutionMethods = $this->getResolutionMethods();
+
+                    if (in_array($methodName, $resolutionMethods, true)) {
+                        if ($this->closureDepth > 0) {
+                            $argumentType = $this->getArgumentType($node->args);
+                            $this->addIssue(
+                                pattern: "\$this->app->{$methodName}()",
+                                line: $node->getStartLine(),
+                                severity: $this->getSeverityForClosureContext($argumentType),
+                                argumentType: $argumentType,
+                                inClosure: true
+                            );
+
+                            return null;
+                        }
+
+                        $argumentType = $this->getArgumentType($node->args);
+                        $this->addIssue(
+                            pattern: "\$this->app->{$methodName}()",
+                            line: $node->getStartLine(),
+                            severity: $this->getSeverityForContext($argumentType),
+                            argumentType: $argumentType
+                        );
+                    }
+
+                    // Detect $this->app->bind() etc. outside service providers
+                    if (! $this->isServiceProvider &&
+                        in_array($methodName, ['bind', 'singleton', 'instance', 'scoped'], true)) {
+                        $this->addIssue(
+                            pattern: "\$this->app->{$methodName}()",
+                            line: $node->getStartLine(),
+                            severity: Severity::High,
+                            argumentType: 'binding'
+                        );
+                    }
+                }
+            }
+
+            // Detect $container->make() / $app->make() variable patterns
+            if ($node->var instanceof Expr\Variable &&
+                is_string($node->var->name) &&
+                in_array($node->var->name, ['container', 'app'], true)) {
+
+                if ($node->name instanceof Node\Identifier) {
+                    $methodName = $node->name->toString();
+
+                    $resolutionMethods = $this->getResolutionMethods();
+
+                    if (in_array($methodName, $resolutionMethods, true)) {
+                        $varName = $node->var->name;
+
+                        if ($this->closureDepth > 0) {
+                            $argumentType = $this->getArgumentType($node->args);
+                            $this->addIssue(
+                                pattern: "\${$varName}->{$methodName}()",
+                                line: $node->getStartLine(),
+                                severity: $this->getSeverityForClosureContext($argumentType),
+                                argumentType: $argumentType,
+                                inClosure: true
+                            );
+
+                            return null;
+                        }
+
+                        $argumentType = $this->getArgumentType($node->args);
+                        $this->addIssue(
+                            pattern: "\${$varName}->{$methodName}()",
+                            line: $node->getStartLine(),
+                            severity: $this->getSeverityForContext($argumentType),
+                            argumentType: $argumentType
+                        );
                     }
                 }
             }
@@ -355,50 +760,133 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                 if (($className === 'App' || str_ends_with($className, '\\App')) &&
                     $node->name instanceof Node\Identifier) {
                     $methodName = $node->name->toString();
-                    if (in_array($methodName, ['make', 'makeWith', 'resolve', 'get'], true)) {
+
+                    $resolutionMethods = $this->getResolutionMethods();
+
+                    if (in_array($methodName, $resolutionMethods, true)) {
+                        if ($this->closureDepth > 0) {
+                            $argumentType = $this->getArgumentType($node->args);
+                            $this->addIssue(
+                                pattern: "App::{$methodName}()",
+                                line: $node->getStartLine(),
+                                severity: $this->getSeverityForClosureContext($argumentType),
+                                argumentType: $argumentType,
+                                inClosure: true
+                            );
+
+                            return null;
+                        }
+
                         $argumentType = $this->getArgumentType($node->args);
-                        $this->issues[] = [
-                            'pattern' => "App::{$methodName}()",
-                            'location' => $this->getLocation(),
-                            'class' => $this->currentClass ?? 'Unknown',
-                            'line' => $node->getStartLine(),
-                            'severity' => $this->getSeverityByArgumentType($argumentType),
-                            'argument_type' => $argumentType,
-                        ];
+                        $this->addIssue(
+                            pattern: "App::{$methodName}()",
+                            line: $node->getStartLine(),
+                            severity: $this->getSeverityForContext($argumentType),
+                            argumentType: $argumentType
+                        );
                     }
                 }
             }
         }
 
-        // Detect resolve() function calls
+        // Detect resolve() function calls and app(Something::class)
         if ($node instanceof Expr\FuncCall) {
             if ($node->name instanceof Node\Name) {
                 $functionName = $node->name->toString();
 
                 // Detect resolve(Something::class)
                 if ($functionName === 'resolve') {
+                    if ($this->closureDepth > 0) {
+                        $argumentType = $this->getArgumentType($node->args);
+                        $this->addIssue(
+                            pattern: 'resolve()',
+                            line: $node->getStartLine(),
+                            severity: $this->getSeverityForClosureContext($argumentType),
+                            argumentType: $argumentType,
+                            inClosure: true
+                        );
+
+                        return null;
+                    }
+
                     $argumentType = $this->getArgumentType($node->args);
-                    $this->issues[] = [
-                        'pattern' => 'resolve()',
-                        'location' => $this->getLocation(),
-                        'class' => $this->currentClass ?? 'Unknown',
-                        'line' => $node->getStartLine(),
-                        'severity' => $this->getSeverityByArgumentType($argumentType),
-                        'argument_type' => $argumentType,
-                    ];
+                    $this->addIssue(
+                        pattern: 'resolve()',
+                        line: $node->getStartLine(),
+                        severity: $this->getSeverityForContext($argumentType),
+                        argumentType: $argumentType
+                    );
                 }
 
                 // Detect app(Something::class) - shorthand for app()->make()
                 if ($functionName === 'app' && ! empty($node->args)) {
+                    if ($this->closureDepth > 0) {
+                        // Still skip whitelisted service aliases in closures
+                        $firstArg = $node->args[0];
+                        if (! $firstArg instanceof Node\VariadicPlaceholder &&
+                            $firstArg->value instanceof Node\Scalar\String_) {
+                            $serviceName = $firstArg->value->value;
+                            if (in_array($serviceName, $this->whitelistServices, true)) {
+                                return null;
+                            }
+                        }
+
+                        $argumentType = $this->getArgumentType($node->args);
+                        $this->addIssue(
+                            pattern: 'app()',
+                            line: $node->getStartLine(),
+                            severity: $this->getSeverityForClosureContext($argumentType),
+                            argumentType: $argumentType,
+                            inClosure: true
+                        );
+
+                        return null;
+                    }
+
+                    // Check if first argument is a whitelisted service alias
+                    $firstArg = $node->args[0];
+                    if (! $firstArg instanceof Node\VariadicPlaceholder &&
+                        $firstArg->value instanceof Node\Scalar\String_) {
+                        $serviceName = $firstArg->value->value;
+                        if (in_array($serviceName, $this->whitelistServices, true)) {
+                            return null; // Skip whitelisted service aliases
+                        }
+                    }
+
                     $argumentType = $this->getArgumentType($node->args);
-                    $this->issues[] = [
-                        'pattern' => 'app()',
-                        'location' => $this->getLocation(),
-                        'class' => $this->currentClass ?? 'Unknown',
-                        'line' => $node->getStartLine(),
-                        'severity' => $this->getSeverityByArgumentType($argumentType),
-                        'argument_type' => $argumentType,
-                    ];
+                    $this->addIssue(
+                        pattern: 'app()',
+                        line: $node->getStartLine(),
+                        severity: $this->getSeverityForContext($argumentType),
+                        argumentType: $argumentType
+                    );
+                }
+            }
+        }
+
+        // Detect manual instantiation (optional feature)
+        if ($this->detectManualInstantiation && $node instanceof Expr\New_) {
+            if ($node->class instanceof Node\Name) {
+                $className = $node->class->toString();
+                if ($this->matchesManualInstantiationPattern($className)) {
+                    if ($this->closureDepth > 0) {
+                        $this->addIssue(
+                            pattern: "new {$className}()",
+                            line: $node->getStartLine(),
+                            severity: Severity::Low,
+                            argumentType: 'instantiation',
+                            inClosure: true
+                        );
+
+                        return null;
+                    }
+
+                    $this->addIssue(
+                        pattern: "new {$className}()",
+                        line: $node->getStartLine(),
+                        severity: Severity::Low,
+                        argumentType: 'instantiation'
+                    );
                 }
             }
         }
@@ -418,7 +906,55 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
             $this->currentClass = null;
         }
 
+        // Clear namespace context on exit
+        if ($node instanceof Stmt\Namespace_) {
+            $this->currentNamespace = null;
+        }
+
+        // Track closure exit
+        if ($node instanceof Expr\Closure || $node instanceof Expr\ArrowFunction) {
+            $this->closureDepth--;
+        }
+
         return null;
+    }
+
+    /**
+     * Add an issue with deduplication.
+     */
+    private function addIssue(string $pattern, int $line, Severity $severity, string $argumentType, bool $inClosure = false): void
+    {
+        $key = "{$line}:{$pattern}";
+
+        // Skip if already seen (deduplication)
+        if (isset($this->seenIssues[$key])) {
+            return;
+        }
+
+        $this->seenIssues[$key] = true;
+        $this->issues[] = [
+            'pattern' => $pattern,
+            'location' => $this->getLocation(),
+            'class' => $this->currentClass ?? 'Unknown',
+            'line' => $line,
+            'severity' => $severity,
+            'argument_type' => $argumentType,
+            'in_closure' => $inClosure,
+        ];
+    }
+
+    /**
+     * Get fully qualified class name.
+     */
+    private function getFullyQualifiedClassName(): ?string
+    {
+        if ($this->currentClass === null) {
+            return null;
+        }
+
+        return $this->currentNamespace !== null
+            ? $this->currentNamespace.'\\'.$this->currentClass
+            : $this->currentClass;
     }
 
     /**
@@ -430,8 +966,17 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
             return false;
         }
 
+        // Get FQN for namespace-aware matching
+        $fqn = $this->getFullyQualifiedClassName();
+
         foreach ($this->whitelistClasses as $pattern) {
+            // Check against short class name
             if ($this->matchesPattern($this->currentClass, $pattern)) {
+                return true;
+            }
+
+            // Check against FQN if available
+            if ($fqn !== null && $this->matchesPattern($fqn, $pattern)) {
                 return true;
             }
         }
@@ -440,15 +985,19 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Check if class name matches pattern (supports wildcards).
+     * Check if class name matches pattern (supports wildcards and namespace patterns).
      */
     private function matchesPattern(string $className, string $pattern): bool
     {
         // Convert wildcard pattern to regex
-        // First replace * with placeholder, then preg_quote, then convert placeholder to .*
+        // First replace ** with placeholder for recursive match
+        $pattern = str_replace('**', 'RECURSIVE_PLACEHOLDER', $pattern);
+        // Then replace * with placeholder for single segment match
         $pattern = str_replace('*', 'WILDCARD_PLACEHOLDER', $pattern);
         $pattern = preg_quote($pattern, '/');
-        $pattern = str_replace('WILDCARD_PLACEHOLDER', '.*', $pattern);
+        // Convert placeholders to regex
+        $pattern = str_replace('RECURSIVE_PLACEHOLDER', '.*', $pattern);
+        $pattern = str_replace('WILDCARD_PLACEHOLDER', '[^\\\\]*', $pattern);
         $regex = '/^'.$pattern.'$/i';
 
         return (bool) preg_match($regex, $className);
@@ -466,6 +1015,22 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         }
 
         return false;
+    }
+
+    /**
+     * Check if a class name refers to Laravel's Container.
+     *
+     * Strictly checks for Container, Illuminate\Container\Container,
+     * or any class ending with \Container (namespace separator required).
+     * This avoids false positives like MyContainerHelper.
+     */
+    private function isContainerClass(Node\Name $name): bool
+    {
+        $className = ltrim($name->toString(), '\\');
+
+        return $className === 'Container'
+            || $className === 'Illuminate\\Container\\Container'
+            || str_ends_with($className, '\\Container');
     }
 
     /**
@@ -519,25 +1084,109 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Get current location string.
+     * Get severity for the current context, escalating to High for Controllers/Services.
+     *
+     * Classes in Controllers, Services, and Repositories namespaces are fully DI-capable,
+     * so using manual resolution is almost always a mistake and deserves higher severity.
+     */
+    private function getSeverityForContext(string $argumentType): Severity
+    {
+        $baseSeverity = $this->getSeverityByArgumentType($argumentType);
+
+        // Don't escalate if already High or Critical
+        if ($baseSeverity !== Severity::Medium) {
+            return $baseSeverity;
+        }
+
+        // Escalate to High for Controllers, Services, and Repositories
+        if ($this->currentNamespace !== null) {
+            foreach ($this->highSeverityNamespaces as $ns) {
+                if (str_starts_with($this->currentNamespace, $ns)) {
+                    return Severity::High;
+                }
+            }
+        }
+
+        return $baseSeverity;
+    }
+
+    /**
+     * Get current location string with fully qualified class name.
      */
     private function getLocation(): string
     {
         if ($this->currentMethod !== null) {
-            return ($this->currentClass ?? 'Unknown').'::'.$this->currentMethod;
+            $fqcn = $this->getFullyQualifiedClassName() ?? $this->currentClass ?? 'Unknown';
+
+            return $fqcn.'::'.$this->currentMethod;
         }
 
         if ($this->currentClass !== null) {
-            return $this->currentClass;
+            return $this->getFullyQualifiedClassName() ?? $this->currentClass;
         }
 
         return 'global scope';
     }
 
     /**
+     * Get severity for resolution inside a closure context.
+     *
+     * String-based resolution (e.g., app('router')) is more fragile than class-based
+     * resolution, so it gets Medium severity even in closures. All other argument types
+     * get Low severity since closures lack constructor DI support.
+     */
+    private function getSeverityForClosureContext(string $argumentType): Severity
+    {
+        return match ($argumentType) {
+            'string' => Severity::Medium,
+            default => Severity::Low,
+        };
+    }
+
+    /**
+     * Get the list of resolution methods to detect.
+     *
+     * @return array<string>
+     */
+    private function getResolutionMethods(): array
+    {
+        $methods = ['make', 'makeWith', 'resolve'];
+        if ($this->detectPsrGet) {
+            $methods[] = 'get';
+        }
+
+        return $methods;
+    }
+
+    /**
+     * Check if class name matches manual instantiation patterns.
+     *
+     * Checks exclusion patterns first to avoid false positives for DTOs,
+     * value objects, and other legitimate instantiations.
+     */
+    private function matchesManualInstantiationPattern(string $className): bool
+    {
+        // Check exclusions first - if it matches an exclusion, don't flag it
+        foreach ($this->manualInstantiationExcludePatterns as $pattern) {
+            if ($this->matchesPattern($className, $pattern)) {
+                return false;
+            }
+        }
+
+        // Then check inclusion patterns
+        foreach ($this->manualInstantiationPatterns as $pattern) {
+            if ($this->matchesPattern($className, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Get collected issues.
      *
-     * @return array<int, array{pattern: string, location: string, class: string, line: int, severity: Severity, argument_type: string}>
+     * @return array<int, array{pattern: string, location: string, class: string, line: int, severity: Severity, argument_type: string, in_closure: bool}>
      */
     public function getIssues(): array
     {

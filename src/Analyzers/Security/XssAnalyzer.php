@@ -44,6 +44,28 @@ class XssAnalyzer extends AbstractFileAnalyzer
      */
     private bool $skipHttpChecks = false;
 
+    /**
+     * Safe JavaScript no-op patterns that don't execute code.
+     *
+     * @var array<string>
+     */
+    private const SAFE_JAVASCRIPT_PATTERNS = [
+        'javascript:;',
+        'javascript:void(0)',
+        'javascript:void(0);',
+    ];
+
+    /**
+     * Functions that URL-encode user input, making it safe in URL context.
+     *
+     * @var array<string>
+     */
+    private const URL_SAFE_FUNCTIONS = [
+        'http_build_query',
+        'urlencode',
+        'rawurlencode',
+    ];
+
     public function __construct(Router $router)
     {
         $this->router = $router;
@@ -298,6 +320,37 @@ class XssAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Check if JavaScript pattern is a safe no-op (doesn't execute code).
+     */
+    private function isSafeJavaScriptPattern(string $line): bool
+    {
+        foreach (self::SAFE_JAVASCRIPT_PATTERNS as $pattern) {
+            // Match the pattern as the entire javascript: value in href or src
+            $regex = '/(?:href|src)\s*=\s*["\']?'.preg_quote($pattern, '/').'["\']?/i';
+            if (preg_match($regex, $line)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if user input is wrapped in URL-encoding functions.
+     */
+    private function isUrlSafeContext(string $attributeValue): bool
+    {
+        foreach (self::URL_SAFE_FUNCTIONS as $function) {
+            // Check if the user input is inside a URL-safe function call
+            if (preg_match('/\b'.preg_quote($function, '/').'\s*\([^)]*(?:request\(|Request::|Input::|\$_)/i', $attributeValue)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Extract the value of an HTML attribute from a line.
      *
      * @param  string  $attributeName  The attribute name (e.g., 'href', 'src')
@@ -337,18 +390,21 @@ class XssAnalyzer extends AbstractFileAnalyzer
         $issues = [];
 
         // Check for javascript: protocol (Critical - immediate XSS risk)
-        // Flag ANY usage of javascript: protocol as it's inherently dangerous
+        // Skip safe no-op patterns like javascript:; or javascript:void(0)
         if (preg_match('/(?:href|src|action|formaction)\s*=\s*["\']?\s*javascript:/i', $line)) {
-            $hasUserInput = $this->mightContainUserInput($line);
-            $issues[] = $this->createIssueWithSnippet(
-                message: $hasUserInput
-                    ? 'Critical XSS: javascript: protocol with user input in HTML attribute'
-                    : 'High: javascript: protocol in HTML attribute (security risk)',
-                filePath: $file,
-                lineNumber: $lineNumber + 1,
-                severity: $hasUserInput ? Severity::Critical : Severity::High,
-                recommendation: 'Never use javascript: URLs. Use data attributes and event listeners instead for better security'
-            );
+            // Skip safe no-op patterns
+            if (! $this->isSafeJavaScriptPattern($line)) {
+                $hasUserInput = $this->mightContainUserInput($line);
+                $issues[] = $this->createIssueWithSnippet(
+                    message: $hasUserInput
+                        ? 'Critical XSS: javascript: protocol with user input in HTML attribute'
+                        : 'High: javascript: protocol with executable code in HTML attribute',
+                    filePath: $file,
+                    lineNumber: $lineNumber + 1,
+                    severity: $hasUserInput ? Severity::Critical : Severity::High,
+                    recommendation: 'Avoid executable javascript: URLs. Use javascript:; or javascript:void(0) for no-op links, or data attributes with event listeners for interactive behavior'
+                );
+            }
         }
 
         // Check for data: protocol with user input (Critical - can execute JavaScript)
@@ -389,13 +445,16 @@ class XssAnalyzer extends AbstractFileAnalyzer
         if ($hrefValue !== null && preg_match('/(\{\{|\{!!)/', $hrefValue) && $this->mightContainUserInput($hrefValue)) {
             // Skip if it's using javascript: or data: (already caught above)
             if (! preg_match('/^\s*(?:javascript|data):/i', $hrefValue)) {
-                $issues[] = $this->createIssueWithSnippet(
-                    message: 'High: User input in href attribute without URL validation',
-                    filePath: $file,
-                    lineNumber: $lineNumber + 1,
-                    severity: Severity::High,
-                    recommendation: 'Validate URLs to ensure they use safe protocols (http/https). Use url() helper or validate against whitelist'
-                );
+                // Skip if user input is properly URL-encoded
+                if (! $this->isUrlSafeContext($hrefValue)) {
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: 'High: User input in href attribute without URL validation',
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
+                        severity: Severity::High,
+                        recommendation: 'Validate URLs to ensure they use safe protocols (http/https). Use url() helper or validate against whitelist'
+                    );
+                }
             }
         }
 
@@ -405,13 +464,16 @@ class XssAnalyzer extends AbstractFileAnalyzer
         if ($srcValue !== null && preg_match('/(\{\{|\{!!)/', $srcValue) && $this->mightContainUserInput($srcValue)) {
             // Skip if it's using javascript: or data: (already caught above)
             if (! preg_match('/^\s*(?:javascript|data):/i', $srcValue)) {
-                $issues[] = $this->createIssueWithSnippet(
-                    message: 'High: User input in src attribute without validation',
-                    filePath: $file,
-                    lineNumber: $lineNumber + 1,
-                    severity: Severity::High,
-                    recommendation: 'Validate resource URLs. Ensure they use safe protocols and come from trusted sources'
-                );
+                // Skip if user input is properly URL-encoded
+                if (! $this->isUrlSafeContext($srcValue)) {
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: 'High: User input in src attribute without validation',
+                        filePath: $file,
+                        lineNumber: $lineNumber + 1,
+                        severity: Severity::High,
+                        recommendation: 'Validate resource URLs. Ensure they use safe protocols and come from trusted sources'
+                    );
+                }
             }
         }
 

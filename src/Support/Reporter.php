@@ -605,18 +605,40 @@ class Reporter implements ReporterInterface
             if (! empty($issues)) {
                 $displayCount = $maxIssuesPerCheck;
 
-                // Show issue locations
-                foreach (array_slice($issues, 0, $displayCount) as $issue) {
-                    // Show message for application-wide issues without location
-                    $displayText = $issue->location === null
-                        ? $issue->message
-                        : "At {$issue->location}";
+                // Group issues by location to avoid duplicate location lines
+                $issuesByLocation = $this->groupIssuesByLocation(array_slice($issues, 0, $displayCount));
+
+                // Show issues grouped by location
+                foreach ($issuesByLocation as $locationKey => $locationIssues) {
+                    $firstIssue = $locationIssues[0];
+
+                    // Show location line (or message for application-wide issues)
+                    if ($firstIssue->location === null) {
+                        $locationText = $firstIssue->message;
+                    } else {
+                        $locationText = "At {$firstIssue->location}";
+                    }
 
                     // Highlight critical issues with background color
-                    if (isset($issue->severity) && $issue->severity->value === 'critical') {
-                        $output[] = $this->color($displayText, 'white', 'bg_red');
+                    $hasCritical = false;
+                    foreach ($locationIssues as $issue) {
+                        if (isset($issue->severity) && $issue->severity->value === 'critical') {
+                            $hasCritical = true;
+                            break;
+                        }
+                    }
+
+                    if ($hasCritical) {
+                        $output[] = $this->color($locationText, 'white', 'bg_red');
                     } else {
-                        $output[] = $this->color($displayText, 'magenta');
+                        $output[] = $this->color($locationText, 'magenta');
+                    }
+
+                    // If multiple issues at same location, show their messages indented
+                    if (count($locationIssues) > 1 && $firstIssue->location !== null) {
+                        foreach ($locationIssues as $issue) {
+                            $output[] = $this->color("  → {$issue->message}", 'gray');
+                        }
                     }
                 }
 
@@ -676,5 +698,34 @@ class Reporter implements ReporterInterface
         }
 
         return $default;
+    }
+
+    /**
+     * Group issues by their location to avoid duplicate location lines in output.
+     *
+     * When multiple issues occur on the same line (e.g., multiple PHPStan errors),
+     * this groups them so we show the location once, with individual messages underneath.
+     *
+     * @param  array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @return array<string, array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>>
+     */
+    private function groupIssuesByLocation(array $issues): array
+    {
+        $grouped = [];
+
+        foreach ($issues as $issue) {
+            // Create a unique key for the location
+            $locationKey = $issue->location === null
+                ? 'no-location-'.$issue->message
+                : (string) $issue->location;
+
+            if (! isset($grouped[$locationKey])) {
+                $grouped[$locationKey] = [];
+            }
+
+            $grouped[$locationKey][] = $issue;
+        }
+
+        return $grouped;
     }
 }

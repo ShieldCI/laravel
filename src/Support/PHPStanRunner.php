@@ -9,24 +9,36 @@ use Symfony\Component\Process\Process;
 
 /**
  * Runs PHPStan analysis on user's application code.
+ *
+ * Uses Larastan and Carbon extensions when available to properly handle
+ * Laravel's magic methods and Carbon's iterator types, reducing false positives.
  */
 class PHPStanRunner
 {
     /**
      * Known false positive patterns to suppress.
-     * These are issues PHPStan reports incorrectly for well-known libraries.
+     *
+     * Most Laravel-specific false positives are handled by including Larastan's
+     * extension.neon at analysis time. This array is reserved for edge cases
+     * that extensions don't cover.
      *
      * @var array<string>
      */
     private const KNOWN_FALSE_POSITIVES = [
-        // Carbon\CarbonPeriod implements Iterator but PHPStan doesn't recognize it
-        '#Argument of an invalid type Carbon\\\\CarbonPeriod supplied for foreach#',
+        // HigherOrderProxy is too magical for Larastan/PHPStan to understand
+        // @see https://github.com/larastan/larastan/blob/2e9ed291bdc1969e7f270fb33c9cdf3c912daeb2/docs/errors-to-ignore.md
+        '#Call to an undefined method Illuminate\\\\Support\\\\HigherOrder#',
     ];
 
     /**
      * @var array<string, mixed>|null
      */
     private ?array $result = null;
+
+    /**
+     * Path to temporary config file, if generated.
+     */
+    private ?string $tempConfigFile = null;
 
     public function __construct(
         private string $basePath
@@ -35,6 +47,9 @@ class PHPStanRunner
     /**
      * Run PHPStan analysis on specified paths.
      *
+     * Generates a temporary configuration file that includes Larastan and Carbon
+     * extensions when available, enabling proper analysis of Laravel code.
+     *
      * @param  string|array<string>  $paths
      * @return $this
      */
@@ -42,35 +57,133 @@ class PHPStanRunner
     {
         $paths = is_array($paths) ? $paths : [$paths];
 
-        // Build PHPStan command
-        $command = [
-            $this->basePath.'/vendor/bin/phpstan',
-            'analyse',
-            '--level='.$level,
-            '--error-format=json',
-            '--no-progress',
-            '--no-interaction',
-        ];
+        // Generate config with Larastan/Carbon extensions
+        $configFile = $this->generateConfig($level);
+        $this->tempConfigFile = $configFile;
 
-        // Add paths
-        foreach ($paths as $path) {
-            $command[] = $path;
-        }
+        try {
+            // Build PHPStan command
+            $command = [
+                $this->basePath.'/vendor/bin/phpstan',
+                'analyse',
+                '--configuration='.$configFile,
+                '--error-format=json',
+                '--no-progress',
+                '--no-interaction',
+            ];
 
-        // Run PHPStan
-        $process = new Process($command, $this->basePath);
-        $process->setTimeout(300); // 5 minutes timeout
-        $process->run();
+            // Add paths
+            foreach ($paths as $path) {
+                $command[] = $path;
+            }
 
-        // Parse JSON output
-        $output = $process->getOutput();
-        $this->result = json_decode($output, true);
+            // Run PHPStan
+            $process = new Process($command, $this->basePath);
+            $process->setTimeout(300); // 5 minutes timeout
+            $process->run();
 
-        if (! is_array($this->result)) {
-            $this->result = ['files' => []];
+            // Parse JSON output
+            $output = $process->getOutput();
+            $this->result = json_decode($output, true);
+
+            if (! is_array($this->result)) {
+                $this->result = ['files' => []];
+            }
+        } finally {
+            // Clean up temp config file
+            $this->cleanupTempConfig();
         }
 
         return $this;
+    }
+
+    /**
+     * Generate a temporary PHPStan configuration file with Larastan extensions.
+     *
+     * The generated config includes:
+     * - Larastan extension (for Eloquent magic methods, facades, etc.)
+     * - Carbon extension (for Carbon types and iterators)
+     * - User's existing config if present
+     */
+    private function generateConfig(int $level): string
+    {
+        $includes = [];
+
+        // Include Larastan extension if available
+        $larastanExtension = $this->basePath.'/vendor/larastan/larastan/extension.neon';
+        if (file_exists($larastanExtension)) {
+            $includes[] = $larastanExtension;
+        }
+
+        // Include Carbon extension if available
+        $carbonExtension = $this->basePath.'/vendor/nesbot/carbon/extension.neon';
+        if (file_exists($carbonExtension)) {
+            $includes[] = $carbonExtension;
+        }
+
+        // Include user's existing config if present
+        $userConfig = $this->basePath.'/phpstan.neon';
+        $userConfigDist = $this->basePath.'/phpstan.neon.dist';
+
+        if (file_exists($userConfig)) {
+            $includes[] = $userConfig;
+        } elseif (file_exists($userConfigDist)) {
+            $includes[] = $userConfigDist;
+        }
+
+        // Generate NEON content
+        $neon = $this->buildNeonConfig($includes, $level);
+
+        // Write to temp file
+        $baseTempFile = tempnam(sys_get_temp_dir(), 'shieldci_phpstan_');
+        if ($baseTempFile === false) {
+            // Fallback if tempnam fails
+            $baseTempFile = sys_get_temp_dir().'/shieldci_phpstan_'.uniqid();
+        }
+
+        $tempFile = $baseTempFile.'.neon';
+        file_put_contents($tempFile, $neon);
+
+        // Clean up the base temp file created by tempnam (without .neon extension)
+        if ($baseTempFile !== $tempFile && file_exists($baseTempFile)) {
+            unlink($baseTempFile);
+        }
+
+        return $tempFile;
+    }
+
+    /**
+     * Build NEON config string from includes and parameters.
+     *
+     * @param  array<string>  $includes
+     */
+    private function buildNeonConfig(array $includes, int $level): string
+    {
+        $lines = [];
+
+        if ($includes !== []) {
+            $lines[] = 'includes:';
+            foreach ($includes as $include) {
+                $lines[] = '    - '.$include;
+            }
+            $lines[] = '';
+        }
+
+        $lines[] = 'parameters:';
+        $lines[] = '    level: '.$level;
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * Clean up the temporary config file if it exists.
+     */
+    private function cleanupTempConfig(): void
+    {
+        if ($this->tempConfigFile !== null && file_exists($this->tempConfigFile)) {
+            unlink($this->tempConfigFile);
+            $this->tempConfigFile = null;
+        }
     }
 
     /**

@@ -39,7 +39,6 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::High,
             tags: ['performance', 'eloquent', 'database', 'n+1', 'optimization'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/eloquent-n-plus-one',
             timeToFix: 30
         );
     }

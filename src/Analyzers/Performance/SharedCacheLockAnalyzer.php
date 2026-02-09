@@ -59,7 +59,6 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
             category: Category::Performance,
             severity: Severity::Low,
             tags: ['performance', 'cache', 'locks', 'redis', 'reliability'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/performance/shared-cache-lock',
             timeToFix: 20
         );
     }

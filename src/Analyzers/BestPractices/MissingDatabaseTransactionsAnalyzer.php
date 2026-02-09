@@ -47,7 +47,6 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::High,
             tags: ['laravel', 'database', 'transactions', 'data-integrity', 'acid'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/missing-database-transactions',
             timeToFix: 25
         );
     }

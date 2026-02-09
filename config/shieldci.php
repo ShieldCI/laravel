@@ -19,6 +19,20 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Documentation Base URL
+    |--------------------------------------------------------------------------
+    |
+    | Base URL for analyzer documentation
+    |
+    | URLs are auto-generated as: {base_url}/analyzers/{category}/{analyzer-id}
+    | Example: https://docs.shieldci.com/analyzers/security/sql-injection
+    |
+    */
+
+    'docs_base_url' => env('SHIELDCI_DOCS_URL', 'https://docs.shieldci.com'),
+
+    /*
+    |--------------------------------------------------------------------------
     | CI Mode Configuration
     |--------------------------------------------------------------------------
     |

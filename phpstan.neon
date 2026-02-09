@@ -5,6 +5,7 @@ parameters:
         - tests
     tmpDir: build/phpstan
     treatPhpDocTypesAsCertain: false
+    reportUnmatchedIgnoredErrors: false
     # Include analyzers-core base classes for proper inheritance analysis
     scanFiles:
         - vendor/shieldci/analyzers-core/src/Abstracts/AbstractFileAnalyzer.php

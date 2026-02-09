@@ -63,7 +63,6 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
             category: Category::Performance,
             severity: Severity::High,
             tags: ['configuration', 'cache', 'performance', 'env'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/performance/env-call-outside-config',
             timeToFix: 30
         );
     }

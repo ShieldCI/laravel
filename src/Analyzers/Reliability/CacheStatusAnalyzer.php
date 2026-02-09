@@ -48,7 +48,6 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::Critical,
             tags: ['cache', 'infrastructure', 'reliability', 'availability'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/cache-status',
             timeToFix: 15
         );
     }

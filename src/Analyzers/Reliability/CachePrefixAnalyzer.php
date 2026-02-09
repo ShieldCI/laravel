@@ -58,7 +58,6 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['cache', 'configuration', 'reliability', 'multi-tenant'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/cache-prefix-configuration',
             timeToFix: 5
         );
     }

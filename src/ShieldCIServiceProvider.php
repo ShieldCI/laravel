@@ -11,6 +11,7 @@ use Psr\Log\LoggerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
+use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Commands\AnalyzeCommand;
 use ShieldCI\Commands\BaselineCommand;
 use ShieldCI\Contracts\ReporterInterface;
@@ -32,6 +33,19 @@ class ShieldCIServiceProvider extends ServiceProvider
         $this->mergeConfigFrom(
             __DIR__.'/../config/shieldci.php',
             'shieldci'
+        );
+
+        // Configure documentation base URL resolver for AnalyzerMetadata
+        // This allows auto-generation of docs URLs from category + analyzer ID
+        AnalyzerMetadata::setDocsBaseUrlResolver(
+            function (): string {
+                /** @var \Illuminate\Contracts\Config\Repository $config */
+                $config = $this->app->make('config');
+                /** @var string $baseUrl */
+                $baseUrl = $config->get('shieldci.docs_base_url', 'https://docs.shieldci.com');
+
+                return $baseUrl;
+            }
         );
 
         // Register bindings

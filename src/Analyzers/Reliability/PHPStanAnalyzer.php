@@ -258,7 +258,6 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['phpstan', 'static-analysis', 'type-safety', 'reliability'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/phpstan',
             timeToFix: 120
         );
     }

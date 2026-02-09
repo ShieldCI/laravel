@@ -38,7 +38,6 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Low,
             tags: ['dependencies', 'composer', 'stability', 'versions', 'production'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/stable-dependencies',
             timeToFix: 30
         );
     }

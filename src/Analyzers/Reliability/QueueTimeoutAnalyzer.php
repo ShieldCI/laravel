@@ -39,7 +39,6 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['queue', 'configuration', 'reliability', 'jobs'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/queue-timeout-configuration',
             timeToFix: 10
         );
     }

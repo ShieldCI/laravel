@@ -37,7 +37,6 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::High,
             tags: ['authentication', 'rate-limiting', 'brute-force', 'security', 'throttling'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/login-throttling',
             timeToFix: 20
         );
     }

@@ -48,7 +48,6 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['debug', 'information-disclosure', 'security', 'configuration'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/debug-mode',
             timeToFix: 5
         );
     }

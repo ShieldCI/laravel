@@ -60,7 +60,6 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['env', 'environment', 'secrets', 'security', 'configuration'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/env-file',
             timeToFix: 10
         );
     }

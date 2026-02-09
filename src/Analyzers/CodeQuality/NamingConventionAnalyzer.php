@@ -43,7 +43,6 @@ class NamingConventionAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Low,
             tags: ['conventions', 'psr', 'code-quality', 'readability'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/naming-convention',
             timeToFix: 20
         );
     }

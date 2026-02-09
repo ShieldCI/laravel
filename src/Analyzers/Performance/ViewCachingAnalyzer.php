@@ -61,7 +61,6 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
             category: Category::Performance,
             severity: Severity::Medium,
             tags: ['cache', 'views', 'blade', 'performance', 'optimization'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/performance/view-caching',
             timeToFix: 5
         );
     }

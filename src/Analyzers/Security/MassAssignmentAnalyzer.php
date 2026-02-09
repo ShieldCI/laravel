@@ -126,7 +126,6 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::High,
             tags: ['mass-assignment', 'eloquent', 'security', 'models', 'sql-injection'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/mass-assignment-vulnerabilities',
             timeToFix: 25
         );
     }

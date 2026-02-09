@@ -51,7 +51,6 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
             category: Category::Performance,
             severity: Severity::Critical,
             tags: ['session', 'performance', 'configuration', 'redis', 'scalability'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/performance/session-driver',
             timeToFix: 30
         );
     }

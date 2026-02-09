@@ -44,7 +44,6 @@ class NestingDepthAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Medium,
             tags: ['complexity', 'maintainability', 'code-quality', 'readability'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/nesting-depth',
             timeToFix: 20
         );
     }

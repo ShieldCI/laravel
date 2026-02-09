@@ -63,7 +63,6 @@ class MaintenanceModeAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['maintenance', 'availability', 'reliability', 'downtime'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/maintenance-mode-status',
             timeToFix: 5
         );
     }

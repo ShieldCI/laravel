@@ -46,7 +46,6 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::High,
             tags: ['laravel', 'routes', 'mvc', 'architecture', 'best-practices'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/logic-in-routes',
             timeToFix: 20
         );
     }

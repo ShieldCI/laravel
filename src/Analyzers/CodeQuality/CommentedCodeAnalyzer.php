@@ -117,7 +117,6 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Low,
             tags: ['maintainability', 'code-quality', 'comments', 'dead-code', 'version-control'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/commented-code',
             timeToFix: 5
         );
     }

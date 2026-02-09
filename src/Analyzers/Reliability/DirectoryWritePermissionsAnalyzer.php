@@ -37,7 +37,6 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::Critical,
             tags: ['permissions', 'filesystem', 'reliability', 'deployment', 'symlinks'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/directory-write-permissions',
             timeToFix: 10
         );
     }

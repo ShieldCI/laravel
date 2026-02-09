@@ -48,7 +48,6 @@ class HorizonSuggestionAnalyzer extends AbstractAnalyzer
             category: Category::Performance,
             severity: Severity::Low,
             tags: ['queue', 'horizon', 'redis', 'monitoring', 'performance'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/performance/horizon-suggestion',
             timeToFix: 15
         );
     }

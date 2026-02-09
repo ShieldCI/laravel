@@ -84,7 +84,6 @@ class XssAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['xss', 'cross-site-scripting', 'security', 'blade', 'csp', 'headers'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/xss-vulnerabilities',
             timeToFix: 30
         );
     }

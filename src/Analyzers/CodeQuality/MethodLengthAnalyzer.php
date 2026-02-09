@@ -60,7 +60,6 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
             category: Category::CodeQuality,
             severity: Severity::Low,
             tags: ['complexity', 'maintainability', 'code-quality', 'readability'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/code-quality/method-length',
             timeToFix: 30
         );
     }

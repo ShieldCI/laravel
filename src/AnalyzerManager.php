@@ -177,7 +177,8 @@ class AnalyzerManager
                         'description' => $metadata->description,
                         'category' => $metadata->category,
                         'severity' => $metadata->severity,
-                        'docsUrl' => $metadata->docsUrl,
+                        'docsUrl' => $metadata->getDocsUrl(),
+                        'timeToFix' => $metadata->timeToFix,
                     ],
                 );
             });
@@ -326,7 +327,8 @@ class AnalyzerManager
                         'description' => $metadata->description,
                         'category' => $metadata->category,
                         'severity' => $metadata->severity,
-                        'docsUrl' => $metadata->docsUrl,
+                        'docsUrl' => $metadata->getDocsUrl(),
+                        'timeToFix' => $metadata->timeToFix,
                         'skipReason' => $skipReason,
                     ],
                 );
@@ -426,7 +428,8 @@ class AnalyzerManager
                 'description' => $metadata->description,
                 'category' => $metadata->category,
                 'severity' => $metadata->severity,
-                'docsUrl' => $metadata->docsUrl,
+                'docsUrl' => $metadata->getDocsUrl(),
+                'timeToFix' => $metadata->timeToFix,
             ],
         );
     }

@@ -77,7 +77,6 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['env', 'http', 'security', 'runtime', 'web-server', 'deployment'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/env-http-accessibility',
             timeToFix: 20
         );
     }

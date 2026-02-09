@@ -53,7 +53,6 @@ class PhpSideFilteringAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Critical,
             tags: ['laravel', 'performance', 'database', 'memory', 'optimization', 'collections'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/php-side-filtering',
             timeToFix: 15
         );
     }

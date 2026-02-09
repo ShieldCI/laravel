@@ -31,7 +31,6 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::Low,
             tags: ['environment', 'configuration', 'documentation', 'team-collaboration'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/env-example-documented',
             timeToFix: 10
         );
     }

@@ -54,7 +54,6 @@ class HardcodedStoragePathsAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::Medium,
             tags: ['laravel', 'portability', 'paths', 'configuration'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/hardcoded-storage-paths',
             timeToFix: 10
         );
     }

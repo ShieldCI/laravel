@@ -66,7 +66,6 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
             category: Category::Reliability,
             severity: Severity::High,
             tags: ['database', 'migrations', 'reliability', 'deployment'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/reliability/up-to-date-migrations',
             timeToFix: 5
         );
     }

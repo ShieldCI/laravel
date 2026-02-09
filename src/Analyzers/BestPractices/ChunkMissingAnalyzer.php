@@ -32,7 +32,6 @@ class ChunkMissingAnalyzer extends AbstractFileAnalyzer
             category: Category::BestPractices,
             severity: Severity::High,
             tags: ['laravel', 'performance', 'memory', 'eloquent', 'optimization'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/best-practices/chunk-missing',
             timeToFix: 15
         );
     }

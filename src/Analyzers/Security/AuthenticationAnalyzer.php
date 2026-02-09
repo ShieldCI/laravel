@@ -80,7 +80,6 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             category: Category::Security,
             severity: Severity::Critical,
             tags: ['authentication', 'authorization', 'security', 'middleware'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/security/authentication-authorization',
             timeToFix: 25
         );
     }

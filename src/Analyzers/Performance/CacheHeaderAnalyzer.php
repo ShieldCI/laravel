@@ -144,7 +144,6 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             category: Category::Performance,
             severity: Severity::High,
             tags: ['cache', 'assets', 'performance', 'headers', 'browser-cache'],
-            docsUrl: 'https://docs.shieldci.com/analyzers/performance/asset-cache-headers',
             timeToFix: 30
         );
     }

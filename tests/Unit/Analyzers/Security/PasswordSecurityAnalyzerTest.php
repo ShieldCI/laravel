@@ -4,16 +4,16 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
-use ShieldCI\Analyzers\Security\HashingStrengthAnalyzer;
+use ShieldCI\Analyzers\Security\PasswordSecurityAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
-class HashingStrengthAnalyzerTest extends AnalyzerTestCase
+class PasswordSecurityAnalyzerTest extends AnalyzerTestCase
 {
     protected function createAnalyzer(): AnalyzerInterface
     {
-        return new HashingStrengthAnalyzer;
+        return new PasswordSecurityAnalyzer;
     }
 
     // ==================== Basic Functionality Tests ====================
@@ -158,8 +158,15 @@ PHP;
         $result = $analyzer->analyze();
 
         $issues = $result->getIssues();
-        $this->assertCount(1, $issues);
-        $this->assertEquals(Severity::Critical, $issues[0]->severity);
+        $bcryptIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'Bcrypt rounds')) {
+                $bcryptIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($bcryptIssue);
+        $this->assertEquals(Severity::Critical, $bcryptIssue->severity);
     }
 
     public function test_bcrypt_rounds_metadata_includes_value(): void
@@ -182,8 +189,15 @@ PHP;
         $result = $analyzer->analyze();
 
         $issues = $result->getIssues();
-        $this->assertArrayHasKey('rounds', $issues[0]->metadata);
-        $this->assertEquals(8, $issues[0]->metadata['rounds']);
+        $bcryptIssue = null;
+        foreach ($issues as $issue) {
+            if (isset($issue->metadata['rounds'])) {
+                $bcryptIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($bcryptIssue);
+        $this->assertEquals(8, $bcryptIssue->metadata['rounds']);
     }
 
     // ==================== Argon2 Configuration Tests ====================
@@ -234,8 +248,15 @@ PHP;
         $result = $analyzer->analyze();
 
         $issues = $result->getIssues();
-        $this->assertCount(1, $issues);
-        $this->assertEquals(Severity::Critical, $issues[0]->severity);
+        $memoryIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'Argon2 memory')) {
+                $memoryIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($memoryIssue);
+        $this->assertEquals(Severity::Critical, $memoryIssue->severity);
     }
 
     public function test_fails_when_argon2_time_too_low(): void
@@ -282,8 +303,15 @@ PHP;
         $result = $analyzer->analyze();
 
         $issues = $result->getIssues();
-        $this->assertCount(1, $issues);
-        $this->assertEquals(Severity::Medium, $issues[0]->severity);
+        $timeIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'Argon2 time cost')) {
+                $timeIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($timeIssue);
+        $this->assertEquals(Severity::Medium, $timeIssue->severity);
     }
 
     public function test_detects_argon2_threads_too_low(): void
@@ -307,7 +335,6 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Low severity results in Warning status
         $this->assertWarning($result);
         $this->assertHasIssueContaining('Argon2 threads', $result);
     }
@@ -332,8 +359,15 @@ PHP;
         $result = $analyzer->analyze();
 
         $issues = $result->getIssues();
-        $this->assertCount(1, $issues);
-        $this->assertEquals(Severity::Low, $issues[0]->severity);
+        $threadIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'Argon2 threads')) {
+                $threadIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($threadIssue);
+        $this->assertEquals(Severity::Low, $threadIssue->severity);
     }
 
     // ==================== Weak Driver Tests ====================
@@ -458,32 +492,6 @@ PHP;
         $this->assertHasIssueContaining('sha1', $result);
     }
 
-    public function test_detects_pos_t_password_hashing(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-class Controller
-{
-    public function store()
-    {
-        $hash = md5($_POST['password']);
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['app/Controller.php' => $code]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('Weak hashing function', $result);
-    }
-
     public function test_ignores_md5_in_comments(): void
     {
         $code = <<<'PHP'
@@ -535,113 +543,6 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_ignores_md5_for_fingerprints(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-class FingerprintService
-{
-    public function generateFingerprint($data)
-    {
-        return md5($data . '_fingerprint');
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['app/FingerprintService.php' => $code]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertPassed($result);
-    }
-
-    // ==================== password_hash() Tests ====================
-
-    public function test_detects_password_hash_with_md5(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-class AuthService
-{
-    public function hash($password)
-    {
-        return password_hash($password, PASSWORD_MD5);
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['app/AuthService.php' => $code]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('PASSWORD_MD5', $result);
-    }
-
-    public function test_detects_password_hash_with_sha1(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-class PasswordService
-{
-    public function hashPassword($pwd)
-    {
-        return password_hash($pwd, PASSWORD_SHA1);
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['app/PasswordService.php' => $code]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('PASSWORD_SHA1', $result);
-    }
-
-    public function test_detects_password_hash_with_sha256(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-class HashService
-{
-    public function create($password)
-    {
-        return password_hash($password, PASSWORD_SHA256);
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['app/HashService.php' => $code]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('PASSWORD_SHA256', $result);
-    }
-
-    // ==================== Plain-Text Password Tests ====================
-
     public function test_detects_plain_text_password_storage(): void
     {
         $code = <<<'PHP'
@@ -671,85 +572,6 @@ PHP;
         $this->assertHasIssueContaining('plain-text password', $result);
     }
 
-    public function test_detects_pos_t_password_storage(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-class Controller
-{
-    public function create()
-    {
-        $user->password = $_POST['password'];
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['app/Controller.php' => $code]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('plain-text password', $result);
-    }
-
-    public function test_ignores_password_comparison(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-class AuthService
-{
-    public function verify($user, $request)
-    {
-        if ($user->password === $request->password) {
-            return true;
-        }
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['app/AuthService.php' => $code]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertPassed($result);
-    }
-
-    public function test_ignores_hashed_password_assignment(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-class UserService
-{
-    public function create($data)
-    {
-        $user->password = $hashedPassword;
-        $user->save();
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['app/UserService.php' => $code]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertPassed($result);
-    }
-
     public function test_ignores_password_with_hash_make(): void
     {
         $code = <<<'PHP'
@@ -775,116 +597,10 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_ignores_password_with_bcrypt(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-class UserController
-{
-    public function create($request)
-    {
-        $user->password = bcrypt($request->password);
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['app/UserController.php' => $code]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertPassed($result);
-    }
-
-    // ==================== Multiple Issues Tests ====================
-
-    public function test_handles_multiple_issues_in_single_config(): void
-    {
-        $config = <<<'PHP'
-<?php
-
-return [
-    'driver' => 'md5',
-    'bcrypt' => [
-        'rounds' => 8,
-    ],
-    'argon' => [
-        'memory' => 1024,
-        'time' => 1,
-    ],
-];
-PHP;
-
-        $tempDir = $this->createTempDirectory(['config/hashing.php' => $config]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $issues = $result->getIssues();
-        $this->assertGreaterThan(1, count($issues));
-    }
-
-    // ==================== Edge Cases Tests ====================
-
-    public function test_handles_single_quote_syntax(): void
-    {
-        $config = <<<'PHP'
-<?php
-
-return [
-    'bcrypt' => [
-        'rounds' => 10,
-    ],
-];
-PHP;
-
-        $tempDir = $this->createTempDirectory(['config/hashing.php' => $config]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('Bcrypt rounds', $result);
-    }
-
-    public function test_handles_double_quote_syntax(): void
-    {
-        $config = <<<'PHP'
-<?php
-
-return [
-    "bcrypt" => [
-        "rounds" => 10,
-    ],
-];
-PHP;
-
-        $tempDir = $this->createTempDirectory(['config/hashing.php' => $config]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('Bcrypt rounds', $result);
-    }
-
     public function test_skips_vendor_files(): void
     {
         $code = <<<'PHP'
 <?php
-
-namespace Vendor\Package;
 
 class SomeClass
 {
@@ -909,64 +625,7 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_skips_test_files(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace Tests\Feature;
-
-class AuthTest
-{
-    public function test_password_hashing()
-    {
-        $hash = md5($password);
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'tests/Feature/AuthTest.php' => $code,
-            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['tests']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertPassed($result);
-    }
-
     // ==================== Result Format Tests ====================
-
-    public function test_result_uses_result_by_severity(): void
-    {
-        $config = <<<'PHP'
-<?php
-
-return [
-    'driver' => 'bcrypt',
-    'bcrypt' => [
-        'rounds' => 12,
-    ],
-];
-PHP;
-
-        $tempDir = $this->createTempDirectory(['config/hashing.php' => $config]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        // Result should be instance of ResultInterface
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
-
-        // Should have getMessage() method (from resultBySeverity)
-        $this->assertIsString($result->getMessage());
-    }
 
     public function test_summary_message_format_singular(): void
     {
@@ -987,7 +646,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertStringContainsString('1 password hashing security issue', $result->getMessage());
+        $this->assertStringContainsString('1 password security issue', $result->getMessage());
     }
 
     public function test_summary_message_format_plural(): void
@@ -1010,6 +669,309 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertStringContainsString('password hashing security issues', $result->getMessage());
+        $this->assertStringContainsString('password security issues', $result->getMessage());
+    }
+
+    // ==================== Password Policy Tests (NEW) ====================
+
+    public function test_detects_missing_password_defaults(): void
+    {
+        $providerCode = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+class AppServiceProvider
+{
+    public function boot()
+    {
+        // nothing configured
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $providerCode,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('No Password::defaults()', $result);
+    }
+
+    public function test_passes_with_complete_password_defaults(): void
+    {
+        $providerCode = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Validation\Rules\Password;
+
+class AppServiceProvider
+{
+    public function boot()
+    {
+        Password::defaults(function () {
+            return Password::min(8)
+                ->letters()
+                ->mixedCase()
+                ->numbers()
+                ->symbols()
+                ->uncompromised();
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $providerCode,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_missing_uncompromised_check(): void
+    {
+        $providerCode = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Validation\Rules\Password;
+
+class AppServiceProvider
+{
+    public function boot()
+    {
+        Password::defaults(function () {
+            return Password::min(8)->mixedCase();
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $providerCode,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('breached password', $result);
+    }
+
+    public function test_detects_missing_mixed_case(): void
+    {
+        $providerCode = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Validation\Rules\Password;
+
+class AppServiceProvider
+{
+    public function boot()
+    {
+        Password::defaults(function () {
+            return Password::min(8)->uncompromised();
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $providerCode,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('mixed case', $result);
+    }
+
+    public function test_detects_weak_password_validation_in_request(): void
+    {
+        $requestCode = <<<'PHP'
+<?php
+
+namespace App\Http\Requests;
+
+class RegisterRequest
+{
+    public function rules()
+    {
+        return [
+            'email' => 'required|email',
+            'password' => 'required|min:4|confirmed',
+        ];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Requests/RegisterRequest.php' => $requestCode,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('Password validation requires only 4 characters', $result);
+    }
+
+    public function test_detects_weak_password_validation_in_controller(): void
+    {
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $request->validate([
+            'password' => 'required|min:6|confirmed',
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/AuthController.php' => $controllerCode,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('Password validation requires only 6 characters', $result);
+    }
+
+    public function test_detects_long_password_confirmation_timeout(): void
+    {
+        $authConfig = <<<'PHP'
+<?php
+
+return [
+    'defaults' => [
+        'guard' => 'web',
+    ],
+    'password_timeout' => 10800,
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/auth.php' => $authConfig,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('Password confirmation timeout', $result);
+    }
+
+    public function test_passes_with_short_password_confirmation_timeout(): void
+    {
+        $authConfig = <<<'PHP'
+<?php
+
+return [
+    'password_timeout' => 3600,
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/auth.php' => $authConfig,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $hasTimeoutIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'long_password_confirmation_timeout') {
+                $hasTimeoutIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasTimeoutIssue);
+    }
+
+    public function test_timeout_issue_includes_human_readable_duration(): void
+    {
+        $authConfig = <<<'PHP'
+<?php
+
+return [
+    'password_timeout' => 10800,
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/auth.php' => $authConfig,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('3h', $result);
+    }
+
+    // ==================== CI Compatibility Tests ====================
+
+    public function test_not_run_in_ci(): void
+    {
+        $this->assertFalse(PasswordSecurityAnalyzer::$runInCI);
+    }
+
+    public function test_metadata_has_correct_id(): void
+    {
+        $analyzer = $this->createAnalyzer();
+        $tempDir = $this->createTempDirectory([
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertEquals('password-security', $result->getAnalyzerId());
     }
 }

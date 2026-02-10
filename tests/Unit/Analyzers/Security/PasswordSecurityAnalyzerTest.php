@@ -554,8 +554,7 @@ class UserController
 {
     public function store($request)
     {
-        $user->password = $request->password;
-        $user->save();
+        $password = $request->password;
     }
 }
 PHP;
@@ -953,6 +952,313 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertHasIssueContaining('3h', $result);
+    }
+
+    // ==================== False Positive Regression Tests ====================
+
+    public function test_fp1_ignores_md5_on_password_prefixed_variables(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class AuthService
+{
+    public function resetToken($passwordResetToken)
+    {
+        return md5($passwordResetToken);
+    }
+
+    public function fieldHash($passwordField)
+    {
+        return sha1($passwordField);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/AuthService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasWeakHashIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_hash_function') {
+                $hasWeakHashIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasWeakHashIssue, 'Should not flag md5/sha1 on $passwordResetToken or $passwordField');
+    }
+
+    public function test_fp1_still_detects_md5_on_exact_password_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = md5($password);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('Weak hashing function', $result);
+    }
+
+    public function test_fp2_ignores_eloquent_property_password_assignment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function store($request)
+    {
+        $user->password = $request->password;
+        $user->save();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasPlainTextIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'plain_text_password') {
+                $hasPlainTextIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasPlainTextIssue, 'Should not flag Eloquent model property assignment (mutators/casts)');
+    }
+
+    public function test_fp3_detects_password_defaults_in_bootstrap_app(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Validation\Rules\Password;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting()
+    ->booting(function () {
+        Password::defaults(function () {
+            return Password::min(8)
+                ->mixedCase()
+                ->uncompromised();
+        });
+    })
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapApp,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $hasMissingDefaults = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'missing_password_defaults') {
+                $hasMissingDefaults = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasMissingDefaults, 'Should detect Password::defaults() in bootstrap/app.php');
+    }
+
+    public function test_fp3_detects_password_defaults_in_custom_provider(): void
+    {
+        $providerCode = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Validation\Rules\Password;
+
+class SecurityServiceProvider
+{
+    public function boot()
+    {
+        Password::defaults(function () {
+            return Password::min(10)->mixedCase()->uncompromised();
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/SecurityServiceProvider.php' => $providerCode,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasMissingDefaults = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'missing_password_defaults') {
+                $hasMissingDefaults = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasMissingDefaults, 'Should detect Password::defaults() in custom provider');
+    }
+
+    public function test_fp4_ignores_weak_hash_in_block_comment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class SecureController
+{
+    public function hash($password)
+    {
+        $result = /* md5($password) */ Hash::make($password);
+        return $result;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/SecureController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasWeakHashIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_hash_function') {
+                $hasWeakHashIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasWeakHashIssue, 'Should not flag md5() inside block comments');
+    }
+
+    public function test_fp6_password_min_outside_defaults_does_not_affect_check(): void
+    {
+        $providerCode = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Validation\Rules\Password;
+
+class AppServiceProvider
+{
+    public function boot()
+    {
+        Password::defaults(function () {
+            return Password::min(12)->mixedCase()->uncompromised();
+        });
+    }
+
+    public function someValidation()
+    {
+        return Password::min(4);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $providerCode,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasMinLengthIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_password_min_length') {
+                $hasMinLengthIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasMinLengthIssue, 'Password::min(4) outside defaults should not override min(12) inside defaults');
+    }
+
+    public function test_fp7_ignores_seeders_and_factories(): void
+    {
+        $seederCode = <<<'PHP'
+<?php
+
+class UserSeeder
+{
+    public function run()
+    {
+        $hash = md5($password);
+    }
+}
+PHP;
+
+        $factoryCode = <<<'PHP'
+<?php
+
+class UserFactory
+{
+    public function definition()
+    {
+        $hash = md5($password);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'database/seeders/UserSeeder.php' => $seederCode,
+            'database/factories/UserFactory.php' => $factoryCode,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['database']);
+
+        $result = $analyzer->analyze();
+
+        $hasWeakHashIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_hash_function') {
+                $hasWeakHashIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasWeakHashIssue, 'Should not scan database/seeders/ or database/factories/');
     }
 
     // ==================== CI Compatibility Tests ====================

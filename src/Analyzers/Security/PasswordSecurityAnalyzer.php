@@ -227,7 +227,9 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         foreach ($this->getPhpFiles() as $file) {
             if (str_contains($file, '/vendor/') ||
                 str_contains($file, '/tests/') ||
-                str_contains($file, '/Tests/')) {
+                str_contains($file, '/Tests/') ||
+                str_contains($file, '/database/seeders/') ||
+                str_contains($file, '/database/factories/')) {
                 continue;
             }
 
@@ -254,6 +256,11 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
+                $codeOnly = preg_replace('/\/\*.*?\*\//', '', $codeOnly);
+                if (! is_string($codeOnly)) {
+                    continue;
+                }
+
                 foreach ($weakHashFunctions as $func) {
                     /** @var array<int, string> $allowedPatterns */
                     $allowedPatterns = $config['allowed_weak_hash_patterns'];
@@ -261,7 +268,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                         continue;
                     }
 
-                    if (preg_match('/\b'.$func.'\s*\(\s*\$(?:password|(?:request|_POST|_GET)(?:->|\[).*password)/i', $codeOnly)) {
+                    if (preg_match('/\b'.$func.'\s*\(\s*\$(?:password\b|(?:request|_POST|_GET)(?:->|\[).*password)/i', $codeOnly)) {
                         $issues[] = $this->createIssueWithSnippet(
                             message: sprintf('Weak hashing function %s() used for password', $func),
                             filePath: $file,
@@ -271,19 +278,6 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                             metadata: ['function' => $func, 'issue_type' => 'weak_hash_function']
                         );
                     }
-                }
-
-                if (preg_match('/password_hash\s*\([^,]+,\s*PASSWORD_(MD5|SHA1|SHA256)/i', $codeOnly, $matches)) {
-                    $algorithm = $matches[1];
-
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: sprintf('Weak password_hash algorithm PASSWORD_%s used', $algorithm),
-                        filePath: $file,
-                        lineNumber: $lineNumber + 1,
-                        severity: Severity::Critical,
-                        recommendation: 'Use PASSWORD_BCRYPT or PASSWORD_ARGON2ID',
-                        metadata: ['algorithm' => "PASSWORD_$algorithm", 'issue_type' => 'weak_password_hash_algorithm']
-                    );
                 }
 
                 if ($this->isPlainTextPasswordStorage($codeOnly)) {
@@ -302,10 +296,8 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 
     private function checkPasswordPolicyDefaults(array &$issues): void
     {
-        $serviceProviderPaths = [
-            $this->buildPath('app', 'Providers', 'AppServiceProvider.php'),
-            $this->buildPath('app', 'Providers', 'AuthServiceProvider.php'),
-        ];
+        $serviceProviderPaths = $this->getPasswordPolicyPaths();
+        $bootstrapApp = $this->buildPath('bootstrap', 'app.php');
 
         $anyProviderExists = false;
         $foundPasswordDefaults = false;
@@ -318,7 +310,9 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $anyProviderExists = true;
+            if ($providerPath !== $bootstrapApp) {
+                $anyProviderExists = true;
+            }
 
             $content = FileParser::readFile($providerPath);
             if ($content === null) {
@@ -329,17 +323,20 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 
             if (preg_match('/Password::defaults\s*\(/', $codeContent)) {
                 $foundPasswordDefaults = true;
+                $anyProviderExists = true;
 
-                if (str_contains($codeContent, '->uncompromised(') || str_contains($codeContent, 'uncompromised()')) {
+                $defaultsBody = $this->extractDefaultsBody($codeContent);
+
+                if (str_contains($defaultsBody, '->uncompromised(') || str_contains($defaultsBody, 'uncompromised()')) {
                     $hasUncompromised = true;
                 }
 
-                if (preg_match('/Password::min\s*\(\s*(\d+)/', $codeContent, $minMatch)) {
+                if (preg_match('/Password::min\s*\(\s*(\d+)/', $defaultsBody, $minMatch)) {
                     $minLength = (int) $minMatch[1];
                     $hasMinLength = $minLength >= 8;
                 }
 
-                if (str_contains($codeContent, '->mixedCase(')) {
+                if (str_contains($defaultsBody, '->mixedCase(')) {
                     $hasMixedCase = true;
                 }
             }
@@ -354,7 +351,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 message: 'No Password::defaults() configured in service providers',
                 location: new \ShieldCI\AnalyzersCore\ValueObjects\Location('app/Providers/AppServiceProvider.php'),
                 severity: Severity::Medium,
-                recommendation: 'Define password validation defaults in AppServiceProvider::boot(): Password::defaults(function () { return Password::min(8)->letters()->mixedCase()->numbers()->symbols()->uncompromised(); });',
+                recommendation: 'Define password validation defaults in a service provider boot() method or bootstrap/app.php: Password::defaults(function () { return Password::min(8)->letters()->mixedCase()->numbers()->symbols()->uncompromised(); });',
                 metadata: ['issue_type' => 'missing_password_defaults']
             );
 
@@ -530,6 +527,10 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
+        if (preg_match('/->password\s*=/', $line)) {
+            return false;
+        }
+
         if (preg_match('/password["\']?\s*=\s*\$(?:password|_POST|_GET|request)/i', $line)) {
             return true;
         }
@@ -642,5 +643,56 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         }
 
         return $map;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function getPasswordPolicyPaths(): array
+    {
+        $paths = [
+            $this->buildPath('app', 'Providers', 'AppServiceProvider.php'),
+            $this->buildPath('app', 'Providers', 'AuthServiceProvider.php'),
+            $this->buildPath('bootstrap', 'app.php'),
+        ];
+
+        $providersDir = $this->buildPath('app', 'Providers');
+        if (is_dir($providersDir)) {
+            /** @var array<int, string>|false $files */
+            $files = glob($providersDir.'/*.php');
+            if (is_array($files)) {
+                foreach ($files as $file) {
+                    if (! in_array($file, $paths, true)) {
+                        $paths[] = $file;
+                    }
+                }
+            }
+        }
+
+        return $paths;
+    }
+
+    private function extractDefaultsBody(string $content): string
+    {
+        $pos = strpos($content, 'Password::defaults(');
+        if ($pos === false) {
+            return '';
+        }
+
+        $start = $pos + strlen('Password::defaults(');
+        $depth = 1;
+        $end = $start;
+        $len = strlen($content);
+
+        while ($end < $len && $depth > 0) {
+            if ($content[$end] === '(') {
+                $depth++;
+            } elseif ($content[$end] === ')') {
+                $depth--;
+            }
+            $end++;
+        }
+
+        return substr($content, $start, $end - $start - 1);
     }
 }

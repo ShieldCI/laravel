@@ -15,3 +15,5 @@ Thumbs.db
 coverage.xml
 *.md
 .claude
+/tests/shieldci-console-report.json
+/tests/shieldci-test-report.json

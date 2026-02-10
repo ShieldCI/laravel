@@ -1,0 +1,48 @@
+{
+    "laravel_version": "11.48.0",
+    "package_version": "dev",
+    "analyzed_at": "2026-02-10T04:24:09+00:00",
+    "total_execution_time": 0,
+    "summary": {
+        "total": 2,
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0,
+        "skipped": 0,
+        "errors": 0,
+        "score": 100
+    },
+    "results": [
+        {
+            "analyzer_id": "test-security-analyzer",
+            "status": "passed",
+            "message": "No security issues",
+            "issues": [],
+            "execution_time": 0.1,
+            "metadata": {
+                "id": "test-security-analyzer",
+                "name": "Test Security Analyzer",
+                "description": "Test analyzer: Test Security Analyzer",
+                "category": "security",
+                "severity": "high",
+                "docsUrl": null
+            }
+        },
+        {
+            "analyzer_id": "test-performance-analyzer",
+            "status": "passed",
+            "message": "No performance issues",
+            "issues": [],
+            "execution_time": 0.1,
+            "metadata": {
+                "id": "test-performance-analyzer",
+                "name": "Test Performance Analyzer",
+                "description": "Test analyzer: Test Performance Analyzer",
+                "category": "performance",
+                "severity": "medium",
+                "docsUrl": null
+            }
+        }
+    ],
+    "metadata": []
+}

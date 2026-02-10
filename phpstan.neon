@@ -3,6 +3,9 @@ parameters:
     paths:
         - src
         - tests
+    excludePaths:
+        - tests/Fixtures/inspects-code/syntax_error.php
+        - tests/Fixtures/inspects-code/sample_functions.php
     tmpDir: build/phpstan
     treatPhpDocTypesAsCertain: false
     reportUnmatchedIgnoredErrors: false
@@ -69,3 +72,107 @@ parameters:
         - '#has parameter \$packages with no value type specified in iterable type array#'
         - '#has parameter \$metadata with no value type specified in iterable type array#'
         - '#has parameter \$ast with no value type specified in iterable type array#'
+
+        # Test file specific ignores - artisan command testing returns int|PendingCommand
+        - '#Cannot call method (assertSuccessful|assertFailed|expectsOutput|expectsOutputToContain)\(\) on Illuminate\\Testing\\PendingCommand\|int#'
+
+        # Mockery method chaining in tests
+        - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage::with\(\)#'
+        - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage::andThrow\(\)#'
+
+        # Test file singleton/container mock binding
+        - '#Cannot call method singleton\(\) on Illuminate\\Foundation\\Application\|null#'
+
+        # Collection generic types in test helpers
+        - '#has parameter \$results with generic class Illuminate\\Support\\Collection but does not specify its types#'
+
+        # AdvisoryAnalyzer test data - simplified test arrays
+        - '#Parameter \#1 \$dependencies of method ShieldCI\\Support\\SecurityAdvisories\\AdvisoryAnalyzer::analyze\(\) expects#'
+        - '#Parameter \#2 \$advisories of method ShieldCI\\Support\\SecurityAdvisories\\AdvisoryAnalyzer::analyze\(\) expects#'
+
+        # Mockery mock interfaces
+        - '#Return type \(ShieldCI\\AnalyzersCore\\Contracts\\AnalyzerInterface\) of method .* should be compatible#'
+        - '#Method .* should return ShieldCI\\AnalyzersCore\\Contracts\\AnalyzerInterface but returns Mockery\\MockInterface#'
+
+        # Test files: Orchestra Testbench guarantees $this->app is never null during tests
+        - '#Cannot call method (make|singleton|forgetInstance|bind|offsetUnset)\(\) on Illuminate\\Foundation\\Application\|null#'
+        - '#Offset .* does not exist on Illuminate\\Foundation\\Application\|null#'
+        - '#Parameter \#1 \$app of class ShieldCI\\ShieldCIServiceProvider constructor expects .*, Illuminate\\Foundation\\Application\|null given#'
+
+        # Test files: Mockery mock passed where concrete class expected (type-safe at runtime)
+        - '#Parameter \#1 \$manager of class ShieldCI\\Support\\DatabaseConnectionChecker constructor expects .*, Mockery\\MockInterface given#'
+
+        # Test files: file_get_contents returns string|false, json_decode returns mixed (controlled in tests)
+        - '#Parameter \#1 \$json of function json_decode expects string, string\|false given#'
+        - '#Parameter \#2 \$data of function hash expects string, string\|false given#'
+        - '#Parameter \#2 \$(haystack|array) of method PHPUnit\\Framework\\Assert::(assertContains|assertArrayNotHasKey|assertCount)\(\) expects .*, mixed given#'
+
+        # Test files: anonymous class method params with untyped arrays
+        -
+            message: '#has parameter \$(headers|options) with no value type specified in iterable type array#'
+            paths:
+                - tests/Unit/Concerns/AnalyzesHeadersTest.php
+                - tests/Unit/Concerns/FindsLoginRouteTest.php
+
+        # Test files: assertStringContainsString with nullable string from result objects
+        - '#Parameter \#2 \$haystack of method PHPUnit\\Framework\\Assert::assertStringContainsString\(\) expects string, string\|null given#'
+
+        # Test files: helper methods with untyped arrays
+        -
+            message: '#has parameter .* with no value type specified in iterable type array#'
+            paths:
+                - tests/Unit/Commands/BaselineCommandTest.php
+                - tests/Unit/Concerns/ParsesPHPStanResultsTest.php
+
+        # Test files: anonymous class helper methods return 'object' type, PHPStan can't resolve methods
+        -
+            message: '#Call to an undefined method object::#'
+            paths:
+                - tests/Unit/Concerns/FindsLoginRouteTest.php
+                - tests/Unit/Concerns/ParsesPHPStanResultsTest.php
+                - tests/Unit/Concerns/AnalyzesMiddlewareTest.php
+                - tests/Unit/Concerns/ParsesPHPStanAnalysisTest.php
+
+        # Test files: anonymous class parameter type mismatch (convertToString expects specific types)
+        -
+            message: '#Parameter \#1 \$url of method class@anonymous.*::convertToString\(\) expects#'
+            path: tests/Unit/Concerns/FindsLoginRouteTest.php
+
+        # Test files: anonymous class constructor/method type specifications
+        -
+            message: '#has parameter \$(router|kernel|search|pattern) with no (type specified|value type specified)#'
+            paths:
+                - tests/Unit/Concerns/AnalyzesMiddlewareTest.php
+                - tests/Unit/Concerns/ParsesPHPStanAnalysisTest.php
+
+        # Test files: AnalyzesMiddleware trait template resolution in anonymous class context
+        -
+            message: '#Unable to resolve the template type#'
+            path: tests/Unit/Concerns/AnalyzesMiddlewareTest.php
+        -
+            message: '#Cannot cast mixed to string#'
+            path: tests/Unit/Concerns/AnalyzesMiddlewareTest.php
+
+        # Test files: array offset access on empty initial array (passes by ref)
+        -
+            message: '#Offset 0 does not exist on array#'
+            path: tests/Unit/Concerns/ParsesPHPStanAnalysisTest.php
+
+        # Test files: Mockery mocks for logger/fetcher constructors
+        - '#Parameter \#2 \$logger of class ShieldCI\\Support\\SecurityAdvisories\\HttpAdvisoryFetcher constructor expects .*, Mockery\\MockInterface given#'
+        - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage::once\(\)#'
+
+        # Test files: json_encode returns string|false, passed to Response constructor
+        -
+            message: '#Parameter \#3 \$body of class GuzzleHttp\\Psr7\\Response constructor expects .*, string\|false given#'
+            path: tests/Unit/Support/SecurityAdvisories/HttpAdvisoryFetcherTest.php
+
+        # Test files: fetch() parameter type for edge case testing
+        -
+            message: '#Parameter \#1 \$dependencies of method ShieldCI\\Support\\SecurityAdvisories\\HttpAdvisoryFetcher::fetch\(\) expects#'
+            path: tests/Unit/Support/SecurityAdvisories/HttpAdvisoryFetcherTest.php
+
+        # Test files: Collection->first() returns nullable but is safe in controlled test context
+        -
+            message: '#Cannot call method (getId|getAnalyzerId|getMessage)\(\) on ShieldCI\\AnalyzersCore\\Contracts\\(AnalyzerInterface|ResultInterface)\|null#'
+            path: tests/Unit/AnalyzerManagerTest.php

@@ -360,6 +360,86 @@ class PHPStanRunnerTest extends TestCase
         $this->assertStringContainsString('return type', $firstIssue['message']);
     }
 
+    public function test_handles_invalid_json_output_from_phpstan(): void
+    {
+        $vendorBinDir = $this->tempDir.'/vendor/bin';
+        mkdir($vendorBinDir, 0755, true);
+
+        // Create a mock PHPStan that outputs invalid JSON
+        $script = <<<'BASH'
+#!/bin/bash
+echo "This is not valid JSON"
+BASH;
+
+        file_put_contents($vendorBinDir.'/phpstan', $script);
+        chmod($vendorBinDir.'/phpstan', 0755);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        // When JSON is invalid, result should fall back to ['files' => []]
+        $issues = $runner->getIssues();
+        $this->assertTrue($issues->isEmpty());
+    }
+
+    public function test_get_issues_skips_non_array_file_data(): void
+    {
+        $runner = new PHPStanRunner($this->tempDir);
+
+        // Use reflection to set result with non-array file data
+        $reflection = new ReflectionClass($runner);
+        $property = $reflection->getProperty('result');
+        $property->setAccessible(true);
+        $property->setValue($runner, [
+            'files' => [
+                '/app/valid.php' => [
+                    'messages' => [
+                        ['line' => 10, 'message' => 'Valid issue'],
+                    ],
+                ],
+                42 => 'not-an-array', // Non-string key, non-array value
+                '/app/missing.php' => 'string-not-array', // String key but non-array value
+            ],
+        ]);
+
+        $issues = $runner->getIssues();
+
+        // Only the valid file data should produce issues
+        $this->assertCount(1, $issues);
+        $firstIssue = $issues->first();
+        $this->assertNotNull($firstIssue);
+        $this->assertEquals('Valid issue', $firstIssue['message']);
+    }
+
+    public function test_get_issues_skips_non_array_message_entries(): void
+    {
+        $runner = new PHPStanRunner($this->tempDir);
+
+        // Use reflection to set result with non-array message entries
+        $reflection = new ReflectionClass($runner);
+        $property = $reflection->getProperty('result');
+        $property->setAccessible(true);
+        $property->setValue($runner, [
+            'files' => [
+                '/app/test.php' => [
+                    'messages' => [
+                        'string-not-array',
+                        ['line' => 10, 'message' => 'Real issue'],
+                        42,
+                    ],
+                ],
+            ],
+        ]);
+
+        $issues = $runner->getIssues();
+
+        // Only the valid message entry should produce issues
+        $this->assertCount(1, $issues);
+        $firstIssue = $issues->first();
+        $this->assertNotNull($firstIssue);
+        $this->assertEquals('Real issue', $firstIssue['message']);
+    }
+
     /**
      * Create a mock PHPStan script that returns predefined issues.
      *

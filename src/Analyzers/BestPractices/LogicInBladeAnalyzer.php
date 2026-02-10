@@ -140,6 +140,17 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         'keys',
     ];
 
+    /** @var array<string> Expensive string processing functions */
+    private const EXPENSIVE_STRING_FUNCTIONS = [
+        'preg_match', 'preg_replace', 'preg_match_all', 'preg_split',
+        'str_replace', 'str_ireplace', 'substr_replace', 'mb_ereg_replace',
+    ];
+
+    /** @var array<string> Expensive collection methods on large datasets */
+    private const EXPENSIVE_COLLECTION_METHODS = [
+        '->toArray(', '->all(', '->toJson(', '->jsonSerialize(',
+    ];
+
     /** @var array<string> Non-Eloquent classes with DB-like method names */
     private const NON_ELOQUENT_CLASSES = [
         'Collection',
@@ -290,6 +301,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         $inPhpBlock = false;
         $phpBlockStart = 0;
         $phpBlockLines = 0;
+        $foreachDepth = 0;
 
         foreach ($lines as $lineNumber => $line) {
             $trimmed = trim($line);
@@ -343,6 +355,14 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
                 $phpBlockLines++;
             }
 
+            // Track @foreach depth for nested loop detection
+            if (preg_match('/@foreach\b/', $trimmed)) {
+                $foreachDepth++;
+            }
+            if (preg_match('/@endforeach\b/', $trimmed)) {
+                $foreachDepth = max(0, $foreachDepth - 1);
+            }
+
             if (preg_match('/<\?php/', $line)) {
                 $this->reportedLines[$lineNumber] = true;
 
@@ -386,6 +406,40 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
                     recommendation: 'Make API calls in controllers or services, not in views. Views should only display pre-fetched data',
                     code: 'blade-has-api-call',
                     metadata: ['line' => $lineNumber + 1]
+                );
+
+                continue;
+            }
+
+            // Check for expensive computation
+            if ($this->hasExpensiveComputation($line, $foreachDepth)) {
+                $this->reportedLines[$lineNumber] = true;
+
+                $issues[] = $this->createIssueWithSnippet(
+                    message: 'Expensive computation found in Blade template',
+                    filePath: $file,
+                    lineNumber: $lineNumber + 1,
+                    severity: Severity::Medium,
+                    recommendation: 'Move expensive operations to controllers or services. Use computed properties or view composers for complex transformations',
+                    code: 'blade-expensive-computation',
+                    metadata: ['line' => $lineNumber + 1]
+                );
+
+                continue;
+            }
+
+            // Check for nested @foreach
+            if ($foreachDepth >= 2 && preg_match('/@foreach\b/', $trimmed)) {
+                $this->reportedLines[$lineNumber] = true;
+
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf('Nested @foreach detected (depth: %d) - potential performance issue', $foreachDepth),
+                    filePath: $file,
+                    lineNumber: $lineNumber + 1,
+                    severity: Severity::Medium,
+                    recommendation: 'Flatten nested data in the controller using eager loading or collection methods. Deeply nested loops in Blade can cause O(n²) or worse rendering performance',
+                    code: 'blade-nested-foreach',
+                    metadata: ['line' => $lineNumber + 1, 'depth' => $foreachDepth]
                 );
 
                 continue;
@@ -738,6 +792,37 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         // Detect complex expressions with function calls and math
         if (preg_match('/\{\{.*\(.*\).*[\+\*\/]/', $line)) {
             return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Check for expensive computation patterns in Blade.
+     *
+     * Detects:
+     * - Regex/string processing inside foreach loops
+     * - Expensive collection methods (->toArray(), ->all()) anywhere
+     */
+    private function hasExpensiveComputation(string $line, int $foreachDepth): bool
+    {
+        // Check for expensive string functions inside loops
+        if ($foreachDepth >= 1) {
+            foreach (self::EXPENSIVE_STRING_FUNCTIONS as $func) {
+                if (preg_match('/\b'.preg_quote($func, '/').'\s*\(/', $line)) {
+                    return true;
+                }
+            }
+        }
+
+        // Check for expensive collection methods anywhere
+        foreach (self::EXPENSIVE_COLLECTION_METHODS as $method) {
+            if (str_contains($line, $method)) {
+                $methodPos = strpos($line, $method);
+                if ($methodPos !== false && ! $this->isInsideStringOrComment($line, $methodPos)) {
+                    return true;
+                }
+            }
         }
 
         return false;

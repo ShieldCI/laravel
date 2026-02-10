@@ -13,17 +13,24 @@ use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 
 /**
- * Validates password hashing configuration strength.
+ * Validates password security: hashing configuration AND password policies.
  *
- * Checks for:
+ * Hashing checks (from original HashingStrengthAnalyzer):
  * - Bcrypt rounds >= 12 (default 10 is weak)
  * - Argon2 memory >= 65536 KB
  * - Argon2 time >= 2
  * - Argon2 threads >= 2
  * - Weak hashing algorithms (MD5, SHA1, SHA256)
  * - Weak password_hash() algorithms
+ *
+ * Password policy checks (new):
+ * - Password::defaults() usage in AppServiceProvider
+ * - Minimum password length in validation rules
+ * - Complexity rules (letters, mixedCase, numbers, symbols)
+ * - Breached password check (uncompromised())
+ * - Password confirmation timeout in auth config
  */
-class HashingStrengthAnalyzer extends AbstractFileAnalyzer
+class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 {
     /**
      * Hashing configuration is environment-specific, not applicable in CI.
@@ -33,19 +40,18 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
-            id: 'hashing-strength',
-            name: 'Password Hashing Strength Analyzer',
-            description: 'Validates that password hashing configuration uses secure parameters',
+            id: 'password-security',
+            name: 'Password Security Analyzer',
+            description: 'Validates password hashing configuration and password policy enforcement',
             category: Category::Security,
             severity: Severity::Critical,
-            tags: ['hashing', 'passwords', 'bcrypt', 'argon2', 'security'],
-            timeToFix: 15
+            tags: ['hashing', 'passwords', 'bcrypt', 'argon2', 'security', 'policy', 'validation'],
+            timeToFix: 20
         );
     }
 
     public function shouldRun(): bool
     {
-        // Run if hashing config exists OR if there are PHP files to scan
         $hashingConfig = ConfigFileHelper::getConfigPath(
             $this->getBasePath(),
             'hashing.php',
@@ -56,7 +62,6 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
             return true;
         }
 
-        // Check if there are any PHP files to scan
         $phpFiles = $this->getPhpFiles();
 
         return ! empty($phpFiles);
@@ -71,22 +76,19 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
     {
         $issues = [];
 
-        // Check config/hashing.php
         $this->checkHashingConfig($issues);
-
-        // Check for weak hashing functions in code
         $this->checkWeakHashingInCode($issues);
+        $this->checkPasswordPolicyDefaults($issues);
+        $this->checkPasswordValidationRules($issues);
+        $this->checkPasswordConfirmationTimeout($issues);
 
         $summary = empty($issues)
-            ? 'Password hashing configuration is secure'
-            : sprintf('Found %d password hashing security issue%s', count($issues), count($issues) === 1 ? '' : 's');
+            ? 'Password security configuration is strong'
+            : sprintf('Found %d password security issue%s', count($issues), count($issues) === 1 ? '' : 's');
 
         return $this->resultBySeverity($summary, $issues);
     }
 
-    /**
-     * Check hashing configuration file.
-     */
     private function checkHashingConfig(array &$issues): void
     {
         $hashingConfig = ConfigFileHelper::getConfigPath($this->getBasePath(), 'hashing.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
@@ -103,11 +105,6 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
         $config = $this->getConfiguration();
         $lineMap = $this->mapConfigKeyLines($hashingConfig);
 
-        /**
-         * ------------------------------------------------------------
-         * Default driver
-         * ------------------------------------------------------------
-         */
         if (isset($configArray['driver'])) {
             $driver = strtolower((string) $configArray['driver']);
 
@@ -123,11 +120,6 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        /**
-         * ------------------------------------------------------------
-         * Bcrypt
-         * ------------------------------------------------------------
-         */
         $minRounds = $config['bcrypt_min_rounds'];
 
         if (isset($configArray['bcrypt']['rounds']) && is_int($configArray['bcrypt']['rounds']) && $configArray['bcrypt']['rounds'] < $minRounds) {
@@ -151,11 +143,6 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        /**
-         * ------------------------------------------------------------
-         * Argon / Argon2id
-         * ------------------------------------------------------------
-         */
         $argon = $configArray['argon'] ?? $configArray['argon2id'] ?? null;
 
         if (is_array($argon)) {
@@ -232,23 +219,18 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
         }
     }
 
-    /**
-     * Check for weak hashing functions in code.
-     */
     private function checkWeakHashingInCode(array &$issues): void
     {
         $weakHashFunctions = ['md5', 'sha1'];
         $config = $this->getConfiguration();
 
         foreach ($this->getPhpFiles() as $file) {
-            // Skip vendor and test files
             if (str_contains($file, '/vendor/') ||
                 str_contains($file, '/tests/') ||
                 str_contains($file, '/Tests/')) {
                 continue;
             }
 
-            // Skip ignored paths
             $relativePath = $this->getRelativePath($file);
             foreach ($config['ignored_paths'] as $ignoredPath) {
                 if (is_string($ignoredPath) && str_contains($relativePath, $ignoredPath)) {
@@ -263,28 +245,22 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                // Skip comments (improved detection)
                 if ($this->isCommentLine($line)) {
                     continue;
                 }
 
-                // Remove inline comments for analysis
                 $codeOnly = preg_replace('/\/\/.*$/', '', $line);
                 if (! is_string($codeOnly)) {
                     continue;
                 }
 
-                // Check for weak hash functions
                 foreach ($weakHashFunctions as $func) {
-                    // Skip if this is an allowed pattern (cache, fingerprint, etc.)
                     /** @var array<int, string> $allowedPatterns */
                     $allowedPatterns = $config['allowed_weak_hash_patterns'];
                     if ($this->isAllowedWeakHashPattern($codeOnly, $allowedPatterns)) {
                         continue;
                     }
 
-                    // Check for password hashing with weak functions
-                    // Detect password variable hashing (direct or through object/array access)
                     if (preg_match('/\b'.$func.'\s*\(\s*\$(?:password|(?:request|_POST|_GET)(?:->|\[).*password)/i', $codeOnly)) {
                         $issues[] = $this->createIssueWithSnippet(
                             message: sprintf('Weak hashing function %s() used for password', $func),
@@ -297,7 +273,6 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
                     }
                 }
 
-                // Check for weak password_hash algorithms
                 if (preg_match('/password_hash\s*\([^,]+,\s*PASSWORD_(MD5|SHA1|SHA256)/i', $codeOnly, $matches)) {
                     $algorithm = $matches[1];
 
@@ -311,7 +286,6 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
                     );
                 }
 
-                // Check for plain password storage (improved detection)
                 if ($this->isPlainTextPasswordStorage($codeOnly)) {
                     $issues[] = $this->createIssueWithSnippet(
                         message: 'Potential plain-text password storage detected',
@@ -326,9 +300,196 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
         }
     }
 
-    /**
-     * Check if line is a comment.
-     */
+    private function checkPasswordPolicyDefaults(array &$issues): void
+    {
+        $serviceProviderPaths = [
+            $this->buildPath('app', 'Providers', 'AppServiceProvider.php'),
+            $this->buildPath('app', 'Providers', 'AuthServiceProvider.php'),
+        ];
+
+        $anyProviderExists = false;
+        $foundPasswordDefaults = false;
+        $hasUncompromised = false;
+        $hasMinLength = false;
+        $hasMixedCase = false;
+
+        foreach ($serviceProviderPaths as $providerPath) {
+            if (! file_exists($providerPath)) {
+                continue;
+            }
+
+            $anyProviderExists = true;
+
+            $content = FileParser::readFile($providerPath);
+            if ($content === null) {
+                continue;
+            }
+
+            $codeContent = $this->stripComments($content);
+
+            if (preg_match('/Password::defaults\s*\(/', $codeContent)) {
+                $foundPasswordDefaults = true;
+
+                if (str_contains($codeContent, '->uncompromised(') || str_contains($codeContent, 'uncompromised()')) {
+                    $hasUncompromised = true;
+                }
+
+                if (preg_match('/Password::min\s*\(\s*(\d+)/', $codeContent, $minMatch)) {
+                    $minLength = (int) $minMatch[1];
+                    $hasMinLength = $minLength >= 8;
+                }
+
+                if (str_contains($codeContent, '->mixedCase(')) {
+                    $hasMixedCase = true;
+                }
+            }
+        }
+
+        if (! $anyProviderExists) {
+            return;
+        }
+
+        if (! $foundPasswordDefaults) {
+            $issues[] = $this->createIssue(
+                message: 'No Password::defaults() configured in service providers',
+                location: new \ShieldCI\AnalyzersCore\ValueObjects\Location('app/Providers/AppServiceProvider.php'),
+                severity: Severity::Medium,
+                recommendation: 'Define password validation defaults in AppServiceProvider::boot(): Password::defaults(function () { return Password::min(8)->letters()->mixedCase()->numbers()->symbols()->uncompromised(); });',
+                metadata: ['issue_type' => 'missing_password_defaults']
+            );
+
+            return;
+        }
+
+        if (! $hasMinLength) {
+            $issues[] = $this->createIssue(
+                message: 'Password::defaults() does not enforce minimum 8 character length',
+                location: new \ShieldCI\AnalyzersCore\ValueObjects\Location('app/Providers/AppServiceProvider.php'),
+                severity: Severity::Medium,
+                recommendation: 'Set minimum password length: Password::min(8)',
+                metadata: ['issue_type' => 'weak_password_min_length']
+            );
+        }
+
+        if (! $hasMixedCase) {
+            $issues[] = $this->createIssue(
+                message: 'Password::defaults() does not require mixed case characters',
+                location: new \ShieldCI\AnalyzersCore\ValueObjects\Location('app/Providers/AppServiceProvider.php'),
+                severity: Severity::Low,
+                recommendation: 'Add mixed case requirement: Password::min(8)->mixedCase()',
+                metadata: ['issue_type' => 'no_mixed_case_requirement']
+            );
+        }
+
+        if (! $hasUncompromised) {
+            $issues[] = $this->createIssue(
+                message: 'Password::defaults() does not check against breached password databases',
+                location: new \ShieldCI\AnalyzersCore\ValueObjects\Location('app/Providers/AppServiceProvider.php'),
+                severity: Severity::Low,
+                recommendation: 'Add breached password check: Password::min(8)->uncompromised()',
+                metadata: ['issue_type' => 'no_breached_password_check']
+            );
+        }
+    }
+
+    private function checkPasswordValidationRules(array &$issues): void
+    {
+        foreach ($this->getPhpFiles() as $file) {
+            if (! str_contains($file, '/Requests/') && ! str_contains($file, '/Controllers/')) {
+                continue;
+            }
+
+            if (str_contains($file, '/vendor/') || str_contains($file, '/tests/') || str_contains($file, '/Tests/')) {
+                continue;
+            }
+
+            $content = FileParser::readFile($file);
+            if ($content === null) {
+                continue;
+            }
+
+            $lines = FileParser::getLines($file);
+
+            foreach ($lines as $lineNumber => $line) {
+                if (! is_string($line)) {
+                    continue;
+                }
+
+                if ($this->isCommentLine($line)) {
+                    continue;
+                }
+
+                if (preg_match("/['\"]password['\"].*\bmin:(\d+)/", $line, $matches)) {
+                    $minLen = (int) $matches[1];
+                    if ($minLen < 8) {
+                        $issues[] = $this->createIssueWithSnippet(
+                            message: sprintf('Password validation requires only %d characters (minimum recommended: 8)', $minLen),
+                            filePath: $file,
+                            lineNumber: $lineNumber + 1,
+                            severity: Severity::Medium,
+                            recommendation: 'Set minimum password length to at least 8 characters: \'password\' => [\'required\', Password::min(8)]',
+                            metadata: ['min_length' => $minLen, 'issue_type' => 'weak_validation_min_length']
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    private function checkPasswordConfirmationTimeout(array &$issues): void
+    {
+        $authConfig = ConfigFileHelper::getConfigPath(
+            $this->getBasePath(),
+            'auth.php',
+            fn ($file) => function_exists('config_path') ? config_path($file) : null
+        );
+
+        if (! file_exists($authConfig)) {
+            return;
+        }
+
+        $content = FileParser::readFile($authConfig);
+        if ($content === null) {
+            return;
+        }
+
+        if (preg_match("/['\"]password_timeout['\"]\\s*=>\\s*(\\d+)/", $content, $matches)) {
+            $timeout = (int) $matches[1];
+
+            if ($timeout > 3600) {
+                $lineMap = $this->mapConfigKeyLines($authConfig);
+
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf('Password confirmation timeout is %d seconds (%s) - consider reducing', $timeout, $this->formatDuration($timeout)),
+                    filePath: $authConfig,
+                    lineNumber: $lineMap['password_timeout'] ?? 1,
+                    severity: Severity::Low,
+                    recommendation: 'Reduce password confirmation timeout to 3600 seconds (1 hour) or less for better security',
+                    metadata: [
+                        'timeout_seconds' => $timeout,
+                        'issue_type' => 'long_password_confirmation_timeout',
+                    ]
+                );
+            }
+        }
+    }
+
+    private function formatDuration(int $seconds): string
+    {
+        $hours = intdiv($seconds, 3600);
+        $minutes = intdiv($seconds % 3600, 60);
+
+        if ($hours > 0 && $minutes > 0) {
+            return sprintf('%dh %dm', $hours, $minutes);
+        }
+
+        if ($hours > 0) {
+            return sprintf('%dh', $hours);
+        }
+
+        return sprintf('%dm', $minutes);
+    }
+
     private function isCommentLine(string $line): bool
     {
         $trimmed = trim($line);
@@ -340,8 +501,6 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if weak hash usage matches allowed patterns.
-     *
      * @param  array<int, string>  $allowedPatterns
      */
     private function isAllowedWeakHashPattern(string $line, array $allowedPatterns): bool
@@ -355,29 +514,22 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
         return false;
     }
 
-    /**
-     * Check if line represents plain-text password storage.
-     */
     private function isPlainTextPasswordStorage(string $line): bool
     {
-        // Don't flag comparisons (===, ==, !=, !==)
         if (preg_match('/[=!]==?/', $line)) {
             return false;
         }
 
-        // Don't flag hashed variable names
         if (preg_match('/\$(hashed|encrypted|encoded|hash)Password/i', $line)) {
             return false;
         }
 
-        // Don't flag if Hash::, bcrypt(), or password_hash() is present
         if (str_contains($line, 'Hash::') ||
             str_contains($line, 'bcrypt(') ||
             str_contains($line, 'password_hash(')) {
             return false;
         }
 
-        // Detect password assignment from user input
         if (preg_match('/password["\']?\s*=\s*\$(?:password|_POST|_GET|request)/i', $line)) {
             return true;
         }
@@ -386,8 +538,6 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Get analyzer configuration.
-     *
      * @return array{
      *    bcrypt_min_rounds: int,
      *    argon2_min_memory: int,
@@ -408,7 +558,20 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
          *    allowed_weak_hash_patterns?: array<int, string>
          * } $config
          */
-        $config = config('shieldci.hashing_strength', []);
+        $config = config('shieldci.password_security', []);
+
+        if (empty($config)) {
+            /** @var array{
+             *    bcrypt_min_rounds?: int,
+             *    argon2_min_memory?: int,
+             *    argon2_min_time?: int,
+             *    argon2_min_threads?: int,
+             *    ignored_paths?: array<int, string>,
+             *    allowed_weak_hash_patterns?: array<int, string>
+             * } $config
+             */
+            $config = config('shieldci.hashing_strength', []);
+        }
 
         return [
             'bcrypt_min_rounds' => ($config['bcrypt_min_rounds'] ?? 12),
@@ -429,9 +592,6 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
         ];
     }
 
-    /**
-     * Safely load a PHP config file without bootstrapping the app.
-     */
     private function loadHashingConfigArray(string $path): ?array
     {
         try {
@@ -443,9 +603,26 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
         }
     }
 
+    private function stripComments(string $content): string
+    {
+        $tokens = @token_get_all($content);
+        $result = '';
+
+        foreach ($tokens as $token) {
+            if (is_array($token)) {
+                if ($token[0] === T_COMMENT || $token[0] === T_DOC_COMMENT) {
+                    continue;
+                }
+                $result .= $token[1];
+            } else {
+                $result .= $token;
+            }
+        }
+
+        return $result;
+    }
+
     /**
-     * Map config keys to their line numbers.
-     *
      * @return array<string, int>
      */
     private function mapConfigKeyLines(string $file): array
@@ -458,11 +635,8 @@ class HashingStrengthAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            // Matches: 'rounds' =>, "memory" =>, etc.
             if (preg_match('/[\'"]([\w]+)[\'"]\s*=>/', $line, $matches)) {
                 $key = $matches[1];
-
-                // Only record first occurrence
                 $map[$key] ??= $lineNumber + 1;
             }
         }

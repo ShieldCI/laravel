@@ -1668,6 +1668,493 @@ PHP;
         $this->assertFalse($hasWeakHashIssue, 'Should not scan database/seeders/ or database/factories/');
     }
 
+    // ==================== password_hash() Algorithm Tests ====================
+
+    public function test_detects_password_hash_with_integer_literal_algorithm(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, 0);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('potentially weak or unknown algorithm', $result);
+    }
+
+    public function test_detects_password_hash_with_variable_algorithm(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, $algo);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('potentially weak or unknown algorithm', $result);
+    }
+
+    public function test_detects_password_hash_with_unknown_constant(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_MD5);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('potentially weak or unknown algorithm', $result);
+    }
+
+    public function test_passes_password_hash_with_password_default(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_DEFAULT);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasWeakAlgoIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_password_hash_algorithm') {
+                $hasWeakAlgoIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasWeakAlgoIssue, 'PASSWORD_DEFAULT should be considered safe');
+    }
+
+    public function test_passes_password_hash_with_password_bcrypt(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_BCRYPT);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasWeakAlgoIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_password_hash_algorithm') {
+                $hasWeakAlgoIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasWeakAlgoIssue, 'PASSWORD_BCRYPT should be considered safe');
+    }
+
+    public function test_passes_password_hash_with_argon2id(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_ARGON2ID);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasWeakAlgoIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_password_hash_algorithm') {
+                $hasWeakAlgoIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasWeakAlgoIssue, 'PASSWORD_ARGON2ID should be considered safe');
+    }
+
+    public function test_passes_password_hash_with_no_second_argument(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasWeakAlgoIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_password_hash_algorithm') {
+                $hasWeakAlgoIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasWeakAlgoIssue, 'password_hash() with no second arg defaults to PASSWORD_DEFAULT which is safe');
+    }
+
+    public function test_ignores_password_hash_on_non_password_argument(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($token, 0);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasWeakAlgoIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_password_hash_algorithm') {
+                $hasWeakAlgoIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasWeakAlgoIssue, 'Should not flag password_hash() when first arg is not password-related');
+    }
+
+    public function test_password_hash_weak_algorithm_has_critical_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, $algo);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $algoIssue = null;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_password_hash_algorithm') {
+                $algoIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($algoIssue);
+        $this->assertEquals(Severity::Critical, $algoIssue->severity);
+    }
+
+    // ==================== Password::defaults() Per-Call AND-Reduction Tests ====================
+
+    public function test_detects_weak_defaults_masked_by_strong_provider(): void
+    {
+        $strongProvider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Validation\Rules\Password;
+
+class AppServiceProvider
+{
+    public function boot()
+    {
+        Password::defaults(function () {
+            return Password::min(8)->mixedCase()->uncompromised();
+        });
+    }
+}
+PHP;
+
+        $weakProvider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Validation\Rules\Password;
+
+class AuthServiceProvider
+{
+    public function boot()
+    {
+        Password::defaults(function () {
+            return Password::min(8);
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $strongProvider,
+            'app/Providers/AuthServiceProvider.php' => $weakProvider,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('mixed case', $result);
+        $this->assertHasIssueContaining('breached password', $result);
+    }
+
+    public function test_passes_when_all_defaults_calls_are_strong(): void
+    {
+        $providerA = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Validation\Rules\Password;
+
+class AppServiceProvider
+{
+    public function boot()
+    {
+        Password::defaults(function () {
+            return Password::min(8)->mixedCase()->uncompromised();
+        });
+    }
+}
+PHP;
+
+        $providerB = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Validation\Rules\Password;
+
+class AuthServiceProvider
+{
+    public function boot()
+    {
+        Password::defaults(function () {
+            return Password::min(10)->mixedCase()->uncompromised();
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $providerA,
+            'app/Providers/AuthServiceProvider.php' => $providerB,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_two_defaults_in_same_file_one_weak(): void
+    {
+        $providerCode = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Validation\Rules\Password;
+
+class AppServiceProvider
+{
+    public function boot()
+    {
+        Password::defaults(function () {
+            return Password::min(8)->mixedCase()->uncompromised();
+        });
+
+        Password::defaults(function () {
+            return Password::min(8);
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $providerCode,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('mixed case', $result);
+        $this->assertHasIssueContaining('breached password', $result);
+    }
+
+    public function test_weak_defaults_in_bootstrap_masked_by_provider(): void
+    {
+        $weakBootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Validation\Rules\Password;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->booting(function () {
+        Password::defaults(function () {
+            return Password::min(8);
+        });
+    })
+    ->create();
+PHP;
+
+        $strongProvider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Validation\Rules\Password;
+
+class AppServiceProvider
+{
+    public function boot()
+    {
+        Password::defaults(function () {
+            return Password::min(8)->mixedCase()->uncompromised();
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $weakBootstrap,
+            'app/Providers/AppServiceProvider.php' => $strongProvider,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('mixed case', $result);
+        $this->assertHasIssueContaining('breached password', $result);
+    }
+
     // ==================== CI Compatibility Tests ====================
 
     public function test_not_run_in_ci(): void

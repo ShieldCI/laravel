@@ -253,6 +253,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             }
 
             $this->detectWeakHashing($file, $ast, $config, $issues);
+            $this->detectWeakPasswordHashAlgorithm($file, $ast, $issues);
             $this->detectPlainTextPasswordStorage($file, $ast, $issues);
         }
     }
@@ -314,6 +315,57 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
      * @param  array<Node>  $ast
      * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
      */
+    private function detectWeakPasswordHashAlgorithm(string $file, array $ast, array &$issues): void
+    {
+        $safeConstants = ['PASSWORD_DEFAULT', 'PASSWORD_BCRYPT', 'PASSWORD_ARGON2I', 'PASSWORD_ARGON2ID'];
+
+        /** @var array<Node\Expr\FuncCall> $calls */
+        $calls = $this->parser->findNodes($ast, Node\Expr\FuncCall::class);
+
+        foreach ($calls as $call) {
+            if (! $call instanceof Node\Expr\FuncCall) {
+                continue;
+            }
+
+            if (! $call->name instanceof Node\Name || $call->name->toString() !== 'password_hash') {
+                continue;
+            }
+
+            if (empty($call->args) || ! isset($call->args[0]) || ! $call->args[0] instanceof Node\Arg) {
+                continue;
+            }
+
+            if (! $this->isPasswordRelatedArgument($call->args[0]->value)) {
+                continue;
+            }
+
+            if (! isset($call->args[1]) || ! $call->args[1] instanceof Node\Arg) {
+                continue;
+            }
+
+            $algoArg = $call->args[1]->value;
+
+            if ($algoArg instanceof Node\Expr\ConstFetch
+                && $algoArg->name instanceof Node\Name
+                && in_array($algoArg->name->toString(), $safeConstants, true)) {
+                continue;
+            }
+
+            $issues[] = $this->createIssueWithSnippet(
+                message: 'password_hash() called with potentially weak or unknown algorithm',
+                filePath: $file,
+                lineNumber: $call->getStartLine(),
+                severity: Severity::Critical,
+                recommendation: 'Use PASSWORD_DEFAULT, PASSWORD_BCRYPT, or PASSWORD_ARGON2ID as the algorithm argument',
+                metadata: ['issue_type' => 'weak_password_hash_algorithm']
+            );
+        }
+    }
+
+    /**
+     * @param  array<Node>  $ast
+     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
     private function detectPlainTextPasswordStorage(string $file, array $ast, array &$issues): void
     {
         /** @var array<Node\Expr\Assign> $assignments */
@@ -325,10 +377,6 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             }
 
             if (! $this->isPasswordAssignmentTarget($assign->var)) {
-                continue;
-            }
-
-            if ($assign->var instanceof Node\Expr\PropertyFetch) {
                 continue;
             }
 
@@ -399,12 +447,6 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             return true;
         }
 
-        if ($node instanceof Node\Expr\PropertyFetch
-            && $node->name instanceof Node\Identifier
-            && $node->name->name === 'password') {
-            return true;
-        }
-
         return false;
     }
 
@@ -443,9 +485,9 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 
         $anyProviderExists = false;
         $foundPasswordDefaults = false;
-        $hasUncompromised = false;
-        $hasMinLength = false;
-        $hasMixedCase = false;
+
+        /** @var array<int, array{uncompromised: bool, minLength: bool, mixedCase: bool}> $callResults */
+        $callResults = [];
 
         foreach ($serviceProviderPaths as $providerPath) {
             if (! file_exists($providerPath)) {
@@ -486,7 +528,11 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $this->analyzePasswordDefaultsBody($closureArg, $hasUncompromised, $hasMinLength, $hasMixedCase);
+                $callUncompromised = false;
+                $callMinLength = false;
+                $callMixedCase = false;
+                $this->analyzePasswordDefaultsBody($closureArg, $callUncompromised, $callMinLength, $callMixedCase);
+                $callResults[] = ['uncompromised' => $callUncompromised, 'minLength' => $callMinLength, 'mixedCase' => $callMixedCase];
             }
         }
 
@@ -504,6 +550,22 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             );
 
             return;
+        }
+
+        $hasUncompromised = ! empty($callResults);
+        $hasMinLength = ! empty($callResults);
+        $hasMixedCase = ! empty($callResults);
+
+        foreach ($callResults as $r) {
+            if (! $r['uncompromised']) {
+                $hasUncompromised = false;
+            }
+            if (! $r['minLength']) {
+                $hasMinLength = false;
+            }
+            if (! $r['mixedCase']) {
+                $hasMixedCase = false;
+            }
         }
 
         if (! $hasMinLength) {

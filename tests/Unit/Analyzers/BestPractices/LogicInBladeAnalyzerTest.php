@@ -2202,4 +2202,283 @@ BLADE;
 
         $this->assertPassed($result);
     }
+
+    // =========================================================================
+    // COMPUTATION COST TESTS (NEW)
+    // =========================================================================
+
+    public function test_detects_nested_foreach(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @foreach($categories as $category)
+        <h2>{{ $category->name }}</h2>
+        @foreach($category->products as $product)
+            <p>{{ $product->name }}</p>
+        @endforeach
+    @endforeach
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/nested.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Nested @foreach', $result);
+    }
+
+    public function test_nested_foreach_has_medium_severity(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @foreach($categories as $category)
+        @foreach($category->products as $product)
+            <p>{{ $product->name }}</p>
+        @endforeach
+    @endforeach
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/nested-sev.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $nestedIssue = null;
+        foreach ($issues as $issue) {
+            if ($issue->code === 'blade-nested-foreach') {
+                $nestedIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($nestedIssue);
+        $this->assertEquals('medium', $nestedIssue->severity->value);
+    }
+
+    public function test_passes_with_single_foreach(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @foreach($items as $item)
+        <p>{{ $item }}</p>
+    @endforeach
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/single.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_regex_in_foreach(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @foreach($items as $item)
+        @php
+            $clean = preg_replace('/[^a-zA-Z]/', '', $item->name);
+        @endphp
+        <p>{{ $clean }}</p>
+    @endforeach
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/regex.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Expensive computation', $result);
+    }
+
+    public function test_detects_str_replace_in_foreach(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @foreach($items as $item)
+        <p>{{ str_replace('_', ' ', $item->slug) }}</p>
+    @endforeach
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/str-replace.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Expensive computation', $result);
+    }
+
+    public function test_passes_regex_outside_loop(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $clean = preg_replace('/[^a-zA-Z]/', '', $title);
+    @endphp
+    <h1>{{ $clean }}</h1>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/regex-outside.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_to_array_in_blade(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $data = $users->toArray();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/to-array.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Expensive computation', $result);
+    }
+
+    public function test_detects_to_json_in_blade(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $json = $collection->toJson();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/to-json.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Expensive computation', $result);
+    }
+
+    public function test_does_not_flag_to_array_in_string(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $msg = "Use ->toArray() to convert";
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/to-array-string.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_expensive_computation_code_is_set(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $data = $users->toArray();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/code.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $computeIssue = null;
+        foreach ($issues as $issue) {
+            if ($issue->code === 'blade-expensive-computation') {
+                $computeIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($computeIssue);
+    }
+
+    public function test_nested_foreach_metadata_includes_depth(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @foreach($categories as $category)
+        @foreach($category->products as $product)
+            <p>{{ $product->name }}</p>
+        @endforeach
+    @endforeach
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/nested-meta.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $nestedIssue = null;
+        foreach ($result->getIssues() as $issue) {
+            if ($issue->code === 'blade-nested-foreach') {
+                $nestedIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($nestedIssue);
+        $this->assertArrayHasKey('depth', $nestedIssue->metadata);
+        $this->assertEquals(2, $nestedIssue->metadata['depth']);
+    }
 }

@@ -1956,6 +1956,262 @@ PHP;
         $this->assertEquals(Severity::Critical, $algoIssue->severity);
     }
 
+    // ==================== password_hash() Options Validation Tests ====================
+
+    public function test_detects_password_hash_with_weak_bcrypt_cost(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 4]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('bcrypt cost (4)', $result);
+    }
+
+    public function test_passes_password_hash_with_strong_bcrypt_cost(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasCostIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_password_hash_bcrypt_cost') {
+                $hasCostIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasCostIssue, 'cost=12 should not trigger weak bcrypt cost issue');
+    }
+
+    public function test_detects_password_hash_default_with_weak_cost(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_DEFAULT, ['cost' => 8]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('bcrypt cost (8)', $result);
+    }
+
+    public function test_detects_password_hash_argon2id_with_weak_memory_cost(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_ARGON2ID, ['memory_cost' => 1024]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('argon2 memory_cost (1024 KB)', $result);
+    }
+
+    public function test_detects_password_hash_argon2id_with_weak_time_cost(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_ARGON2ID, ['time_cost' => 1]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $timeIssue = null;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_password_hash_argon2_time') {
+                $timeIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($timeIssue);
+        $this->assertEquals(Severity::Medium, $timeIssue->severity);
+    }
+
+    public function test_passes_password_hash_argon2id_with_strong_options(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_ARGON2ID, ['memory_cost' => 65536, 'time_cost' => 2, 'threads' => 2]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasArgonOptionIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            $type = $issue->metadata['issue_type'] ?? '';
+            if (in_array($type, ['weak_password_hash_argon2_memory', 'weak_password_hash_argon2_time', 'weak_password_hash_argon2_threads'], true)) {
+                $hasArgonOptionIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasArgonOptionIssue, 'Strong argon2 options should not trigger any issues');
+    }
+
+    public function test_ignores_password_hash_options_with_variable_cost(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => $cost]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasCostIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_password_hash_bcrypt_cost') {
+                $hasCostIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasCostIssue, 'Variable cost should be skipped (cannot evaluate at static analysis time)');
+    }
+
+    public function test_password_hash_bcrypt_cost_severity_is_critical(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 4]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $costIssue = null;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_password_hash_bcrypt_cost') {
+                $costIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($costIssue);
+        $this->assertEquals(Severity::Critical, $costIssue->severity);
+    }
+
     // ==================== Password::defaults() Per-Call AND-Reduction Tests ====================
 
     public function test_detects_weak_defaults_masked_by_strong_provider(): void

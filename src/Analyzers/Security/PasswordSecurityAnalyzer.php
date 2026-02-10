@@ -253,7 +253,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             }
 
             $this->detectWeakHashing($file, $ast, $config, $issues);
-            $this->detectWeakPasswordHashAlgorithm($file, $ast, $issues);
+            $this->detectWeakPasswordHashAlgorithm($file, $ast, $config, $issues);
             $this->detectPlainTextPasswordStorage($file, $ast, $issues);
         }
     }
@@ -313,9 +313,10 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 
     /**
      * @param  array<Node>  $ast
+     * @param  array{bcrypt_min_rounds: int, argon2_min_memory: int, argon2_min_time: int, argon2_min_threads: int, ignored_paths: array<int, string>, allowed_weak_hash_patterns: array<int, string>, password_confirmation_max_timeout: int}  $config
      * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
      */
-    private function detectWeakPasswordHashAlgorithm(string $file, array $ast, array &$issues): void
+    private function detectWeakPasswordHashAlgorithm(string $file, array $ast, array $config, array &$issues): void
     {
         $safeConstants = ['PASSWORD_DEFAULT', 'PASSWORD_BCRYPT', 'PASSWORD_ARGON2I', 'PASSWORD_ARGON2ID'];
 
@@ -345,21 +346,157 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 
             $algoArg = $call->args[1]->value;
 
-            if ($algoArg instanceof Node\Expr\ConstFetch
+            $isSafeAlgo = $algoArg instanceof Node\Expr\ConstFetch
                 && $algoArg->name instanceof Node\Name
-                && in_array($algoArg->name->toString(), $safeConstants, true)) {
+                && in_array($algoArg->name->toString(), $safeConstants, true);
+
+            if (! $isSafeAlgo) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: 'password_hash() called with potentially weak or unknown algorithm',
+                    filePath: $file,
+                    lineNumber: $call->getStartLine(),
+                    severity: Severity::Critical,
+                    recommendation: 'Use PASSWORD_DEFAULT, PASSWORD_BCRYPT, or PASSWORD_ARGON2ID as the algorithm argument',
+                    metadata: ['issue_type' => 'weak_password_hash_algorithm']
+                );
+
                 continue;
             }
 
-            $issues[] = $this->createIssueWithSnippet(
-                message: 'password_hash() called with potentially weak or unknown algorithm',
-                filePath: $file,
-                lineNumber: $call->getStartLine(),
-                severity: Severity::Critical,
-                recommendation: 'Use PASSWORD_DEFAULT, PASSWORD_BCRYPT, or PASSWORD_ARGON2ID as the algorithm argument',
-                metadata: ['issue_type' => 'weak_password_hash_algorithm']
-            );
+            if (isset($call->args[2])
+                && $call->args[2] instanceof Node\Arg
+                && $call->args[2]->value instanceof Node\Expr\Array_
+                && $algoArg instanceof Node\Expr\ConstFetch
+                && $algoArg->name instanceof Node\Name
+            ) {
+                $this->validatePasswordHashOptions($file, $call, $call->args[2]->value, $algoArg->name->toString(), $config, $issues);
+            }
         }
+    }
+
+    /**
+     * @param  array{bcrypt_min_rounds: int, argon2_min_memory: int, argon2_min_time: int, argon2_min_threads: int, ignored_paths: array<int, string>, allowed_weak_hash_patterns: array<int, string>, password_confirmation_max_timeout: int}  $config
+     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
+    private function validatePasswordHashOptions(
+        string $file,
+        Node\Expr\FuncCall $call,
+        Node\Expr\Array_ $optionsArray,
+        string $algoName,
+        array $config,
+        array &$issues
+    ): void {
+        $isBcrypt = in_array($algoName, ['PASSWORD_DEFAULT', 'PASSWORD_BCRYPT'], true);
+        $isArgon = in_array($algoName, ['PASSWORD_ARGON2I', 'PASSWORD_ARGON2ID'], true);
+
+        foreach ($optionsArray->items as $item) {
+            if (! $item instanceof Node\Expr\ArrayItem) {
+                continue;
+            }
+
+            $key = $this->extractPasswordHashArrayKey($item->key);
+            if ($key === null) {
+                continue;
+            }
+
+            if (! $item->value instanceof Node\Scalar\Int_) {
+                continue;
+            }
+
+            $value = $item->value->value;
+
+            if ($isBcrypt && $key === 'cost' && $value < $config['bcrypt_min_rounds']) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf(
+                        'password_hash() bcrypt cost (%d) is below recommended minimum of %d',
+                        $value,
+                        $config['bcrypt_min_rounds']
+                    ),
+                    filePath: $file,
+                    lineNumber: $call->getStartLine(),
+                    severity: Severity::Critical,
+                    recommendation: sprintf(
+                        'Set bcrypt cost to at least %d for better protection against brute-force attacks',
+                        $config['bcrypt_min_rounds']
+                    ),
+                    metadata: ['cost' => $value, 'issue_type' => 'weak_password_hash_bcrypt_cost']
+                );
+            }
+
+            if ($isArgon && $key === 'memory_cost' && $value < $config['argon2_min_memory']) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf(
+                        'password_hash() argon2 memory_cost (%d KB) is below recommended minimum of %d KB',
+                        $value,
+                        $config['argon2_min_memory']
+                    ),
+                    filePath: $file,
+                    lineNumber: $call->getStartLine(),
+                    severity: Severity::Critical,
+                    recommendation: sprintf(
+                        'Set argon2 memory_cost to at least %d KB',
+                        $config['argon2_min_memory']
+                    ),
+                    metadata: ['memory_cost' => $value, 'issue_type' => 'weak_password_hash_argon2_memory']
+                );
+            }
+
+            if ($isArgon && $key === 'time_cost' && $value < $config['argon2_min_time']) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf(
+                        'password_hash() argon2 time_cost (%d) is below recommended minimum of %d',
+                        $value,
+                        $config['argon2_min_time']
+                    ),
+                    filePath: $file,
+                    lineNumber: $call->getStartLine(),
+                    severity: Severity::Medium,
+                    recommendation: sprintf(
+                        'Set argon2 time_cost to at least %d',
+                        $config['argon2_min_time']
+                    ),
+                    metadata: ['time_cost' => $value, 'issue_type' => 'weak_password_hash_argon2_time']
+                );
+            }
+
+            if ($isArgon && $key === 'threads' && $value < $config['argon2_min_threads']) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf(
+                        'password_hash() argon2 threads (%d) is below recommended minimum of %d',
+                        $value,
+                        $config['argon2_min_threads']
+                    ),
+                    filePath: $file,
+                    lineNumber: $call->getStartLine(),
+                    severity: Severity::Low,
+                    recommendation: sprintf(
+                        'Set argon2 threads to at least %d',
+                        $config['argon2_min_threads']
+                    ),
+                    metadata: ['threads' => $value, 'issue_type' => 'weak_password_hash_argon2_threads']
+                );
+            }
+        }
+    }
+
+    /**
+     * Extract a string key from an array item key node.
+     */
+    private function extractPasswordHashArrayKey(Node\Expr|Node\Identifier|null $keyNode): ?string
+    {
+        if ($keyNode === null) {
+            return null;
+        }
+
+        if ($keyNode instanceof Node\Identifier) {
+            return $keyNode->toString();
+        }
+
+        if ($keyNode instanceof Node\Scalar\String_) {
+            return $keyNode->value;
+        }
+
+        return null;
     }
 
     /**

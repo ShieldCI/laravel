@@ -588,6 +588,12 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             return true;
         }
 
+        if ($node instanceof Node\Expr\PropertyFetch
+            && $node->name instanceof Node\Identifier
+            && $node->name->name === 'password') {
+            return true;
+        }
+
         if ($node instanceof Node\Expr\ArrayDimFetch
             && $node->dim instanceof Node\Scalar\String_
             && $node->dim->value === 'password') {

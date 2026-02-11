@@ -797,6 +797,69 @@ PHP;
         $this->assertHasIssueContaining('plain-text password', $result);
     }
 
+    public function test_detects_plain_text_property_password_storage(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $user = new \App\Models\User();
+        $user->password = $request->password;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('plain-text password', $result);
+    }
+
+    public function test_ignores_property_password_with_hash_make(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $user = new \App\Models\User();
+        $user->password = Hash::make($request->password);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasPlainTextIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'plain_text_password') {
+                $hasPlainTextIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasPlainTextIssue, 'Should not flag $user->password when using Hash::make()');
+    }
+
     public function test_ignores_password_assignment_with_bcrypt(): void
     {
         $code = <<<'PHP'
@@ -1425,7 +1488,7 @@ PHP;
         $this->assertHasIssueContaining('Weak hashing function', $result);
     }
 
-    public function test_fp2_ignores_eloquent_property_password_assignment(): void
+    public function test_fp2_detects_eloquent_property_password_assignment(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1450,14 +1513,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $hasPlainTextIssue = false;
-        foreach ($result->getIssues() as $issue) {
-            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'plain_text_password') {
-                $hasPlainTextIssue = true;
-                break;
-            }
-        }
-        $this->assertFalse($hasPlainTextIssue, 'Should not flag Eloquent model property assignment (mutators/casts)');
+        $this->assertHasIssueContaining('plain-text password', $result);
     }
 
     public function test_fp3_detects_password_defaults_in_bootstrap_app(): void

@@ -1201,11 +1201,15 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         }
 
         if ($rehashOnLogin === false) {
-            $lineMap = $this->mapConfigKeyLines($hashingConfigPath);
+            $lineNumber = 1;
+            if (file_exists($hashingConfigPath)) {
+                $lineMap = $this->mapConfigKeyLines($hashingConfigPath);
+                $lineNumber = $lineMap['rehash_on_login'] ?? 1;
+            }
             $issues[] = $this->createIssueWithSnippet(
                 message: 'Password rehashing on login is disabled (rehash_on_login is false)',
                 filePath: $hashingConfigPath,
-                lineNumber: $lineMap['rehash_on_login'] ?? 1,
+                lineNumber: $lineNumber,
                 severity: Severity::Medium,
                 recommendation: "Set 'rehash_on_login' => true in config/hashing.php so passwords are automatically rehashed when algorithm options change",
                 metadata: ['issue_type' => 'rehash_on_login_disabled']

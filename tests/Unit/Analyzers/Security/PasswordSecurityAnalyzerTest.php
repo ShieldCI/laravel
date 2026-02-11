@@ -2860,6 +2860,321 @@ PHP;
         $this->assertHasIssueContaining('never rehashes passwords', $result);
     }
 
+    public function test_detects_missing_rehash_with_auth_login(): void
+    {
+        $hashingConfig = <<<'PHP'
+<?php
+
+return [
+    'driver' => 'bcrypt',
+    'bcrypt' => ['rounds' => 12],
+];
+PHP;
+
+        $loginController = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Auth;
+
+class LoginController
+{
+    public function login($user)
+    {
+        Auth::login($user);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/hashing.php' => $hashingConfig,
+            'app/Http/Controllers/LoginController.php' => $loginController,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('never rehashes passwords', $result);
+    }
+
+    public function test_detects_missing_rehash_with_auth_login_using_id(): void
+    {
+        $hashingConfig = <<<'PHP'
+<?php
+
+return [
+    'driver' => 'bcrypt',
+    'bcrypt' => ['rounds' => 12],
+];
+PHP;
+
+        $loginController = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Auth;
+
+class LoginController
+{
+    public function login($id)
+    {
+        Auth::loginUsingId($id);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/hashing.php' => $hashingConfig,
+            'app/Http/Controllers/LoginController.php' => $loginController,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('never rehashes passwords', $result);
+    }
+
+    public function test_detects_missing_rehash_with_auth_helper_login(): void
+    {
+        $hashingConfig = <<<'PHP'
+<?php
+
+return [
+    'driver' => 'bcrypt',
+    'bcrypt' => ['rounds' => 12],
+];
+PHP;
+
+        $loginController = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class LoginController
+{
+    public function login($user)
+    {
+        auth()->login($user);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/hashing.php' => $hashingConfig,
+            'app/Http/Controllers/LoginController.php' => $loginController,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('never rehashes passwords', $result);
+    }
+
+    public function test_detects_missing_rehash_with_fortify_authenticate_using(): void
+    {
+        $hashingConfig = <<<'PHP'
+<?php
+
+return [
+    'driver' => 'bcrypt',
+    'bcrypt' => ['rounds' => 12],
+];
+PHP;
+
+        $fortifyProvider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Laravel\Fortify\Fortify;
+
+class FortifyServiceProvider
+{
+    public function boot()
+    {
+        Fortify::authenticateUsing(function ($request) {
+            return null;
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/hashing.php' => $hashingConfig,
+            'app/Providers/FortifyServiceProvider.php' => $fortifyProvider,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('never rehashes passwords', $result);
+    }
+
+    public function test_passes_when_auth_login_with_hash_needs_rehash(): void
+    {
+        $hashingConfig = <<<'PHP'
+<?php
+
+return [
+    'driver' => 'bcrypt',
+    'bcrypt' => ['rounds' => 12],
+];
+PHP;
+
+        $loginController = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
+
+class LoginController
+{
+    public function login($user)
+    {
+        Auth::login($user);
+        if (Hash::needsRehash($user->password)) {
+            $user->update(['password' => Hash::make('secret')]);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/hashing.php' => $hashingConfig,
+            'app/Http/Controllers/LoginController.php' => $loginController,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasRehashIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            $type = $issue->metadata['issue_type'] ?? '';
+            if (in_array($type, ['rehash_on_login_disabled', 'missing_password_rehash'], true)) {
+                $hasRehashIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasRehashIssue, 'Auth::login() with Hash::needsRehash() should not trigger rehash issue');
+    }
+
+    public function test_passes_when_hasher_variable_needs_rehash(): void
+    {
+        $hashingConfig = <<<'PHP'
+<?php
+
+return [
+    'driver' => 'bcrypt',
+    'bcrypt' => ['rounds' => 12],
+];
+PHP;
+
+        $loginController = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Auth;
+
+class LoginController
+{
+    public function login($request, $hasher)
+    {
+        if (Auth::attempt($request->only('email', 'password'))) {
+            if ($hasher->needsRehash($request->user()->password)) {
+                $request->user()->update(['password' => $hasher->make($request->password)]);
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/hashing.php' => $hashingConfig,
+            'app/Http/Controllers/LoginController.php' => $loginController,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasRehashIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            $type = $issue->metadata['issue_type'] ?? '';
+            if (in_array($type, ['rehash_on_login_disabled', 'missing_password_rehash'], true)) {
+                $hasRehashIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasRehashIssue, '$hasher->needsRehash() should be recognized as a valid rehash call');
+    }
+
+    public function test_ignores_needs_rehash_on_non_hash_variable(): void
+    {
+        $hashingConfig = <<<'PHP'
+<?php
+
+return [
+    'driver' => 'bcrypt',
+    'bcrypt' => ['rounds' => 12],
+];
+PHP;
+
+        $loginController = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Auth;
+
+class LoginController
+{
+    public function login($request, $cache)
+    {
+        if (Auth::attempt($request->only('email', 'password'))) {
+            if ($cache->needsRehash($request->user()->password)) {
+                $request->user()->update(['password' => 'rehashed']);
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/hashing.php' => $hashingConfig,
+            'app/Http/Controllers/LoginController.php' => $loginController,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('never rehashes passwords', $result);
+    }
+
     // ==================== CI Compatibility Tests ====================
 
     public function test_not_run_in_ci(): void

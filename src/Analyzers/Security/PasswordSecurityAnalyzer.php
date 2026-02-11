@@ -1175,8 +1175,8 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $hasAuthAttempt = false;
-        $authAttemptFile = '';
+        $hasLoginFlow = false;
+        $loginFlowFile = '';
         $hasRehash = false;
 
         foreach ($this->getPhpFiles() as $file) {
@@ -1189,14 +1189,20 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            if (! $hasAuthAttempt) {
-                if (! empty($this->parser->findStaticCalls($ast, 'Auth', 'attempt'))) {
-                    $hasAuthAttempt = true;
-                    $authAttemptFile = $file;
+            if (! $hasLoginFlow) {
+                foreach (['attempt', 'login', 'loginUsingId'] as $method) {
+                    if (! $hasLoginFlow && ! empty($this->parser->findStaticCalls($ast, 'Auth', $method))) {
+                        $hasLoginFlow = true;
+                        $loginFlowFile = $file;
+                    }
                 }
-                if (! $hasAuthAttempt && $this->hasAuthHelperAttempt($ast)) {
-                    $hasAuthAttempt = true;
-                    $authAttemptFile = $file;
+                if (! $hasLoginFlow && ! empty($this->parser->findStaticCalls($ast, 'Fortify', 'authenticateUsing'))) {
+                    $hasLoginFlow = true;
+                    $loginFlowFile = $file;
+                }
+                if (! $hasLoginFlow && $this->hasAuthHelperLogin($ast)) {
+                    $hasLoginFlow = true;
+                    $loginFlowFile = $file;
                 }
             }
 
@@ -1209,12 +1215,12 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 }
             }
 
-            if ($hasAuthAttempt && $hasRehash) {
+            if ($hasLoginFlow && $hasRehash) {
                 return;
             }
         }
 
-        if (! $hasAuthAttempt) {
+        if (! $hasLoginFlow) {
             return;
         }
 
@@ -1238,9 +1244,9 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 
         if (! $hasRehash) {
             $issues[] = $this->createIssue(
-                message: 'Login flow uses Auth::attempt() but never rehashes passwords when hash parameters change',
+                message: 'Login flow detected but never rehashes passwords when hash parameters change',
                 location: new \ShieldCI\AnalyzersCore\ValueObjects\Location(
-                    $this->getRelativePath($authAttemptFile)
+                    $this->getRelativePath($loginFlowFile)
                 ),
                 severity: Severity::Medium,
                 recommendation: "Add Hash::needsRehash() after authentication, or upgrade to Laravel 11+ and set 'rehash_on_login' => true in config/hashing.php",
@@ -1252,8 +1258,10 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
     /**
      * @param  array<Node>  $ast
      */
-    private function hasAuthHelperAttempt(array $ast): bool
+    private function hasAuthHelperLogin(array $ast): bool
     {
+        $loginMethods = ['attempt', 'login', 'loginUsingId'];
+
         /** @var array<Node\Expr\MethodCall> $methodCalls */
         $methodCalls = $this->parser->findNodes($ast, Node\Expr\MethodCall::class);
 
@@ -1261,7 +1269,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             if (! $call instanceof Node\Expr\MethodCall) {
                 continue;
             }
-            if (! $call->name instanceof Node\Identifier || $call->name->name !== 'attempt') {
+            if (! $call->name instanceof Node\Identifier || ! in_array($call->name->name, $loginMethods, true)) {
                 continue;
             }
             if ($call->var instanceof Node\Expr\FuncCall
@@ -1296,7 +1304,10 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         foreach ($methodCalls as $call) {
             if ($call instanceof Node\Expr\MethodCall
                 && $call->name instanceof Node\Identifier
-                && $call->name->name === 'needsRehash') {
+                && $call->name->name === 'needsRehash'
+                && $call->var instanceof Node\Expr\Variable
+                && is_string($call->var->name)
+                && stripos($call->var->name, 'hash') !== false) {
                 return true;
             }
         }

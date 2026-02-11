@@ -4146,6 +4146,570 @@ PHP;
         $this->assertNoPlainTextPasswordIssue($result);
     }
 
+    // ==================== Additional Request Method Tests ====================
+
+    public function test_detects_weak_hash_of_request_post_password(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $password = md5($request->post('password'));
+        User::create(['password' => $password]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Weak hashing function', $result);
+    }
+
+    public function test_detects_weak_hash_of_request_query_password(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class AuthController
+{
+    public function register($request)
+    {
+        $password = sha1($request->query('password'));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('sha1', $result);
+    }
+
+    public function test_detects_weak_hash_of_request_json_password(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $password = md5($request->json('password'));
+        User::create(['password' => $password]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Weak hashing function', $result);
+    }
+
+    public function test_detects_plaintext_password_via_request_post(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function store($user, $request)
+    {
+        $user->update([
+            'password' => $request->post('password'),
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_plaintext_password_in_create_via_request_json(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController
+{
+    public function store($request)
+    {
+        User::create([
+            'name' => $request->name,
+            'password' => $request->json('password'),
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    // ==================== Rehash Heuristic Tightening Tests ====================
+
+    public function test_does_not_count_hashmap_needs_rehash_as_valid(): void
+    {
+        $hashingConfig = <<<'PHP'
+<?php
+
+return [
+    'driver' => 'bcrypt',
+    'bcrypt' => ['rounds' => 12],
+];
+PHP;
+
+        $loginController = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Auth;
+
+class LoginController
+{
+    public function login($request, $hashmap)
+    {
+        if (Auth::attempt($request->only('email', 'password'))) {
+            if ($hashmap->needsRehash($request->user()->password)) {
+                $request->user()->update(['password' => 'rehashed']);
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/hashing.php' => $hashingConfig,
+            'app/Http/Controllers/LoginController.php' => $loginController,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('never rehashes passwords', $result);
+    }
+
+    public function test_hasher_variable_needs_rehash_is_valid(): void
+    {
+        $hashingConfig = <<<'PHP'
+<?php
+
+return [
+    'driver' => 'bcrypt',
+    'bcrypt' => ['rounds' => 12],
+];
+PHP;
+
+        $loginController = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Auth;
+
+class LoginController
+{
+    public function login($request, $hasher)
+    {
+        if (Auth::attempt($request->only('email', 'password'))) {
+            if ($hasher->needsRehash($request->user()->password)) {
+                $request->user()->update(['password' => $hasher->make($request->password)]);
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/hashing.php' => $hashingConfig,
+            'app/Http/Controllers/LoginController.php' => $loginController,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasRehashIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            $type = $issue->metadata['issue_type'] ?? '';
+            if (in_array($type, ['rehash_on_login_disabled', 'missing_password_rehash'], true)) {
+                $hasRehashIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasRehashIssue, '$hasher->needsRehash() should be recognized as a valid rehash call');
+    }
+
+    public function test_hash_manager_variable_needs_rehash_is_valid(): void
+    {
+        $hashingConfig = <<<'PHP'
+<?php
+
+return [
+    'driver' => 'bcrypt',
+    'bcrypt' => ['rounds' => 12],
+];
+PHP;
+
+        $loginController = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Auth;
+
+class LoginController
+{
+    public function login($request, $hashManager)
+    {
+        if (Auth::attempt($request->only('email', 'password'))) {
+            if ($hashManager->needsRehash($request->user()->password)) {
+                $request->user()->update(['password' => $hashManager->make($request->password)]);
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/hashing.php' => $hashingConfig,
+            'app/Http/Controllers/LoginController.php' => $loginController,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasRehashIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            $type = $issue->metadata['issue_type'] ?? '';
+            if (in_array($type, ['rehash_on_login_disabled', 'missing_password_rehash'], true)) {
+                $hasRehashIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasRehashIssue, '$hashManager->needsRehash() should be recognized as a valid rehash call');
+    }
+
+    // ==================== Indirect Variable Assignment Tests ====================
+
+    public function test_detects_plaintext_password_via_variable_in_model_create(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController
+{
+    public function store($request)
+    {
+        $data = [
+            'name' => $request->name,
+            'password' => $request->password,
+        ];
+        User::create($data);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_plaintext_password_via_variable_in_db_insert(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\DB;
+
+class UserController
+{
+    public function store($request)
+    {
+        $data = [
+            'name' => $request->name,
+            'password' => $request->input('password'),
+        ];
+        DB::table('users')->insert($data);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_ignores_hashed_password_via_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+use Illuminate\Support\Facades\Hash;
+
+class UserController
+{
+    public function store($request)
+    {
+        $data = [
+            'name' => $request->name,
+            'password' => Hash::make($request->password),
+        ];
+        User::create($data);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertNoPlainTextPasswordIssue($result);
+    }
+
+    public function test_ignores_variable_without_password_key(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController
+{
+    public function store($request)
+    {
+        $data = [
+            'name' => $request->name,
+            'email' => $request->email,
+        ];
+        User::create($data);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertNoPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_plaintext_via_variable_in_update_or_create(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController
+{
+    public function store($request)
+    {
+        $values = ['password' => $request->password];
+        User::updateOrCreate(
+            ['email' => $request->email],
+            $values,
+        );
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_incremental_array_password_in_create(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController
+{
+    public function store($request)
+    {
+        $data = [];
+        $data['name'] = $request->name;
+        $data['password'] = $request->password;
+        User::create($data);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_ignores_incremental_array_with_hashed_password(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+use Illuminate\Support\Facades\Hash;
+
+class UserController
+{
+    public function store($request)
+    {
+        $data = [];
+        $data['name'] = $request->name;
+        $data['password'] = Hash::make($request->password);
+        User::create($data);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertNoPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_incremental_array_password_in_insert(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\DB;
+
+class UserController
+{
+    public function store($request)
+    {
+        $data['name'] = $request->name;
+        $data['password'] = $request->input('password');
+        DB::table('users')->insert($data);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
     // ==================== CI Compatibility Tests ====================
 
     public function test_not_run_in_ci(): void
@@ -4172,7 +4736,7 @@ PHP;
     {
         foreach ($result->getIssues() as $issue) {
             if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'plain_text_password') {
-                $this->fail('Expected no plain-text password issue, but one was found: ' . $issue->message);
+                $this->fail('Expected no plain-text password issue, but one was found: '.$issue->message);
             }
         }
 

@@ -624,6 +624,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         /** @var array<Node\Expr\Assign> $assignments */
         $assignments = $this->parser->findNodes($ast, Node\Expr\Assign::class);
         $hasherVars = $this->findHasherVariables($assignments);
+        $plaintextVars = $this->findPlaintextPasswordArrayVariables($assignments, $hasherVars);
 
         /** @var array<Node\Expr\MethodCall> $methodCalls */
         $methodCalls = $this->parser->findNodes($ast, Node\Expr\MethodCall::class);
@@ -638,7 +639,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $this->checkArgsForPlaintextPassword($file, $call->args, $call->getStartLine(), $hasherVars, $issues);
+            $this->checkArgsForPlaintextPassword($file, $call->args, $call->getStartLine(), $hasherVars, $plaintextVars, $issues);
         }
 
         /** @var array<Node\Expr\StaticCall> $staticCalls */
@@ -654,13 +655,14 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $this->checkArgsForPlaintextPassword($file, $call->args, $call->getStartLine(), $hasherVars, $issues);
+            $this->checkArgsForPlaintextPassword($file, $call->args, $call->getStartLine(), $hasherVars, $plaintextVars, $issues);
         }
     }
 
     /**
      * @param  array<Node\Arg|Node\VariadicPlaceholder>  $args
      * @param  array<string>  $hasherVars
+     * @param  array<string>  $plaintextVars
      * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
      */
     private function checkArgsForPlaintextPassword(
@@ -668,10 +670,27 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         array $args,
         int $lineNumber,
         array $hasherVars,
+        array $plaintextVars,
         array &$issues,
     ): void {
         foreach ($args as $arg) {
             if (! $arg instanceof Node\Arg) {
+                continue;
+            }
+
+            // Check for indirect variable passing: User::create($data) where $data has plaintext password
+            if ($arg->value instanceof Node\Expr\Variable
+                && is_string($arg->value->name)
+                && in_array($arg->value->name, $plaintextVars, true)) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: 'Potential plain-text password storage detected',
+                    filePath: $file,
+                    lineNumber: $lineNumber,
+                    severity: Severity::Critical,
+                    recommendation: 'Always hash passwords using Hash::make() or bcrypt()',
+                    metadata: ['issue_type' => 'plain_text_password']
+                );
+
                 continue;
             }
 
@@ -722,7 +741,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 
         if ($node instanceof Node\Expr\MethodCall
             && $node->name instanceof Node\Identifier
-            && in_array($node->name->name, ['input', 'get'], true)
+            && in_array($node->name->name, ['input', 'get', 'post', 'query', 'json'], true)
             && ! empty($node->args)
             && isset($node->args[0])
             && $node->args[0] instanceof Node\Arg
@@ -865,6 +884,63 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         }
 
         return $hasherVars;
+    }
+
+    /**
+     * Find variables assigned arrays containing a plaintext 'password' key.
+     *
+     * @param  array<Node\Expr\Assign>  $assignments
+     * @param  array<string>  $hasherVars
+     * @return array<string>
+     */
+    private function findPlaintextPasswordArrayVariables(array $assignments, array $hasherVars): array
+    {
+        $plaintextVars = [];
+
+        foreach ($assignments as $assign) {
+            if (! $assign instanceof Node\Expr\Assign) {
+                continue;
+            }
+
+            // Path A: $data = ['password' => $request->password]
+            if ($assign->var instanceof Node\Expr\Variable
+                && is_string($assign->var->name)
+                && $assign->expr instanceof Node\Expr\Array_) {
+                foreach ($assign->expr->items as $item) {
+                    if (! $item instanceof Node\Expr\ArrayItem) {
+                        continue;
+                    }
+
+                    if (! $item->key instanceof Node\Scalar\String_ || $item->key->value !== 'password') {
+                        continue;
+                    }
+
+                    if ($this->isHashedValue($item->value, $hasherVars)) {
+                        continue;
+                    }
+
+                    if (! $this->isRawPasswordInput($item->value)) {
+                        continue;
+                    }
+
+                    $plaintextVars[] = $assign->var->name;
+                }
+            }
+
+            // Path B: $data['password'] = $request->password
+            if ($assign->var instanceof Node\Expr\ArrayDimFetch
+                && $assign->var->dim instanceof Node\Scalar\String_
+                && $assign->var->dim->value === 'password'
+                && $assign->var->var instanceof Node\Expr\Variable
+                && is_string($assign->var->var->name)) {
+                if (! $this->isHashedValue($assign->expr, $hasherVars)
+                    && $this->isRawPasswordInput($assign->expr)) {
+                    $plaintextVars[] = $assign->var->var->name;
+                }
+            }
+        }
+
+        return $plaintextVars;
     }
 
     private function isRawPasswordInput(Node $node): bool
@@ -1566,7 +1642,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 && $call->name->name === 'needsRehash'
                 && $call->var instanceof Node\Expr\Variable
                 && is_string($call->var->name)
-                && stripos($call->var->name, 'hash') !== false) {
+                && preg_match('/^(hash|hasher|hashManager|hashing)$/i', $call->var->name) === 1) {
                 return true;
             }
         }

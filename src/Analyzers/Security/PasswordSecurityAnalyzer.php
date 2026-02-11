@@ -87,6 +87,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         $this->checkPasswordPolicyDefaults($issues);
         $this->checkPasswordValidationRules($issues);
         $this->checkPasswordConfirmationTimeout($issues);
+        $this->checkPasswordRehashUsage($issues);
 
         $summary = empty($issues)
             ? 'Password security configuration is strong'
@@ -1131,5 +1132,153 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         }
 
         return $lines[$index];
+    }
+
+    /**
+     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
+    private function checkPasswordRehashUsage(array &$issues): void
+    {
+        $hashingConfigPath = ConfigFileHelper::getConfigPath(
+            $this->getBasePath(),
+            'hashing.php',
+            fn ($file) => function_exists('config_path') ? config_path($file) : null
+        );
+
+        $rehashOnLogin = null;
+        if (file_exists($hashingConfigPath)) {
+            $configArray = $this->loadHashingConfigArray($hashingConfigPath);
+            if (is_array($configArray) && array_key_exists('rehash_on_login', $configArray)) {
+                $rehashOnLogin = (bool) $configArray['rehash_on_login'];
+            }
+        }
+
+        if ($rehashOnLogin === true) {
+            return;
+        }
+
+        $hasAuthAttempt = false;
+        $authAttemptFile = '';
+        $hasRehash = false;
+
+        foreach ($this->getPhpFiles() as $file) {
+            if (str_contains($file, '/vendor/') || str_contains($file, '/tests/') || str_contains($file, '/Tests/')) {
+                continue;
+            }
+
+            $ast = $this->parser->parseFile($file);
+            if (empty($ast)) {
+                continue;
+            }
+
+            if (! $hasAuthAttempt) {
+                if (! empty($this->parser->findStaticCalls($ast, 'Auth', 'attempt'))) {
+                    $hasAuthAttempt = true;
+                    $authAttemptFile = $file;
+                }
+                if (! $hasAuthAttempt && $this->hasAuthHelperAttempt($ast)) {
+                    $hasAuthAttempt = true;
+                    $authAttemptFile = $file;
+                }
+            }
+
+            if (! $hasRehash) {
+                if (! empty($this->parser->findStaticCalls($ast, 'Hash', 'needsRehash'))) {
+                    $hasRehash = true;
+                }
+                if (! $hasRehash && $this->hasRehashCall($ast)) {
+                    $hasRehash = true;
+                }
+            }
+
+            if ($hasAuthAttempt && $hasRehash) {
+                return;
+            }
+        }
+
+        if (! $hasAuthAttempt) {
+            return;
+        }
+
+        if ($rehashOnLogin === false) {
+            $lineMap = $this->mapConfigKeyLines($hashingConfigPath);
+            $issues[] = $this->createIssueWithSnippet(
+                message: 'Password rehashing on login is disabled (rehash_on_login is false)',
+                filePath: $hashingConfigPath,
+                lineNumber: $lineMap['rehash_on_login'] ?? 1,
+                severity: Severity::Medium,
+                recommendation: "Set 'rehash_on_login' => true in config/hashing.php so passwords are automatically rehashed when algorithm options change",
+                metadata: ['issue_type' => 'rehash_on_login_disabled']
+            );
+
+            return;
+        }
+
+        if (! $hasRehash) {
+            $issues[] = $this->createIssue(
+                message: 'Login flow uses Auth::attempt() but never rehashes passwords when hash parameters change',
+                location: new \ShieldCI\AnalyzersCore\ValueObjects\Location(
+                    $this->getRelativePath($authAttemptFile)
+                ),
+                severity: Severity::Medium,
+                recommendation: "Add Hash::needsRehash() after authentication, or upgrade to Laravel 11+ and set 'rehash_on_login' => true in config/hashing.php",
+                metadata: ['issue_type' => 'missing_password_rehash']
+            );
+        }
+    }
+
+    /**
+     * @param  array<Node>  $ast
+     */
+    private function hasAuthHelperAttempt(array $ast): bool
+    {
+        /** @var array<Node\Expr\MethodCall> $methodCalls */
+        $methodCalls = $this->parser->findNodes($ast, Node\Expr\MethodCall::class);
+
+        foreach ($methodCalls as $call) {
+            if (! $call instanceof Node\Expr\MethodCall) {
+                continue;
+            }
+            if (! $call->name instanceof Node\Identifier || $call->name->name !== 'attempt') {
+                continue;
+            }
+            if ($call->var instanceof Node\Expr\FuncCall
+                && $call->var->name instanceof Node\Name
+                && $call->var->name->toString() === 'auth') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<Node>  $ast
+     */
+    private function hasRehashCall(array $ast): bool
+    {
+        /** @var array<Node\Expr\FuncCall> $funcCalls */
+        $funcCalls = $this->parser->findNodes($ast, Node\Expr\FuncCall::class);
+
+        foreach ($funcCalls as $call) {
+            if ($call instanceof Node\Expr\FuncCall
+                && $call->name instanceof Node\Name
+                && $call->name->toString() === 'password_needs_rehash') {
+                return true;
+            }
+        }
+
+        /** @var array<Node\Expr\MethodCall> $methodCalls */
+        $methodCalls = $this->parser->findNodes($ast, Node\Expr\MethodCall::class);
+
+        foreach ($methodCalls as $call) {
+            if ($call instanceof Node\Expr\MethodCall
+                && $call->name instanceof Node\Identifier
+                && $call->name->name === 'needsRehash') {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

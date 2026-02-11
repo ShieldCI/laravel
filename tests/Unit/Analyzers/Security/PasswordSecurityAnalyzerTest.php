@@ -3382,6 +3382,145 @@ PHP;
         $this->assertHasIssueContaining('never rehashes passwords', $result);
     }
 
+    // ==================== Validated Array Password Detection (Bug 1 Verification) ====================
+
+    public function test_detects_validated_array_password_as_plaintext(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function store($request)
+    {
+        $data['password'] = $request->validated()['password'];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('plain-text password', $result);
+    }
+
+    // ==================== hash() Function Weak Algorithm Detection (Bug 3) ====================
+
+    public function test_detects_hash_sha256_for_password(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = hash('sha256', $request->password);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hashIssue = null;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_hash_function'
+                && isset($issue->metadata['algorithm']) && $issue->metadata['algorithm'] === 'sha256') {
+                $hashIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($hashIssue, "Should detect hash('sha256', \$request->password) as weak hashing");
+        $this->assertEquals(Severity::Critical, $hashIssue->severity);
+        $this->assertEquals('hash', $hashIssue->metadata['function']);
+    }
+
+    public function test_detects_hash_md5_for_password(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = hash('md5', $password);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hashIssue = null;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_hash_function'
+                && isset($issue->metadata['algorithm']) && $issue->metadata['algorithm'] === 'md5') {
+                $hashIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($hashIssue, "Should detect hash('md5', \$password) as weak hashing");
+        $this->assertEquals(Severity::Critical, $hashIssue->severity);
+        $this->assertEquals('hash', $hashIssue->metadata['function']);
+    }
+
+    public function test_ignores_hash_with_non_password_argument(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = hash('sha256', $someData);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasWeakHashIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_hash_function') {
+                $hasWeakHashIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasWeakHashIssue, 'Should not flag hash() when second argument is not password-related');
+    }
+
     // ==================== CI Compatibility Tests ====================
 
     public function test_not_run_in_ci(): void

@@ -267,6 +267,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
     private function detectWeakHashing(string $file, array $ast, array $config, array &$issues): void
     {
         $weakFunctions = ['md5', 'sha1'];
+        $weakHashAlgorithms = ['md5', 'sha1', 'sha256', 'sha384', 'sha512'];
 
         /** @var array<Node\Expr\FuncCall> $calls */
         $calls = $this->parser->findNodes($ast, Node\Expr\FuncCall::class);
@@ -311,6 +312,59 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 severity: Severity::Critical,
                 recommendation: 'Use Hash::make() or bcrypt() for password hashing',
                 metadata: ['function' => $func, 'issue_type' => 'weak_hash_function']
+            );
+        }
+
+        foreach ($calls as $call) {
+            if (! $call instanceof Node\Expr\FuncCall) {
+                continue;
+            }
+
+            if (! $call->name instanceof Node\Name) {
+                continue;
+            }
+
+            if ($call->name->toString() !== 'hash') {
+                continue;
+            }
+
+            if (count($call->args) < 2
+                || ! isset($call->args[0], $call->args[1])
+                || ! $call->args[0] instanceof Node\Arg
+                || ! $call->args[1] instanceof Node\Arg) {
+                continue;
+            }
+
+            $algoArg = $call->args[0]->value;
+            if (! $algoArg instanceof Node\Scalar\String_) {
+                continue;
+            }
+
+            $algo = strtolower($algoArg->value);
+            if (! in_array($algo, $weakHashAlgorithms, true)) {
+                continue;
+            }
+
+            if (! $this->isPasswordRelatedArgument($call->args[1]->value)) {
+                continue;
+            }
+
+            $lineNumber = $call->getStartLine();
+            $lineContent = $this->getLineContent($file, $lineNumber);
+
+            /** @var array<int, string> $allowedPatterns */
+            $allowedPatterns = $config['allowed_weak_hash_patterns'];
+            if ($lineContent !== null && $this->isAllowedWeakHashPattern($lineContent, $allowedPatterns)) {
+                continue;
+            }
+
+            $issues[] = $this->createIssueWithSnippet(
+                message: sprintf("Weak hashing algorithm hash('%s') used for password", $algo),
+                filePath: $file,
+                lineNumber: $lineNumber,
+                severity: Severity::Critical,
+                recommendation: 'Use Hash::make() or bcrypt() for password hashing',
+                metadata: ['function' => 'hash', 'algorithm' => $algo, 'issue_type' => 'weak_hash_function']
             );
         }
     }
@@ -410,6 +464,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             ? ['cost']
             : ($isArgon ? ['memory_cost', 'time_cost', 'threads'] : []);
 
+        $unknownKeys = [];
         foreach ($optionsArray->items as $item) {
             if (! $item instanceof Node\Expr\ArrayItem) {
                 continue;
@@ -418,6 +473,10 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             $key = $this->extractPasswordHashArrayKey($item->key);
             if ($key === null) {
                 continue;
+            }
+
+            if (! in_array($key, $validKeys, true)) {
+                $unknownKeys[] = $key;
             }
 
             if (! $item->value instanceof Node\Scalar\Int_) {
@@ -496,22 +555,6 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                     ),
                     metadata: ['threads' => $value, 'issue_type' => 'weak_password_hash_argon2_threads']
                 );
-            }
-        }
-
-        $unknownKeys = [];
-        foreach ($optionsArray->items as $item) {
-            if (! $item instanceof Node\Expr\ArrayItem) {
-                continue;
-            }
-
-            $key = $this->extractPasswordHashArrayKey($item->key);
-            if ($key === null) {
-                continue;
-            }
-
-            if (! in_array($key, $validKeys, true)) {
-                $unknownKeys[] = $key;
             }
         }
 

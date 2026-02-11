@@ -3631,6 +3631,521 @@ PHP;
         $this->assertFalse($hasWeakHashIssue, 'Should not flag hash() when second argument is not password-related');
     }
 
+    // ==================== Hashed Value Wrapping Tests ====================
+
+    public function test_ignores_password_with_trim_wrapping_hash_make(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Hash;
+
+class UserController
+{
+    public function store($request)
+    {
+        $user->password = trim(Hash::make($request->password));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertNoPlainTextPasswordIssue($result);
+    }
+
+    public function test_ignores_password_with_strtolower_wrapping_hash_make(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Hash;
+
+class UserController
+{
+    public function store($request)
+    {
+        $user->password = strtolower(Hash::make($request->password));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertNoPlainTextPasswordIssue($result);
+    }
+
+    public function test_ignores_password_with_string_cast_wrapping_hash_make(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Hash;
+
+class UserController
+{
+    public function store($request)
+    {
+        $user->password = (string) Hash::make($request->password);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertNoPlainTextPasswordIssue($result);
+    }
+
+    public function test_ignores_password_with_nested_wrapping_hash_make(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Hash;
+
+class UserController
+{
+    public function store($request)
+    {
+        $user->password = strtolower(trim(Hash::make($request->password)));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertNoPlainTextPasswordIssue($result);
+    }
+
+    public function test_ignores_password_with_cast_wrapping_bcrypt(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function store($request)
+    {
+        $user->password = (string) bcrypt($request->password);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertNoPlainTextPasswordIssue($result);
+    }
+
+    public function test_ignores_password_with_ternary_containing_hash(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Hash;
+
+class UserController
+{
+    public function store($request, $condition)
+    {
+        $user->password = $condition ? Hash::make($request->password) : '';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertNoPlainTextPasswordIssue($result);
+    }
+
+    public function test_still_detects_plaintext_with_trim_wrapping_raw_password(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function store($request)
+    {
+        $user->password = trim($request->password);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    // ==================== Method Call Plaintext Detection Tests ====================
+
+    public function test_detects_plaintext_password_in_model_create(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController
+{
+    public function store($request)
+    {
+        User::create([
+            'name' => $request->name,
+            'password' => $request->password,
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_plaintext_password_in_db_insert(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\DB;
+
+class UserController
+{
+    public function store($request)
+    {
+        DB::table('users')->insert([
+            'name' => $request->name,
+            'password' => $request->password,
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_plaintext_password_in_model_update(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function update($user, $request)
+    {
+        $user->update([
+            'password' => $request->password,
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_plaintext_password_in_model_fill(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function update($user, $data)
+    {
+        $user->fill([
+            'password' => $data['password'],
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_plaintext_password_in_force_create(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController
+{
+    public function store($input)
+    {
+        User::forceCreate([
+            'password' => $input->password,
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_plaintext_password_in_update_or_create(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController
+{
+    public function store($request)
+    {
+        User::updateOrCreate(
+            ['email' => $request->email],
+            ['password' => $request->password],
+        );
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_ignores_hashed_password_in_model_create(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+use Illuminate\Support\Facades\Hash;
+
+class UserController
+{
+    public function store($request)
+    {
+        User::create([
+            'name' => $request->name,
+            'password' => Hash::make($request->password),
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertNoPlainTextPasswordIssue($result);
+    }
+
+    public function test_ignores_hashed_password_in_model_update(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function update($user, $request)
+    {
+        $user->update([
+            'password' => bcrypt($request->password),
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertNoPlainTextPasswordIssue($result);
+    }
+
+    public function test_ignores_wrapped_hash_in_model_create(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+use Illuminate\Support\Facades\Hash;
+
+class UserController
+{
+    public function store($request)
+    {
+        User::create([
+            'name' => $request->name,
+            'password' => trim(Hash::make($request->password)),
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertNoPlainTextPasswordIssue($result);
+    }
+
+    public function test_ignores_create_without_password_key(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController
+{
+    public function store($request)
+    {
+        User::create([
+            'name' => $request->name,
+            'email' => $request->email,
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/UserController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertNoPlainTextPasswordIssue($result);
+    }
+
     // ==================== CI Compatibility Tests ====================
 
     public function test_not_run_in_ci(): void
@@ -3649,5 +4164,31 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertEquals('password-security', $result->getAnalyzerId());
+    }
+
+    // ==================== Helper Assertions ====================
+
+    private function assertNoPlainTextPasswordIssue(\ShieldCI\AnalyzersCore\Contracts\ResultInterface $result): void
+    {
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'plain_text_password') {
+                $this->fail('Expected no plain-text password issue, but one was found: ' . $issue->message);
+            }
+        }
+
+        $this->addToAssertionCount(1);
+    }
+
+    private function assertHasPlainTextPasswordIssue(\ShieldCI\AnalyzersCore\Contracts\ResultInterface $result): void
+    {
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'plain_text_password') {
+                $this->addToAssertionCount(1);
+
+                return;
+            }
+        }
+
+        $this->fail('Expected a plain-text password issue, but none was found');
     }
 }

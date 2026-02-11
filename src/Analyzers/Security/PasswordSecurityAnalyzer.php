@@ -39,6 +39,12 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
      */
     public static bool $runInCI = false;
 
+    /** @var array<int, string> */
+    private const PASSWORD_PERSISTENCE_METHODS = [
+        'insert', 'create', 'update', 'fill', 'forceCreate',
+        'updateOrCreate', 'upsert', 'firstOrCreate', 'firstOrNew',
+    ];
+
     public function __construct(
         private ParserInterface $parser
     ) {}
@@ -256,6 +262,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             $this->detectWeakHashing($file, $ast, $config, $issues);
             $this->detectWeakPasswordHashAlgorithm($file, $ast, $config, $issues);
             $this->detectPlainTextPasswordStorage($file, $ast, $issues);
+            $this->detectPlainTextPasswordInMethodCalls($file, $ast, $issues);
         }
     }
 
@@ -608,6 +615,99 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         }
     }
 
+    /**
+     * @param  array<Node>  $ast
+     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
+    private function detectPlainTextPasswordInMethodCalls(string $file, array $ast, array &$issues): void
+    {
+        /** @var array<Node\Expr\Assign> $assignments */
+        $assignments = $this->parser->findNodes($ast, Node\Expr\Assign::class);
+        $hasherVars = $this->findHasherVariables($assignments);
+
+        /** @var array<Node\Expr\MethodCall> $methodCalls */
+        $methodCalls = $this->parser->findNodes($ast, Node\Expr\MethodCall::class);
+
+        foreach ($methodCalls as $call) {
+            if (! $call instanceof Node\Expr\MethodCall) {
+                continue;
+            }
+
+            if (! $call->name instanceof Node\Identifier
+                || ! in_array($call->name->name, self::PASSWORD_PERSISTENCE_METHODS, true)) {
+                continue;
+            }
+
+            $this->checkArgsForPlaintextPassword($file, $call->args, $call->getStartLine(), $hasherVars, $issues);
+        }
+
+        /** @var array<Node\Expr\StaticCall> $staticCalls */
+        $staticCalls = $this->parser->findNodes($ast, Node\Expr\StaticCall::class);
+
+        foreach ($staticCalls as $call) {
+            if (! $call instanceof Node\Expr\StaticCall) {
+                continue;
+            }
+
+            if (! $call->name instanceof Node\Identifier
+                || ! in_array($call->name->name, self::PASSWORD_PERSISTENCE_METHODS, true)) {
+                continue;
+            }
+
+            $this->checkArgsForPlaintextPassword($file, $call->args, $call->getStartLine(), $hasherVars, $issues);
+        }
+    }
+
+    /**
+     * @param  array<Node\Arg|Node\VariadicPlaceholder>  $args
+     * @param  array<string>  $hasherVars
+     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
+    private function checkArgsForPlaintextPassword(
+        string $file,
+        array $args,
+        int $lineNumber,
+        array $hasherVars,
+        array &$issues,
+    ): void {
+        foreach ($args as $arg) {
+            if (! $arg instanceof Node\Arg) {
+                continue;
+            }
+
+            if (! $arg->value instanceof Node\Expr\Array_) {
+                continue;
+            }
+
+            foreach ($arg->value->items as $item) {
+                if (! $item instanceof Node\Expr\ArrayItem) {
+                    continue;
+                }
+
+                if (! $item->key instanceof Node\Scalar\String_ || $item->key->value !== 'password') {
+                    continue;
+                }
+
+                if ($this->isHashedValue($item->value, $hasherVars)) {
+                    continue;
+                }
+
+                if (! $this->isRawPasswordInput($item->value)) {
+                    continue;
+                }
+
+                $issues[] = $this->createIssueWithSnippet(
+                    message: 'Potential plain-text password storage detected',
+                    filePath: $file,
+                    lineNumber: $lineNumber,
+                    severity: Severity::Critical,
+                    recommendation: 'Always hash passwords using Hash::make() or bcrypt()',
+                    metadata: ['issue_type' => 'plain_text_password']
+                );
+            }
+        }
+    }
+
     private function isPasswordRelatedArgument(Node $node): bool
     {
         if ($node instanceof Node\Expr\Variable && is_string($node->name) && $node->name === 'password') {
@@ -706,6 +806,34 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             return true;
         }
 
+        // Pattern 5: FuncCall wrapping — e.g. trim(Hash::make($pw)), strtolower(trim(Hash::make($pw)))
+        if ($node instanceof Node\Expr\FuncCall) {
+            foreach ($node->args as $arg) {
+                if ($arg instanceof Node\Arg && $this->isHashedValue($arg->value, $hasherVars)) {
+                    return true;
+                }
+            }
+        }
+
+        // Pattern 6: Cast wrapping — e.g. (string) Hash::make($pw)
+        if ($node instanceof Node\Expr\Cast) {
+            return $this->isHashedValue($node->expr, $hasherVars);
+        }
+
+        // Pattern 7: Ternary — e.g. $condition ? Hash::make($pw) : ''
+        if ($node instanceof Node\Expr\Ternary) {
+            if ($node->if !== null && $this->isHashedValue($node->if, $hasherVars)) {
+                return true;
+            }
+
+            return $this->isHashedValue($node->else, $hasherVars);
+        }
+
+        // Pattern 8: Null coalesce — e.g. Hash::make($pw) ?? $default
+        if ($node instanceof Node\Expr\BinaryOp\Coalesce) {
+            return $this->isHashedValue($node->left, $hasherVars) || $this->isHashedValue($node->right, $hasherVars);
+        }
+
         return false;
     }
 
@@ -741,7 +869,25 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 
     private function isRawPasswordInput(Node $node): bool
     {
-        return $this->isPasswordRelatedArgument($node);
+        if ($this->isPasswordRelatedArgument($node)) {
+            return true;
+        }
+
+        // Check inside function call wrappers like trim($request->password)
+        if ($node instanceof Node\Expr\FuncCall) {
+            foreach ($node->args as $arg) {
+                if ($arg instanceof Node\Arg && $this->isRawPasswordInput($arg->value)) {
+                    return true;
+                }
+            }
+        }
+
+        // Check inside cast wrappers like (string) $request->password
+        if ($node instanceof Node\Expr\Cast) {
+            return $this->isRawPasswordInput($node->expr);
+        }
+
+        return false;
     }
 
     /**

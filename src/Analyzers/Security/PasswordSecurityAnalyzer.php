@@ -396,7 +396,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 filePath: $file,
                 lineNumber: $call->getStartLine(),
                 severity: Severity::Info,
-                recommendation: 'Use an explicit algorithm constant (PASSWORD_BCRYPT or PASSWORD_ARGON2ID) when passing algorithm-specific options',
+                recommendation: "Use Laravel's Hash::make() for password hashing, or specify an explicit algorithm constant (PASSWORD_BCRYPT or PASSWORD_ARGON2ID) when algorithm-specific options are needed",
                 metadata: ['issue_type' => 'password_default_with_options']
             );
 
@@ -405,6 +405,10 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 
         $isBcrypt = $algoName === 'PASSWORD_BCRYPT';
         $isArgon = in_array($algoName, ['PASSWORD_ARGON2I', 'PASSWORD_ARGON2ID'], true);
+
+        $validKeys = $isBcrypt
+            ? ['cost']
+            : ($isArgon ? ['memory_cost', 'time_cost', 'threads'] : []);
 
         foreach ($optionsArray->items as $item) {
             if (! $item instanceof Node\Expr\ArrayItem) {
@@ -493,6 +497,33 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                     metadata: ['threads' => $value, 'issue_type' => 'weak_password_hash_argon2_threads']
                 );
             }
+        }
+
+        $unknownKeys = [];
+        foreach ($optionsArray->items as $item) {
+            if (! $item instanceof Node\Expr\ArrayItem) {
+                continue;
+            }
+
+            $key = $this->extractPasswordHashArrayKey($item->key);
+            if ($key === null) {
+                continue;
+            }
+
+            if (! in_array($key, $validKeys, true)) {
+                $unknownKeys[] = $key;
+            }
+        }
+
+        if (! empty($unknownKeys)) {
+            $issues[] = $this->createIssueWithSnippet(
+                message: sprintf('password_hash() options contain unknown key(s): %s', implode(', ', $unknownKeys)),
+                filePath: $file,
+                lineNumber: $call->getStartLine(),
+                severity: Severity::Info,
+                recommendation: sprintf('Valid options for %s are: %s. Remove unrecognized keys.', $algoName, implode(', ', $validKeys)),
+                metadata: ['issue_type' => 'unknown_password_hash_options', 'unknown_keys' => $unknownKeys]
+            );
         }
     }
 

@@ -2285,6 +2285,213 @@ PHP;
         $this->assertEquals(Severity::Critical, $costIssue->severity);
     }
 
+    // ==================== Unknown password_hash Options Key Tests ====================
+
+    public function test_detects_unknown_keys_in_bcrypt_options(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12, 'foo' => 123]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $unknownIssue = null;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'unknown_password_hash_options') {
+                $unknownIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($unknownIssue, 'Should detect unknown key "foo" in bcrypt options');
+        $this->assertEquals(Severity::Info, $unknownIssue->severity);
+        $this->assertEquals(['foo'], $unknownIssue->metadata['unknown_keys']);
+        $this->assertStringContainsString('foo', $unknownIssue->message);
+    }
+
+    public function test_detects_unknown_keys_in_argon2id_options(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_ARGON2ID, ['memory_cost' => 65536, 'unknown_opt' => 99]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $unknownIssue = null;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'unknown_password_hash_options') {
+                $unknownIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($unknownIssue, 'Should detect unknown key "unknown_opt" in argon2id options');
+        $this->assertEquals(Severity::Info, $unknownIssue->severity);
+        $this->assertEquals(['unknown_opt'], $unknownIssue->metadata['unknown_keys']);
+    }
+
+    public function test_no_warning_for_valid_bcrypt_options(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $unknownKeyIssues = array_filter(
+            $result->getIssues(),
+            fn ($issue) => ($issue->metadata['issue_type'] ?? null) === 'unknown_password_hash_options'
+        );
+        $this->assertEmpty($unknownKeyIssues, 'Valid bcrypt options should not trigger unknown key warning');
+    }
+
+    public function test_no_warning_for_valid_argon2id_options(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_ARGON2ID, ['memory_cost' => 65536, 'time_cost' => 4, 'threads' => 2]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $unknownKeyIssues = array_filter(
+            $result->getIssues(),
+            fn ($issue) => ($issue->metadata['issue_type'] ?? null) === 'unknown_password_hash_options'
+        );
+        $this->assertEmpty($unknownKeyIssues, 'Valid argon2id options should not trigger unknown key warning');
+    }
+
+    public function test_detects_bcrypt_key_as_unknown_in_argon_options(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_ARGON2ID, ['memory_cost' => 65536, 'cost' => 12]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $unknownIssue = null;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'unknown_password_hash_options') {
+                $unknownIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($unknownIssue, 'Bcrypt "cost" key should be flagged as unknown for ARGON2ID');
+        $this->assertEquals(['cost'], $unknownIssue->metadata['unknown_keys']);
+    }
+
+    public function test_detects_unknown_keys_with_non_integer_values(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function register($request)
+    {
+        $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12, 'salt' => 'mysalt']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $unknownIssue = null;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'unknown_password_hash_options') {
+                $unknownIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($unknownIssue, 'String-valued "salt" key should be detected as unknown even though value-validation skips non-integers');
+        $this->assertEquals(['salt'], $unknownIssue->metadata['unknown_keys']);
+    }
+
     // ==================== Password::defaults() Per-Call AND-Reduction Tests ====================
 
     public function test_detects_weak_defaults_masked_by_strong_provider(): void

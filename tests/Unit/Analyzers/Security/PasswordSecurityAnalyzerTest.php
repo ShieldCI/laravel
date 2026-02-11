@@ -930,6 +930,80 @@ PHP;
         $this->assertFalse($hasPlainTextIssue, 'Should not flag $user->password when using Hash::driver()->make()');
     }
 
+    public function test_ignores_password_stored_via_hasher_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Hash;
+
+class AuthController
+{
+    public function store($request)
+    {
+        $hasher = Hash::driver('argon2id');
+        $user->password = $hasher->make($request->password);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasPlainTextIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'plain_text_password') {
+                $hasPlainTextIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasPlainTextIssue, 'Should not flag $user->password when using Hash::driver() variable with ->make()');
+    }
+
+    public function test_detects_plain_password_without_hasher_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Hash;
+
+class AuthController
+{
+    public function store($request)
+    {
+        $hasher = Hash::driver('argon2id');
+        $user->password = $request->password;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasPlainTextIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'plain_text_password') {
+                $hasPlainTextIssue = true;
+                break;
+            }
+        }
+        $this->assertTrue($hasPlainTextIssue, 'Should flag $user->password when raw password is assigned even though a hasher variable exists');
+    }
+
     // ==================== Result Format Tests ====================
 
     public function test_summary_message_format_singular(): void

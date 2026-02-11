@@ -578,6 +578,8 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         /** @var array<Node\Expr\Assign> $assignments */
         $assignments = $this->parser->findNodes($ast, Node\Expr\Assign::class);
 
+        $hasherVars = $this->findHasherVariables($assignments);
+
         foreach ($assignments as $assign) {
             if (! $assign instanceof Node\Expr\Assign) {
                 continue;
@@ -587,7 +589,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            if ($this->isHashedValue($assign->expr)) {
+            if ($this->isHashedValue($assign->expr, $hasherVars)) {
                 continue;
             }
 
@@ -636,7 +638,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         }
 
         if ($node instanceof Node\Expr\BinaryOp\Coalesce) {
-            return $this->isPasswordRelatedArgument($node->left);
+            return $this->isPasswordRelatedArgument($node->left) || $this->isPasswordRelatedArgument($node->right);
         }
 
         return false;
@@ -663,7 +665,10 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         return false;
     }
 
-    private function isHashedValue(Node $node): bool
+    /**
+     * @param  array<string>  $hasherVars
+     */
+    private function isHashedValue(Node $node, array $hasherVars = []): bool
     {
         if ($node instanceof Node\Expr\StaticCall
             && $node->class instanceof Node\Name
@@ -691,7 +696,47 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             return true;
         }
 
+        // Pattern 4: $hasherVar->make(...) where $hasherVar was assigned from Hash::driver()
+        if ($node instanceof Node\Expr\MethodCall
+            && $node->name instanceof Node\Identifier
+            && $node->name->name === 'make'
+            && $node->var instanceof Node\Expr\Variable
+            && is_string($node->var->name)
+            && in_array($node->var->name, $hasherVars, true)) {
+            return true;
+        }
+
         return false;
+    }
+
+    /**
+     * @param  array<Node\Expr\Assign>  $assignments
+     * @return array<string>
+     */
+    private function findHasherVariables(array $assignments): array
+    {
+        $hasherVars = [];
+
+        foreach ($assignments as $assign) {
+            if (! $assign instanceof Node\Expr\Assign) {
+                continue;
+            }
+
+            if (! $assign->var instanceof Node\Expr\Variable || ! is_string($assign->var->name)) {
+                continue;
+            }
+
+            // $var = Hash::driver(...)
+            if ($assign->expr instanceof Node\Expr\StaticCall
+                && $assign->expr->class instanceof Node\Name
+                && $assign->expr->class->toString() === 'Hash'
+                && $assign->expr->name instanceof Node\Identifier
+                && $assign->expr->name->name === 'driver') {
+                $hasherVars[] = $assign->var->name;
+            }
+        }
+
+        return $hasherVars;
     }
 
     private function isRawPasswordInput(Node $node): bool

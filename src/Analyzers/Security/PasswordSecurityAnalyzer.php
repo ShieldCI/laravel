@@ -483,14 +483,10 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
     /**
      * Extract a string key from an array item key node.
      */
-    private function extractPasswordHashArrayKey(Node\Expr|Node\Identifier|null $keyNode): ?string
+    private function extractPasswordHashArrayKey(?Node\Expr $keyNode): ?string
     {
         if ($keyNode === null) {
             return null;
-        }
-
-        if ($keyNode instanceof Node\Identifier) {
-            return $keyNode->toString();
         }
 
         if ($keyNode instanceof Node\Scalar\String_) {

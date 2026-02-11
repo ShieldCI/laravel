@@ -387,7 +387,20 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         array $config,
         array &$issues
     ): void {
-        $isBcrypt = in_array($algoName, ['PASSWORD_DEFAULT', 'PASSWORD_BCRYPT'], true);
+        if ($algoName === 'PASSWORD_DEFAULT') {
+            $issues[] = $this->createIssueWithSnippet(
+                message: 'password_hash() uses PASSWORD_DEFAULT with an explicit options array; options are algorithm-specific and may become invalid if PHP changes the default algorithm',
+                filePath: $file,
+                lineNumber: $call->getStartLine(),
+                severity: Severity::Info,
+                recommendation: 'Use an explicit algorithm constant (PASSWORD_BCRYPT or PASSWORD_ARGON2ID) when passing algorithm-specific options',
+                metadata: ['issue_type' => 'password_default_with_options']
+            );
+
+            return;
+        }
+
+        $isBcrypt = $algoName === 'PASSWORD_BCRYPT';
         $isArgon = in_array($algoName, ['PASSWORD_ARGON2I', 'PASSWORD_ARGON2ID'], true);
 
         foreach ($optionsArray->items as $item) {

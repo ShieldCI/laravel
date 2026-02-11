@@ -2019,7 +2019,7 @@ PHP;
         $this->assertFalse($hasCostIssue, 'cost=12 should not trigger weak bcrypt cost issue');
     }
 
-    public function test_detects_password_hash_default_with_weak_cost(): void
+    public function test_detects_password_default_with_explicit_options(): void
     {
         $code = <<<'PHP'
 <?php
@@ -2043,7 +2043,24 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertHasIssueContaining('bcrypt cost (8)', $result);
+        $this->assertHasIssueContaining('PASSWORD_DEFAULT', $result);
+
+        // Verify it's an info-level issue, not a bcrypt cost issue
+        $defaultIssue = null;
+        foreach ($result->getIssues() as $issue) {
+            if (str_contains($issue->message, 'PASSWORD_DEFAULT')) {
+                $defaultIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($defaultIssue);
+        $this->assertSame(Severity::Info, $defaultIssue->severity);
+        $this->assertSame('password_default_with_options', $defaultIssue->metadata['issue_type']);
+
+        // Ensure no bcrypt cost issue is emitted (the key behavioral change)
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringNotContainsString('bcrypt cost', $issue->message);
+        }
     }
 
     public function test_detects_password_hash_argon2id_with_weak_memory_cost(): void

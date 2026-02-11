@@ -894,6 +894,42 @@ PHP;
         $this->assertFalse($hasPlainTextIssue, 'Should not flag password assignment when using bcrypt()');
     }
 
+    public function test_ignores_password_assignment_with_hash_driver_make(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Hash;
+
+class AuthController
+{
+    public function store($request)
+    {
+        $user->password = Hash::driver('argon2id')->make($request->password);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasPlainTextIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'plain_text_password') {
+                $hasPlainTextIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasPlainTextIssue, 'Should not flag $user->password when using Hash::driver()->make()');
+    }
+
     // ==================== Result Format Tests ====================
 
     public function test_summary_message_format_singular(): void

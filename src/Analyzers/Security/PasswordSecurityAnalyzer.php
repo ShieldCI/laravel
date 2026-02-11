@@ -697,6 +697,17 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             }
         }
 
+        if ($node instanceof Node\Expr\MethodCall
+            && $node->name instanceof Node\Identifier
+            && $node->name->name === 'make'
+            && $node->var instanceof Node\Expr\StaticCall
+            && $node->var->class instanceof Node\Name
+            && $node->var->class->toString() === 'Hash'
+            && $node->var->name instanceof Node\Identifier
+            && $node->var->name->name === 'driver') {
+            return true;
+        }
+
         return false;
     }
 

@@ -282,90 +282,73 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             }
 
             $func = $call->name->toString();
-            if (! in_array($func, $weakFunctions, true)) {
-                continue;
+
+            if (in_array($func, $weakFunctions, true)) {
+                if (empty($call->args) || ! isset($call->args[0]) || ! $call->args[0] instanceof Node\Arg) {
+                    continue;
+                }
+
+                if (! $this->isPasswordRelatedArgument($call->args[0]->value)) {
+                    continue;
+                }
+
+                $lineNumber = $call->getStartLine();
+                $lineContent = $this->getLineContent($file, $lineNumber);
+
+                /** @var array<int, string> $allowedPatterns */
+                $allowedPatterns = $config['allowed_weak_hash_patterns'];
+                if ($lineContent !== null && $this->isAllowedWeakHashPattern($lineContent, $allowedPatterns)) {
+                    continue;
+                }
+
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf('Weak hashing function %s() used for password', $func),
+                    filePath: $file,
+                    lineNumber: $lineNumber,
+                    severity: Severity::Critical,
+                    recommendation: 'Use Hash::make() or bcrypt() for password hashing',
+                    metadata: ['function' => $func, 'issue_type' => 'weak_hash_function']
+                );
+            } elseif ($func === 'hash') {
+                if (count($call->args) < 2
+                    || ! isset($call->args[0], $call->args[1])
+                    || ! $call->args[0] instanceof Node\Arg
+                    || ! $call->args[1] instanceof Node\Arg) {
+                    continue;
+                }
+
+                $algoArg = $call->args[0]->value;
+                if (! $algoArg instanceof Node\Scalar\String_) {
+                    continue;
+                }
+
+                $algo = strtolower($algoArg->value);
+                if (! in_array($algo, $weakHashAlgorithms, true)) {
+                    continue;
+                }
+
+                if (! $this->isPasswordRelatedArgument($call->args[1]->value)) {
+                    continue;
+                }
+
+                $lineNumber = $call->getStartLine();
+                $lineContent = $this->getLineContent($file, $lineNumber);
+
+                /** @var array<int, string> $allowedPatterns */
+                $allowedPatterns = $config['allowed_weak_hash_patterns'];
+                if ($lineContent !== null && $this->isAllowedWeakHashPattern($lineContent, $allowedPatterns)) {
+                    continue;
+                }
+
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf("Weak hashing algorithm hash('%s') used for password", $algo),
+                    filePath: $file,
+                    lineNumber: $lineNumber,
+                    severity: Severity::Critical,
+                    recommendation: 'Use Hash::make() or bcrypt() for password hashing',
+                    metadata: ['function' => 'hash', 'algorithm' => $algo, 'issue_type' => 'weak_hash_function']
+                );
             }
-
-            if (empty($call->args) || ! isset($call->args[0]) || ! $call->args[0] instanceof Node\Arg) {
-                continue;
-            }
-
-            $firstArg = $call->args[0]->value;
-
-            if (! $this->isPasswordRelatedArgument($firstArg)) {
-                continue;
-            }
-
-            $lineNumber = $call->getStartLine();
-            $lineContent = $this->getLineContent($file, $lineNumber);
-
-            /** @var array<int, string> $allowedPatterns */
-            $allowedPatterns = $config['allowed_weak_hash_patterns'];
-            if ($lineContent !== null && $this->isAllowedWeakHashPattern($lineContent, $allowedPatterns)) {
-                continue;
-            }
-
-            $issues[] = $this->createIssueWithSnippet(
-                message: sprintf('Weak hashing function %s() used for password', $func),
-                filePath: $file,
-                lineNumber: $lineNumber,
-                severity: Severity::Critical,
-                recommendation: 'Use Hash::make() or bcrypt() for password hashing',
-                metadata: ['function' => $func, 'issue_type' => 'weak_hash_function']
-            );
-        }
-
-        foreach ($calls as $call) {
-            if (! $call instanceof Node\Expr\FuncCall) {
-                continue;
-            }
-
-            if (! $call->name instanceof Node\Name) {
-                continue;
-            }
-
-            if ($call->name->toString() !== 'hash') {
-                continue;
-            }
-
-            if (count($call->args) < 2
-                || ! isset($call->args[0], $call->args[1])
-                || ! $call->args[0] instanceof Node\Arg
-                || ! $call->args[1] instanceof Node\Arg) {
-                continue;
-            }
-
-            $algoArg = $call->args[0]->value;
-            if (! $algoArg instanceof Node\Scalar\String_) {
-                continue;
-            }
-
-            $algo = strtolower($algoArg->value);
-            if (! in_array($algo, $weakHashAlgorithms, true)) {
-                continue;
-            }
-
-            if (! $this->isPasswordRelatedArgument($call->args[1]->value)) {
-                continue;
-            }
-
-            $lineNumber = $call->getStartLine();
-            $lineContent = $this->getLineContent($file, $lineNumber);
-
-            /** @var array<int, string> $allowedPatterns */
-            $allowedPatterns = $config['allowed_weak_hash_patterns'];
-            if ($lineContent !== null && $this->isAllowedWeakHashPattern($lineContent, $allowedPatterns)) {
-                continue;
-            }
-
-            $issues[] = $this->createIssueWithSnippet(
-                message: sprintf("Weak hashing algorithm hash('%s') used for password", $algo),
-                filePath: $file,
-                lineNumber: $lineNumber,
-                severity: Severity::Critical,
-                recommendation: 'Use Hash::make() or bcrypt() for password hashing',
-                metadata: ['function' => 'hash', 'algorithm' => $algo, 'issue_type' => 'weak_hash_function']
-            );
         }
     }
 

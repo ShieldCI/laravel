@@ -36,7 +36,11 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
 {
     public const DEFAULT_MAX_PHP_BLOCK_LINES = 10;
 
+    public const DEFAULT_MIN_ARITHMETIC_OPERATORS = 2;
+
     private int $maxPhpBlockLines;
+
+    private int $minArithmeticOperators;
 
     /** @var array<int, true> Track reported lines to avoid duplicates */
     private array $reportedLines = [];
@@ -66,6 +70,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
         $this->maxPhpBlockLines = $analyzerConfig['max_php_block_lines'] ?? self::DEFAULT_MAX_PHP_BLOCK_LINES;
+        $this->minArithmeticOperators = $analyzerConfig['min_arithmetic_operators'] ?? self::DEFAULT_MIN_ARITHMETIC_OPERATORS;
 
         $issues = [];
 
@@ -248,7 +253,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $visitor = new BladeLogicVisitor;
+        $visitor = new BladeLogicVisitor($this->minArithmeticOperators);
         $traverser = new NodeTraverser;
         $traverser->addVisitor($visitor);
         $traverser->traverse($ast);
@@ -305,6 +310,10 @@ class BladeLogicVisitor extends NodeVisitorAbstract
 
     /** @var list<array{message: string, severity: Severity, recommendation: string, code: string, line: int, metadata: array<string, mixed>}> */
     private array $issues = [];
+
+    public function __construct(
+        private int $minArithmeticOperators = LogicInBladeAnalyzer::DEFAULT_MIN_ARITHMETIC_OPERATORS,
+    ) {}
 
     /** @var array<string> Non-Eloquent classes with DB-like method names */
     private const NON_ELOQUENT_CLASSES = [
@@ -850,7 +859,7 @@ class BladeLogicVisitor extends NodeVisitorAbstract
             }
 
             $arithmeticCount = $this->countArithmeticOperators($inner);
-            if ($arithmeticCount >= 2) {
+            if ($arithmeticCount >= $this->minArithmeticOperators) {
                 $this->addIssue(
                     line: $node->getStartLine(),
                     message: 'Complex calculation found in Blade template',

@@ -328,6 +328,13 @@ class BladeLogicVisitor extends NodeVisitorAbstract
         'Observer', 'Scope', 'Cast', 'Enum', 'Factory', 'Action',
     ];
 
+    /** @var array<string> Ambiguous suffixes — only flag with terminal + Models namespace */
+    private const AMBIGUOUS_SUFFIXES = [
+        'Resource',
+        'Manager',
+        'Builder',
+    ];
+
     /** @var array<string> Variable name patterns that suggest collections, not models */
     private const COLLECTION_VARIABLE_PATTERNS = [
         'collection', 'items', 'list', 'array', 'data',
@@ -499,7 +506,16 @@ class BladeLogicVisitor extends NodeVisitorAbstract
         }
 
         // Self-terminal methods (::find(), ::all(), ::first(), ::create(), etc.)
+        // Ambiguous suffixes (Resource, Manager, Builder) need Models namespace to flag
         if (in_array($methodName, self::SELF_TERMINAL_METHODS, true)) {
+            if ($this->hasAmbiguousSuffix($shortName)) {
+                if (str_contains($fullClassName, '\\Models\\') || str_contains($fullClassName, '\\Model\\')) {
+                    $this->addDbIssue($node->getStartLine());
+                }
+
+                return;
+            }
+
             $this->addDbIssue($node->getStartLine());
 
             return;
@@ -574,6 +590,7 @@ class BladeLogicVisitor extends NodeVisitorAbstract
             }
 
             // Has terminal method (we're here because it does) — flag it
+            // This includes ambiguous suffixes: terminal confirms query intent
             $this->addDbIssue($root->getStartLine());
 
             return;
@@ -907,6 +924,17 @@ class BladeLogicVisitor extends NodeVisitorAbstract
     private function hasDefiniteNonModelSuffix(string $className): bool
     {
         foreach (self::DEFINITE_NON_MODEL_SUFFIXES as $suffix) {
+            if (str_ends_with($className, $suffix)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function hasAmbiguousSuffix(string $className): bool
+    {
+        foreach (self::AMBIGUOUS_SUFFIXES as $suffix) {
             if (str_ends_with($className, $suffix)) {
                 return true;
             }

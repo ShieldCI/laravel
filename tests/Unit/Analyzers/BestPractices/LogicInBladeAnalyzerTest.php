@@ -2481,4 +2481,391 @@ BLADE;
         $this->assertArrayHasKey('depth', $nestedIssue->metadata);
         $this->assertEquals(2, $nestedIssue->metadata['depth']);
     }
+
+    // =========================================================================
+    // MULTI-LINE DB CHAIN DETECTION TESTS
+    // =========================================================================
+
+    public function test_detects_multi_line_where_get_chain(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $users = User::where('active', true)
+            ->get();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/multi-get.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Database query', $result);
+    }
+
+    public function test_detects_multi_line_where_first_chain(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $user = User::where('email', $email)
+            ->first();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/multi-first.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Database query', $result);
+    }
+
+    public function test_detects_multi_line_fqcn_where_without_terminal(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $query = \App\Models\User::where('active', true)
+            ->orderBy('name');
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/multi-fqcn.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Database query', $result);
+    }
+
+    public function test_does_not_flag_multi_line_non_eloquent_chain(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $filtered = Collection::where('status', 'active')
+            ->first();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/multi-collection.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_multi_line_service_chain(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $result = UserService::where('active', true)
+            ->get();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/multi-service.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_multi_line_chain_without_terminal(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $query = SomeClass::where('x', 'y')
+            ->orderBy('name');
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/multi-no-terminal.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_multi_line_chain_stops_at_blank_line(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $query = User::where('active', true)
+
+            ->get();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/multi-blank.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        // Blank line breaks the chain — should NOT be flagged as multi-line DB query
+        $this->assertPassed($result);
+    }
+
+    public function test_multi_line_chain_stops_at_endphp(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $query = User::where('active', true)
+    @endphp
+    @php
+            ->get();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/multi-endphp.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        // @endphp boundary stops the scan — should NOT detect multi-line chain
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_multi_line_db_facade_chain(): void
+    {
+        // DB:: is a DEFINITE_DB_PATTERN, so it's caught on line 1 by hasDbQuery()
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $users = DB::table('users')
+            ->where('active', true)
+            ->get();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/multi-db.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Database query', $result);
+    }
+
+    public function test_multi_line_chain_with_ambiguous_suffix_and_terminal(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $items = OrderResource::where('status', 'active')
+            ->get();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/multi-resource.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Database query', $result);
+    }
+
+    // =========================================================================
+    // BLOCK COMMENT FALSE POSITIVE TESTS
+    // =========================================================================
+
+    public function test_does_not_flag_db_pattern_in_single_line_block_comment(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        /* DB::table('users')->get(); */
+        $value = 1;
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/block-comment-single.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_db_pattern_in_multi_line_block_comment(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        /*
+         * DB::table('users')->get();
+         * User::all();
+         */
+        $value = 1;
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/block-comment-multi.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_api_call_in_block_comment(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        /* Http::get('https://api.example.com') */
+        $value = 1;
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/block-comment-api.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_flags_code_after_block_comment_closes(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        /*
+         * This is a comment
+         */
+        $users = User::all();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/block-comment-then-code.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Database query', $result);
+    }
+
+    public function test_does_not_flag_block_comment_delimiter_in_string(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $x = "/* not a comment */";
+        $users = User::all();
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/block-delimiter-in-string.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        // The /* is inside a string, so User::all() should still be flagged
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Database query', $result);
+    }
+
+    public function test_block_comment_spanning_many_lines(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        /*
+         * Line 1
+         * Line 2
+         * Line 3
+         * DB::table('users')->get();
+         * User::all();
+         * Http::get('https://api.example.com');
+         */
+        $value = 1;
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/block-comment-long.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

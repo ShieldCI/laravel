@@ -302,6 +302,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         $phpBlockStart = 0;
         $phpBlockLines = 0;
         $foreachDepth = 0;
+        $inBlockComment = false;
 
         foreach ($lines as $lineNumber => $line) {
             $trimmed = trim($line);
@@ -355,6 +356,24 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
                 $phpBlockLines++;
             }
 
+            // Block comment tracking
+            if (! $inBlockComment && $this->lineOpensBlockComment($line)) {
+                $inBlockComment = true;
+                // Check if the same line also closes the block comment: /* ... */
+                if ($this->lineClosesBlockComment($line)) {
+                    $inBlockComment = false;
+                }
+
+                continue;
+            }
+            if ($inBlockComment) {
+                if ($this->lineClosesBlockComment($line)) {
+                    $inBlockComment = false;
+                }
+
+                continue; // Skip all detection inside block comments
+            }
+
             // Track @foreach depth for nested loop detection
             if (preg_match('/@foreach\b/', $trimmed)) {
                 $foreachDepth++;
@@ -392,6 +411,24 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
                 );
 
                 continue; // Don't check other patterns if we found a DB query
+            }
+
+            // Multi-line DB chain detection (e.g., User::where(...)\n    ->get())
+            $chainStartPos = $this->getChainStartPosition($line);
+            if ($chainStartPos >= 0 && $this->scanForwardForTerminal($lines, $lineNumber, $chainStartPos, $line)) {
+                $this->reportedLines[$lineNumber] = true;
+
+                $issues[] = $this->createIssueWithSnippet(
+                    message: 'Database query found in Blade template',
+                    filePath: $file,
+                    lineNumber: $lineNumber + 1,
+                    severity: Severity::Critical,
+                    recommendation: 'Never query the database from Blade templates. Load all required data in the controller and pass it to the view',
+                    code: 'blade-has-db-query',
+                    metadata: ['line' => $lineNumber + 1]
+                );
+
+                continue;
             }
 
             // Check for API calls
@@ -497,6 +534,11 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
 
     private function hasDbQuery(string $line): bool
     {
+        // Fast-path: skip if line has no static call or arrow operator
+        if (! str_contains($line, '::') && ! str_contains($line, '->')) {
+            return false;
+        }
+
         // First, check if this is a non-database get method
         foreach (self::NON_DB_GET_METHODS as $nonDbMethod) {
             if (str_contains($line, $nonDbMethod) && str_contains($line, '->get(')) {
@@ -616,6 +658,105 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Get the match position of a chain start pattern (::where() without terminal on same line).
+     *
+     * Returns -1 if no actionable chain start found.
+     */
+    private function getChainStartPosition(string $line): int
+    {
+        // Only check CHAIN_DB_PATTERNS (::where etc.)
+        foreach (self::CHAIN_DB_PATTERNS as $pattern) {
+            if (! preg_match($pattern, $line, $matches, PREG_OFFSET_CAPTURE)) {
+                continue;
+            }
+
+            $matchPos = $matches[0][1];
+
+            if ($this->isInsideStringOrComment($line, $matchPos)) {
+                continue;
+            }
+
+            // Skip definite non-Eloquent classes, but allow ambiguous suffixes through
+            // for forward scanning (terminal may be on the next line)
+            if ($this->isNonEloquentStaticCall($line, $matchPos)
+                && ! $this->hasAmbiguousSuffixClass($line, $matchPos)) {
+                continue;
+            }
+
+            // If terminal method is already on the same line, hasDbQuery() handles it
+            if ($this->hasTerminalMethod($line)) {
+                return -1;
+            }
+
+            // If FQCN with Models namespace, hasDbQuery() already handles it
+            if ($this->isFromModelsNamespace($line, $matchPos)) {
+                return -1;
+            }
+
+            return $matchPos;
+        }
+
+        return -1;
+    }
+
+    /**
+     * Forward-scan from a chain start line to find a terminal method on continuation lines.
+     *
+     * @param  array<int, string>  $lines  All lines in the file (0-indexed keys)
+     * @param  int  $startLine  The 0-indexed line number of the chain start
+     * @param  int  $chainStartPos  The character position of the chain start on the start line
+     * @param  string  $startLineContent  The content of the start line
+     */
+    private function scanForwardForTerminal(array $lines, int $startLine, int $chainStartPos, string $startLineContent): bool
+    {
+        // If the starting line has a FQCN from \Models\ namespace — always a DB query
+        if ($this->isFromModelsNamespace($startLineContent, $chainStartPos)) {
+            return true;
+        }
+
+        $lineKeys = array_keys($lines);
+        $startIndex = array_search($startLine, $lineKeys, true);
+        if ($startIndex === false) {
+            return false;
+        }
+
+        $maxLookahead = 20;
+        $scanned = 0;
+
+        for ($i = $startIndex + 1; $i < count($lineKeys) && $scanned < $maxLookahead; $i++, $scanned++) {
+            $nextLine = $lines[$lineKeys[$i]];
+            $trimmedNext = trim($nextLine);
+
+            // Stop at blank lines
+            if ($trimmedNext === '') {
+                return false;
+            }
+
+            // Stop at @endphp boundary
+            if (preg_match('/@endphp\b/', $trimmedNext)) {
+                return false;
+            }
+
+            // Only chain continuation lines start with ->
+            if (! str_starts_with($trimmedNext, '->')) {
+                return false;
+            }
+
+            // Check if this continuation line has a terminal method
+            if ($this->hasTerminalMethod($nextLine)) {
+                return true;
+            }
+
+            // If the line ends with a semicolon, the chain ended without a terminal
+            if (str_ends_with($trimmedNext, ';')) {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Check if the line contains a terminal method that confirms a DB query.
      */
     private function hasTerminalMethod(string $line): bool
@@ -690,6 +831,27 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Check if the class in a static call has an ambiguous suffix (Resource, Manager, Builder).
+     */
+    private function hasAmbiguousSuffixClass(string $line, int $matchPosition): bool
+    {
+        $beforeMatch = substr($line, 0, $matchPosition);
+        $trimmed = rtrim($beforeMatch);
+
+        if (preg_match('/\\\\?(?:[A-Za-z_][A-Za-z0-9_]*\\\\)*([A-Za-z_][A-Za-z0-9_]*)$/', $trimmed, $matches)) {
+            $className = $matches[1];
+
+            foreach (self::AMBIGUOUS_SUFFIXES as $suffix) {
+                if (str_ends_with($className, $suffix)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Check if a match position is inside a string literal or comment.
      */
     private function isInsideStringOrComment(string $line, int $matchPosition): bool
@@ -700,6 +862,17 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         $singleCommentPos = strpos($beforeMatch, '//');
         if ($singleCommentPos !== false) {
             return true;
+        }
+
+        // Check for block comment wrapping the match position: /* ... match ... */
+        $blockOpenPos = strrpos($beforeMatch, '/*');
+        if ($blockOpenPos !== false) {
+            // Is there a close (*/) between the open and match position?
+            $closeBeforeMatch = strpos($beforeMatch, '*/', $blockOpenPos + 2);
+            if ($closeBeforeMatch === false) {
+                // No close before match — we're inside an unclosed block comment
+                return true;
+            }
         }
 
         // Check if we're inside a string literal by counting quotes
@@ -725,8 +898,37 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         return $inSingleQuote || $inDoubleQuote;
     }
 
+    /**
+     * Check if a line opens a block comment (/*) outside of a string literal.
+     */
+    private function lineOpensBlockComment(string $line): bool
+    {
+        $pos = strpos($line, '/*');
+        if ($pos === false) {
+            return false;
+        }
+
+        return ! $this->isInsideStringOrComment($line, $pos);
+    }
+
+    /**
+     * Check if a line closes a block comment (* /).
+     */
+    private function lineClosesBlockComment(string $line): bool
+    {
+        return str_contains($line, '*/');
+    }
+
     private function hasApiCall(string $line): bool
     {
+        // Fast-path: skip if line has none of the API call indicators
+        if (! str_contains($line, 'Http::')
+            && ! str_contains($line, 'Guzzle')
+            && ! str_contains($line, 'curl_')
+            && ! str_contains($line, 'file_get_contents')) {
+            return false;
+        }
+
         $patterns = [
             '/Http::/',                // Laravel HTTP client
             '/\bGuzzle\b/',            // Guzzle client
@@ -750,6 +952,13 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
 
     private function hasComplexCalculation(string $line): bool
     {
+        // Fast-path: skip if line has no Blade output and no assignment operators
+        if (! str_contains($line, '{{') && ! str_contains($line, '+=')
+            && ! str_contains($line, '-=') && ! str_contains($line, '*=')
+            && ! str_contains($line, '/=') && ! str_contains($line, '%=')) {
+            return false;
+        }
+
         // Skip simple variable outputs
         if (preg_match('/^\{\{\s*\$\w+\s*\}\}$/', trim($line))) {
             return false;
@@ -806,6 +1015,21 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
      */
     private function hasExpensiveComputation(string $line, int $foreachDepth): bool
     {
+        // Fast-path: check if any expensive collection method substring is present
+        $hasExpensiveCollectionMethod = false;
+        foreach (self::EXPENSIVE_COLLECTION_METHODS as $method) {
+            if (str_contains($line, $method)) {
+                $hasExpensiveCollectionMethod = true;
+
+                break;
+            }
+        }
+
+        // If not in a loop and no expensive collection methods, nothing to check
+        if ($foreachDepth < 1 && ! $hasExpensiveCollectionMethod) {
+            return false;
+        }
+
         // Check for expensive string functions inside loops
         if ($foreachDepth >= 1) {
             foreach (self::EXPENSIVE_STRING_FUNCTIONS as $func) {
@@ -830,6 +1054,22 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
 
     private function hasBusinessLogicInDirective(string $line): bool
     {
+        // Fast-path: skip if line has no directives and no business logic functions
+        $hasDirective = str_contains($line, '@if') || str_contains($line, '@foreach');
+        if (! $hasDirective) {
+            $hasFunction = false;
+            foreach (self::BUSINESS_LOGIC_FUNCTIONS as $func) {
+                if (str_contains($line, $func)) {
+                    $hasFunction = true;
+
+                    break;
+                }
+            }
+            if (! $hasFunction) {
+                return false;
+            }
+        }
+
         // Check for overly complex @if conditions (4+ conditions, not 3+)
         if (preg_match('/@if\s*\(/', $line)) {
             // Count && and || operators

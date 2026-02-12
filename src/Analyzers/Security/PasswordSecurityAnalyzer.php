@@ -1355,20 +1355,6 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
          */
         $config = config('shieldci.password_security', []);
 
-        if (empty($config)) {
-            /** @var array{
-             *    bcrypt_min_rounds?: int,
-             *    argon2_min_memory?: int,
-             *    argon2_min_time?: int,
-             *    argon2_min_threads?: int,
-             *    ignored_paths?: array<int, string>,
-             *    allowed_weak_hash_patterns?: array<int, string>,
-             *    password_confirmation_max_timeout?: int
-             * } $config
-             */
-            $config = config('shieldci.hashing_strength', []);
-        }
-
         return [
             'bcrypt_min_rounds' => ($config['bcrypt_min_rounds'] ?? 12),
             'argon2_min_memory' => ($config['argon2_min_memory'] ?? 65536),

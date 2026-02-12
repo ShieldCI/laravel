@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
+use PhpParser\Node;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
+use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -36,6 +38,16 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
      * Hashing configuration is environment-specific, not applicable in CI.
      */
     public static bool $runInCI = false;
+
+    /** @var array<int, string> */
+    private const PASSWORD_PERSISTENCE_METHODS = [
+        'insert', 'create', 'update', 'fill', 'forceCreate',
+        'updateOrCreate', 'upsert', 'firstOrCreate', 'firstOrNew',
+    ];
+
+    public function __construct(
+        private ParserInterface $parser
+    ) {}
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -81,6 +93,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         $this->checkPasswordPolicyDefaults($issues);
         $this->checkPasswordValidationRules($issues);
         $this->checkPasswordConfirmationTimeout($issues);
+        $this->checkPasswordRehashUsage($issues);
 
         $summary = empty($issues)
             ? 'Password security configuration is strong'
@@ -89,6 +102,9 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         return $this->resultBySeverity($summary, $issues);
     }
 
+    /**
+     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
     private function checkHashingConfig(array &$issues): void
     {
         $hashingConfig = ConfigFileHelper::getConfigPath($this->getBasePath(), 'hashing.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
@@ -105,19 +121,18 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         $config = $this->getConfiguration();
         $lineMap = $this->mapConfigKeyLines($hashingConfig);
 
-        if (isset($configArray['driver'])) {
-            $driver = strtolower((string) $configArray['driver']);
+        $driverValue = $configArray['driver'] ?? null;
+        $driver = is_string($driverValue) ? strtolower($driverValue) : null;
 
-            if (in_array($driver, ['md5', 'sha1', 'sha256'], true)) {
-                $issues[] = $this->createIssueWithSnippet(
-                    message: sprintf('Weak hashing driver "%s" configured', $driver),
-                    filePath: $hashingConfig,
-                    lineNumber: $lineMap['driver'] ?? 1,
-                    severity: Severity::Critical,
-                    recommendation: 'Use "bcrypt" or "argon2id" as the hashing driver',
-                    metadata: ['driver' => $driver, 'issue_type' => 'weak_driver']
-                );
-            }
+        if ($driver !== null && in_array($driver, ['md5', 'sha1', 'sha256'], true)) {
+            $issues[] = $this->createIssueWithSnippet(
+                message: sprintf('Weak hashing driver "%s" configured', $driver),
+                filePath: $hashingConfig,
+                lineNumber: $lineMap['driver'] ?? 1,
+                severity: Severity::Critical,
+                recommendation: 'Use "bcrypt" or "argon2id" as the hashing driver',
+                metadata: ['driver' => $driver, 'issue_type' => 'weak_driver']
+            );
         }
 
         $minRounds = $config['bcrypt_min_rounds'];
@@ -143,205 +158,872 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             );
         }
 
+        $isArgonDriver = ($driver === null || in_array($driver, ['argon2id', 'argon2i', 'argon'], true));
+
+        if (! $isArgonDriver) {
+            return;
+        }
+
         $argon = $configArray['argon'] ?? $configArray['argon2id'] ?? null;
 
-        if (is_array($argon)) {
-            $minArgonMemory = $config['argon2_min_memory'];
+        if (! is_array($argon)) {
+            return;
+        }
 
-            if (
-                isset($argon['memory']) &&
-                is_int($argon['memory']) &&
-                $argon['memory'] < $minArgonMemory
-            ) {
-                $issues[] = $this->createIssueWithSnippet(
-                    message: sprintf(
-                        'Argon2 memory (%d KB) is below recommended minimum of %d KB',
-                        $argon['memory'],
-                        $minArgonMemory
-                    ),
-                    filePath: $hashingConfig,
-                    lineNumber: $lineMap['memory'] ?? ($lineMap['argon'] ?? 1),
-                    severity: Severity::Critical,
-                    recommendation: sprintf(
-                        'Set argon2 memory to at least %d KB',
-                        $minArgonMemory
-                    ),
-                    metadata: [
-                        'memory' => $argon['memory'],
-                        'issue_type' => 'weak_argon2_memory',
-                    ]
-                );
-            }
+        $minArgonMemory = $config['argon2_min_memory'];
 
-            $minArgonTime = $config['argon2_min_time'];
-            if (isset($argon['time']) && is_int($argon['time']) && $argon['time'] < $minArgonTime) {
-                $issues[] = $this->createIssueWithSnippet(
-                    message: sprintf(
-                        'Argon2 time cost (%d) is below recommended minimum of %d',
-                        $argon['time'],
-                        $minArgonTime
-                    ),
-                    filePath: $hashingConfig,
-                    lineNumber: $lineMap['time'] ?? ($lineMap['argon'] ?? 1),
-                    severity: Severity::Medium,
-                    recommendation: sprintf(
-                        'Set argon2 time cost to at least %d',
-                        $minArgonTime
-                    ),
-                    metadata: [
-                        'time' => $argon['time'],
-                        'issue_type' => 'weak_argon2_time',
-                    ]
-                );
-            }
+        if (
+            isset($argon['memory']) &&
+            is_int($argon['memory']) &&
+            $argon['memory'] < $minArgonMemory
+        ) {
+            $issues[] = $this->createIssueWithSnippet(
+                message: sprintf(
+                    'Argon2 memory (%d KB) is below recommended minimum of %d KB',
+                    $argon['memory'],
+                    $minArgonMemory
+                ),
+                filePath: $hashingConfig,
+                lineNumber: $lineMap['memory'] ?? ($lineMap['argon'] ?? 1),
+                severity: Severity::Critical,
+                recommendation: sprintf(
+                    'Set argon2 memory to at least %d KB',
+                    $minArgonMemory
+                ),
+                metadata: [
+                    'memory' => $argon['memory'],
+                    'issue_type' => 'weak_argon2_memory',
+                ]
+            );
+        }
 
-            $minArgonThreads = $config['argon2_min_threads'];
-            if (isset($argon['threads']) && is_int($argon['threads']) && $argon['threads'] < $minArgonThreads) {
-                $issues[] = $this->createIssueWithSnippet(
-                    message: sprintf(
-                        'Argon2 threads (%d) is below recommended minimum of %d',
-                        $argon['threads'],
-                        $minArgonThreads
-                    ),
-                    filePath: $hashingConfig,
-                    lineNumber: $lineMap['threads'] ?? ($lineMap['argon'] ?? 1),
-                    severity: Severity::Low,
-                    recommendation: sprintf(
-                        'Set argon2 threads to at least %d',
-                        $minArgonThreads
-                    ),
-                    metadata: [
-                        'threads' => $argon['threads'],
-                        'issue_type' => 'weak_argon2_threads',
-                    ]
-                );
-            }
+        $minArgonTime = $config['argon2_min_time'];
+        if (isset($argon['time']) && is_int($argon['time']) && $argon['time'] < $minArgonTime) {
+            $issues[] = $this->createIssueWithSnippet(
+                message: sprintf(
+                    'Argon2 time cost (%d) is below recommended minimum of %d',
+                    $argon['time'],
+                    $minArgonTime
+                ),
+                filePath: $hashingConfig,
+                lineNumber: $lineMap['time'] ?? ($lineMap['argon'] ?? 1),
+                severity: Severity::Medium,
+                recommendation: sprintf(
+                    'Set argon2 time cost to at least %d',
+                    $minArgonTime
+                ),
+                metadata: [
+                    'time' => $argon['time'],
+                    'issue_type' => 'weak_argon2_time',
+                ]
+            );
+        }
+
+        $minArgonThreads = $config['argon2_min_threads'];
+        if (isset($argon['threads']) && is_int($argon['threads']) && $argon['threads'] < $minArgonThreads) {
+            $issues[] = $this->createIssueWithSnippet(
+                message: sprintf(
+                    'Argon2 threads (%d) is below recommended minimum of %d',
+                    $argon['threads'],
+                    $minArgonThreads
+                ),
+                filePath: $hashingConfig,
+                lineNumber: $lineMap['threads'] ?? ($lineMap['argon'] ?? 1),
+                severity: Severity::Low,
+                recommendation: sprintf(
+                    'Set argon2 threads to at least %d',
+                    $minArgonThreads
+                ),
+                metadata: [
+                    'threads' => $argon['threads'],
+                    'issue_type' => 'weak_argon2_threads',
+                ]
+            );
         }
     }
 
+    /**
+     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
     private function checkWeakHashingInCode(array &$issues): void
     {
-        $weakHashFunctions = ['md5', 'sha1'];
         $config = $this->getConfiguration();
 
         foreach ($this->getPhpFiles() as $file) {
-            if (str_contains($file, '/vendor/') ||
-                str_contains($file, '/tests/') ||
-                str_contains($file, '/Tests/')) {
+            if ($this->shouldSkipFileForCodeScan($file, $config)) {
                 continue;
             }
 
-            $relativePath = $this->getRelativePath($file);
-            foreach ($config['ignored_paths'] as $ignoredPath) {
-                if (is_string($ignoredPath) && str_contains($relativePath, $ignoredPath)) {
-                    continue 2;
-                }
+            $ast = $this->parser->parseFile($file);
+            if (empty($ast)) {
+                continue;
             }
 
-            $lines = FileParser::getLines($file);
+            $this->detectWeakHashing($file, $ast, $config, $issues);
+            $this->detectWeakPasswordHashAlgorithm($file, $ast, $config, $issues);
+            $this->detectPlainTextPasswordStorage($file, $ast, $issues);
+            $this->detectPlainTextPasswordInMethodCalls($file, $ast, $issues);
+        }
+    }
 
-            foreach ($lines as $lineNumber => $line) {
-                if (! is_string($line)) {
+    /**
+     * @param  array<Node>  $ast
+     * @param  array{bcrypt_min_rounds: int, argon2_min_memory: int, argon2_min_time: int, argon2_min_threads: int, ignored_paths: array<int, string>, allowed_weak_hash_patterns: array<int, string>, password_confirmation_max_timeout: int}  $config
+     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
+    private function detectWeakHashing(string $file, array $ast, array $config, array &$issues): void
+    {
+        $weakFunctions = ['md5', 'sha1'];
+        $weakHashAlgorithms = ['md5', 'sha1', 'sha256', 'sha384', 'sha512'];
+
+        /** @var array<Node\Expr\FuncCall> $calls */
+        $calls = $this->parser->findNodes($ast, Node\Expr\FuncCall::class);
+
+        foreach ($calls as $call) {
+            if (! $call instanceof Node\Expr\FuncCall) {
+                continue;
+            }
+
+            if (! $call->name instanceof Node\Name) {
+                continue;
+            }
+
+            $func = $call->name->toString();
+
+            if (in_array($func, $weakFunctions, true)) {
+                if (empty($call->args) || ! isset($call->args[0]) || ! $call->args[0] instanceof Node\Arg) {
                     continue;
                 }
 
-                if ($this->isCommentLine($line)) {
+                if (! $this->isPasswordRelatedArgument($call->args[0]->value)) {
                     continue;
                 }
 
-                $codeOnly = preg_replace('/\/\/.*$/', '', $line);
-                if (! is_string($codeOnly)) {
+                $lineNumber = $call->getStartLine();
+                $lineContent = $this->getLineContent($file, $lineNumber);
+
+                /** @var array<int, string> $allowedPatterns */
+                $allowedPatterns = $config['allowed_weak_hash_patterns'];
+                if ($lineContent !== null && $this->isAllowedWeakHashPattern($lineContent, $allowedPatterns)) {
                     continue;
                 }
 
-                foreach ($weakHashFunctions as $func) {
-                    /** @var array<int, string> $allowedPatterns */
-                    $allowedPatterns = $config['allowed_weak_hash_patterns'];
-                    if ($this->isAllowedWeakHashPattern($codeOnly, $allowedPatterns)) {
-                        continue;
-                    }
-
-                    if (preg_match('/\b'.$func.'\s*\(\s*\$(?:password|(?:request|_POST|_GET)(?:->|\[).*password)/i', $codeOnly)) {
-                        $issues[] = $this->createIssueWithSnippet(
-                            message: sprintf('Weak hashing function %s() used for password', $func),
-                            filePath: $file,
-                            lineNumber: $lineNumber + 1,
-                            severity: Severity::Critical,
-                            recommendation: 'Use Hash::make() or bcrypt() for password hashing',
-                            metadata: ['function' => $func, 'issue_type' => 'weak_hash_function']
-                        );
-                    }
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf('Weak hashing function %s() used for password', $func),
+                    filePath: $file,
+                    lineNumber: $lineNumber,
+                    severity: Severity::Critical,
+                    recommendation: 'Use Hash::make() or bcrypt() for password hashing',
+                    metadata: ['function' => $func, 'issue_type' => 'weak_hash_function']
+                );
+            } elseif ($func === 'hash') {
+                if (count($call->args) < 2
+                    || ! isset($call->args[0], $call->args[1])
+                    || ! $call->args[0] instanceof Node\Arg
+                    || ! $call->args[1] instanceof Node\Arg) {
+                    continue;
                 }
 
-                if (preg_match('/password_hash\s*\([^,]+,\s*PASSWORD_(MD5|SHA1|SHA256)/i', $codeOnly, $matches)) {
-                    $algorithm = $matches[1];
-
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: sprintf('Weak password_hash algorithm PASSWORD_%s used', $algorithm),
-                        filePath: $file,
-                        lineNumber: $lineNumber + 1,
-                        severity: Severity::Critical,
-                        recommendation: 'Use PASSWORD_BCRYPT or PASSWORD_ARGON2ID',
-                        metadata: ['algorithm' => "PASSWORD_$algorithm", 'issue_type' => 'weak_password_hash_algorithm']
-                    );
+                $algoArg = $call->args[0]->value;
+                if (! $algoArg instanceof Node\Scalar\String_) {
+                    continue;
                 }
 
-                if ($this->isPlainTextPasswordStorage($codeOnly)) {
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: 'Potential plain-text password storage detected',
-                        filePath: $file,
-                        lineNumber: $lineNumber + 1,
-                        severity: Severity::Critical,
-                        recommendation: 'Always hash passwords using Hash::make() or bcrypt()',
-                        metadata: ['issue_type' => 'plain_text_password']
-                    );
+                $algo = strtolower($algoArg->value);
+                if (! in_array($algo, $weakHashAlgorithms, true)) {
+                    continue;
                 }
+
+                if (! $this->isPasswordRelatedArgument($call->args[1]->value)) {
+                    continue;
+                }
+
+                $lineNumber = $call->getStartLine();
+                $lineContent = $this->getLineContent($file, $lineNumber);
+
+                /** @var array<int, string> $allowedPatterns */
+                $allowedPatterns = $config['allowed_weak_hash_patterns'];
+                if ($lineContent !== null && $this->isAllowedWeakHashPattern($lineContent, $allowedPatterns)) {
+                    continue;
+                }
+
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf("Weak hashing algorithm hash('%s') used for password", $algo),
+                    filePath: $file,
+                    lineNumber: $lineNumber,
+                    severity: Severity::Critical,
+                    recommendation: 'Use Hash::make() or bcrypt() for password hashing',
+                    metadata: ['function' => 'hash', 'algorithm' => $algo, 'issue_type' => 'weak_hash_function']
+                );
             }
         }
     }
 
+    /**
+     * @param  array<Node>  $ast
+     * @param  array{bcrypt_min_rounds: int, argon2_min_memory: int, argon2_min_time: int, argon2_min_threads: int, ignored_paths: array<int, string>, allowed_weak_hash_patterns: array<int, string>, password_confirmation_max_timeout: int}  $config
+     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
+    private function detectWeakPasswordHashAlgorithm(string $file, array $ast, array $config, array &$issues): void
+    {
+        $safeConstants = ['PASSWORD_DEFAULT', 'PASSWORD_BCRYPT', 'PASSWORD_ARGON2I', 'PASSWORD_ARGON2ID'];
+
+        /** @var array<Node\Expr\FuncCall> $calls */
+        $calls = $this->parser->findNodes($ast, Node\Expr\FuncCall::class);
+
+        foreach ($calls as $call) {
+            if (! $call instanceof Node\Expr\FuncCall) {
+                continue;
+            }
+
+            if (! $call->name instanceof Node\Name || $call->name->toString() !== 'password_hash') {
+                continue;
+            }
+
+            if (empty($call->args) || ! isset($call->args[0]) || ! $call->args[0] instanceof Node\Arg) {
+                continue;
+            }
+
+            if (! $this->isPasswordRelatedArgument($call->args[0]->value)) {
+                continue;
+            }
+
+            if (! isset($call->args[1]) || ! $call->args[1] instanceof Node\Arg) {
+                continue;
+            }
+
+            $algoArg = $call->args[1]->value;
+
+            $isSafeAlgo = $algoArg instanceof Node\Expr\ConstFetch
+                && $algoArg->name instanceof Node\Name
+                && in_array($algoArg->name->toString(), $safeConstants, true);
+
+            if (! $isSafeAlgo) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: 'password_hash() called with potentially weak or unknown algorithm',
+                    filePath: $file,
+                    lineNumber: $call->getStartLine(),
+                    severity: Severity::Critical,
+                    recommendation: 'Use PASSWORD_DEFAULT, PASSWORD_BCRYPT, or PASSWORD_ARGON2ID as the algorithm argument',
+                    metadata: ['issue_type' => 'weak_password_hash_algorithm']
+                );
+
+                continue;
+            }
+
+            if (isset($call->args[2])
+                && $call->args[2] instanceof Node\Arg
+                && $call->args[2]->value instanceof Node\Expr\Array_
+                && $algoArg instanceof Node\Expr\ConstFetch
+                && $algoArg->name instanceof Node\Name
+            ) {
+                $this->validatePasswordHashOptions($file, $call, $call->args[2]->value, $algoArg->name->toString(), $config, $issues);
+            }
+        }
+    }
+
+    /**
+     * @param  array{bcrypt_min_rounds: int, argon2_min_memory: int, argon2_min_time: int, argon2_min_threads: int, ignored_paths: array<int, string>, allowed_weak_hash_patterns: array<int, string>, password_confirmation_max_timeout: int}  $config
+     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
+    private function validatePasswordHashOptions(
+        string $file,
+        Node\Expr\FuncCall $call,
+        Node\Expr\Array_ $optionsArray,
+        string $algoName,
+        array $config,
+        array &$issues
+    ): void {
+        if ($algoName === 'PASSWORD_DEFAULT') {
+            $issues[] = $this->createIssueWithSnippet(
+                message: 'password_hash() uses PASSWORD_DEFAULT with an explicit options array; options are algorithm-specific and may become invalid if PHP changes the default algorithm',
+                filePath: $file,
+                lineNumber: $call->getStartLine(),
+                severity: Severity::Info,
+                recommendation: "Use Laravel's Hash::make() for password hashing, or specify an explicit algorithm constant (PASSWORD_BCRYPT or PASSWORD_ARGON2ID) when algorithm-specific options are needed",
+                metadata: ['issue_type' => 'password_default_with_options']
+            );
+
+            return;
+        }
+
+        $isBcrypt = $algoName === 'PASSWORD_BCRYPT';
+        $isArgon = in_array($algoName, ['PASSWORD_ARGON2I', 'PASSWORD_ARGON2ID'], true);
+
+        $validKeys = $isBcrypt
+            ? ['cost']
+            : ($isArgon ? ['memory_cost', 'time_cost', 'threads'] : []);
+
+        $unknownKeys = [];
+        foreach ($optionsArray->items as $item) {
+            if (! $item instanceof Node\Expr\ArrayItem) {
+                continue;
+            }
+
+            $key = $this->extractPasswordHashArrayKey($item->key);
+            if ($key === null) {
+                continue;
+            }
+
+            if (! in_array($key, $validKeys, true)) {
+                $unknownKeys[] = $key;
+            }
+
+            if (! $item->value instanceof Node\Scalar\Int_) {
+                continue;
+            }
+
+            $value = $item->value->value;
+
+            if ($isBcrypt && $key === 'cost' && $value < $config['bcrypt_min_rounds']) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf(
+                        'password_hash() bcrypt cost (%d) is below recommended minimum of %d',
+                        $value,
+                        $config['bcrypt_min_rounds']
+                    ),
+                    filePath: $file,
+                    lineNumber: $call->getStartLine(),
+                    severity: Severity::Critical,
+                    recommendation: sprintf(
+                        'Set bcrypt cost to at least %d for better protection against brute-force attacks',
+                        $config['bcrypt_min_rounds']
+                    ),
+                    metadata: ['cost' => $value, 'issue_type' => 'weak_password_hash_bcrypt_cost']
+                );
+            }
+
+            if ($isArgon && $key === 'memory_cost' && $value < $config['argon2_min_memory']) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf(
+                        'password_hash() argon2 memory_cost (%d KB) is below recommended minimum of %d KB',
+                        $value,
+                        $config['argon2_min_memory']
+                    ),
+                    filePath: $file,
+                    lineNumber: $call->getStartLine(),
+                    severity: Severity::Critical,
+                    recommendation: sprintf(
+                        'Set argon2 memory_cost to at least %d KB',
+                        $config['argon2_min_memory']
+                    ),
+                    metadata: ['memory_cost' => $value, 'issue_type' => 'weak_password_hash_argon2_memory']
+                );
+            }
+
+            if ($isArgon && $key === 'time_cost' && $value < $config['argon2_min_time']) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf(
+                        'password_hash() argon2 time_cost (%d) is below recommended minimum of %d',
+                        $value,
+                        $config['argon2_min_time']
+                    ),
+                    filePath: $file,
+                    lineNumber: $call->getStartLine(),
+                    severity: Severity::Medium,
+                    recommendation: sprintf(
+                        'Set argon2 time_cost to at least %d',
+                        $config['argon2_min_time']
+                    ),
+                    metadata: ['time_cost' => $value, 'issue_type' => 'weak_password_hash_argon2_time']
+                );
+            }
+
+            if ($isArgon && $key === 'threads' && $value < $config['argon2_min_threads']) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: sprintf(
+                        'password_hash() argon2 threads (%d) is below recommended minimum of %d',
+                        $value,
+                        $config['argon2_min_threads']
+                    ),
+                    filePath: $file,
+                    lineNumber: $call->getStartLine(),
+                    severity: Severity::Low,
+                    recommendation: sprintf(
+                        'Set argon2 threads to at least %d',
+                        $config['argon2_min_threads']
+                    ),
+                    metadata: ['threads' => $value, 'issue_type' => 'weak_password_hash_argon2_threads']
+                );
+            }
+        }
+
+        if (! empty($unknownKeys)) {
+            $issues[] = $this->createIssueWithSnippet(
+                message: sprintf('password_hash() options contain unknown key(s): %s', implode(', ', $unknownKeys)),
+                filePath: $file,
+                lineNumber: $call->getStartLine(),
+                severity: Severity::Info,
+                recommendation: sprintf('Valid options for %s are: %s. Remove unrecognized keys.', $algoName, implode(', ', $validKeys)),
+                metadata: ['issue_type' => 'unknown_password_hash_options', 'unknown_keys' => $unknownKeys]
+            );
+        }
+    }
+
+    /**
+     * Extract a string key from an array item key node.
+     */
+    private function extractPasswordHashArrayKey(?Node\Expr $keyNode): ?string
+    {
+        if ($keyNode === null) {
+            return null;
+        }
+
+        if ($keyNode instanceof Node\Scalar\String_) {
+            return $keyNode->value;
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<Node>  $ast
+     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
+    private function detectPlainTextPasswordStorage(string $file, array $ast, array &$issues): void
+    {
+        /** @var array<Node\Expr\Assign> $assignments */
+        $assignments = $this->parser->findNodes($ast, Node\Expr\Assign::class);
+
+        $hasherVars = $this->findHasherVariables($assignments);
+
+        foreach ($assignments as $assign) {
+            if (! $assign instanceof Node\Expr\Assign) {
+                continue;
+            }
+
+            if (! $this->isPasswordAssignmentTarget($assign->var)) {
+                continue;
+            }
+
+            if ($this->isHashedValue($assign->expr, $hasherVars)) {
+                continue;
+            }
+
+            if (! $this->isRawPasswordInput($assign->expr)) {
+                continue;
+            }
+
+            $issues[] = $this->createIssueWithSnippet(
+                message: 'Potential plain-text password storage detected',
+                filePath: $file,
+                lineNumber: $assign->getStartLine(),
+                severity: Severity::Critical,
+                recommendation: 'Always hash passwords using Hash::make() or bcrypt()',
+                metadata: ['issue_type' => 'plain_text_password']
+            );
+        }
+    }
+
+    /**
+     * @param  array<Node>  $ast
+     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
+    private function detectPlainTextPasswordInMethodCalls(string $file, array $ast, array &$issues): void
+    {
+        /** @var array<Node\Expr\Assign> $assignments */
+        $assignments = $this->parser->findNodes($ast, Node\Expr\Assign::class);
+        $hasherVars = $this->findHasherVariables($assignments);
+        $plaintextVars = $this->findPlaintextPasswordArrayVariables($assignments, $hasherVars);
+
+        /** @var array<Node\Expr\MethodCall> $methodCalls */
+        $methodCalls = $this->parser->findNodes($ast, Node\Expr\MethodCall::class);
+
+        foreach ($methodCalls as $call) {
+            if (! $call instanceof Node\Expr\MethodCall) {
+                continue;
+            }
+
+            if (! $call->name instanceof Node\Identifier
+                || ! in_array($call->name->name, self::PASSWORD_PERSISTENCE_METHODS, true)) {
+                continue;
+            }
+
+            $this->checkArgsForPlaintextPassword($file, $call->args, $call->getStartLine(), $hasherVars, $plaintextVars, $issues);
+        }
+
+        /** @var array<Node\Expr\StaticCall> $staticCalls */
+        $staticCalls = $this->parser->findNodes($ast, Node\Expr\StaticCall::class);
+
+        foreach ($staticCalls as $call) {
+            if (! $call instanceof Node\Expr\StaticCall) {
+                continue;
+            }
+
+            if (! $call->name instanceof Node\Identifier
+                || ! in_array($call->name->name, self::PASSWORD_PERSISTENCE_METHODS, true)) {
+                continue;
+            }
+
+            $this->checkArgsForPlaintextPassword($file, $call->args, $call->getStartLine(), $hasherVars, $plaintextVars, $issues);
+        }
+    }
+
+    /**
+     * @param  array<Node\Arg|Node\VariadicPlaceholder>  $args
+     * @param  array<string>  $hasherVars
+     * @param  array<string>  $plaintextVars
+     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
+    private function checkArgsForPlaintextPassword(
+        string $file,
+        array $args,
+        int $lineNumber,
+        array $hasherVars,
+        array $plaintextVars,
+        array &$issues,
+    ): void {
+        foreach ($args as $arg) {
+            if (! $arg instanceof Node\Arg) {
+                continue;
+            }
+
+            // Check for indirect variable passing: User::create($data) where $data has plaintext password
+            if ($arg->value instanceof Node\Expr\Variable
+                && is_string($arg->value->name)
+                && in_array($arg->value->name, $plaintextVars, true)) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: 'Potential plain-text password storage detected',
+                    filePath: $file,
+                    lineNumber: $lineNumber,
+                    severity: Severity::Critical,
+                    recommendation: 'Always hash passwords using Hash::make() or bcrypt()',
+                    metadata: ['issue_type' => 'plain_text_password']
+                );
+
+                continue;
+            }
+
+            if (! $arg->value instanceof Node\Expr\Array_) {
+                continue;
+            }
+
+            foreach ($arg->value->items as $item) {
+                if (! $item instanceof Node\Expr\ArrayItem) {
+                    continue;
+                }
+
+                if (! $item->key instanceof Node\Scalar\String_ || $item->key->value !== 'password') {
+                    continue;
+                }
+
+                if ($this->isHashedValue($item->value, $hasherVars)) {
+                    continue;
+                }
+
+                if (! $this->isRawPasswordInput($item->value)) {
+                    continue;
+                }
+
+                $issues[] = $this->createIssueWithSnippet(
+                    message: 'Potential plain-text password storage detected',
+                    filePath: $file,
+                    lineNumber: $lineNumber,
+                    severity: Severity::Critical,
+                    recommendation: 'Always hash passwords using Hash::make() or bcrypt()',
+                    metadata: ['issue_type' => 'plain_text_password']
+                );
+            }
+        }
+    }
+
+    private function isPasswordRelatedArgument(Node $node): bool
+    {
+        if ($node instanceof Node\Expr\Variable && is_string($node->name) && $node->name === 'password') {
+            return true;
+        }
+
+        if ($node instanceof Node\Expr\PropertyFetch
+            && $node->name instanceof Node\Identifier
+            && $node->name->name === 'password') {
+            return true;
+        }
+
+        if ($node instanceof Node\Expr\MethodCall
+            && $node->name instanceof Node\Identifier
+            && in_array($node->name->name, ['input', 'get', 'post', 'query', 'json'], true)
+            && ! empty($node->args)
+            && isset($node->args[0])
+            && $node->args[0] instanceof Node\Arg
+            && $node->args[0]->value instanceof Node\Scalar\String_
+            && $node->args[0]->value->value === 'password') {
+            return true;
+        }
+
+        if ($node instanceof Node\Expr\ArrayDimFetch
+            && $node->dim instanceof Node\Scalar\String_
+            && $node->dim->value === 'password') {
+            return true;
+        }
+
+        if ($node instanceof Node\Expr\BinaryOp\Coalesce) {
+            return $this->isPasswordRelatedArgument($node->left) || $this->isPasswordRelatedArgument($node->right);
+        }
+
+        return false;
+    }
+
+    private function isPasswordAssignmentTarget(Node $node): bool
+    {
+        if ($node instanceof Node\Expr\Variable && is_string($node->name) && $node->name === 'password') {
+            return true;
+        }
+
+        if ($node instanceof Node\Expr\PropertyFetch
+            && $node->name instanceof Node\Identifier
+            && $node->name->name === 'password') {
+            return true;
+        }
+
+        if ($node instanceof Node\Expr\ArrayDimFetch
+            && $node->dim instanceof Node\Scalar\String_
+            && $node->dim->value === 'password') {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string>  $hasherVars
+     */
+    private function isHashedValue(Node $node, array $hasherVars = []): bool
+    {
+        if ($node instanceof Node\Expr\StaticCall
+            && $node->class instanceof Node\Name
+            && $node->class->toString() === 'Hash'
+            && $node->name instanceof Node\Identifier
+            && $node->name->name === 'make') {
+            return true;
+        }
+
+        if ($node instanceof Node\Expr\FuncCall && $node->name instanceof Node\Name) {
+            $name = $node->name->toString();
+            if (in_array($name, ['bcrypt', 'password_hash'], true)) {
+                return true;
+            }
+        }
+
+        if ($node instanceof Node\Expr\MethodCall
+            && $node->name instanceof Node\Identifier
+            && $node->name->name === 'make'
+            && $node->var instanceof Node\Expr\StaticCall
+            && $node->var->class instanceof Node\Name
+            && $node->var->class->toString() === 'Hash'
+            && $node->var->name instanceof Node\Identifier
+            && $node->var->name->name === 'driver') {
+            return true;
+        }
+
+        // Pattern 4: $hasherVar->make(...) where $hasherVar was assigned from Hash::driver()
+        if ($node instanceof Node\Expr\MethodCall
+            && $node->name instanceof Node\Identifier
+            && $node->name->name === 'make'
+            && $node->var instanceof Node\Expr\Variable
+            && is_string($node->var->name)
+            && in_array($node->var->name, $hasherVars, true)) {
+            return true;
+        }
+
+        // Pattern 5: FuncCall wrapping — e.g. trim(Hash::make($pw)), strtolower(trim(Hash::make($pw)))
+        if ($node instanceof Node\Expr\FuncCall) {
+            foreach ($node->args as $arg) {
+                if ($arg instanceof Node\Arg && $this->isHashedValue($arg->value, $hasherVars)) {
+                    return true;
+                }
+            }
+        }
+
+        // Pattern 6: Cast wrapping — e.g. (string) Hash::make($pw)
+        if ($node instanceof Node\Expr\Cast) {
+            return $this->isHashedValue($node->expr, $hasherVars);
+        }
+
+        // Pattern 7: Ternary — e.g. $condition ? Hash::make($pw) : ''
+        if ($node instanceof Node\Expr\Ternary) {
+            if ($node->if !== null && $this->isHashedValue($node->if, $hasherVars)) {
+                return true;
+            }
+
+            return $this->isHashedValue($node->else, $hasherVars);
+        }
+
+        // Pattern 8: Null coalesce — e.g. Hash::make($pw) ?? $default
+        if ($node instanceof Node\Expr\BinaryOp\Coalesce) {
+            return $this->isHashedValue($node->left, $hasherVars) || $this->isHashedValue($node->right, $hasherVars);
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<Node\Expr\Assign>  $assignments
+     * @return array<string>
+     */
+    private function findHasherVariables(array $assignments): array
+    {
+        $hasherVars = [];
+
+        foreach ($assignments as $assign) {
+            if (! $assign instanceof Node\Expr\Assign) {
+                continue;
+            }
+
+            if (! $assign->var instanceof Node\Expr\Variable || ! is_string($assign->var->name)) {
+                continue;
+            }
+
+            // $var = Hash::driver(...)
+            if ($assign->expr instanceof Node\Expr\StaticCall
+                && $assign->expr->class instanceof Node\Name
+                && $assign->expr->class->toString() === 'Hash'
+                && $assign->expr->name instanceof Node\Identifier
+                && $assign->expr->name->name === 'driver') {
+                $hasherVars[] = $assign->var->name;
+            }
+        }
+
+        return $hasherVars;
+    }
+
+    /**
+     * Find variables assigned arrays containing a plaintext 'password' key.
+     *
+     * @param  array<Node\Expr\Assign>  $assignments
+     * @param  array<string>  $hasherVars
+     * @return array<string>
+     */
+    private function findPlaintextPasswordArrayVariables(array $assignments, array $hasherVars): array
+    {
+        $plaintextVars = [];
+
+        foreach ($assignments as $assign) {
+            if (! $assign instanceof Node\Expr\Assign) {
+                continue;
+            }
+
+            // Path A: $data = ['password' => $request->password]
+            if ($assign->var instanceof Node\Expr\Variable
+                && is_string($assign->var->name)
+                && $assign->expr instanceof Node\Expr\Array_) {
+                foreach ($assign->expr->items as $item) {
+                    if (! $item instanceof Node\Expr\ArrayItem) {
+                        continue;
+                    }
+
+                    if (! $item->key instanceof Node\Scalar\String_ || $item->key->value !== 'password') {
+                        continue;
+                    }
+
+                    if ($this->isHashedValue($item->value, $hasherVars)) {
+                        continue;
+                    }
+
+                    if (! $this->isRawPasswordInput($item->value)) {
+                        continue;
+                    }
+
+                    $plaintextVars[] = $assign->var->name;
+                }
+            }
+
+            // Path B: $data['password'] = $request->password
+            if ($assign->var instanceof Node\Expr\ArrayDimFetch
+                && $assign->var->dim instanceof Node\Scalar\String_
+                && $assign->var->dim->value === 'password'
+                && $assign->var->var instanceof Node\Expr\Variable
+                && is_string($assign->var->var->name)) {
+                if (! $this->isHashedValue($assign->expr, $hasherVars)
+                    && $this->isRawPasswordInput($assign->expr)) {
+                    $plaintextVars[] = $assign->var->var->name;
+                }
+            }
+        }
+
+        return $plaintextVars;
+    }
+
+    private function isRawPasswordInput(Node $node): bool
+    {
+        if ($this->isPasswordRelatedArgument($node)) {
+            return true;
+        }
+
+        // Check inside function call wrappers like trim($request->password)
+        if ($node instanceof Node\Expr\FuncCall) {
+            foreach ($node->args as $arg) {
+                if ($arg instanceof Node\Arg && $this->isRawPasswordInput($arg->value)) {
+                    return true;
+                }
+            }
+        }
+
+        // Check inside cast wrappers like (string) $request->password
+        if ($node instanceof Node\Expr\Cast) {
+            return $this->isRawPasswordInput($node->expr);
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
     private function checkPasswordPolicyDefaults(array &$issues): void
     {
-        $serviceProviderPaths = [
-            $this->buildPath('app', 'Providers', 'AppServiceProvider.php'),
-            $this->buildPath('app', 'Providers', 'AuthServiceProvider.php'),
-        ];
+        $serviceProviderPaths = $this->getPasswordPolicyPaths();
+        $bootstrapApp = $this->buildPath('bootstrap', 'app.php');
 
         $anyProviderExists = false;
         $foundPasswordDefaults = false;
-        $hasUncompromised = false;
-        $hasMinLength = false;
-        $hasMixedCase = false;
+
+        /** @var array<int, array{uncompromised: bool, minLength: bool, mixedCase: bool}> $callResults */
+        $callResults = [];
 
         foreach ($serviceProviderPaths as $providerPath) {
             if (! file_exists($providerPath)) {
                 continue;
             }
 
-            $anyProviderExists = true;
+            if ($providerPath !== $bootstrapApp) {
+                $anyProviderExists = true;
+            }
 
-            $content = FileParser::readFile($providerPath);
-            if ($content === null) {
+            $ast = $this->parser->parseFile($providerPath);
+            if (empty($ast)) {
                 continue;
             }
 
-            $codeContent = $this->stripComments($content);
+            /** @var array<Node\Expr\StaticCall> $defaultsCalls */
+            $defaultsCalls = $this->parser->findStaticCalls($ast, 'Password', 'defaults');
 
-            if (preg_match('/Password::defaults\s*\(/', $codeContent)) {
-                $foundPasswordDefaults = true;
+            if (empty($defaultsCalls)) {
+                continue;
+            }
 
-                if (str_contains($codeContent, '->uncompromised(') || str_contains($codeContent, 'uncompromised()')) {
-                    $hasUncompromised = true;
+            $foundPasswordDefaults = true;
+            $anyProviderExists = true;
+
+            foreach ($defaultsCalls as $defaultsCall) {
+                if (! $defaultsCall instanceof Node\Expr\StaticCall) {
+                    continue;
                 }
 
-                if (preg_match('/Password::min\s*\(\s*(\d+)/', $codeContent, $minMatch)) {
-                    $minLength = (int) $minMatch[1];
-                    $hasMinLength = $minLength >= 8;
+                if (empty($defaultsCall->args) || ! isset($defaultsCall->args[0]) || ! $defaultsCall->args[0] instanceof Node\Arg) {
+                    continue;
                 }
 
-                if (str_contains($codeContent, '->mixedCase(')) {
-                    $hasMixedCase = true;
+                $closureArg = $defaultsCall->args[0]->value;
+
+                if (! $closureArg instanceof Node\Expr\Closure && ! $closureArg instanceof Node\Expr\ArrowFunction) {
+                    continue;
                 }
+
+                $callUncompromised = false;
+                $callMinLength = false;
+                $callMixedCase = false;
+                $this->analyzePasswordDefaultsBody($closureArg, $callUncompromised, $callMinLength, $callMixedCase);
+                $callResults[] = ['uncompromised' => $callUncompromised, 'minLength' => $callMinLength, 'mixedCase' => $callMixedCase];
             }
         }
 
@@ -354,11 +1036,27 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 message: 'No Password::defaults() configured in service providers',
                 location: new \ShieldCI\AnalyzersCore\ValueObjects\Location('app/Providers/AppServiceProvider.php'),
                 severity: Severity::Medium,
-                recommendation: 'Define password validation defaults in AppServiceProvider::boot(): Password::defaults(function () { return Password::min(8)->letters()->mixedCase()->numbers()->symbols()->uncompromised(); });',
+                recommendation: 'Define password validation defaults in a service provider boot() method or bootstrap/app.php: Password::defaults(function () { return Password::min(8)->letters()->mixedCase()->numbers()->symbols()->uncompromised(); });',
                 metadata: ['issue_type' => 'missing_password_defaults']
             );
 
             return;
+        }
+
+        $hasUncompromised = ! empty($callResults);
+        $hasMinLength = ! empty($callResults);
+        $hasMixedCase = ! empty($callResults);
+
+        foreach ($callResults as $r) {
+            if (! $r['uncompromised']) {
+                $hasUncompromised = false;
+            }
+            if (! $r['minLength']) {
+                $hasMinLength = false;
+            }
+            if (! $r['mixedCase']) {
+                $hasMixedCase = false;
+            }
         }
 
         if (! $hasMinLength) {
@@ -392,6 +1090,47 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         }
     }
 
+    private function analyzePasswordDefaultsBody(Node\Expr\Closure|Node\Expr\ArrowFunction $closureNode, bool &$hasUncompromised, bool &$hasMinLength, bool &$hasMixedCase): void
+    {
+        /** @var array<Node\Expr\MethodCall> $methodCalls */
+        $methodCalls = $this->parser->findNodes([$closureNode], Node\Expr\MethodCall::class);
+
+        foreach ($methodCalls as $methodCall) {
+            if (! $methodCall instanceof Node\Expr\MethodCall || ! $methodCall->name instanceof Node\Identifier) {
+                continue;
+            }
+
+            $methodName = $methodCall->name->name;
+
+            if ($methodName === 'uncompromised') {
+                $hasUncompromised = true;
+            }
+
+            if ($methodName === 'mixedCase') {
+                $hasMixedCase = true;
+            }
+        }
+
+        /** @var array<Node\Expr\StaticCall> $staticCalls */
+        $staticCalls = $this->parser->findStaticCalls([$closureNode], 'Password', 'min');
+
+        foreach ($staticCalls as $staticCall) {
+            if (! $staticCall instanceof Node\Expr\StaticCall) {
+                continue;
+            }
+
+            if (! empty($staticCall->args) && isset($staticCall->args[0]) && $staticCall->args[0] instanceof Node\Arg) {
+                $argValue = $staticCall->args[0]->value;
+                if ($argValue instanceof Node\Scalar\Int_ && $argValue->value >= 8) {
+                    $hasMinLength = true;
+                }
+            }
+        }
+    }
+
+    /**
+     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
     private function checkPasswordValidationRules(array &$issues): void
     {
         foreach ($this->getPhpFiles() as $file) {
@@ -403,39 +1142,123 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $content = FileParser::readFile($file);
-            if ($content === null) {
+            $ast = $this->parser->parseFile($file);
+            if (empty($ast)) {
                 continue;
             }
 
-            $lines = FileParser::getLines($file);
+            /** @var array<Node\Expr\ArrayItem> $arrayItems */
+            $arrayItems = $this->parser->findNodes($ast, Node\Expr\ArrayItem::class);
 
-            foreach ($lines as $lineNumber => $line) {
-                if (! is_string($line)) {
+            foreach ($arrayItems as $item) {
+                if (! $item instanceof Node\Expr\ArrayItem) {
                     continue;
                 }
 
-                if ($this->isCommentLine($line)) {
+                if (! $item->key instanceof Node\Scalar\String_ || $item->key->value !== 'password') {
                     continue;
                 }
 
-                if (preg_match("/['\"]password['\"].*\bmin:(\d+)/", $line, $matches)) {
-                    $minLen = (int) $matches[1];
-                    if ($minLen < 8) {
-                        $issues[] = $this->createIssueWithSnippet(
-                            message: sprintf('Password validation requires only %d characters (minimum recommended: 8)', $minLen),
-                            filePath: $file,
-                            lineNumber: $lineNumber + 1,
-                            severity: Severity::Medium,
-                            recommendation: 'Set minimum password length to at least 8 characters: \'password\' => [\'required\', Password::min(8)]',
-                            metadata: ['min_length' => $minLen, 'issue_type' => 'weak_validation_min_length']
-                        );
-                    }
+                $minLength = $this->extractPasswordMinLength($item->value);
+
+                if ($minLength !== null && $minLength < 8) {
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: sprintf('Password validation requires only %d characters (minimum recommended: 8)', $minLength),
+                        filePath: $file,
+                        lineNumber: $item->getStartLine(),
+                        severity: Severity::Medium,
+                        recommendation: 'Set minimum password length to at least 8 characters: \'password\' => [\'required\', Password::min(8)]',
+                        metadata: ['min_length' => $minLength, 'issue_type' => 'weak_validation_min_length']
+                    );
                 }
             }
         }
     }
 
+    private function extractPasswordMinLength(Node $value): ?int
+    {
+        if ($value instanceof Node\Scalar\String_) {
+            if (preg_match('/\bmin:(\d+)/', $value->value, $matches)) {
+                return (int) $matches[1];
+            }
+
+            return null;
+        }
+
+        if ($value instanceof Node\Expr\Array_) {
+            foreach ($value->items as $arrayItem) {
+                if ($arrayItem === null) {
+                    continue;
+                }
+
+                if ($arrayItem->value instanceof Node\Scalar\String_) {
+                    if (preg_match('/\bmin:(\d+)/', $arrayItem->value->value, $matches)) {
+                        return (int) $matches[1];
+                    }
+                }
+
+                $minFromCall = $this->extractMinFromNode($arrayItem->value);
+                if ($minFromCall !== null) {
+                    return $minFromCall;
+                }
+            }
+
+            return null;
+        }
+
+        return $this->extractMinFromNode($value);
+    }
+
+    private function extractMinFromNode(Node $node): ?int
+    {
+        if ($node instanceof Node\Expr\StaticCall) {
+            return $this->extractMinFromPasswordCall($node);
+        }
+
+        if ($node instanceof Node\Expr\MethodCall) {
+            return $this->extractMinFromMethodChain($node);
+        }
+
+        return null;
+    }
+
+    private function extractMinFromPasswordCall(Node\Expr\StaticCall $call): ?int
+    {
+        if (! $call->class instanceof Node\Name || $call->class->toString() !== 'Password') {
+            return null;
+        }
+
+        if (! $call->name instanceof Node\Identifier || $call->name->name !== 'min') {
+            return null;
+        }
+
+        if (! empty($call->args) && isset($call->args[0]) && $call->args[0] instanceof Node\Arg) {
+            $argValue = $call->args[0]->value;
+            if ($argValue instanceof Node\Scalar\Int_) {
+                return $argValue->value;
+            }
+        }
+
+        return null;
+    }
+
+    private function extractMinFromMethodChain(Node\Expr\MethodCall $call): ?int
+    {
+        $current = $call;
+
+        while ($current instanceof Node\Expr\MethodCall) {
+            if ($current->var instanceof Node\Expr\StaticCall) {
+                return $this->extractMinFromPasswordCall($current->var);
+            }
+            $current = $current->var;
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
     private function checkPasswordConfirmationTimeout(array &$issues): void
     {
         $authConfig = ConfigFileHelper::getConfigPath(
@@ -453,10 +1276,13 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
+        $config = $this->getConfiguration();
+        $maxTimeout = $config['password_confirmation_max_timeout'];
+
         if (preg_match("/['\"]password_timeout['\"]\\s*=>\\s*(\\d+)/", $content, $matches)) {
             $timeout = (int) $matches[1];
 
-            if ($timeout > 3600) {
+            if ($timeout > $maxTimeout) {
                 $lineMap = $this->mapConfigKeyLines($authConfig);
 
                 $issues[] = $this->createIssueWithSnippet(
@@ -464,7 +1290,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                     filePath: $authConfig,
                     lineNumber: $lineMap['password_timeout'] ?? 1,
                     severity: Severity::Low,
-                    recommendation: 'Reduce password confirmation timeout to 3600 seconds (1 hour) or less for better security',
+                    recommendation: sprintf('Reduce password confirmation timeout to %d seconds (%s) or less for better security', $maxTimeout, $this->formatDuration($maxTimeout)),
                     metadata: [
                         'timeout_seconds' => $timeout,
                         'issue_type' => 'long_password_confirmation_timeout',
@@ -490,16 +1316,6 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         return sprintf('%dm', $minutes);
     }
 
-    private function isCommentLine(string $line): bool
-    {
-        $trimmed = trim($line);
-
-        return str_starts_with($trimmed, '//') ||
-               str_starts_with($trimmed, '*') ||
-               str_starts_with($trimmed, '/*') ||
-               str_starts_with($trimmed, '#');
-    }
-
     /**
      * @param  array<int, string>  $allowedPatterns
      */
@@ -514,29 +1330,6 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         return false;
     }
 
-    private function isPlainTextPasswordStorage(string $line): bool
-    {
-        if (preg_match('/[=!]==?/', $line)) {
-            return false;
-        }
-
-        if (preg_match('/\$(hashed|encrypted|encoded|hash)Password/i', $line)) {
-            return false;
-        }
-
-        if (str_contains($line, 'Hash::') ||
-            str_contains($line, 'bcrypt(') ||
-            str_contains($line, 'password_hash(')) {
-            return false;
-        }
-
-        if (preg_match('/password["\']?\s*=\s*\$(?:password|_POST|_GET|request)/i', $line)) {
-            return true;
-        }
-
-        return false;
-    }
-
     /**
      * @return array{
      *    bcrypt_min_rounds: int,
@@ -544,7 +1337,8 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
      *    argon2_min_time: int,
      *    argon2_min_threads: int,
      *    ignored_paths: array<int, string>,
-     *    allowed_weak_hash_patterns: array<int, string>
+     *    allowed_weak_hash_patterns: array<int, string>,
+     *    password_confirmation_max_timeout: int
      * }
      * */
     private function getConfiguration(): array
@@ -555,23 +1349,11 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
          *    argon2_min_time?: int,
          *    argon2_min_threads?: int,
          *    ignored_paths?: array<int, string>,
-         *    allowed_weak_hash_patterns?: array<int, string>
+         *    allowed_weak_hash_patterns?: array<int, string>,
+         *    password_confirmation_max_timeout?: int
          * } $config
          */
         $config = config('shieldci.password_security', []);
-
-        if (empty($config)) {
-            /** @var array{
-             *    bcrypt_min_rounds?: int,
-             *    argon2_min_memory?: int,
-             *    argon2_min_time?: int,
-             *    argon2_min_threads?: int,
-             *    ignored_paths?: array<int, string>,
-             *    allowed_weak_hash_patterns?: array<int, string>
-             * } $config
-             */
-            $config = config('shieldci.hashing_strength', []);
-        }
 
         return [
             'bcrypt_min_rounds' => ($config['bcrypt_min_rounds'] ?? 12),
@@ -589,9 +1371,13 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                     'checksum',
                     'etag',
                 ],
+            'password_confirmation_max_timeout' => ($config['password_confirmation_max_timeout'] ?? 10800),
         ];
     }
 
+    /**
+     * @return array<string, mixed>|null
+     */
     private function loadHashingConfigArray(string $path): ?array
     {
         try {
@@ -601,25 +1387,6 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         } catch (\Throwable) {
             return null;
         }
-    }
-
-    private function stripComments(string $content): string
-    {
-        $tokens = @token_get_all($content);
-        $result = '';
-
-        foreach ($tokens as $token) {
-            if (is_array($token)) {
-                if ($token[0] === T_COMMENT || $token[0] === T_DOC_COMMENT) {
-                    continue;
-                }
-                $result .= $token[1];
-            } else {
-                $result .= $token;
-            }
-        }
-
-        return $result;
     }
 
     /**
@@ -642,5 +1409,230 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         }
 
         return $map;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function getPasswordPolicyPaths(): array
+    {
+        $paths = [
+            $this->buildPath('app', 'Providers', 'AppServiceProvider.php'),
+            $this->buildPath('app', 'Providers', 'AuthServiceProvider.php'),
+            $this->buildPath('bootstrap', 'app.php'),
+        ];
+
+        $providersDir = $this->buildPath('app', 'Providers');
+        if (is_dir($providersDir)) {
+            /** @var array<int, string>|false $files */
+            $files = glob($providersDir.'/*.php');
+            if (is_array($files)) {
+                foreach ($files as $file) {
+                    if (! in_array($file, $paths, true)) {
+                        $paths[] = $file;
+                    }
+                }
+            }
+        }
+
+        return $paths;
+    }
+
+    /**
+     * @param  array{bcrypt_min_rounds: int, argon2_min_memory: int, argon2_min_time: int, argon2_min_threads: int, ignored_paths: array<int, string>, allowed_weak_hash_patterns: array<int, string>, password_confirmation_max_timeout: int}  $config
+     */
+    private function shouldSkipFileForCodeScan(string $file, array $config): bool
+    {
+        if (str_contains($file, '/vendor/') ||
+            str_contains($file, '/tests/') ||
+            str_contains($file, '/Tests/') ||
+            str_contains($file, '/database/seeders/') ||
+            str_contains($file, '/database/factories/')) {
+            return true;
+        }
+
+        $relativePath = $this->getRelativePath($file);
+        foreach ($config['ignored_paths'] as $ignoredPath) {
+            if (is_string($ignoredPath) && str_contains($relativePath, $ignoredPath)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function getLineContent(string $file, int $lineNumber): ?string
+    {
+        $lines = FileParser::getLines($file);
+        $index = $lineNumber - 1;
+
+        if (! isset($lines[$index]) || ! is_string($lines[$index])) {
+            return null;
+        }
+
+        return $lines[$index];
+    }
+
+    /**
+     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     */
+    private function checkPasswordRehashUsage(array &$issues): void
+    {
+        $hashingConfigPath = ConfigFileHelper::getConfigPath(
+            $this->getBasePath(),
+            'hashing.php',
+            fn ($file) => function_exists('config_path') ? config_path($file) : null
+        );
+
+        $rehashOnLogin = null;
+        if (file_exists($hashingConfigPath)) {
+            $configArray = $this->loadHashingConfigArray($hashingConfigPath);
+            if (is_array($configArray) && array_key_exists('rehash_on_login', $configArray)) {
+                $rehashOnLogin = (bool) $configArray['rehash_on_login'];
+            }
+        }
+
+        if ($rehashOnLogin === true) {
+            return;
+        }
+
+        $hasLoginFlow = false;
+        $loginFlowFile = '';
+        $hasRehash = false;
+
+        foreach ($this->getPhpFiles() as $file) {
+            if (str_contains($file, '/vendor/') || str_contains($file, '/tests/') || str_contains($file, '/Tests/')) {
+                continue;
+            }
+
+            $ast = $this->parser->parseFile($file);
+            if (empty($ast)) {
+                continue;
+            }
+
+            if (! $hasLoginFlow) {
+                foreach (['attempt', 'login', 'loginUsingId'] as $method) {
+                    if (! $hasLoginFlow && ! empty($this->parser->findStaticCalls($ast, 'Auth', $method))) {
+                        $hasLoginFlow = true;
+                        $loginFlowFile = $file;
+                    }
+                }
+                if (! $hasLoginFlow && ! empty($this->parser->findStaticCalls($ast, 'Fortify', 'authenticateUsing'))) {
+                    $hasLoginFlow = true;
+                    $loginFlowFile = $file;
+                }
+                if (! $hasLoginFlow && $this->hasAuthHelperLogin($ast)) {
+                    $hasLoginFlow = true;
+                    $loginFlowFile = $file;
+                }
+            }
+
+            if (! $hasRehash) {
+                if (! empty($this->parser->findStaticCalls($ast, 'Hash', 'needsRehash'))) {
+                    $hasRehash = true;
+                }
+                if (! $hasRehash && $this->hasRehashCall($ast)) {
+                    $hasRehash = true;
+                }
+            }
+
+            if ($hasLoginFlow && $hasRehash) {
+                return;
+            }
+        }
+
+        if (! $hasLoginFlow) {
+            return;
+        }
+
+        if ($rehashOnLogin === false) {
+            $lineNumber = 1;
+            if (file_exists($hashingConfigPath)) {
+                $lineMap = $this->mapConfigKeyLines($hashingConfigPath);
+                $lineNumber = $lineMap['rehash_on_login'] ?? 1;
+            }
+            $issues[] = $this->createIssueWithSnippet(
+                message: 'Password rehashing on login is disabled (rehash_on_login is false)',
+                filePath: $hashingConfigPath,
+                lineNumber: $lineNumber,
+                severity: Severity::Medium,
+                recommendation: "Set 'rehash_on_login' => true in config/hashing.php so passwords are automatically rehashed when algorithm options change",
+                metadata: ['issue_type' => 'rehash_on_login_disabled']
+            );
+
+            return;
+        }
+
+        if (! $hasRehash) {
+            $issues[] = $this->createIssue(
+                message: 'Login flow detected but never rehashes passwords when hash parameters change',
+                location: new \ShieldCI\AnalyzersCore\ValueObjects\Location(
+                    $this->getRelativePath($loginFlowFile)
+                ),
+                severity: Severity::Medium,
+                recommendation: "Add Hash::needsRehash() after authentication, or upgrade to Laravel 11+ and set 'rehash_on_login' => true in config/hashing.php",
+                metadata: ['issue_type' => 'missing_password_rehash']
+            );
+        }
+    }
+
+    /**
+     * @param  array<Node>  $ast
+     */
+    private function hasAuthHelperLogin(array $ast): bool
+    {
+        $loginMethods = ['attempt', 'login', 'loginUsingId'];
+
+        /** @var array<Node\Expr\MethodCall> $methodCalls */
+        $methodCalls = $this->parser->findNodes($ast, Node\Expr\MethodCall::class);
+
+        foreach ($methodCalls as $call) {
+            if (! $call instanceof Node\Expr\MethodCall) {
+                continue;
+            }
+            if (! $call->name instanceof Node\Identifier || ! in_array($call->name->name, $loginMethods, true)) {
+                continue;
+            }
+            if ($call->var instanceof Node\Expr\FuncCall
+                && $call->var->name instanceof Node\Name
+                && $call->var->name->toString() === 'auth') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<Node>  $ast
+     */
+    private function hasRehashCall(array $ast): bool
+    {
+        /** @var array<Node\Expr\FuncCall> $funcCalls */
+        $funcCalls = $this->parser->findNodes($ast, Node\Expr\FuncCall::class);
+
+        foreach ($funcCalls as $call) {
+            if ($call instanceof Node\Expr\FuncCall
+                && $call->name instanceof Node\Name
+                && $call->name->toString() === 'password_needs_rehash') {
+                return true;
+            }
+        }
+
+        /** @var array<Node\Expr\MethodCall> $methodCalls */
+        $methodCalls = $this->parser->findNodes($ast, Node\Expr\MethodCall::class);
+
+        foreach ($methodCalls as $call) {
+            if ($call instanceof Node\Expr\MethodCall
+                && $call->name instanceof Node\Identifier
+                && $call->name->name === 'needsRehash'
+                && $call->var instanceof Node\Expr\Variable
+                && is_string($call->var->name)
+                && preg_match('/^(hash|hasher|hashManager|hashing)$/i', $call->var->name) === 1) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

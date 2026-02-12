@@ -2641,8 +2641,9 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        // Blank line breaks the chain — should NOT be flagged as multi-line DB query
-        $this->assertPassed($result);
+        // AST correctly detects the chain across blank lines (blank lines don't break PHP expressions)
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Database query', $result);
     }
 
     public function test_multi_line_chain_stops_at_endphp(): void

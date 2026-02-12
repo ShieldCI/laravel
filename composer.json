@@ -24,6 +24,7 @@
         "illuminate/contracts": "^9.0|^10.0|^11.0|^12.0",
         "illuminate/http": "^9.0|^10.0|^11.0|^12.0",
         "illuminate/support": "^9.0|^10.0|^11.0|^12.0",
+        "illuminate/view": "^9.0|^10.0|^11.0|^12.0",
         "larastan/larastan": "^2.0",
         "phpstan/phpstan": "^1.10",
         "shieldci/analyzers-core": "^0.1"

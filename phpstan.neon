@@ -6,6 +6,7 @@ parameters:
     excludePaths:
         - tests/Fixtures/inspects-code/syntax_error.php
         - tests/Fixtures/inspects-code/sample_functions.php
+        - tests/Fixtures/inspects-code-config/syntax_error.php
     tmpDir: build/phpstan
     treatPhpDocTypesAsCertain: false
     reportUnmatchedIgnoredErrors: false

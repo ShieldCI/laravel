@@ -4,10 +4,15 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
+use PhpParser\Node\Expr\Exit_;
+use PhpParser\Node\Expr\FuncCall;
+use PhpParser\Node\Name;
+use PhpParser\NodeFinder;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
@@ -221,229 +226,204 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check for debug functions in code using PHP tokens.
+     * Check for debug functions and exit/die in code using AST parsing.
      */
     private function checkDebugFunctions(array &$issues): void
     {
+        $astParser = new AstParser;
+        $nodeFinder = new NodeFinder;
+
         foreach ($this->getPhpFiles() as $file) {
             // Skip test files and development helpers
             if ($this->isTestFile($file) || $this->isDevelopmentFile($file)) {
                 continue;
             }
 
-            $code = FileParser::readFile($file);
-            if ($code === null) {
+            $ast = $astParser->parseFile($file);
+
+            if ($ast === []) {
                 continue;
             }
 
-            $tokens = token_get_all($code);
-            $tokenCount = count($tokens);
             $isConsoleCommand = $this->isConsoleCommand($file);
 
-            for ($i = 0; $i < $tokenCount; $i++) {
-                $token = $tokens[$i];
+            // Find debug function calls via FuncCall nodes
+            /** @var FuncCall[] $funcCalls */
+            $funcCalls = $nodeFinder->findInstanceOf($ast, FuncCall::class);
 
-                if (! is_array($token)) {
+            foreach ($funcCalls as $funcCall) {
+                if (! $funcCall->name instanceof Name) {
                     continue;
                 }
 
-                // Check for exit/die (T_EXIT token - they're language constructs, not functions)
-                if ($token[0] === T_EXIT) {
-                    // Skip in Console Commands (exit codes are legitimate)
-                    if ($isConsoleCommand) {
-                        continue;
-                    }
+                $functionName = strtolower($funcCall->name->toString());
 
-                    // Ignore function/method definitions: function exit() {} or public function exit()
-                    $prev = $this->previousMeaningfulToken($tokens, $i);
-                    if ($prev !== null && is_array($prev) && $prev[0] === T_FUNCTION) {
-                        continue;
-                    }
-
-                    // Ignore static method calls: self::exit(), static::exit(), ClassName::exit()
-                    if ($prev !== null && is_array($prev) && $prev[0] === T_DOUBLE_COLON) {
-                        continue;
-                    }
-
-                    // Note: $obj->exit() uses T_STRING (not T_EXIT), so no need to check T_OBJECT_OPERATOR
-
-                    // Determine if it's exit or die based on the token text
-                    $functionName = strtolower($token[1]);
+                // Check for debug functions
+                if (in_array($functionName, $this->debugFunctions, true)) {
+                    $severity = match ($functionName) {
+                        'ray' => Severity::High,
+                        default => in_array($functionName, self::HIGH_SEVERITY_FUNCTIONS, true)
+                            ? Severity::High
+                            : Severity::Medium,
+                    };
 
                     $issues[] = $this->createIssueWithSnippet(
                         message: sprintf(
-                            'Script termination function %s() found in production code',
+                            'Debug function %s() found in production code',
                             $functionName
                         ),
                         filePath: $file,
-                        lineNumber: $token[2],
-                        severity: Severity::Medium,
-                        recommendation: 'Use abort() for web requests or return early. For CLI commands, use proper exit codes via Command::FAILURE/Command::SUCCESS.',
+                        lineNumber: $funcCall->getStartLine(),
+                        severity: $severity,
+                        recommendation: sprintf(
+                            'Remove %s() calls before deploying to production or replace with structured logging',
+                            $functionName
+                        ),
                         metadata: [
                             'function' => $functionName,
                             'file' => basename($file),
-                            'type' => 'termination',
                         ]
                     );
+                }
 
+                // Check for error_reporting(E_ALL) or error_reporting(-1)
+                if ($functionName === 'error_reporting') {
+                    $this->checkErrorReportingCall($funcCall, $file, $issues);
+                }
+
+                // Check for ini_set('display_errors', ...) or ini_set('display_startup_errors', ...)
+                if ($functionName === 'ini_set') {
+                    $this->checkIniSetCall($funcCall, $file, $issues);
+                }
+            }
+
+            // Find exit/die via Exit_ nodes
+            /** @var Exit_[] $exitNodes */
+            $exitNodes = $nodeFinder->findInstanceOf($ast, Exit_::class);
+
+            foreach ($exitNodes as $exitNode) {
+                if ($isConsoleCommand) {
                     continue;
                 }
 
-                // Only interested in identifiers (function names) for debug functions
-                if ($token[0] !== T_STRING) {
-                    continue;
-                }
-
-                $functionName = strtolower($token[1]);
-
-                if (! in_array($functionName, $this->debugFunctions, true)) {
-                    continue;
-                }
-
-                // Ignore function definitions: function dump() {}
-                $prev = $this->previousMeaningfulToken($tokens, $i);
-                if ($prev !== null && is_array($prev) && $prev[0] === T_FUNCTION) {
-                    continue;
-                }
-
-                // Ignore method calls: $obj->dump()
-                if ($prev === '->' || $prev === '::') {
-                    continue;
-                }
-
-                // Ensure this is actually a function call (next token is "(")
-                $next = $this->nextMeaningfulToken($tokens, $i);
-                if ($next !== '(') {
-                    continue;
-                }
-
-                // Debug function issue
-                $severity = match ($functionName) {
-                    'ray' => Severity::High,
-                    default => in_array($functionName, self::HIGH_SEVERITY_FUNCTIONS, true)
-                        ? Severity::High
-                        : Severity::Medium,
-                };
+                $functionName = $exitNode->getAttribute('kind') === Exit_::KIND_DIE ? 'die' : 'exit';
 
                 $issues[] = $this->createIssueWithSnippet(
                     message: sprintf(
-                        'Debug function %s() found in production code',
+                        'Script termination function %s() found in production code',
                         $functionName
                     ),
                     filePath: $file,
-                    lineNumber: $token[2],
-                    severity: $severity,
-                    recommendation: sprintf(
-                        'Remove %s() calls before deploying to production or replace with structured logging',
-                        $functionName
-                    ),
+                    lineNumber: $exitNode->getStartLine(),
+                    severity: Severity::Medium,
+                    recommendation: 'Use abort() for web requests or return early. For CLI commands, use proper exit codes via Command::FAILURE/Command::SUCCESS.',
                     metadata: [
                         'function' => $functionName,
                         'file' => basename($file),
+                        'type' => 'termination',
                     ]
                 );
             }
-
-            // Extra checks that are easier at the string level
-            $this->checkDebugIniSettings($file, $issues);
         }
     }
 
     /**
-     * Get the previous non-whitespace/comment token.
-     *
-     * @param  array<int, array<int, int|string>|string>  $tokens
+     * Check an error_reporting() call for verbose settings (E_ALL or -1).
      */
-    private function previousMeaningfulToken(array $tokens, int $index): mixed
+    private function checkErrorReportingCall(FuncCall $funcCall, string $file, array &$issues): void
     {
-        for ($i = $index - 1; $i >= 0; $i--) {
-            $token = $tokens[$i];
-
-            if (is_array($token)) {
-                if (in_array($token[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
-                    continue;
-                }
-
-                return $token;
-            }
-
-            return $token;
+        if (! isset($funcCall->args[0])) {
+            return;
         }
 
-        return null;
+        $arg = $funcCall->args[0]->value;
+
+        $isVerbose = false;
+
+        // Check for E_ALL constant
+        if ($arg instanceof \PhpParser\Node\Expr\ConstFetch
+            && $arg->name->toString() === 'E_ALL'
+        ) {
+            $isVerbose = true;
+        }
+
+        // Check for -1 (UnaryMinus with LNumber 1)
+        if ($arg instanceof \PhpParser\Node\Expr\UnaryMinus
+            && $arg->expr instanceof \PhpParser\Node\Scalar\LNumber
+            && $arg->expr->value === 1
+        ) {
+            $isVerbose = true;
+        }
+
+        if ($isVerbose) {
+            $issues[] = $this->createIssueWithSnippet(
+                message: 'Verbose error reporting enabled',
+                filePath: $file,
+                lineNumber: $funcCall->getStartLine(),
+                severity: Severity::Medium,
+                recommendation: 'Control error reporting via APP_DEBUG and framework configuration',
+                metadata: [
+                    'function' => 'error_reporting',
+                    'file' => basename($file),
+                ]
+            );
+        }
     }
 
     /**
-     * Get the next non-whitespace/comment token.
-     *
-     * @param  array<int, array<int, int|string>|string>  $tokens
+     * Check an ini_set() call for display_errors or display_startup_errors with truthy values.
      */
-    private function nextMeaningfulToken(array $tokens, int $index): mixed
+    private function checkIniSetCall(FuncCall $funcCall, string $file, array &$issues): void
     {
-        $count = count($tokens);
-
-        for ($i = $index + 1; $i < $count; $i++) {
-            $token = $tokens[$i];
-
-            if (is_array($token)) {
-                if (in_array($token[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
-                    continue;
-                }
-
-                return $token;
-            }
-
-            return $token;
+        if (! isset($funcCall->args[0], $funcCall->args[1])) {
+            return;
         }
 
-        return null;
-    }
+        $settingArg = $funcCall->args[0]->value;
 
-    private function checkDebugIniSettings(string $file, array &$issues): void
-    {
-        $lines = FileParser::getLines($file);
+        if (! $settingArg instanceof \PhpParser\Node\Scalar\String_) {
+            return;
+        }
 
-        foreach ($lines as $lineNumber => $line) {
-            if (! is_string($line)) {
-                continue;
-            }
+        $settingName = $settingArg->value;
 
-            // Skip full-line comments
-            if (preg_match('/^\s*(\/\/|#)/', $line)) {
-                continue;
-            }
+        if (! in_array($settingName, ['display_errors', 'display_startup_errors'], true)) {
+            return;
+        }
 
-            if (preg_match('/error_reporting\s*\(\s*(E_ALL|-1)/i', $line)) {
-                $issues[] = $this->createIssueWithSnippet(
-                    message: 'Verbose error reporting enabled',
-                    filePath: $file,
-                    lineNumber: $lineNumber + 1,
-                    severity: Severity::Medium,
-                    recommendation: 'Control error reporting via APP_DEBUG and framework configuration',
-                    metadata: [
-                        'function' => 'error_reporting',
-                        'file' => basename($file),
-                    ]
-                );
-            }
+        $valueArg = $funcCall->args[1]->value;
 
-            if (preg_match(
-                '/ini_set\s*\(\s*[\'"]display_(startup_)?errors[\'"]\s*,\s*(1|true|on|yes)/i',
-                $line
-            )) {
-                $issues[] = $this->createIssueWithSnippet(
-                    message: 'PHP display_errors enabled',
-                    filePath: $file,
-                    lineNumber: $lineNumber + 1,
-                    severity: Severity::High,
-                    recommendation: 'Disable display_errors in production environments',
-                    metadata: [
-                        'function' => 'ini_set',
-                        'parameter' => 'display_errors',
-                        'file' => basename($file),
-                    ]
-                );
-            }
+        $isTruthy = false;
+
+        if ($valueArg instanceof \PhpParser\Node\Scalar\LNumber && $valueArg->value >= 1) {
+            $isTruthy = true;
+        }
+
+        if ($valueArg instanceof \PhpParser\Node\Scalar\String_
+            && in_array(strtolower($valueArg->value), ['1', 'true', 'on', 'yes'], true)
+        ) {
+            $isTruthy = true;
+        }
+
+        if ($valueArg instanceof \PhpParser\Node\Expr\ConstFetch
+            && strtolower($valueArg->name->toString()) === 'true'
+        ) {
+            $isTruthy = true;
+        }
+
+        if ($isTruthy) {
+            $issues[] = $this->createIssueWithSnippet(
+                message: 'PHP display_errors enabled',
+                filePath: $file,
+                lineNumber: $funcCall->getStartLine(),
+                severity: Severity::High,
+                recommendation: 'Disable display_errors in production environments',
+                metadata: [
+                    'function' => 'ini_set',
+                    'parameter' => 'display_errors',
+                    'file' => basename($file),
+                ]
+            );
         }
     }
 

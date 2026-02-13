@@ -1353,7 +1353,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
          *    password_confirmation_max_timeout?: int
          * } $config
          */
-        $config = config('shieldci.password_security', []);
+        $config = config('shieldci.analyzers.security.password-security', []);
 
         return [
             'bcrypt_min_rounds' => ($config['bcrypt_min_rounds'] ?? 12),

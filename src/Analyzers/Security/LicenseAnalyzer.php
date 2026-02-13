@@ -390,7 +390,7 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
     private function getConfiguration(): array
     {
         /** @var array<string, mixed> $config */
-        $config = config('shieldci.license_compliance', []);
+        $config = config('shieldci.analyzers.security.license-compliance', []);
 
         return array_merge([
             'whitelisted_licenses' => $this->whitelistedLicenses,

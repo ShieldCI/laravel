@@ -20,7 +20,7 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         Mockery::close();
         /** @var Config $config */
         $config = $this->app?->make('config') ?? app('config');
-        $config->set('shieldci.database.connections', []);
+        $config->set('shieldci.analyzers.reliability.database-status.connections', []);
 
         parent::tearDown();
     }
@@ -161,7 +161,7 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $this->applyDatabaseConfig($connections);
         /** @var Config $config */
         $config = $this->app?->make('config') ?? app('config');
-        $config->set('shieldci.database.connections', ['sqlite']);
+        $config->set('shieldci.analyzers.reliability.database-status.connections', ['sqlite']);
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
 
@@ -201,7 +201,7 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $this->applyDatabaseConfig();
         /** @var Config $config */
         $config = $this->app?->make('config') ?? app('config');
-        $config->set('shieldci.database.connections', 'mysql,sqlite');
+        $config->set('shieldci.analyzers.reliability.database-status.connections', 'mysql,sqlite');
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
         /** @phpstan-ignore-next-line */
@@ -226,7 +226,7 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $this->applyDatabaseConfig();
         /** @var Config $config */
         $config = $this->app?->make('config') ?? app('config');
-        $config->set('shieldci.database.connections', ['mysql', null, 123, '', 'valid']);
+        $config->set('shieldci.analyzers.reliability.database-status.connections', ['mysql', null, 123, '', 'valid']);
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
         /** @phpstan-ignore-next-line */
@@ -251,7 +251,7 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $this->applyDatabaseConfig();
         /** @var Config $config */
         $config = $this->app?->make('config') ?? app('config');
-        $config->set('shieldci.database.connections', 'mysql , sqlite ');
+        $config->set('shieldci.analyzers.reliability.database-status.connections', 'mysql , sqlite ');
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
         /** @phpstan-ignore-next-line */
@@ -480,7 +480,7 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         // Default is 'mysql', and we configure 'mysql' again
         /** @var Config $config */
         $config = $this->app?->make('config') ?? app('config');
-        $config->set('shieldci.database.connections', ['mysql']);
+        $config->set('shieldci.analyzers.reliability.database-status.connections', ['mysql']);
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
         // Should only be called once for mysql (deduplicated)
@@ -868,7 +868,7 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $this->applyDatabaseConfig($connections);
         /** @var Config $config */
         $config = $this->app?->make('config') ?? app('config');
-        $config->set('shieldci.database.connections', ['sqlite']);
+        $config->set('shieldci.analyzers.reliability.database-status.connections', ['sqlite']);
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
         /** @phpstan-ignore-next-line */
@@ -907,7 +907,7 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $this->applyDatabaseConfig($connections);
         /** @var Config $config */
         $config = $this->app?->make('config') ?? app('config');
-        $config->set('shieldci.database.connections', ['sqlite']);
+        $config->set('shieldci.analyzers.reliability.database-status.connections', ['sqlite']);
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
         /** @phpstan-ignore-next-line */

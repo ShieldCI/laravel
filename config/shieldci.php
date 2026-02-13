@@ -33,6 +33,31 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Guest URL
+    |--------------------------------------------------------------------------
+    |
+    | Override the guest/login URL used by authentication-related analyzers.
+    | By default, the analyzers auto-detect common login routes.
+    |
+    */
+
+    'guest_url' => env('SHIELDCI_GUEST_URL'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Security Advisories
+    |--------------------------------------------------------------------------
+    |
+    | Configure the source for PHP security advisory data.
+    |
+    */
+
+    'security_advisories' => [
+        'source' => env('SHIELDCI_ADVISORY_SOURCE', 'https://api.osv.dev/v1/querybatch'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | CI Mode Configuration
     |--------------------------------------------------------------------------
     |

@@ -114,7 +114,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
             return "Not relevant in '{$currentEnv}' environment (only relevant in: {$relevantEnvs})";
         }
 
-        return 'Build directory not found (configure via shieldci.build_path or SHIELDCI_BUILD_PATH)';
+        return 'Build directory not found (configure via shieldci.analyzers.performance.asset-minification.build_path or SHIELDCI_BUILD_PATH)';
     }
 
     protected function runAnalysis(): ResultInterface
@@ -425,7 +425,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         $basePath = ! empty($this->basePath) ? $this->basePath : $this->getBasePath();
 
         try {
-            $configPath = config('shieldci.build_path');
+            $configPath = config('shieldci.analyzers.performance.asset-minification.build_path');
 
             if ($configPath && is_string($configPath)) {
                 $resolved = str_starts_with($configPath, DIRECTORY_SEPARATOR)

@@ -7,11 +7,19 @@ namespace ShieldCI\Analyzers\Security;
 use GuzzleHttp\Client;
 use Illuminate\Routing\Router;
 use Illuminate\Support\Str;
+use PhpParser\Node;
+use PhpParser\Node\Expr\FuncCall;
+use PhpParser\Node\Expr\StaticCall;
+use PhpParser\Node\Expr\Variable;
+use PhpParser\Node\Name;
+use PhpParser\Node\Stmt\Echo_;
+use PhpParser\NodeFinder;
 use Psr\Http\Message\ResponseInterface;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
@@ -65,6 +73,24 @@ class XssAnalyzer extends AbstractFileAnalyzer
         'urlencode',
         'rawurlencode',
     ];
+
+    /**
+     * Functions that escape output, making it safe for HTML context.
+     *
+     * @var array<string>
+     */
+    private const ESCAPE_FUNCTIONS = [
+        'htmlspecialchars',
+        'htmlentities',
+        'e',
+    ];
+
+    /**
+     * Superglobal variable names that always contain user input.
+     *
+     * @var array<string>
+     */
+    private const SUPERGLOBAL_NAMES = ['_GET', '_POST', '_REQUEST', '_COOKIE', '_FILES'];
 
     public function __construct(Router $router)
     {
@@ -120,11 +146,8 @@ class XssAnalyzer extends AbstractFileAnalyzer
      * PART 1: Static Code Analysis.
      *
      * Analyzes PHP and Blade files for XSS vulnerabilities:
-     * - Unescaped blade output ({!! $var !!})
-     * - Direct echo of superglobals
-     * - Request data without escaping
-     * - Response::make() with user input
-     * - Unsafe JavaScript injection
+     * - Non-Blade PHP files: AST-based analysis for echo/response patterns
+     * - Blade files: Regex-based analysis for Blade syntax, HTML context, and PHP patterns
      *
      * @return array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>
      */
@@ -133,6 +156,15 @@ class XssAnalyzer extends AbstractFileAnalyzer
         $issues = [];
 
         foreach ($this->getAnalyzableFiles() as $file) {
+            // Non-Blade PHP files: use AST-based analysis
+            if (str_ends_with($file, '.php') && ! str_ends_with($file, '.blade.php')) {
+                $astIssues = $this->analyzePhpFileWithAst($file);
+                $issues = array_merge($issues, $astIssues);
+
+                continue;
+            }
+
+            // Blade files: use regex-based analysis
             $content = FileParser::readFile($file);
             if ($content === null) {
                 continue;
@@ -266,6 +298,220 @@ class XssAnalyzer extends AbstractFileAnalyzer
         }
 
         return $issues;
+    }
+
+    /**
+     * Analyze a non-Blade PHP file using AST for XSS patterns.
+     *
+     * Detects:
+     * - Echo of superglobals ($_GET, $_POST, etc.) without escaping
+     * - Echo of request() data without escaping
+     * - Response::make() with unescaped user input
+     *
+     * @return array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>
+     */
+    private function analyzePhpFileWithAst(string $file): array
+    {
+        $astParser = new AstParser;
+        $ast = $astParser->parseFile($file);
+
+        if ($ast === []) {
+            return [];
+        }
+
+        $issues = [];
+        $nodeFinder = new NodeFinder;
+
+        // 1. Find echo statements with user input
+        /** @var Echo_[] $echoNodes */
+        $echoNodes = $nodeFinder->findInstanceOf($ast, Echo_::class);
+
+        foreach ($echoNodes as $echoNode) {
+            foreach ($echoNode->exprs as $expr) {
+                // Skip if the expression is wrapped in an escape function
+                if ($this->isEscapedExpressionAst($expr)) {
+                    continue;
+                }
+
+                if ($this->containsSuperglobalAst($expr, $nodeFinder)) {
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: 'Critical XSS: Direct echo of superglobal without escaping',
+                        filePath: $file,
+                        lineNumber: $echoNode->getStartLine(),
+                        severity: Severity::Critical,
+                        recommendation: 'Always escape output: echo htmlspecialchars($_GET["var"], ENT_QUOTES, "UTF-8")'
+                    );
+                } elseif ($this->containsRequestCallAst($expr, $nodeFinder)) {
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: 'Potential XSS: Echo of request data without escaping',
+                        filePath: $file,
+                        lineNumber: $echoNode->getStartLine(),
+                        severity: Severity::High,
+                        recommendation: 'Use e() helper or htmlspecialchars() to escape output'
+                    );
+                }
+            }
+        }
+
+        // 2. Find Response::make() with user input
+        /** @var StaticCall[] $responseMakeCalls */
+        $responseMakeCalls = $astParser->findStaticCalls($ast, 'Response', 'make');
+
+        foreach ($responseMakeCalls as $call) {
+            if (! isset($call->args[0])) {
+                continue;
+            }
+
+            /** @var \PhpParser\Node\Expr $argExpr */
+            $argExpr = $call->args[0]->value;
+
+            // Skip if the argument is wrapped in an escape function
+            if ($this->isEscapedExpressionAst($argExpr)) {
+                continue;
+            }
+
+            // Skip if it's a JSON response
+            if ($this->isJsonResponseAst($argExpr)) {
+                continue;
+            }
+
+            if ($this->containsUserInputAst($argExpr, $nodeFinder)) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: 'Potential XSS: HTTP response body contains unescaped user input',
+                    filePath: $file,
+                    lineNumber: $call->getStartLine(),
+                    severity: Severity::High,
+                    recommendation: 'Escape output using e() or htmlspecialchars(), or return JSON responses with response()->json()'
+                );
+            }
+        }
+
+        // 3. Find response() helper with user input as direct argument
+        /** @var FuncCall[] $funcCalls */
+        $funcCalls = $nodeFinder->findInstanceOf($ast, FuncCall::class);
+
+        foreach ($funcCalls as $funcCall) {
+            if (! $funcCall->name instanceof Name || $funcCall->name->toString() !== 'response') {
+                continue;
+            }
+
+            // response($content) — with direct content argument
+            if (isset($funcCall->args[0])) {
+                $argExpr = $funcCall->args[0]->value;
+
+                if (! $this->isEscapedExpressionAst($argExpr)
+                    && ! $this->isJsonResponseAst($argExpr)
+                    && $this->containsUserInputAst($argExpr, $nodeFinder)
+                ) {
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: 'Potential XSS: HTTP response body contains unescaped user input',
+                        filePath: $file,
+                        lineNumber: $funcCall->getStartLine(),
+                        severity: Severity::High,
+                        recommendation: 'Escape output using e() or htmlspecialchars(), or return JSON responses with response()->json()'
+                    );
+                }
+            }
+        }
+
+        return $issues;
+    }
+
+    /**
+     * Check if an AST expression is wrapped in an escape function (e(), htmlspecialchars(), etc.).
+     */
+    private function isEscapedExpressionAst(Node $expr): bool
+    {
+        if ($expr instanceof FuncCall && $expr->name instanceof Name) {
+            return in_array($expr->name->toString(), self::ESCAPE_FUNCTIONS, true);
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if an AST expression is a JSON response (safe for XSS).
+     */
+    private function isJsonResponseAst(Node $expr): bool
+    {
+        if ($expr instanceof FuncCall && $expr->name instanceof Name) {
+            return in_array($expr->name->toString(), ['json_encode', 'json_decode'], true);
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if an AST expression subtree contains a superglobal variable.
+     */
+    private function containsSuperglobalAst(Node $expr, NodeFinder $nodeFinder): bool
+    {
+        /** @var Variable[] $variables */
+        $variables = $nodeFinder->findInstanceOf([$expr], Variable::class);
+
+        foreach ($variables as $var) {
+            if (is_string($var->name) && in_array($var->name, self::SUPERGLOBAL_NAMES, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if an AST expression subtree contains a request() function call.
+     */
+    private function containsRequestCallAst(Node $expr, NodeFinder $nodeFinder): bool
+    {
+        /** @var FuncCall[] $funcCalls */
+        $funcCalls = $nodeFinder->findInstanceOf([$expr], FuncCall::class);
+
+        foreach ($funcCalls as $call) {
+            if ($call->name instanceof Name && $call->name->toString() === 'request') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if an AST expression subtree contains any user input pattern.
+     */
+    private function containsUserInputAst(Node $expr, NodeFinder $nodeFinder): bool
+    {
+        if ($this->containsSuperglobalAst($expr, $nodeFinder)) {
+            return true;
+        }
+
+        if ($this->containsRequestCallAst($expr, $nodeFinder)) {
+            return true;
+        }
+
+        // Check for Input:: or Request:: static calls
+        /** @var StaticCall[] $staticCalls */
+        $staticCalls = $nodeFinder->findInstanceOf([$expr], StaticCall::class);
+
+        foreach ($staticCalls as $call) {
+            if ($call->class instanceof Name) {
+                $className = $call->class->toString();
+                if ($className === 'Input' || $className === 'Request') {
+                    return true;
+                }
+            }
+        }
+
+        // Check for old() helper
+        /** @var FuncCall[] $funcCalls */
+        $funcCalls = $nodeFinder->findInstanceOf([$expr], FuncCall::class);
+
+        foreach ($funcCalls as $call) {
+            if ($call->name instanceof Name && $call->name->toString() === 'old') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected function shouldAnalyzeFile(SplFileInfo $file): bool

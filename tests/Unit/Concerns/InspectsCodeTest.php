@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Concerns;
 
+use PhpParser\Node\ArrayItem;
+use PhpParser\Node\Expr\Array_;
+use PhpParser\Node\Scalar\String_;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Concerns\InspectsCode;
 use ShieldCI\Tests\TestCase;
@@ -205,6 +208,173 @@ class InspectsCodeTest extends TestCase
 
         $this->assertEquals(count($results1), count($results2));
     }
+
+    #[Test]
+    public function parse_config_array_extracts_string_int_float_bool_null_values(): void
+    {
+        $inspector = new ConcreteInspectsCode;
+        $result = $inspector->publicParseConfigArray(__DIR__.'/../../Fixtures/inspects-code-config/config_standard.php');
+
+        $this->assertArrayHasKey('name', $result);
+        $this->assertSame('MyApp', $result['name']['value']);
+        $this->assertFalse($result['name']['isEnvCall']);
+
+        $this->assertArrayHasKey('debug', $result);
+        $this->assertFalse($result['debug']['value']);
+
+        $this->assertArrayHasKey('port', $result);
+        $this->assertSame(8080, $result['port']['value']);
+
+        $this->assertArrayHasKey('rate', $result);
+        $this->assertSame(1.5, $result['rate']['value']);
+
+        $this->assertArrayHasKey('nullable', $result);
+        $this->assertNull($result['nullable']['value']);
+    }
+
+    #[Test]
+    public function parse_config_array_detects_env_calls_without_default(): void
+    {
+        $inspector = new ConcreteInspectsCode;
+        $result = $inspector->publicParseConfigArray(__DIR__.'/../../Fixtures/inspects-code-config/config_standard.php');
+
+        $this->assertArrayHasKey('key', $result);
+        $this->assertTrue($result['key']['isEnvCall']);
+        $this->assertNull($result['key']['value']);
+        $this->assertNull($result['key']['envDefault']);
+    }
+
+    #[Test]
+    public function parse_config_array_detects_env_calls_with_default(): void
+    {
+        $inspector = new ConcreteInspectsCode;
+        $result = $inspector->publicParseConfigArray(__DIR__.'/../../Fixtures/inspects-code-config/config_standard.php');
+
+        $this->assertArrayHasKey('debug_env', $result);
+        $this->assertTrue($result['debug_env']['isEnvCall']);
+        $this->assertNull($result['debug_env']['value']);
+        $this->assertFalse($result['debug_env']['envDefault']);
+
+        $this->assertArrayHasKey('url', $result);
+        $this->assertTrue($result['url']['isEnvCall']);
+        $this->assertSame('http://localhost', $result['url']['envDefault']);
+    }
+
+    #[Test]
+    public function parse_config_array_returns_null_for_complex_expressions(): void
+    {
+        $inspector = new ConcreteInspectsCode;
+        $result = $inspector->publicParseConfigArray(__DIR__.'/../../Fixtures/inspects-code-config/config_standard.php');
+
+        $this->assertArrayHasKey('complex', $result);
+        $this->assertNull($result['complex']['value']);
+        $this->assertFalse($result['complex']['isEnvCall']);
+    }
+
+    #[Test]
+    public function parse_config_array_returns_empty_for_unparseable_file(): void
+    {
+        $inspector = new ConcreteInspectsCode;
+        $result = $inspector->publicParseConfigArray(__DIR__.'/../../Fixtures/inspects-code-config/syntax_error.php');
+
+        $this->assertSame([], $result);
+    }
+
+    #[Test]
+    public function parse_config_array_returns_empty_when_no_return_statement(): void
+    {
+        $inspector = new ConcreteInspectsCode;
+        $result = $inspector->publicParseConfigArray(__DIR__.'/../../Fixtures/inspects-code-config/config_no_return.php');
+
+        $this->assertSame([], $result);
+    }
+
+    #[Test]
+    public function parse_config_array_skips_integer_keyed_items(): void
+    {
+        $inspector = new ConcreteInspectsCode;
+        $result = $inspector->publicParseConfigArray(__DIR__.'/../../Fixtures/inspects-code-config/config_mixed_keys.php');
+
+        // String keys should be present
+        $this->assertArrayHasKey('named_key', $result);
+        $this->assertArrayHasKey('another', $result);
+        $this->assertArrayHasKey('last', $result);
+
+        // Integer key (0) should be skipped
+        $this->assertCount(3, $result);
+    }
+
+    #[Test]
+    public function parse_config_array_skips_spread_operator_items(): void
+    {
+        $inspector = new ConcreteInspectsCode;
+        $result = $inspector->publicParseConfigArray(__DIR__.'/../../Fixtures/inspects-code-config/config_with_spread.php');
+
+        // Spread operator items (...$defaults) are ArrayItem with unpack=true, so they
+        // pass the instanceof check but their key is null (not String_), skipped at line 122
+        $this->assertArrayHasKey('name', $result);
+        $this->assertArrayHasKey('debug', $result);
+        $this->assertCount(2, $result);
+    }
+
+    #[Test]
+    public function parse_config_array_skips_null_array_items(): void
+    {
+        // php-parser's Array_::$items is typed as (ArrayItem|null)[] — null items
+        // only occur in list() destructuring, never in real config files.
+        // Test by injecting a mock parser that returns an AST with a null item.
+        $inspector = new ConcreteInspectsCode;
+
+        // Build a minimal AST: return ['key' => 'value', null]
+        $items = [
+            new ArrayItem(new String_('value'), new String_('key')),
+            null, // The null item that exercises the guard on line 118
+        ];
+        /** @phpstan-ignore argument.type (Intentionally injecting null to test defensive guard) */
+        $returnStmt = new \PhpParser\Node\Stmt\Return_(new Array_($items));
+
+        // Create a mock parser that returns our crafted AST
+        $mockParser = new class($returnStmt) extends \ShieldCI\AnalyzersCore\Support\AstParser
+        {
+            private \PhpParser\Node\Stmt\Return_ $ast;
+
+            public function __construct(\PhpParser\Node\Stmt\Return_ $ast)
+            {
+                $this->ast = $ast;
+            }
+
+            /** @return array<\PhpParser\Node> */
+            public function parseFile(string $filePath): array
+            {
+                return [$this->ast];
+            }
+        };
+
+        // Inject the mock parser via reflection
+        $reflection = new \ReflectionProperty($inspector, 'parser');
+        $reflection->setAccessible(true);
+        $reflection->setValue($inspector, $mockParser);
+
+        $result = $inspector->publicParseConfigArray('/dev/null');
+
+        // Only 'key' should be present, null item should be skipped
+        $this->assertCount(1, $result);
+        $this->assertArrayHasKey('key', $result);
+        $this->assertSame('value', $result['key']['value']);
+    }
+
+    #[Test]
+    public function parse_config_array_includes_line_numbers(): void
+    {
+        $inspector = new ConcreteInspectsCode;
+        $result = $inspector->publicParseConfigArray(__DIR__.'/../../Fixtures/inspects-code-config/config_standard.php');
+
+        foreach ($result as $entry) {
+            $this->assertArrayHasKey('line', $entry);
+            $this->assertIsInt($entry['line']);
+            $this->assertGreaterThan(0, $entry['line']);
+        }
+    }
 }
 
 /**
@@ -235,6 +405,14 @@ class ConcreteInspectsCode
         array $excludePaths = ['/config/']
     ): array {
         return $this->findFunctionCalls($functionName, $paths, $excludePaths);
+    }
+
+    /**
+     * @return array<string, array{value: mixed, line: int, isEnvCall: bool, envDefault: mixed}>
+     */
+    public function publicParseConfigArray(string $filePath): array
+    {
+        return $this->parseConfigArray($filePath);
     }
 
     /**

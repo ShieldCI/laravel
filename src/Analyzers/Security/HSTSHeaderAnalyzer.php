@@ -8,10 +8,12 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\InspectsCode;
 
 /**
  * Validates HTTP Strict Transport Security (HSTS) header configuration.
@@ -25,6 +27,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
 {
+    use InspectsCode;
+
     /**
      * HSTS header checks require a live web server, not applicable in CI.
      */
@@ -83,12 +87,13 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
      */
     private function isHttpsOnlyApp(): bool
     {
-        // Check session configuration
+        // Check session configuration using AST
         $sessionConfig = ConfigFileHelper::getConfigPath($this->getBasePath(), 'session.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
         if (file_exists($sessionConfig)) {
-            $content = FileParser::readFile($sessionConfig);
-            if ($content !== null && preg_match('/["\']secure["\']\s*=>\s*true/i', $content)) {
+            $config = $this->parseConfigArray($sessionConfig);
+
+            if (isset($config['secure']) && $config['secure']['value'] === true) {
                 return true;
             }
         }
@@ -105,16 +110,17 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        // Check config/app.php for force_https
+        // Check config/app.php for force_https using AST
         $appConfig = ConfigFileHelper::getConfigPath($this->getBasePath(), 'app.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
         if (file_exists($appConfig)) {
-            $content = FileParser::readFile($appConfig);
-            if ($content !== null && preg_match('/["\']force_https["\']\s*=>\s*true/i', $content)) {
+            $config = $this->parseConfigArray($appConfig);
+
+            if (isset($config['force_https']) && $config['force_https']['value'] === true) {
                 return true;
             }
         }
 
-        // AppServiceProvider URL::forceScheme('https')
+        // AppServiceProvider URL::forceScheme('https') or URL::forceHttps()
         if ($this->hasForceHttpsInServiceProvider()) {
             return true;
         }
@@ -135,7 +141,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check for HTTPS enforcement middleware in AppServiceProvider.php
+     * Check for HTTPS enforcement in AppServiceProvider using AST.
      */
     private function hasForceHttpsInServiceProvider(): bool
     {
@@ -145,16 +151,34 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        $content = FileParser::readFile($providerPath);
-        if (! is_string($content)) {
+        $astParser = new AstParser;
+        $ast = $astParser->parseFile($providerPath);
+
+        if ($ast === []) {
             return false;
         }
 
-        // Strip comments
-        $content = preg_replace('/^\s*\/\/.*$/m', '', $content) ?? '';
-        $content = preg_replace('/\/\*.*?\*\//s', '', $content) ?? '';
+        // Check for URL::forceScheme('https')
+        $forceSchemeCallNodes = $astParser->findStaticCalls($ast, 'URL', 'forceScheme');
 
-        return preg_match('/\bURL::force(?:Scheme\s*\(\s*[\'"]https[\'"]\s*\)|Https\s*\(\s*\))/i', $content) === 1;
+        foreach ($forceSchemeCallNodes as $call) {
+            /** @var \PhpParser\Node\Expr\StaticCall $call */
+            if (isset($call->args[0])
+                && $call->args[0]->value instanceof \PhpParser\Node\Scalar\String_
+                && $call->args[0]->value->value === 'https'
+            ) {
+                return true;
+            }
+        }
+
+        // Check for URL::forceHttps()
+        $forceHttpsCallNodes = $astParser->findStaticCalls($ast, 'URL', 'forceHttps');
+
+        if ($forceHttpsCallNodes !== []) {
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -309,7 +333,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check session configuration for HTTPS.
+     * Check session configuration for HTTPS using AST.
      */
     private function checkSessionConfiguration(array &$issues): void
     {
@@ -325,26 +349,18 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $content = FileParser::readFile($sessionConfig);
-        if ($content === null) {
-            return;
-        }
+        $configArray = $this->parseConfigArray($sessionConfig);
 
-        $lines = FileParser::getLines($sessionConfig);
+        if (isset($configArray['secure'])) {
+            $entry = $configArray['secure'];
 
-        foreach ($lines as $lineNumber => $line) {
-            if (! is_string($line)) {
-                continue;
-            }
-
-            // If app is HTTPS-only but secure cookies are disabled
-            if (preg_match('/["\']secure["\']\s*=>\s*(false|0)/i', $line)) {
+            if ($entry['value'] === false || $entry['value'] === 0) {
                 $issues[] = $this->createIssue(
                     message: 'HTTPS-only application has secure cookies disabled',
-                    location: new Location($this->getRelativePath($sessionConfig), $lineNumber + 1),
+                    location: new Location($this->getRelativePath($sessionConfig), $entry['line']),
                     severity: Severity::High,
                     recommendation: 'Set "secure" => true in config/session.php for HTTPS-only applications',
-                    code: FileParser::getCodeSnippet($sessionConfig, $lineNumber + 1),
+                    code: FileParser::getCodeSnippet($sessionConfig, $entry['line']),
                     metadata: [
                         'issue_type' => 'insecure_cookies',
                         'https_only' => true,

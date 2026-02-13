@@ -256,4 +256,58 @@ PHP);
 
         $this->assertTrue($this->parser->isLineSuppressed($file, 3, 'sql-injection'));
     }
+
+    // ==========================================
+    // Additional edge cases
+    // ==========================================
+
+    #[Test]
+    public function empty_file_returns_not_suppressed(): void
+    {
+        $file = $this->createTempFile('');
+
+        $this->assertFalse($this->parser->isLineSuppressed($file, 1, 'sql-injection'));
+    }
+
+    #[Test]
+    public function line_beyond_file_length_returns_not_suppressed(): void
+    {
+        $file = $this->createTempFile("<?php\n\$a = 1;\n\$b = 2;");
+
+        $this->assertFalse($this->parser->isLineSuppressed($file, 10, 'sql-injection'));
+    }
+
+    #[Test]
+    public function whitespace_around_comma_separated_ids_prevents_match(): void
+    {
+        // The regex `[\w,-]+` stops at whitespace, so " xss-detection" won't be captured
+        $file = $this->createTempFile(<<<'PHP'
+<?php
+// @shieldci-ignore sql-injection, xss-detection
+$result = DB::select("SELECT 1");
+PHP);
+
+        // sql-injection should match (it's before the space)
+        $this->assertTrue($this->parser->isLineSuppressed($file, 3, 'sql-injection'));
+
+        // xss-detection should NOT match because the regex captures "sql-injection,"
+        // and the space before "xss-detection" terminates the regex capture group
+        $this->assertFalse($this->parser->isLineSuppressed($file, 3, 'xss-detection'));
+    }
+
+    #[Test]
+    public function unreadable_file_returns_not_suppressed(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('chmod not supported on Windows');
+        }
+
+        $file = $this->createTempFile("<?php\n// @shieldci-ignore\n\$x = 1;");
+        chmod($file, 0000);
+
+        $this->assertFalse($this->parser->isLineSuppressed($file, 3, 'sql-injection'));
+
+        // Restore permissions for cleanup
+        chmod($file, 0644);
+    }
 }

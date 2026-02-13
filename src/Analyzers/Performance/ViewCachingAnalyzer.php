@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Performance;
 
-use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Filesystem\Filesystem;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -47,7 +47,7 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
 
     public function __construct(
         private Filesystem $files,
-        private ConfigRepository $config
+        private Config $config
     ) {
         $this->configRepository = $config;
     }

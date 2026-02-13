@@ -319,11 +319,6 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         foreach ($lines as $lineNumber => $line) {
             // Check for route groups without middleware
             if (preg_match('/Route::group\s*\(/i', $line)) {
-                // Check for suppression comment
-                if ($this->hasSuppressionComment($lines, $lineNumber, 'authentication')) {
-                    continue;
-                }
-
                 $hasAuthMiddleware = $this->checkRouteGroupForAuth($lines, $lineNumber);
 
                 // Check if this route group is inside a protected parent group
@@ -345,11 +340,6 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             // Check for routes without middleware
             if (preg_match('/Route::(get|post|put|patch|delete|resource|apiResource)\s*\(/i', $line, $matches)) {
                 $method = strtoupper($matches[1]);
-
-                // Check for suppression comment
-                if ($this->hasSuppressionComment($lines, $lineNumber, 'authentication')) {
-                    continue;
-                }
 
                 // Skip if it's clearly a public route
                 if ($this->isPublicRouteLine($line)) {
@@ -436,67 +426,6 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if a line has a @shieldci-ignore suppression comment.
-     *
-     * Checks the current line and up to 5 lines above for:
-     * - @shieldci-ignore (ignores all checks)
-     * - @shieldci-ignore authentication (ignores only authentication checks)
-     * - @shieldci-ignore authorization (ignores only authorization checks)
-     *
-     * @param  array<int, string>  $lines
-     */
-    private function hasSuppressionComment(array $lines, int $lineNumber, string $checkType = ''): bool
-    {
-        // Check current line and up to 5 lines above
-        $searchStart = max(0, $lineNumber - 5);
-
-        for ($i = $searchStart; $i <= $lineNumber; $i++) {
-            if (! isset($lines[$i]) || ! is_string($lines[$i])) {
-                continue;
-            }
-
-            $line = $lines[$i];
-
-            // Check for general @shieldci-ignore
-            if (preg_match('/@shieldci-ignore(?:\s|$)/i', $line)) {
-                return true;
-            }
-
-            // Check for specific type ignore (e.g., @shieldci-ignore authentication)
-            if ($checkType !== '' && preg_match('/@shieldci-ignore\s+'.preg_quote($checkType, '/').'(?:\s|$)/i', $line)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Check if a ClassMethod node has a @shieldci-ignore suppression comment in its docblock.
-     */
-    private function methodHasSuppressionComment(Node\Stmt\ClassMethod $method, string $checkType = ''): bool
-    {
-        $docComment = $method->getDocComment();
-        if ($docComment === null) {
-            return false;
-        }
-
-        $commentText = $docComment->getText();
-
-        // Check for general @shieldci-ignore
-        if (preg_match('/@shieldci-ignore(?:\s|$|\*)/i', $commentText)) {
-            return true;
-        }
-
-        // Check for specific type ignore
-        if ($checkType !== '' && preg_match('/@shieldci-ignore\s+'.preg_quote($checkType, '/').'(?:\s|$|\*)/i', $commentText)) {
-            return true;
-        }
-
-        return false;
-    }
-
-    /**
      * Check controller for missing authentication.
      */
     private function checkController(string $file, array &$issues): void
@@ -534,11 +463,6 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
                     // Check sensitive methods (including invokable controllers)
                     if (in_array($methodName, $this->sensitiveControllerMethods) || $methodName === '__invoke') {
-                        // Check for suppression comment in method docblock
-                        if ($this->methodHasSuppressionComment($stmt, 'authentication')) {
-                            continue;
-                        }
-
                         // Skip if this controller method is intentionally public (from route analysis)
                         $controllerMethodKey = "{$className}::{$methodName}";
                         if (isset($this->publicControllerMethods[$controllerMethodKey])) {

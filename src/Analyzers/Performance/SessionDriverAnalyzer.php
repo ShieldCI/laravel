@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Performance;
 
-use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Routing\Router;
 use Illuminate\Session\Middleware\StartSession;
@@ -35,7 +35,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
 class SessionDriverAnalyzer extends AbstractAnalyzer
 {
     public function __construct(
-        private ConfigRepository $config,
+        private Config $config,
         private Router $router,
         private Kernel $kernel
     ) {

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Performance;
 
-use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\Node\Expr\Assign;
 use PhpParser\Node\Expr\MethodCall;
@@ -47,7 +47,7 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
 
     public function __construct(
         private ParserInterface $parser,
-        private ConfigRepository $config
+        private Config $config
     ) {}
 
     protected function metadata(): AnalyzerMetadata

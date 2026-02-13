@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\Contracts\ReporterInterface;
+use ShieldCI\Support\InlineSuppressionParser;
 use ShieldCI\ValueObjects\AnalysisReport;
 
 class AnalyzeCommand extends Command
@@ -24,10 +25,13 @@ class AnalyzeCommand extends Command
 
     protected $description = 'Run ShieldCI security and code quality analysis';
 
+    private InlineSuppressionParser $suppressionParser;
+
     public function handle(
         AnalyzerManager $manager,
         ReporterInterface $reporter,
     ): int {
+        $this->suppressionParser = new InlineSuppressionParser;
         // Validate options
         if (! $this->validateOptions($manager)) {
             return self::FAILURE;
@@ -97,6 +101,9 @@ class AnalyzeCommand extends Command
 
         // Filter against ignore_errors config (already applied in streaming, but needed for non-streaming)
         $report = $this->filterAgainstIgnoreErrors($report);
+
+        // Filter against inline @shieldci-ignore comments (already applied in streaming, but needed for non-streaming)
+        $report = $this->filterAgainstInlineSuppressions($report);
 
         // Filter against baseline if requested
         if ($this->option('baseline')) {
@@ -188,8 +195,9 @@ class AnalyzeCommand extends Command
                     ],
                 );
 
-                // Apply ignore_errors filtering before streaming
+                // Apply ignore_errors and inline suppression filtering before streaming
                 $filteredResult = $this->filterSingleResultAgainstIgnoreErrors($enrichedResult);
+                $filteredResult = $this->filterSingleResultAgainstInlineSuppressions($filteredResult);
 
                 $results->push($filteredResult);
 
@@ -310,8 +318,9 @@ class AnalyzeCommand extends Command
                     ],
                 );
 
-                // Apply ignore_errors filtering before streaming
+                // Apply ignore_errors and inline suppression filtering before streaming
                 $filteredResult = $this->filterSingleResultAgainstIgnoreErrors($enrichedResult);
+                $filteredResult = $this->filterSingleResultAgainstInlineSuppressions($filteredResult);
 
                 $results->push($filteredResult);
 
@@ -1095,6 +1104,72 @@ class AnalyzeCommand extends Command
     }
 
     /**
+     * Filter a single result against inline @shieldci-ignore comments.
+     * Used in streaming mode to filter results before displaying them.
+     */
+    protected function filterSingleResultAgainstInlineSuppressions(\ShieldCI\AnalyzersCore\Results\AnalysisResult $result): \ShieldCI\AnalyzersCore\Results\AnalysisResult
+    {
+        $currentIssues = $result->getIssues();
+
+        if ($currentIssues === []) {
+            return $result;
+        }
+
+        $analyzerId = $result->getAnalyzerId();
+
+        $newIssues = array_filter($currentIssues, function ($issue) use ($analyzerId) {
+            $location = $issue->location;
+
+            if ($location === null || $location->line === null || $location->line < 1) {
+                return true; // Keep issues without a location — can't suppress inline
+            }
+
+            return ! $this->suppressionParser->isLineSuppressed($location->file, $location->line, $analyzerId);
+        });
+
+        if (count($newIssues) === count($currentIssues)) {
+            return $result; // Nothing was suppressed
+        }
+
+        $status = $newIssues === []
+            ? \ShieldCI\AnalyzersCore\Enums\Status::Passed
+            : $result->getStatus();
+
+        $message = $this->adjustFilteredMessage($result->getMessage(), count($currentIssues), count($newIssues));
+
+        return new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
+            analyzerId: $result->getAnalyzerId(),
+            status: $status,
+            message: $message,
+            issues: array_values($newIssues),
+            executionTime: $result->getExecutionTime(),
+            metadata: $result->getMetadata(),
+        );
+    }
+
+    /**
+     * Filter report against inline @shieldci-ignore comments in source files.
+     */
+    protected function filterAgainstInlineSuppressions(AnalysisReport $report): AnalysisReport
+    {
+        $filteredResults = $report->results->map(function (ResultInterface $result) {
+            if (! $result instanceof \ShieldCI\AnalyzersCore\Results\AnalysisResult) {
+                return $result;
+            }
+
+            return $this->filterSingleResultAgainstInlineSuppressions($result);
+        });
+
+        return new AnalysisReport(
+            laravelVersion: $report->laravelVersion,
+            packageVersion: $report->packageVersion,
+            results: $filteredResults,
+            totalExecutionTime: $report->totalExecutionTime,
+            analyzedAt: $report->analyzedAt,
+        );
+    }
+
+    /**
      * Filter report against baseline to show only new issues.
      */
     protected function filterAgainstBaseline(AnalysisReport $report): AnalysisReport
@@ -1410,6 +1485,43 @@ class AnalyzeCommand extends Command
         $json = json_encode($data);
 
         return hash('sha256', $json !== false ? $json : '');
+    }
+
+    /**
+     * Adjust result message when issues have been filtered out.
+     *
+     * Updates count in the message and fixes singular/plural grammar.
+     */
+    private function adjustFilteredMessage(string $message, int $originalCount, int $filteredCount): string
+    {
+        if ($filteredCount === 0) {
+            return 'All issues are suppressed via @shieldci-ignore';
+        }
+
+        if ($filteredCount === $originalCount) {
+            return $message;
+        }
+
+        // Update numeric counts in the message
+        $updatedMessage = preg_replace('/\b'.$originalCount.'\b/', (string) $filteredCount, $message, 1);
+        $message = is_string($updatedMessage) ? $updatedMessage : $message;
+
+        // Fix singular/plural grammar
+        if ($filteredCount === 1) {
+            $message = preg_replace_callback('/\b(issues|errors|warnings|problems|vulnerabilities)\b/', function ($matches) {
+                $singular = [
+                    'issues' => 'issue',
+                    'errors' => 'error',
+                    'warnings' => 'warning',
+                    'problems' => 'problem',
+                    'vulnerabilities' => 'vulnerability',
+                ];
+
+                return $singular[strtolower($matches[1])] ?? $matches[1];
+            }, $message, 1) ?? $message;
+        }
+
+        return $message;
     }
 
     /**

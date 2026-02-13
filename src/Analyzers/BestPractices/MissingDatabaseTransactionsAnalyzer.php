@@ -15,6 +15,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\ClassifiesFiles;
 
 /**
  * Detects multiple database write operations without transactions.
@@ -26,6 +27,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
 {
+    use ClassifiesFiles;
+
     /**
      * Minimum number of writes that require full transactional atomicity.
      */
@@ -103,28 +106,6 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
             sprintf('Found %d method(s) with multiple writes missing transaction protection', count($issues)),
             $issues
         );
-    }
-
-    /**
-     * Check if file is a test file.
-     */
-    private function isTestFile(string $file): bool
-    {
-        return str_contains($file, '/tests/') ||
-               str_contains($file, '/Tests/') ||
-               str_ends_with($file, 'Test.php');
-    }
-
-    /**
-     * Check if file is a development helper file.
-     */
-    private function isDevelopmentFile(string $file): bool
-    {
-        return str_contains($file, '/database/seeders/') ||
-               str_contains($file, '/database/factories/') ||
-               str_contains($file, '/database/migrations/') ||
-               str_ends_with($file, 'Seeder.php') ||
-               str_ends_with($file, 'Factory.php');
     }
 }
 

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Performance;
 
-use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Contracts\Config\Repository as Config;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -21,7 +21,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  * - Expose sensitive debugging information
  *
  * Skips local/development/testing environments where debug logging is acceptable for development.
- * Uses Laravel's ConfigRepository for proper configuration checking.
+ * Uses Laravel's Config for proper configuration checking.
  */
 class DebugLogAnalyzer extends AbstractAnalyzer
 {
@@ -37,7 +37,7 @@ class DebugLogAnalyzer extends AbstractAnalyzer
     protected ?array $relevantEnvironments = ['production', 'staging'];
 
     public function __construct(
-        private ConfigRepository $config
+        private Config $config
     ) {
         $this->configRepository = $config;
     }

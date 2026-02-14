@@ -17,6 +17,7 @@ use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\ClassifiesFiles;
 
 /**
  * Detects debug mode and debugging-related security issues.
@@ -30,6 +31,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class DebugModeAnalyzer extends AbstractFileAnalyzer
 {
+    use ClassifiesFiles;
+
     private const HIGH_SEVERITY_FUNCTIONS = ['dd', 'dump', 'var_dump', 'print_r'];
 
     private array $debugFunctions = [
@@ -483,36 +486,5 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                 );
             }
         }
-    }
-
-    /**
-     * Check if file is a test file.
-     */
-    private function isTestFile(string $file): bool
-    {
-        return str_contains($file, '/tests/') ||
-               str_contains($file, '/Tests/') ||
-               str_ends_with($file, 'Test.php');
-    }
-
-    /**
-     * Check if file is a development helper file.
-     */
-    private function isDevelopmentFile(string $file): bool
-    {
-        return str_contains($file, '/database/seeders/') ||
-               str_contains($file, '/database/factories/') ||
-               str_contains($file, 'Seeder.php') ||
-               str_contains($file, 'Factory.php');
-    }
-
-    /**
-     * Check if file is a Console Command (where exit codes are legitimate).
-     */
-    private function isConsoleCommand(string $file): bool
-    {
-        return str_contains($file, '/Console/Commands/') ||
-               str_contains($file, '/app/Console/Commands/') ||
-               str_contains($file, '\\Console\\Commands\\');
     }
 }

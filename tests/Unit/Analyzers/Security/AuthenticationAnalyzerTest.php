@@ -3049,87 +3049,8 @@ PHP;
     // ==========================================
     // Suppression Comment Tests (@shieldci-ignore)
     // ==========================================
-
-    public function test_suppresses_route_with_shieldci_ignore_comment(): void
-    {
-        $routes = <<<'PHP'
-<?php
-
-// @shieldci-ignore authentication
-Route::post('/public-webhook', [WebhookController::class, 'handle']);
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'routes/web.php' => $routes,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        // Should pass because route is suppressed
-        $this->assertPassed($result);
-    }
-
-    public function test_suppresses_controller_method_with_shieldci_ignore_docblock(): void
-    {
-        $controller = <<<'PHP'
-<?php
-
-namespace App\Http\Controllers;
-
-class WebhookController extends Controller
-{
-    /**
-     * Public webhook endpoint for external systems
-     * @shieldci-ignore authentication
-     */
-    public function store()
-    {
-        // Public webhook logic
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/WebhookController.php' => $controller,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        // Should pass because method is suppressed
-        $this->assertPassed($result);
-    }
-
-    public function test_suppresses_route_group_with_shieldci_ignore_comment(): void
-    {
-        $routes = <<<'PHP'
-<?php
-
-// @shieldci-ignore
-Route::group(['prefix' => 'webhooks'], function () {
-    Route::post('/stripe', [WebhookController::class, 'stripe']);
-    Route::post('/paypal', [WebhookController::class, 'paypal']);
-});
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'routes/web.php' => $routes,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        // Should pass because route group is suppressed
-        $this->assertPassed($result);
-    }
+    // Note: @shieldci-ignore is now handled centrally by AnalyzeCommand.
+    // See tests/Unit/Support/InlineSuppressionParserTest.php for suppression tests.
 
     public function test_does_not_suppress_without_specific_tag(): void
     {

@@ -272,7 +272,7 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
         ];
 
         if (function_exists('config')) {
-            $config = config('shieldci.php_configuration', []);
+            $config = config('shieldci.analyzers.security.php-ini.php_configuration', []);
             if (is_array($config)) {
                 /** @var array{ini_path?: string|null, secure_settings?: array<string, bool>} $config */
                 $merged = array_replace_recursive($defaults, $config);
@@ -298,7 +298,7 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
 
         $configPath = null;
         if (function_exists('config')) {
-            $configPath = config('shieldci.php_configuration.ini_path');
+            $configPath = config('shieldci.analyzers.security.php-ini.ini_path');
         }
 
         if (is_string($configPath) && $configPath !== '') {

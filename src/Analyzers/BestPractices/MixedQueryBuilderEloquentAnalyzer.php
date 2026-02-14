@@ -438,8 +438,6 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
     private ?string $currentClassName = null;
 
-    private bool $currentClassSuppressed = false;
-
     /**
      * @param  array<string>  $whitelist
      * @param  array<string, string|null>  $tableRegistry
@@ -461,7 +459,6 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         // Track current class
         if ($node instanceof Node\Stmt\Class_) {
             $this->currentClassName = $node->name?->toString();
-            $this->currentClassSuppressed = $this->hasSuppressionComment($node);
         }
 
         // Reset variable tracking at method boundaries for proper scoping
@@ -635,15 +632,14 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
         // When leaving a class, check for mixed usage
         if ($node instanceof Node\Stmt\Class_) {
-            // Skip check if class is suppressed or whitelisted
+            // Skip check if class is whitelisted
             $isWhitelisted = $this->currentClassName && in_array($this->currentClassName, $this->whitelist, true);
 
-            if (! $this->currentClassSuppressed && ! $isWhitelisted) {
+            if (! $isWhitelisted) {
                 $this->checkMixedUsage();
             }
             $this->tableUsage = []; // Reset for next class
             $this->variableTracking = []; // Reset variable tracking
-            $this->currentClassSuppressed = false;
         }
 
         return null;
@@ -765,31 +761,6 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             if ($inferredTable === $tableName) {
                 return true;
             }
-        }
-
-        return false;
-    }
-
-    /**
-     * Check if a class has suppression comment.
-     */
-    private function hasSuppressionComment(Node\Stmt\Class_ $classNode): bool
-    {
-        $docComment = $classNode->getDocComment();
-        if (! $docComment) {
-            return false;
-        }
-
-        $commentText = $docComment->getText();
-
-        // Check for general suppression or specific analyzer suppression
-        if (preg_match('/@shieldci-ignore\s+(mixed-query-builder-eloquent|all)/i', $commentText)) {
-            return true;
-        }
-
-        // Check for general @shieldci-ignore without specific analyzer
-        if (preg_match('/@shieldci-ignore\s*$/m', $commentText)) {
-            return true;
         }
 
         return false;

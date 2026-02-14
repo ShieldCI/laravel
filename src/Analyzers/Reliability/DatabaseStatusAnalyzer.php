@@ -107,7 +107,7 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
      */
     private function getConnectionsToCheck(string $defaultConnection): array
     {
-        $configured = config('shieldci.database.connections', []);
+        $configured = config('shieldci.analyzers.reliability.database-status.connections', []);
 
         if (is_string($configured)) {
             $configured = array_filter(array_map('trim', explode(',', $configured)));

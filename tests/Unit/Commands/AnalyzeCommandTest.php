@@ -24,6 +24,7 @@ class AnalyzeCommandTest extends TestCase
 {
     protected function tearDown(): void
     {
+        $this->cleanupTempPaths();
         Mockery::close();
         parent::tearDown();
     }
@@ -1400,6 +1401,419 @@ class AnalyzeCommandTest extends TestCase
         $this->artisan('shield:analyze', ['--format' => 'json'])
             ->assertFailed()
             ->expectsOutputToContain('No analyzers were run');
+    }
+
+    // ==========================================
+    // Inline @shieldci-ignore suppression tests
+    // ==========================================
+
+    /**
+     * @var list<string> Temp files/dirs to clean up
+     */
+    private array $tempPaths = [];
+
+    private function createTempPhpFile(string $content): string
+    {
+        $dir = sys_get_temp_dir().'/shieldci-cmd-test-'.uniqid();
+        mkdir($dir, 0755, true);
+        $path = $dir.'/test_'.uniqid().'.php';
+        file_put_contents($path, $content);
+        $this->tempPaths[] = $dir;
+
+        return $path;
+    }
+
+    private function cleanupTempPaths(): void
+    {
+        foreach ($this->tempPaths as $dir) {
+            if (is_dir($dir)) {
+                $files = glob($dir.'/*');
+                if ($files !== false) {
+                    array_map('unlink', $files);
+                }
+                rmdir($dir);
+            }
+        }
+        $this->tempPaths = [];
+    }
+
+    #[Test]
+    public function inline_suppression_filters_issues_in_json_mode(): void
+    {
+        $file = $this->createTempPhpFile(<<<'PHP'
+<?php
+// @shieldci-ignore
+$result = DB::select("SELECT * FROM users WHERE id = $id");
+PHP);
+
+        $result = new AnalysisResult(
+            analyzerId: 'sql-injection',
+            status: Status::Failed,
+            message: 'Found 1 issues',
+            issues: [
+                new Issue(
+                    message: 'SQL Injection detected',
+                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 3),
+                    severity: Severity::Critical,
+                    recommendation: 'Use prepared statements',
+                ),
+            ],
+            executionTime: 0.1,
+            metadata: [
+                'id' => 'sql-injection',
+                'name' => 'SQL Injection',
+                'description' => 'Detects SQL injection',
+                'category' => Category::Security,
+                'severity' => Severity::Critical,
+            ],
+        );
+
+        $this->registerManagerWithResults([$result]);
+        config(['shieldci.fail_on' => 'never']);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('"status": "passed"');
+
+        $this->cleanupTempPaths();
+    }
+
+    #[Test]
+    public function inline_suppression_filters_issues_in_streaming_mode(): void
+    {
+        $file = $this->createTempPhpFile(<<<'PHP'
+<?php
+// @shieldci-ignore
+$result = DB::select("SELECT * FROM users WHERE id = $id");
+PHP);
+
+        $result = new AnalysisResult(
+            analyzerId: 'sql-injection',
+            status: Status::Failed,
+            message: 'Found 1 issues',
+            issues: [
+                new Issue(
+                    message: 'SQL Injection detected',
+                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 3),
+                    severity: Severity::Critical,
+                    recommendation: 'Use prepared statements',
+                ),
+            ],
+            executionTime: 0.1,
+            metadata: [
+                'id' => 'sql-injection',
+                'name' => 'SQL Injection',
+                'description' => 'Detects SQL injection',
+                'category' => Category::Security,
+                'severity' => Severity::Critical,
+            ],
+        );
+
+        $this->registerManagerWithResults([$result]);
+        config(['shieldci.fail_on' => 'never']);
+
+        $output = $this->artisan('shield:analyze', ['--format' => 'console']);
+        $output->assertSuccessful();
+
+        $this->cleanupTempPaths();
+    }
+
+    #[Test]
+    public function inline_suppression_partial_filtering_keeps_unsuppressed_issues(): void
+    {
+        $file = $this->createTempPhpFile(<<<'PHP'
+<?php
+// @shieldci-ignore sql-injection
+$result = DB::select("SELECT * FROM users WHERE id = $id");
+
+echo $userInput;
+PHP);
+
+        $result = new AnalysisResult(
+            analyzerId: 'sql-injection',
+            status: Status::Failed,
+            message: 'Found 2 issues',
+            issues: [
+                new Issue(
+                    message: 'SQL Injection on suppressed line',
+                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 3),
+                    severity: Severity::High,
+                    recommendation: 'Use prepared statements',
+                ),
+                new Issue(
+                    message: 'SQL Injection on unsuppressed line',
+                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 5),
+                    severity: Severity::High,
+                    recommendation: 'Use prepared statements',
+                ),
+            ],
+            executionTime: 0.1,
+            metadata: [
+                'id' => 'sql-injection',
+                'name' => 'SQL Injection',
+                'description' => 'Detects SQL injection',
+                'category' => Category::Security,
+                'severity' => Severity::High,
+            ],
+        );
+
+        $this->registerManagerWithResults([$result]);
+        config(['shieldci.fail_on' => 'never']);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('SQL Injection on unsuppressed line');
+
+        $this->cleanupTempPaths();
+    }
+
+    #[Test]
+    public function inline_suppression_all_issues_suppressed_changes_status_to_passed(): void
+    {
+        $file = $this->createTempPhpFile(<<<'PHP'
+<?php
+// @shieldci-ignore
+$a = DB::select("SELECT * FROM users WHERE id = $id");
+// @shieldci-ignore
+$b = DB::select("SELECT * FROM posts WHERE id = $id");
+PHP);
+
+        $result = new AnalysisResult(
+            analyzerId: 'sql-injection',
+            status: Status::Failed,
+            message: 'Found 2 issues',
+            issues: [
+                new Issue(
+                    message: 'SQL Injection issue 1',
+                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 3),
+                    severity: Severity::High,
+                    recommendation: 'Use prepared statements',
+                ),
+                new Issue(
+                    message: 'SQL Injection issue 2',
+                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 5),
+                    severity: Severity::High,
+                    recommendation: 'Use prepared statements',
+                ),
+            ],
+            executionTime: 0.1,
+            metadata: [
+                'id' => 'sql-injection',
+                'name' => 'SQL Injection',
+                'description' => 'Detects SQL injection',
+                'category' => Category::Security,
+                'severity' => Severity::High,
+            ],
+        );
+
+        $this->registerManagerWithResults([$result]);
+        config(['shieldci.fail_on' => 'never']);
+
+        $exitCode = \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
+        $output = \Illuminate\Support\Facades\Artisan::output();
+
+        $this->assertSame(0, $exitCode);
+        $this->assertStringContainsString('"status": "passed"', $output);
+        $this->assertStringContainsString('All issues are suppressed via @shieldci-ignore', $output);
+
+        $this->cleanupTempPaths();
+    }
+
+    #[Test]
+    public function inline_suppression_keeps_issues_without_location(): void
+    {
+        $file = $this->createTempPhpFile(<<<'PHP'
+<?php
+// @shieldci-ignore
+$x = 1;
+PHP);
+
+        $result = new AnalysisResult(
+            analyzerId: 'app-wide-check',
+            status: Status::Failed,
+            message: 'Found 1 issues',
+            issues: [
+                new Issue(
+                    message: 'Application-wide issue with no location',
+                    location: null,
+                    severity: Severity::Medium,
+                    recommendation: 'Fix it',
+                ),
+            ],
+            executionTime: 0.1,
+            metadata: [
+                'id' => 'app-wide-check',
+                'name' => 'App Wide Check',
+                'description' => 'Tests app-wide issues',
+                'category' => Category::Reliability,
+                'severity' => Severity::Medium,
+            ],
+        );
+
+        $this->registerManagerWithResults([$result]);
+        config(['shieldci.fail_on' => 'never']);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('Application-wide issue with no location');
+
+        $this->cleanupTempPaths();
+    }
+
+    #[Test]
+    public function inline_suppression_keeps_issues_with_line_zero(): void
+    {
+        $file = $this->createTempPhpFile(<<<'PHP'
+<?php
+// @shieldci-ignore
+$x = 1;
+PHP);
+
+        $result = new AnalysisResult(
+            analyzerId: 'line-zero-check',
+            status: Status::Failed,
+            message: 'Found 1 issues',
+            issues: [
+                new Issue(
+                    message: 'Issue at line zero',
+                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 0),
+                    severity: Severity::Medium,
+                    recommendation: 'Fix it',
+                ),
+            ],
+            executionTime: 0.1,
+            metadata: [
+                'id' => 'line-zero-check',
+                'name' => 'Line Zero Check',
+                'description' => 'Tests line zero handling',
+                'category' => Category::Reliability,
+                'severity' => Severity::Medium,
+            ],
+        );
+
+        $this->registerManagerWithResults([$result]);
+        config(['shieldci.fail_on' => 'never']);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('Issue at line zero');
+
+        $this->cleanupTempPaths();
+    }
+
+    #[Test]
+    public function inline_suppression_passes_non_analysis_result_unchanged(): void
+    {
+        $command = new \ShieldCI\Commands\AnalyzeCommand;
+
+        // Initialize the suppression parser via reflection
+        $parserProp = new \ReflectionProperty($command, 'suppressionParser');
+        $parserProp->setAccessible(true);
+        $parserProp->setValue($command, new \ShieldCI\Support\InlineSuppressionParser);
+
+        $method = new \ReflectionMethod($command, 'filterAgainstInlineSuppressions');
+        $method->setAccessible(true);
+
+        // Create a mock ResultInterface that is NOT an AnalysisResult
+        /** @var \ShieldCI\AnalyzersCore\Contracts\ResultInterface&MockInterface $mockResult */
+        $mockResult = Mockery::mock(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class);
+        /** @phpstan-ignore-next-line */
+        $mockResult->shouldReceive('getAnalyzerId')->andReturn('mock-analyzer');
+        /** @phpstan-ignore-next-line */
+        $mockResult->shouldReceive('getStatus')->andReturn(Status::Failed);
+        /** @phpstan-ignore-next-line */
+        $mockResult->shouldReceive('getMessage')->andReturn('Mock failed');
+        /** @phpstan-ignore-next-line */
+        $mockResult->shouldReceive('getIssues')->andReturn([]);
+        /** @phpstan-ignore-next-line */
+        $mockResult->shouldReceive('getExecutionTime')->andReturn(0.1);
+        /** @phpstan-ignore-next-line */
+        $mockResult->shouldReceive('getMetadata')->andReturn([]);
+        /** @phpstan-ignore-next-line */
+        $mockResult->shouldReceive('isSuccess')->andReturn(false);
+        /** @phpstan-ignore-next-line */
+        $mockResult->shouldReceive('toArray')->andReturn([]);
+
+        $report = new \ShieldCI\ValueObjects\AnalysisReport(
+            laravelVersion: '11.0',
+            packageVersion: '1.0.0',
+            results: collect([$mockResult]),
+            totalExecutionTime: 0.1,
+            analyzedAt: new \DateTimeImmutable('2026-01-01T00:00:00Z'),
+        );
+
+        /** @var \ShieldCI\ValueObjects\AnalysisReport $filteredReport */
+        $filteredReport = $method->invoke($command, $report);
+
+        // The non-AnalysisResult object should pass through unchanged
+        $this->assertSame($mockResult, $filteredReport->results->first());
+    }
+
+    // ==========================================
+    // adjustFilteredMessage tests (via reflection)
+    // ==========================================
+
+    #[Test]
+    public function adjust_filtered_message_all_filtered_returns_suppressed_message(): void
+    {
+        $command = new \ShieldCI\Commands\AnalyzeCommand;
+        $method = new \ReflectionMethod($command, 'adjustFilteredMessage');
+        $method->setAccessible(true);
+
+        $result = $method->invoke($command, 'Found 3 issues', 3, 0);
+
+        $this->assertSame('All issues are suppressed via @shieldci-ignore', $result);
+    }
+
+    #[Test]
+    public function adjust_filtered_message_none_filtered_returns_original(): void
+    {
+        $command = new \ShieldCI\Commands\AnalyzeCommand;
+        $method = new \ReflectionMethod($command, 'adjustFilteredMessage');
+        $method->setAccessible(true);
+
+        $result = $method->invoke($command, 'Found 3 issues', 3, 3);
+
+        $this->assertSame('Found 3 issues', $result);
+    }
+
+    #[Test]
+    public function adjust_filtered_message_partial_filter_updates_count(): void
+    {
+        $command = new \ShieldCI\Commands\AnalyzeCommand;
+        $method = new \ReflectionMethod($command, 'adjustFilteredMessage');
+        $method->setAccessible(true);
+
+        $result = $method->invoke($command, 'Found 3 issues', 3, 2);
+
+        $this->assertSame('Found 2 issues', $result);
+    }
+
+    #[Test]
+    public function adjust_filtered_message_singular_grammar_for_issues(): void
+    {
+        $command = new \ShieldCI\Commands\AnalyzeCommand;
+        $method = new \ReflectionMethod($command, 'adjustFilteredMessage');
+        $method->setAccessible(true);
+
+        $this->assertSame('Found 1 issue', $method->invoke($command, 'Found 3 issues', 3, 1));
+        $this->assertSame('Found 1 error', $method->invoke($command, 'Found 3 errors', 3, 1));
+        $this->assertSame('Found 1 vulnerability', $method->invoke($command, 'Found 3 vulnerabilities', 3, 1));
+        $this->assertSame('Found 1 warning', $method->invoke($command, 'Found 3 warnings', 3, 1));
+        $this->assertSame('Found 1 problem', $method->invoke($command, 'Found 3 problems', 3, 1));
+    }
+
+    #[Test]
+    public function adjust_filtered_message_zero_original_and_zero_filtered(): void
+    {
+        $command = new \ShieldCI\Commands\AnalyzeCommand;
+        $method = new \ReflectionMethod($command, 'adjustFilteredMessage');
+        $method->setAccessible(true);
+
+        // filteredCount === 0, so it returns the suppressed message
+        $result = $method->invoke($command, 'Something wrong', 0, 0);
+
+        $this->assertSame('All issues are suppressed via @shieldci-ignore', $result);
     }
 
     /**

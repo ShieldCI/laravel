@@ -34,11 +34,11 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 
         // Configure to check these specific directories (disable symlink check for this test)
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
                 $tempDir.'/bootstrap/cache',
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -57,11 +57,11 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 
         // Configure to check non-existent directories
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
                 $tempDir.'/bootstrap/cache',
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -84,10 +84,10 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         chmod($tempDir.'/storage', 0555);
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -107,12 +107,12 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $tempDir = $this->createTempDirectory([]);
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
                 $tempDir.'/bootstrap/cache',
                 $tempDir.'/custom/cache',
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -144,10 +144,10 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         ]);
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/custom/path',
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -166,8 +166,8 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         ]);
 
         config([
-            'shieldci.writable_directories' => [],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [],
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -188,8 +188,8 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 
         // Set invalid config (not an array)
         config([
-            'shieldci.writable_directories' => 'not-an-array',
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => 'not-an-array',
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -208,14 +208,14 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         ]);
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
                 null,
                 123,
                 '',
                 ['nested' => 'array'],
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -237,12 +237,12 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 
         // Use relative paths like in the real config
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 'storage',
                 'bootstrap/cache',
                 'custom/dir',
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -263,11 +263,11 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 
         // Mix of absolute and relative paths
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage', // Absolute
                 'cache',              // Relative
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -288,10 +288,10 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $tempDir = $this->createTempDirectory([]);
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -314,11 +314,11 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $tempDir = $this->createTempDirectory([]);
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
                 $tempDir.'/bootstrap/cache',
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -342,10 +342,10 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $tempDir = $this->createTempDirectory([]);
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -379,11 +379,11 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         chmod($tempDir.'/storage', 0555);
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',        // exists but not writable
                 $tempDir.'/bootstrap/cache', // missing
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -418,10 +418,10 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $tempDir = $this->createTempDirectory([]);
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -448,10 +448,10 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         chmod($tempDir.'/storage', 0555);
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -480,11 +480,11 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         chmod($tempDir.'/storage', 0555);
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
                 $tempDir.'/cache',
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -513,11 +513,11 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         chmod($tempDir.'/storage', 0555);
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
                 $tempDir.'/cache',
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -550,10 +550,10 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         }
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $symlinkPath,
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -571,8 +571,8 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $analyzer->setBasePath('');
 
         config([
-            'shieldci.writable_directories' => null,
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => null,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $result = $analyzer->analyze();
@@ -600,14 +600,14 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         }
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
                 $tempDir.'/bootstrap/cache',
             ],
             'filesystems.links' => [
                 $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
             ],
-            'shieldci.check_symlinks' => true,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -631,14 +631,14 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         // Don't create the symlink
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
                 $tempDir.'/bootstrap/cache',
             ],
             'filesystems.links' => [
                 $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
             ],
-            'shieldci.check_symlinks' => true,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -678,14 +678,14 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         // Note: storage/app/public doesn't exist, so symlink is broken
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
                 $tempDir.'/bootstrap/cache',
             ],
             'filesystems.links' => [
                 $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
             ],
-            'shieldci.check_symlinks' => true,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -722,14 +722,14 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         }
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
                 $tempDir.'/bootstrap/cache',
             ],
             'filesystems.links' => [
                 $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
             ],
-            'shieldci.check_symlinks' => true,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -763,12 +763,12 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         // Should use default public/storage -> storage/app/public
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
                 $tempDir.'/bootstrap/cache',
             ],
             'filesystems.links' => null,
-            'shieldci.check_symlinks' => true,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -799,7 +799,7 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         }
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
                 $tempDir.'/bootstrap/cache',
             ],
@@ -807,7 +807,7 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
                 $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
                 $tempDir.'/public/uploads' => $tempDir.'/storage/app/uploads',
             ],
-            'shieldci.check_symlinks' => true,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -829,14 +829,14 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         // No symlink created, but check is disabled
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
                 $tempDir.'/bootstrap/cache',
             ],
             'filesystems.links' => [
                 $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
             ],
-            'shieldci.check_symlinks' => false,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -857,14 +857,14 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         ]);
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
                 $tempDir.'/bootstrap/cache',
             ],
             'filesystems.links' => [
                 $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
             ],
-            'shieldci.check_symlinks' => true,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -895,7 +895,7 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         ]);
 
         config([
-            'shieldci.writable_directories' => [
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
                 $tempDir.'/storage',
                 $tempDir.'/bootstrap/cache',
             ],
@@ -903,7 +903,7 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
                 $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
                 $tempDir.'/public/uploads' => $tempDir.'/storage/app/uploads',
             ],
-            'shieldci.check_symlinks' => true,
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
         ]);
 
         $analyzer = $this->createAnalyzer();

@@ -89,7 +89,7 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
     private function getDirectoriesToCheck(string $basePath): array
     {
         $directoriesToCheck = $this->safeExecute(
-            fn () => config('shieldci.writable_directories'),
+            fn () => config('shieldci.analyzers.reliability.directory-write-permissions.writable_directories'),
             null
         );
 
@@ -367,7 +367,7 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
     private function isSymlinkCheckEnabled(): bool
     {
         $enabled = $this->safeExecute(
-            fn () => config('shieldci.check_symlinks', true),
+            fn () => config('shieldci.analyzers.reliability.directory-write-permissions.check_symlinks', true),
             true
         );
 

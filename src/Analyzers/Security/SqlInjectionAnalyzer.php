@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
-use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -138,7 +138,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
 
     public function __construct(
         private ParserInterface $parser,
-        private ?ConfigRepository $config = null
+        private Config $config,
     ) {}
 
     protected function metadata(): AnalyzerMetadata
@@ -423,11 +423,9 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
      */
     private function getNativeMysqliFunctions(): array
     {
-        if ($this->config) {
-            $custom = $this->config->get('shieldci.analyzers.security.sql-injection.mysqli_functions');
-            if (is_array($custom) && ! empty($custom)) {
-                return $custom;
-            }
+        $custom = $this->config->get('shieldci.analyzers.security.sql-injection.mysqli_functions');
+        if (is_array($custom) && ! empty($custom)) {
+            return $custom;
         }
 
         return $this->nativeMysqliFunctions;
@@ -440,11 +438,9 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
      */
     private function getNativePostgresFunctions(): array
     {
-        if ($this->config) {
-            $custom = $this->config->get('shieldci.analyzers.security.sql-injection.postgres_functions');
-            if (is_array($custom) && ! empty($custom)) {
-                return $custom;
-            }
+        $custom = $this->config->get('shieldci.analyzers.security.sql-injection.postgres_functions');
+        if (is_array($custom) && ! empty($custom)) {
+            return $custom;
         }
 
         return $this->nativePostgresFunctions;

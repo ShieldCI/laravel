@@ -224,7 +224,7 @@ class PHPStan
         $result = [];
 
         /** @var array<string, string|bool> */
-        $configs = config('shieldci.phpstan', [
+        $configs = config('shieldci.analyzers.reliability.phpstan.options', [
             '--error-format' => 'json',
             '--no-progress' => true,
         ]);

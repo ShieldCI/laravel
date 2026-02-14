@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
+use Illuminate\Contracts\Config\Repository as Config;
+use Mockery;
 use ShieldCI\Analyzers\Security\SqlInjectionAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -12,7 +14,13 @@ class SqlInjectionAnalyzerTest extends AnalyzerTestCase
 {
     protected function createAnalyzer(): AnalyzerInterface
     {
-        return new SqlInjectionAnalyzer($this->parser);
+        /** @var Config&\Mockery\MockInterface $config */
+        $config = Mockery::mock(Config::class);
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')->andReturn(null);
+
+        return new SqlInjectionAnalyzer($this->parser, $config);
     }
 
     public function test_passes_with_safe_query_builder(): void

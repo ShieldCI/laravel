@@ -179,7 +179,7 @@ Providing complete OWASP Top 10 2021 coverage:
 
 ### Cryptographic Failures (A02:2021)
 - **App Key Analyzer** - Validates APP_KEY configuration and cipher settings
-- **Hashing Strength Analyzer** - Checks password hashing algorithms (bcrypt rounds, Argon2 settings)
+- **Password Security Analyzer** - Validates hashing configuration, password policy defaults, plain-text storage, weak validation rules, and rehash-on-login
 - **Cookie Security Analyzer** - Validates HttpOnly, Secure, and SameSite cookie flags
 - **HSTS Header Analyzer** - Ensures Strict-Transport-Security header for HTTPS applications
 

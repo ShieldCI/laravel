@@ -1493,7 +1493,7 @@ PHP;
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
 
-        $this->app['config']->set('shieldci.password_security.password_confirmation_max_timeout', 3600);
+        $this->app['config']->set('shieldci.analyzers.security.password-security.password_confirmation_max_timeout', 3600);
 
         $result = $analyzer->analyze();
 

@@ -648,7 +648,7 @@ PHP;
 
     public function test_warns_about_missing_preload_when_configured(): void
     {
-        config(['shieldci.hsts_header.require_preload' => true]);
+        config(['shieldci.analyzers.security.hsts-header.require_preload' => true]);
 
         $sessionConfig = <<<'PHP'
 <?php
@@ -690,7 +690,7 @@ PHP;
 
     public function test_passes_with_preload_when_configured(): void
     {
-        config(['shieldci.hsts_header.require_preload' => true]);
+        config(['shieldci.analyzers.security.hsts-header.require_preload' => true]);
 
         $sessionConfig = <<<'PHP'
 <?php
@@ -966,7 +966,7 @@ PHP;
 
     public function test_skips_session_check_when_disabled_in_config(): void
     {
-        config(['shieldci.hsts_header.check_session_secure' => false]);
+        config(['shieldci.analyzers.security.hsts-header.check_session_secure' => false]);
 
         $sessionConfig = <<<'PHP'
 <?php
@@ -1017,7 +1017,7 @@ PHP;
 
     public function test_respects_custom_min_max_age(): void
     {
-        config(['shieldci.hsts_header.min_max_age' => 31536000]); // 1 year
+        config(['shieldci.analyzers.security.hsts-header.min_max_age' => 31536000]); // 1 year
 
         $sessionConfig = <<<'PHP'
 <?php
@@ -1059,7 +1059,7 @@ PHP;
 
     public function test_respects_disabled_include_subdomains_requirement(): void
     {
-        config(['shieldci.hsts_header.require_include_subdomains' => false]);
+        config(['shieldci.analyzers.security.hsts-header.require_include_subdomains' => false]);
 
         $sessionConfig = <<<'PHP'
 <?php
@@ -1100,7 +1100,7 @@ PHP;
 
     public function test_respects_ignored_middleware(): void
     {
-        config(['shieldci.hsts_header.ignored_middleware' => ['TestMiddleware']]);
+        config(['shieldci.analyzers.security.hsts-header.ignored_middleware' => ['TestMiddleware']]);
 
         $sessionConfig = <<<'PHP'
 <?php
@@ -1147,7 +1147,7 @@ PHP;
 
     public function test_reports_multiple_issues(): void
     {
-        config(['shieldci.hsts_header.require_preload' => true]);
+        config(['shieldci.analyzers.security.hsts-header.require_preload' => true]);
 
         $sessionConfig = <<<'PHP'
 <?php

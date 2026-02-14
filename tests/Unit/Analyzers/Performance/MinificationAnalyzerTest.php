@@ -286,7 +286,7 @@ JS;
             'custom_build/css/app.css' => $unminifiedCss,
         ]);
 
-        config(['shieldci.build_path' => 'custom_build']);
+        config(['shieldci.analyzers.performance.asset-minification.build_path' => 'custom_build']);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -368,7 +368,7 @@ JS;
         ]);
 
         // Set config to use temp directory's public path (which doesn't exist)
-        config(['shieldci.build_path' => $tempDir.'/public']);
+        config(['shieldci.analyzers.performance.asset-minification.build_path' => $tempDir.'/public']);
 
         /** @var MinificationAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
@@ -1214,7 +1214,7 @@ JS;
         ]);
 
         $absolutePath = $tempDir.DIRECTORY_SEPARATOR.'custom';
-        config(['shieldci.build_path' => $absolutePath]);
+        config(['shieldci.analyzers.performance.asset-minification.build_path' => $absolutePath]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -1233,7 +1233,7 @@ JS;
             'public/css/app.css' => str_repeat("body {\n    color: red;\n}\n", 10),
         ]);
 
-        config(['shieldci.build_path' => '/completely/different/path']);
+        config(['shieldci.analyzers.performance.asset-minification.build_path' => '/completely/different/path']);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);

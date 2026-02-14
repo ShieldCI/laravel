@@ -6,7 +6,7 @@ namespace ShieldCI\Analyzers\Performance;
 
 use Fideloper\Proxy\TrustProxies as FideloperTrustProxies;
 use Fruitcake\Cors\HandleCors as FruitcakeHandleCors;
-use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Http\Middleware\HandleCors;
@@ -44,7 +44,7 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
 
     public function __construct(
         private Application $app,
-        private ConfigRepository $config,
+        private Config $config,
         Router $router,
         Kernel $kernel
     ) {

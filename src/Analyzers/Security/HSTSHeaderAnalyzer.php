@@ -410,7 +410,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
     private function getConfiguration(): array
     {
         /** @var array<string, mixed> $config */
-        $config = config('shieldci.hsts_header', []);
+        $config = config('shieldci.analyzers.security.hsts-header', []);
 
         return array_merge([
             'min_max_age' => 15768000,  // 6 months in seconds

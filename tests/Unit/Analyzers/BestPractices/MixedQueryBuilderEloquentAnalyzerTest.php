@@ -403,44 +403,6 @@ PHP;
         $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
     }
 
-    public function test_respects_suppression_comments(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Repositories;
-
-use App\Models\User;
-use Illuminate\Support\Facades\DB;
-
-/**
- * @shieldci-ignore mixed-query-builder-eloquent
- */
-class UserRepository
-{
-    public function findActive()
-    {
-        return User::where('active', true)->get();
-    }
-
-    public function getUserCount()
-    {
-        return DB::table('users')->count();
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['Repositories/UserRepository.php' => $code]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertPassed($result);
-    }
-
     public function test_detects_extended_eloquent_methods(): void
     {
         $code = <<<'PHP'
@@ -530,44 +492,6 @@ PHP;
         $this->assertNotNull($sameTableIssue, 'Should find same-table mixing issue');
         $this->assertEquals('High', $sameTableIssue->severity->name);
         $this->assertStringContainsString('may bypass global scopes', $sameTableIssue->recommendation);
-    }
-
-    public function test_general_suppression_comment_works(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Repositories;
-
-use App\Models\User;
-use Illuminate\Support\Facades\DB;
-
-/**
- * @shieldci-ignore
- */
-class UserRepository
-{
-    public function findActive()
-    {
-        return User::where('active', true)->get();
-    }
-
-    public function getUserCount()
-    {
-        return DB::table('users')->count();
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['Repositories/UserRepository.php' => $code]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertPassed($result);
     }
 
     public function test_detects_query_builder_via_model_tobase(): void

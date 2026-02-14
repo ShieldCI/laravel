@@ -173,7 +173,7 @@ class PHPIniAnalyzerTest extends AnalyzerTestCase
         ]);
 
         config([
-            'shieldci.php_configuration.secure_settings' => [
+            'shieldci.analyzers.security.php-ini.php_configuration.secure_settings' => [
                 'custom_setting' => false,
             ],
         ]);

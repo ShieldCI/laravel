@@ -141,7 +141,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 
         // Allow configuration override
         /** @var array<string, array{type: string, max: int, recommended: int, critical?: bool, executable?: bool}> $config */
-        $config = function_exists('config') ? config('shieldci.file_permissions', []) : [];
+        $config = function_exists('config') ? config('shieldci.analyzers.security.file-permissions', []) : [];
 
         return array_merge($defaults, $config);
     }

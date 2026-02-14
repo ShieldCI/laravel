@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Performance;
 
-use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Contracts\Config\Repository as Config;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -21,7 +21,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - Performance improvements from using Unix sockets
  * - Single-server optimization recommendations
  *
- * Uses Laravel's ConfigRepository for proper configuration access.
+ * Uses Laravel's Config for proper configuration access.
  *
  * Environment Relevance:
  * - Production/Staging: Important (Unix sockets provide measurable performance improvement)
@@ -47,7 +47,7 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
     protected ?array $relevantEnvironments = ['production', 'staging'];
 
     public function __construct(
-        private ConfigRepository $config
+        private Config $config
     ) {
         $this->configRepository = $config;
     }

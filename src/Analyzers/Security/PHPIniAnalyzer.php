@@ -9,6 +9,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
+use ShieldCI\AnalyzersCore\Support\PlatformDetector;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
@@ -74,6 +75,8 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
      * @var array<string, array<int, string>>
      */
     private array $phpIniLinesCache = [];
+
+    private ?string $deploymentPlatformOverride = null;
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -259,6 +262,35 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Override deployment platform detection (testing only).
+     */
+    public function setDeploymentPlatform(string $platform): void
+    {
+        $this->deploymentPlatformOverride = $platform;
+    }
+
+    /**
+     * Check if the deployment platform is Laravel Vapor or another serverless environment.
+     */
+    private function isVaporOrServerless(): bool
+    {
+        if ($this->deploymentPlatformOverride !== null) {
+            return in_array($this->deploymentPlatformOverride, ['vapor', 'serverless'], true);
+        }
+
+        return PlatformDetector::isLaravelVapor($this->getBasePath())
+            || PlatformDetector::isServerless();
+    }
+
+    /**
+     * Get the project-level php/conf.d/php.ini path for Vapor deployments.
+     */
+    private function getProjectConfDPath(): string
+    {
+        return $this->getBasePath().'/php/conf.d/php.ini';
+    }
+
+    /**
      * @return array{
      *     ini_path: string|null,
      *     secure_settings: array<string, bool>
@@ -389,6 +421,14 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
                     fn ($file) => $file !== '' && is_string($file)
                 );
                 $sources['additional'] = $files;
+            }
+        }
+
+        // On Vapor/serverless, also check the project-level php/conf.d/php.ini
+        if ($this->isVaporOrServerless()) {
+            $projectConfD = $this->getProjectConfDPath();
+            if (file_exists($projectConfD)) {
+                $sources['additional'][] = $projectConfD;
             }
         }
 
@@ -548,59 +588,32 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
     ): Issue {
         // Try to find the actual source of this setting
         $source = $this->findSettingSource($setting);
+        $isVapor = $this->isVaporOrServerless();
 
         if ($source !== null) {
-            // We found the actual file where the setting is defined
             $actualFile = $source['file'];
             $line = $source['line'];
-            $sourceType = $source['type'] === 'additional_ini' ? 'additional configuration file' : 'main php.ini';
-
-            // Update recommendation to point to the correct file
-            if ($expectedValue !== null) {
-                $recommendation = sprintf(
-                    'Set %s = %s in %s (%s)',
-                    $setting,
-                    $expectedValue,
-                    basename($actualFile),
-                    $sourceType
-                );
-            } else {
-                $recommendation = sprintf(
-                    'Update %s in %s (%s)',
-                    $setting,
-                    basename($actualFile),
-                    $sourceType
-                );
-            }
+            $recommendation = $this->buildRecommendation($setting, $expectedValue, $source, $isVapor);
         } else {
             // Setting not found in any file - might be PHP default or runtime override
             $actualFile = $phpIniPath;
             $line = 1;
-            $sources = $this->getConfigurationSources();
 
-            // Build list of all loaded ini files
-            $allFiles = array_filter([
-                $sources['main'] ?? null,
-                ...($sources['additional'] ?? []),
-            ]);
-
-            // Keep recommendation concise - details go in metadata
-            $recommendation .= ' | WARNING: Setting not found in loaded .ini files. May be from PHP defaults, .user.ini, .htaccess, or web server config.';
-
-            // Add detailed information to metadata for debugging
-            $metadata['possible_sources'] = [
-                'php_defaults' => 'PHP compiled-in default value',
-                'user_ini' => '.user.ini files in directory hierarchy',
-                'htaccess' => '.htaccess php_value/php_flag directives',
-                'apache_config' => 'Apache VirtualHost or Directory php_value directives',
-                'nginx_config' => 'Nginx fastcgi_param PHP_VALUE/PHP_ADMIN_VALUE',
-            ];
-            $metadata['checked_files'] = $allFiles;
+            $recommendation = $this->buildRecommendationForMissingSetting(
+                $setting,
+                $expectedValue,
+                $recommendation,
+                $isVapor,
+                $metadata
+            );
         }
 
-        // Add metadata about configuration sources for debugging
+        // Add metadata about configuration sources and platform for debugging
         $metadata['configuration_sources'] = $this->getConfigurationSources();
         $metadata['actual_source'] = $source;
+        if ($isVapor) {
+            $metadata['deployment_platform'] = $this->deploymentPlatformOverride ?? 'vapor';
+        }
 
         return $this->createIssue(
             message: $message,
@@ -610,6 +623,109 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
             code: FileParser::getCodeSnippet($actualFile, $line),
             metadata: $metadata
         );
+    }
+
+    /**
+     * Build recommendation text when the setting's source file is known.
+     *
+     * @param  array{file: string, type: string, line: int}  $source
+     */
+    private function buildRecommendation(
+        string $setting,
+        ?string $expectedValue,
+        array $source,
+        bool $isVapor
+    ): string {
+        $actualFile = $source['file'];
+
+        if ($isVapor) {
+            $projectConfD = $this->getProjectConfDPath();
+            $isProjectConfD = realpath($actualFile) === realpath($projectConfD)
+                || str_ends_with($actualFile, 'php/conf.d/php.ini');
+
+            if ($isProjectConfD) {
+                $action = $expectedValue !== null
+                    ? sprintf('Set %s = %s', $setting, $expectedValue)
+                    : sprintf('Update %s', $setting);
+
+                return sprintf(
+                    '%s in php/conf.d/php.ini (project override for Laravel Vapor)',
+                    $action
+                );
+            }
+
+            // Found in system ini on Vapor — recommend moving to project conf.d
+            $action = $expectedValue !== null
+                ? sprintf('Set %s = %s', $setting, $expectedValue)
+                : sprintf('Update %s', $setting);
+
+            return sprintf(
+                '%s in your project\'s php/conf.d/php.ini (system php.ini is read-only on Laravel Vapor). Redeploy after changes.',
+                $action
+            );
+        }
+
+        // Traditional platform
+        $sourceType = $source['type'] === 'additional_ini' ? 'additional configuration file' : 'main php.ini';
+
+        if ($expectedValue !== null) {
+            return sprintf(
+                'Set %s = %s in %s (%s)',
+                $setting,
+                $expectedValue,
+                basename($actualFile),
+                $sourceType
+            );
+        }
+
+        return sprintf(
+            'Update %s in %s (%s)',
+            $setting,
+            basename($actualFile),
+            $sourceType
+        );
+    }
+
+    /**
+     * Build recommendation text when the setting is not found in any config file.
+     *
+     * @param  array<string, mixed>  $metadata
+     */
+    private function buildRecommendationForMissingSetting(
+        string $setting,
+        ?string $expectedValue,
+        string $baseRecommendation,
+        bool $isVapor,
+        array &$metadata
+    ): string {
+        if ($isVapor) {
+            $action = $expectedValue !== null
+                ? sprintf('Set %s = %s', $setting, $expectedValue)
+                : sprintf('Update %s', $setting);
+
+            return sprintf(
+                '%s in your project\'s php/conf.d/php.ini (system php.ini is read-only on Laravel Vapor). Redeploy after changes.',
+                $action
+            );
+        }
+
+        // Traditional platform — setting not found in any file
+        $sources = $this->getConfigurationSources();
+        $allFiles = array_filter([
+            $sources['main'] ?? null,
+            ...($sources['additional'] ?? []),
+        ]);
+
+        $metadata['possible_sources'] = [
+            'php_defaults' => 'PHP compiled-in default value',
+            'user_ini' => '.user.ini files in directory hierarchy',
+            'htaccess' => '.htaccess php_value/php_flag directives',
+            'apache_config' => 'Apache VirtualHost or Directory php_value directives',
+            'nginx_config' => 'Nginx fastcgi_param PHP_VALUE/PHP_ADMIN_VALUE',
+        ];
+        $metadata['checked_files'] = $allFiles;
+
+        return $baseRecommendation.' | WARNING: Setting not found in loaded .ini files. May be from PHP defaults, .user.ini, .htaccess, or web server config.';
     }
 
     private function getSettingLine(string $phpIniPath, string $setting): int

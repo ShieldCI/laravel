@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
 use ShieldCI\Analyzers\Security\PHPIniAnalyzer;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class PHPIniAnalyzerTest extends AnalyzerTestCase
@@ -660,6 +661,221 @@ class PHPIniAnalyzerTest extends AnalyzerTestCase
             }
         }
         $this->assertFalse($hasAllowUrlIncludeIssue, 'allow_url_include = 0 should be valid');
+    }
+
+    // ── Vapor / Serverless Tests ──────────────────────────────────────
+
+    public function test_vapor_platform_adjusts_recommendations(): void
+    {
+        $tempDir = $this->createVaporFixture(
+            iniLines: ['display_errors = On'],
+        );
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($tempDir.'/php.ini');
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setDeploymentPlatform('vapor');
+        $analyzer->setIniValues($this->secureIniValues([
+            'display_errors' => '1',
+        ]));
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        $displayErrorsIssue = $this->findIssueContaining('display_errors', $issues);
+        $this->assertNotNull($displayErrorsIssue, 'Should have an issue for display_errors');
+
+        // Vapor recommendation should point to project conf.d, not system php.ini
+        $this->assertStringContainsString('php/conf.d/php.ini', $displayErrorsIssue->recommendation);
+        $this->assertStringContainsString('Laravel Vapor', $displayErrorsIssue->recommendation);
+        $this->assertStringNotContainsString('WARNING', $displayErrorsIssue->recommendation);
+    }
+
+    public function test_traditional_platform_keeps_existing_recommendations(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'display_errors = On',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        // No setDeploymentPlatform() — traditional platform
+        $analyzer->setIniValues($this->secureIniValues([
+            'display_errors' => '1',
+        ]));
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        $displayErrorsIssue = $this->findIssueContaining('display_errors', $issues);
+        $this->assertNotNull($displayErrorsIssue);
+
+        // Traditional recommendations should mention main php.ini
+        $this->assertStringContainsString('main php.ini', $displayErrorsIssue->recommendation);
+        $this->assertStringNotContainsString('Laravel Vapor', $displayErrorsIssue->recommendation);
+    }
+
+    public function test_vapor_checks_project_conf_d_for_settings(): void
+    {
+        $tempDir = $this->createVaporFixture(
+            iniLines: ['expose_php = Off'],
+            confDLines: ['display_errors = On'],
+        );
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($tempDir.'/php.ini');
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setDeploymentPlatform('vapor');
+        $analyzer->setIniValues($this->secureIniValues([
+            'display_errors' => '1',
+        ]));
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        $displayErrorsIssue = $this->findIssueContaining('display_errors', $issues);
+        $this->assertNotNull($displayErrorsIssue, 'Should detect display_errors from project conf.d');
+
+        // Should find it in the project conf.d file and note it as project override
+        $this->assertStringContainsString('project override for Laravel Vapor', $displayErrorsIssue->recommendation);
+
+        // Metadata should show the conf.d file as actual source
+        $this->assertNotNull($displayErrorsIssue->metadata['actual_source']);
+        $actualSource = $displayErrorsIssue->metadata['actual_source'];
+        $this->assertIsArray($actualSource);
+        /** @var array{file: string, type: string, line: int} $actualSource */
+        $this->assertStringContainsString(
+            'php/conf.d/php.ini',
+            $actualSource['file']
+        );
+    }
+
+    public function test_vapor_recommendation_when_setting_not_in_any_file(): void
+    {
+        $tempDir = $this->createVaporFixture(
+            iniLines: ['expose_php = Off'],
+        );
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($tempDir.'/php.ini');
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setDeploymentPlatform('vapor');
+        // allow_url_fopen is enabled at runtime but not defined in any file
+        $analyzer->setIniValues($this->secureIniValues([
+            'allow_url_fopen' => '1',
+        ]));
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+
+        $allowUrlFopenIssue = $this->findIssueContaining('allow_url_fopen', $issues);
+        $this->assertNotNull($allowUrlFopenIssue, 'Should have an issue for allow_url_fopen');
+
+        // Vapor: should recommend project conf.d, NOT show WARNING about htaccess/nginx
+        $this->assertStringContainsString('php/conf.d/php.ini', $allowUrlFopenIssue->recommendation);
+        $this->assertStringContainsString('read-only on Laravel Vapor', $allowUrlFopenIssue->recommendation);
+        $this->assertStringContainsString('Redeploy', $allowUrlFopenIssue->recommendation);
+        $this->assertStringNotContainsString('WARNING', $allowUrlFopenIssue->recommendation);
+    }
+
+    public function test_deployment_platform_included_in_metadata(): void
+    {
+        $tempDir = $this->createVaporFixture(
+            iniLines: ['display_errors = On'],
+        );
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($tempDir.'/php.ini');
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setDeploymentPlatform('vapor');
+        $analyzer->setIniValues($this->secureIniValues([
+            'display_errors' => '1',
+        ]));
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertGreaterThan(0, count($issues));
+
+        foreach ($issues as $issue) {
+            $this->assertArrayHasKey('deployment_platform', $issue->metadata);
+            $this->assertEquals('vapor', $issue->metadata['deployment_platform']);
+        }
+    }
+
+    public function test_vapor_passes_when_all_settings_secure(): void
+    {
+        $tempDir = $this->createVaporFixture(
+            iniLines: [
+                'allow_url_fopen = Off',
+                'allow_url_include = Off',
+                'expose_php = Off',
+                'display_errors = Off',
+                'display_startup_errors = Off',
+                'log_errors = On',
+                'ignore_repeated_errors = Off',
+            ],
+        );
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($tempDir.'/php.ini');
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setDeploymentPlatform('vapor');
+        $analyzer->setIniValues($this->secureIniValues());
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────
+
+    /**
+     * Find an issue whose message contains a given string.
+     *
+     * @param  array<int, Issue>  $issues
+     */
+    private function findIssueContaining(string $needle, array $issues): ?Issue
+    {
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, $needle)) {
+                return $issue;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Create a temp directory simulating a Vapor project.
+     *
+     * @param  array<int, string>  $iniLines  Lines for the main php.ini
+     * @param  array<int, string>  $confDLines  Lines for php/conf.d/php.ini (if provided)
+     */
+    private function createVaporFixture(array $iniLines, array $confDLines = []): string
+    {
+        $files = [
+            '.env' => "APP_ENV=production\n",
+            'php.ini' => implode(PHP_EOL, $iniLines),
+            'vapor.yml' => "id: 12345\nname: my-app\n",
+        ];
+
+        if ($confDLines !== []) {
+            $files['php/conf.d/php.ini'] = implode(PHP_EOL, $confDLines);
+        }
+
+        return $this->createTempDirectory($files);
     }
 
     /**

@@ -428,6 +428,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
                 'might not exist' => 'Fix the offset access - the offset might not exist. Add an isset() check before accessing the offset.',
             ],
             'invalid-property-access' => [
+                'Access to an undefined property' => 'Fix the property access - the property does not exist on this class. If this is an Eloquent Attribute accessor, add a generic return type PHPDoc: /** @return Attribute<string, never> */. Larastan requires generic Attribute<TGet, TSet> annotations to recognize accessor-defined properties.',
                 'undefined property' => 'Fix the property access - the property does not exist on this class. Check for typos in the property name or ensure the property is defined.',
                 'private' => 'Fix the property visibility - you are accessing a private/protected property outside its scope.',
                 'protected' => 'Fix the property visibility - you are accessing a private/protected property outside its scope.',

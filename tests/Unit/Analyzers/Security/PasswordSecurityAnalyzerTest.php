@@ -234,6 +234,7 @@ PHP;
 <?php
 
 return [
+    'driver' => 'argon2id',
     'argon' => [
         'memory' => 1024,
     ],
@@ -265,6 +266,7 @@ PHP;
 <?php
 
 return [
+    'driver' => 'argon2id',
     'argon' => [
         'memory' => 65536,
         'time' => 1,
@@ -289,6 +291,7 @@ PHP;
 <?php
 
 return [
+    'driver' => 'argon2id',
     'argon' => [
         'time' => 1,
     ],
@@ -320,6 +323,7 @@ PHP;
 <?php
 
 return [
+    'driver' => 'argon2id',
     'argon' => [
         'memory' => 65536,
         'time' => 2,
@@ -345,6 +349,7 @@ PHP;
 <?php
 
 return [
+    'driver' => 'argon2id',
     'argon' => [
         'threads' => 1,
     ],
@@ -407,7 +412,7 @@ PHP;
         $this->assertFalse($hasArgonIssue, 'Should not flag argon params when driver is bcrypt');
     }
 
-    public function test_flags_argon_when_no_driver_specified(): void
+    public function test_skips_argon_checks_when_no_driver_specified(): void
     {
         $config = <<<'PHP'
 <?php
@@ -428,9 +433,14 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertHasIssueContaining('Argon2 memory', $result);
-        $this->assertHasIssueContaining('Argon2 time cost', $result);
-        $this->assertHasIssueContaining('Argon2 threads', $result);
+        $hasArgonIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (str_contains($issue->message, 'Argon2')) {
+                $hasArgonIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasArgonIssue, 'Should not flag argon params when driver is not specified (Laravel defaults to bcrypt)');
     }
 
     // ==================== Weak Driver Tests ====================
@@ -1069,8 +1079,20 @@ class AppServiceProvider
 }
 PHP;
 
+        $userModel = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class User
+{
+    protected $fillable = ['name', 'email', 'password'];
+}
+PHP;
+
         $tempDir = $this->createTempDirectory([
             'app/Providers/AppServiceProvider.php' => $providerCode,
+            'app/Models/User.php' => $userModel,
             'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
         ]);
 
@@ -1362,6 +1384,117 @@ PHP;
             }
         }
         $this->assertFalse($hasWeakValidation, 'Password::min(8) should not trigger weak validation issue');
+    }
+
+    // ==================== Rule::password() Validation Tests ====================
+
+    public function test_detects_weak_min_via_rule_password(): void
+    {
+        $requestCode = <<<'PHP'
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Validation\Rule;
+
+class RegisterRequest
+{
+    public function rules()
+    {
+        return [
+            'password' => Rule::password()->min(6),
+        ];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Requests/RegisterRequest.php' => $requestCode,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('Password validation requires only 6 characters', $result);
+    }
+
+    public function test_detects_weak_min_via_rule_password_with_chained_methods(): void
+    {
+        $requestCode = <<<'PHP'
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Validation\Rule;
+
+class RegisterRequest
+{
+    public function rules()
+    {
+        return [
+            'password' => Rule::password()->min(5)->letters()->mixedCase(),
+        ];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Requests/RegisterRequest.php' => $requestCode,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('Password validation requires only 5 characters', $result);
+    }
+
+    public function test_passes_strong_rule_password_min(): void
+    {
+        $requestCode = <<<'PHP'
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Validation\Rule;
+
+class RegisterRequest
+{
+    public function rules()
+    {
+        return [
+            'password' => Rule::password()->min(8)->letters()->mixedCase(),
+        ];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Requests/RegisterRequest.php' => $requestCode,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasWeakValidation = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_validation_min_length') {
+                $hasWeakValidation = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasWeakValidation, 'Rule::password()->min(8) should not trigger weak validation issue');
     }
 
     // ==================== Timeout Tests ====================
@@ -3177,7 +3310,7 @@ PHP;
         $this->assertHasIssueContaining('never rehashes passwords', $result);
     }
 
-    public function test_detects_missing_rehash_with_auth_login(): void
+    public function test_no_rehash_issue_when_only_auth_login(): void
     {
         $hashingConfig = <<<'PHP'
 <?php
@@ -3215,10 +3348,10 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertHasIssueContaining('never rehashes passwords', $result);
+        $this->assertNoRehashIssue($result);
     }
 
-    public function test_detects_missing_rehash_with_auth_login_using_id(): void
+    public function test_no_rehash_issue_when_only_auth_login_using_id(): void
     {
         $hashingConfig = <<<'PHP'
 <?php
@@ -3256,10 +3389,10 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertHasIssueContaining('never rehashes passwords', $result);
+        $this->assertNoRehashIssue($result);
     }
 
-    public function test_detects_missing_rehash_with_auth_helper_login(): void
+    public function test_no_rehash_issue_when_only_auth_helper_login(): void
     {
         $hashingConfig = <<<'PHP'
 <?php
@@ -3295,7 +3428,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertHasIssueContaining('never rehashes passwords', $result);
+        $this->assertNoRehashIssue($result);
     }
 
     public function test_detects_missing_rehash_with_fortify_authenticate_using(): void
@@ -3341,7 +3474,7 @@ PHP;
         $this->assertHasIssueContaining('never rehashes passwords', $result);
     }
 
-    public function test_passes_when_auth_login_with_hash_needs_rehash(): void
+    public function test_no_rehash_issue_when_auth_login_with_hash_needs_rehash(): void
     {
         $hashingConfig = <<<'PHP'
 <?php
@@ -3383,15 +3516,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $hasRehashIssue = false;
-        foreach ($result->getIssues() as $issue) {
-            $type = $issue->metadata['issue_type'] ?? '';
-            if (in_array($type, ['rehash_on_login_disabled', 'missing_password_rehash'], true)) {
-                $hasRehashIssue = true;
-                break;
-            }
-        }
-        $this->assertFalse($hasRehashIssue, 'Auth::login() with Hash::needsRehash() should not trigger rehash issue');
+        $this->assertNoRehashIssue($result);
     }
 
     public function test_passes_when_hasher_variable_needs_rehash(): void
@@ -3519,6 +3644,179 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertHasIssueContaining('plain-text password', $result);
+    }
+
+    // ==================== Taint Tracking Tests ====================
+
+    public function test_detects_tainted_variable_in_property_assignment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function store($request, $user)
+    {
+        $pw = $request->password;
+        $user->password = $pw;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_does_not_flag_tainted_variable_when_hashed(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Hash;
+
+class AuthController
+{
+    public function store($request, $user)
+    {
+        $pw = Hash::make($request->password);
+        $user->password = $pw;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertNoPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_tainted_variable_in_inline_array_create(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function store($request)
+    {
+        $pw = $request->password;
+        \App\Models\User::create(['email' => $request->email, 'password' => $pw]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_tainted_variable_in_indirect_array_create(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function store($request)
+    {
+        $pw = $request->password;
+        $data = ['email' => $request->email, 'password' => $pw];
+        \App\Models\User::create($data);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_tainted_variable_from_request_input(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function store($request, $user)
+    {
+        $pass = $request->input('password');
+        $user->password = $pass;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_tainted_variable_from_array_access(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function store($data, $user)
+    {
+        $pw = $data['password'];
+        $user->password = $pw;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
     }
 
     // ==================== hash() Function Weak Algorithm Detection (Bug 3) ====================
@@ -4754,5 +5052,338 @@ PHP;
         }
 
         $this->fail('Expected a plain-text password issue, but none was found');
+    }
+
+    private function assertNoRehashIssue(\ShieldCI\AnalyzersCore\Contracts\ResultInterface $result): void
+    {
+        foreach ($result->getIssues() as $issue) {
+            $type = $issue->metadata['issue_type'] ?? '';
+            if (in_array($type, ['rehash_on_login_disabled', 'missing_password_rehash'], true)) {
+                $this->fail('Expected no rehash issue, but found: '.$issue->message);
+            }
+        }
+
+        $this->addToAssertionCount(1);
+    }
+
+    // ==================== False-Positive Prevention Tests ====================
+
+    public function test_no_password_defaults_issue_on_passwordless_project(): void
+    {
+        $providerCode = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+class AppServiceProvider
+{
+    public function boot()
+    {
+        // SSO project - no passwords
+    }
+}
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+use Illuminate\Support\Facades\Auth;
+
+class LoginUser
+{
+    public function handle($request, $next)
+    {
+        $user = $this->getUserFromCloudflareHeader($request);
+        Auth::login($user);
+        return $next($request);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $providerCode,
+            'app/Http/Middleware/LoginUser.php' => $middleware,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringNotContainsString(
+                'No Password::defaults()',
+                $issue->message,
+                'Passwordless projects should not get missing Password::defaults() issue'
+            );
+        }
+
+        $this->addToAssertionCount(1);
+    }
+
+    // ==================== Password Detection Coverage Tests ====================
+
+    public function test_detects_password_usage_via_migration_column(): void
+    {
+        $providerCode = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+class AppServiceProvider
+{
+    public function boot() {}
+}
+PHP;
+
+        $migration = <<<'PHP'
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up()
+    {
+        Schema::create('users', function (Blueprint $table) {
+            $table->id();
+            $table->string('email');
+            $table->string('password');
+            $table->timestamps();
+        });
+    }
+};
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $providerCode,
+            'database/migrations/2024_01_01_create_users_table.php' => $migration,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'database']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('No Password::defaults()', $result);
+    }
+
+    public function test_detects_password_usage_via_fillable_property(): void
+    {
+        $providerCode = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+class AppServiceProvider
+{
+    public function boot() {}
+}
+PHP;
+
+        $userModel = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class User
+{
+    protected $fillable = ['name', 'email', 'password'];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $providerCode,
+            'app/Models/User.php' => $userModel,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('No Password::defaults()', $result);
+    }
+
+    public function test_detects_password_usage_via_hidden_property(): void
+    {
+        $providerCode = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+class AppServiceProvider
+{
+    public function boot() {}
+}
+PHP;
+
+        $userModel = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class User
+{
+    protected $hidden = ['password', 'remember_token'];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $providerCode,
+            'app/Models/User.php' => $userModel,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('No Password::defaults()', $result);
+    }
+
+    public function test_detects_password_usage_via_auth_attempt(): void
+    {
+        $providerCode = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+class AppServiceProvider
+{
+    public function boot() {}
+}
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Auth;
+
+class LoginController
+{
+    public function login($request)
+    {
+        Auth::attempt($request->only('email', 'password'));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $providerCode,
+            'app/Http/Controllers/LoginController.php' => $controller,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('No Password::defaults()', $result);
+    }
+
+    public function test_detects_password_usage_via_validation_rules(): void
+    {
+        $providerCode = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+class AppServiceProvider
+{
+    public function boot() {}
+}
+PHP;
+
+        $request = <<<'PHP'
+<?php
+
+namespace App\Http\Requests;
+
+class RegisterRequest
+{
+    public function rules()
+    {
+        return [
+            'email' => 'required|email',
+            'password' => 'required|min:8',
+        ];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $providerCode,
+            'app/Http/Requests/RegisterRequest.php' => $request,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('No Password::defaults()', $result);
+    }
+
+    public function test_detects_password_usage_via_hash_make_call(): void
+    {
+        $providerCode = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+class AppServiceProvider
+{
+    public function boot() {}
+}
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Hash;
+
+class UserController
+{
+    public function store($request)
+    {
+        $hashed = Hash::make($request->password);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $providerCode,
+            'app/Http/Controllers/UserController.php' => $controller,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('No Password::defaults()', $result);
     }
 }

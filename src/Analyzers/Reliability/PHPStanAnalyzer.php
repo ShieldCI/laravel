@@ -413,6 +413,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
                 'not found' => 'Fix the import - the class, interface, or trait does not exist. Check for typos in the import statement or ensure the file exists.',
             ],
             'invalid-method-calls' => [
+                'Eloquent\Builder' => 'Fix the method call - if this is an Eloquent local scope, narrow the Builder type with an inline @var annotation: /** @var \Illuminate\Database\Eloquent\Builder<\App\Models\YourModel> $query */. This is the simplest fix when calling scopes inside closures. Alternatively, add a @method annotation to the model: /** @method static \Illuminate\Database\Eloquent\Builder<static> sent() */. ShieldCI includes Larastan which recognizes most scopes automatically, but scopes inside closures, traits, or parent models may need these annotations.',
                 'undefined method' => 'Fix the method call - the method does not exist on this class. Check for typos in the method name or ensure the method is defined.',
                 'Parameter' => 'Fix the method parameters - they do not match the method signature. Check the parameter types, order, and count.',
                 'private' => 'Fix the method visibility - you are calling a private/protected method outside its scope.',

@@ -482,6 +482,63 @@ PHP;
         }
     }
 
+    public function test_provides_eloquent_scope_recommendation_for_builder_method_calls(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Deal extends Model
+{
+    public function scopeSent($query)
+    {
+        return $query->where('sent', true);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Deal.php' => $code]);
+        $filePath = $tempDir.'/app/Models/Deal.php';
+
+        @mkdir($tempDir.'/vendor/bin', 0755, true);
+        file_put_contents(
+            $tempDir.'/vendor/bin/phpstan',
+            $this->createMockPHPStanScript([
+                [
+                    'file' => $filePath,
+                    'line' => 10,
+                    'message' => 'Call to an undefined method Illuminate\Database\Eloquent\Builder<Illuminate\Database\Eloquent\Model>::sent().',
+                ],
+            ])
+        );
+        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Invalid Method Calls', $result);
+
+        $issues = $result->getIssues();
+        $scopeRecommendationFound = false;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->recommendation, 'local scope')) {
+                $scopeRecommendationFound = true;
+                $this->assertStringContainsString('@var', $issue->recommendation);
+                $this->assertStringContainsString('@method', $issue->recommendation);
+                $this->assertStringContainsString('Builder<static>', $issue->recommendation);
+                break;
+            }
+        }
+        $this->assertTrue($scopeRecommendationFound, 'Expected Eloquent scope recommendation with @var and @method annotation guidance');
+    }
+
     public function test_metadata_contains_correct_information(): void
     {
         $analyzer = $this->createAnalyzer();

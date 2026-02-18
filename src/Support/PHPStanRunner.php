@@ -28,6 +28,11 @@ class PHPStanRunner
         // HigherOrderProxy is too magical for Larastan/PHPStan to understand
         // @see https://github.com/larastan/larastan/blob/2e9ed291bdc1969e7f270fb33c9cdf3c912daeb2/docs/errors-to-ignore.md
         '#Call to an undefined method Illuminate\\\\Support\\\\HigherOrder#',
+
+        // Faker uses __call() and __get() magic methods to proxy calls through providers.
+        // PHPStan cannot resolve these dynamic method/property lookups.
+        '#on an unknown class Faker\\\\#',
+        '#(undefined method|undefined static method|undefined property) Faker\\\\#',
     ];
 
     /**

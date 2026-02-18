@@ -747,4 +747,141 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
     {
         $this->assertFalse(OpcacheAnalyzer::$runInCI);
     }
+
+    // Category 11: Comment Detection Bug Fix
+
+    public function test_commented_setting_does_not_report_commented_line(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'php.ini' => implode("\n", [
+                '[opcache]',
+                '; opcache.validate_timestamps=1',
+                ';opcache.memory_consumption=64',
+                '# opcache.max_accelerated_files=5000',
+            ]),
+        ]);
+
+        /** @var OpcacheAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        // @phpstan-ignore-next-line
+        $analyzer->setScenario(true, [
+            'directives' => [
+                'opcache.enable' => true,
+                'opcache.validate_timestamps' => true,
+            ],
+        ]);
+        $analyzer->setPhpIniPath($tempDir.'/php.ini');
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        // Should report line 1 (generic), NOT line 2 (the commented line)
+        $this->assertNotNull($issues[0]->location);
+        $this->assertEquals(1, $issues[0]->location->line);
+    }
+
+    public function test_active_setting_reports_correct_line_number(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'php.ini' => implode("\n", [
+                '[opcache]',
+                '; opcache.validate_timestamps=0',
+                'opcache.enable=1',
+                'opcache.validate_timestamps=1',
+                'opcache.memory_consumption=64',
+            ]),
+        ]);
+
+        /** @var OpcacheAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        // @phpstan-ignore-next-line
+        $analyzer->setScenario(true, [
+            'directives' => [
+                'opcache.enable' => true,
+                'opcache.validate_timestamps' => true,
+                'opcache.memory_consumption' => 64,
+            ],
+        ]);
+        $analyzer->setPhpIniPath($tempDir.'/php.ini');
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+
+        // validate_timestamps is active on line 4 (not commented line 2)
+        $this->assertNotNull($issues[0]->location);
+        $this->assertEquals(4, $issues[0]->location->line);
+
+        // memory_consumption is active on line 5
+        $this->assertNotNull($issues[1]->location);
+        $this->assertEquals(5, $issues[1]->location->line);
+    }
+
+    // Category 12: Vapor / Serverless Support
+
+    public function test_vapor_adjusts_opcache_recommendations(): void
+    {
+        /** @var OpcacheAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        // @phpstan-ignore-next-line
+        $analyzer->setScenario(true, [
+            'directives' => [
+                'opcache.enable' => true,
+                'opcache.memory_consumption' => 64,
+            ],
+        ]);
+        $analyzer->setDeploymentPlatform('vapor');
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        $recommendation = $issues[0]->recommendation;
+        // Uses relative path, not absolute
+        $this->assertStringContainsString('php/conf.d/php.ini', $recommendation);
+        $this->assertStringContainsString('Vapor', $recommendation);
+        $this->assertStringContainsString('read-only', $recommendation);
+        $this->assertStringContainsString('Redeploy', $recommendation);
+        // Should NOT contain "restart PHP" — irrelevant on Vapor
+        $this->assertStringNotContainsString('restart PHP', $recommendation);
+        // Should use relative path, not absolute basePath
+        $this->assertNotNull($this->app);
+        $this->assertStringNotContainsString($this->app->basePath(), $recommendation);
+
+        $this->assertArrayHasKey('deployment_platform', $issues[0]->metadata);
+        $this->assertEquals('vapor', $issues[0]->metadata['deployment_platform']);
+    }
+
+    public function test_traditional_platform_does_not_mention_vapor(): void
+    {
+        /** @var OpcacheAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        // @phpstan-ignore-next-line
+        $analyzer->setScenario(true, [
+            'directives' => [
+                'opcache.enable' => true,
+                'opcache.memory_consumption' => 64,
+            ],
+        ]);
+        // No setDeploymentPlatform() call — traditional server
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        $recommendation = $issues[0]->recommendation;
+        $this->assertStringNotContainsString('Vapor', $recommendation);
+        $this->assertStringNotContainsString('read-only', $recommendation);
+        $this->assertStringNotContainsString('php/conf.d', $recommendation);
+
+        $this->assertArrayNotHasKey('deployment_platform', $issues[0]->metadata);
+    }
 }

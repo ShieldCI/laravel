@@ -1461,4 +1461,319 @@ JS;
         // Should pass: high avg line length indicates minification despite line breaks
         $this->assertPassed($result);
     }
+
+    // Category 7: Mix Manifest Extension Filtering Tests
+
+    public function test_mix_manifest_skips_font_files(): void
+    {
+        // Manifest with fonts AND a CSS file - fonts should be skipped, CSS checked
+        $unminifiedCss = str_repeat("body {\n    color: red;\n}\n", 10);
+
+        $mixManifest = json_encode([
+            '/fonts/vendor/roboto.woff2' => '/fonts/vendor/roboto.woff2?id=abc123',
+            '/fonts/icons.ttf' => '/fonts/icons.ttf?id=def456',
+            '/fonts/glyphs.eot' => '/fonts/glyphs.eot?id=ghi789',
+            '/css/app.css' => '/css/app.css?id=xyz000',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $mixManifest,
+            'public/fonts/vendor/roboto.woff2' => random_bytes(100),
+            'public/fonts/icons.ttf' => random_bytes(100),
+            'public/fonts/glyphs.eot' => random_bytes(100),
+            'public/css/app.css' => $unminifiedCss,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should warn about CSS only, fonts are skipped entirely
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('Mix', $result);
+    }
+
+    public function test_mix_manifest_skips_image_files(): void
+    {
+        // Manifest with images AND a JS file - images should be skipped, JS checked
+        $unminifiedJs = <<<'JS'
+/**
+ * Image gallery module
+ * @module gallery
+ */
+function init() {
+    console.log('gallery');
+}
+
+
+function load() {
+    return true;
+}
+
+module.exports = { init, load };
+JS;
+
+        $mixManifest = json_encode([
+            '/images/logo.png' => '/images/logo.png?id=abc123',
+            '/images/hero.jpg' => '/images/hero.jpg?id=def456',
+            '/images/icon.svg' => '/images/icon.svg?id=ghi789',
+            '/js/app.js' => '/js/app.js?id=xyz000',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $mixManifest,
+            'public/images/logo.png' => random_bytes(100),
+            'public/images/hero.jpg' => random_bytes(100),
+            'public/images/icon.svg' => '<svg></svg>',
+            'public/js/app.js' => $unminifiedJs,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should warn about JS only, images are skipped entirely
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('Mix', $result);
+    }
+
+    public function test_mix_manifest_with_only_non_js_css_files_passes(): void
+    {
+        // Manifest with only fonts and images - nothing to check
+        $mixManifest = json_encode([
+            '/fonts/roboto.woff2' => '/fonts/roboto.woff2?id=abc123',
+            '/images/logo.png' => '/images/logo.png?id=def456',
+            '/fonts/icons.ttf' => '/fonts/icons.ttf?id=ghi789',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $mixManifest,
+            'public/fonts/roboto.woff2' => random_bytes(100),
+            'public/images/logo.png' => random_bytes(100),
+            'public/fonts/icons.ttf' => random_bytes(100),
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - no JS/CSS files to check
+        $this->assertPassed($result);
+    }
+
+    // Category 8: License Banner False Positive Tests
+
+    public function test_small_minified_file_with_license_banner_passes(): void
+    {
+        // Small code-split chunk with TerserPlugin-preserved banner
+        // Under 1KB so falls through to pattern analysis
+        $content = "/*!\n * Bootstrap v5.3.0\n * Copyright 2011-2024 The Bootstrap Authors\n * Licensed under MIT\n */\n";
+        $content .= 'var a=function(){return 1},b=function(){return 2};';
+
+        $tempDir = $this->createTempDirectory([
+            'public/js/chunk.js' => $content,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - license banner is not evidence of unminified code
+        $this->assertPassed($result);
+    }
+
+    public function test_small_minified_file_with_at_license_banner_passes(): void
+    {
+        // Small chunk with @license annotation preserved by TerserPlugin
+        $content = "/**\n * @license MIT\n * react-dom v18.2.0\n */\n";
+        $content .= 'var c=function(e){return e.toString()};module.exports=c;';
+
+        $tempDir = $this->createTempDirectory([
+            'public/js/vendor.js' => $content,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - @license comments are preserved by build tools
+        $this->assertPassed($result);
+    }
+
+    public function test_small_minified_file_with_at_preserve_banner_passes(): void
+    {
+        // Small chunk with @preserve annotation
+        $content = "/*!\n * @preserve\n * jQuery v3.7.1\n * Copyright OpenJS Foundation\n */\n";
+        $content .= 'var $=function(s){return document.querySelector(s)};';
+
+        $tempDir = $this->createTempDirectory([
+            'public/js/jquery.js' => $content,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - @preserve comments are preserved by build tools
+        $this->assertPassed($result);
+    }
+
+    public function test_jsdoc_comment_without_license_keywords_still_detected(): void
+    {
+        // Real JSDoc (no license keywords) should still be flagged
+        $content = "/**\n * Calculate the sum of two numbers\n * @param {number} a\n * @param {number} b\n */\nfunction add(a,b){return a+b}";
+
+        $tempDir = $this->createTempDirectory([
+            'public/js/utils.js' => $content,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should warn - genuine JSDoc without license keywords indicates unminified code
+        $this->assertWarning($result);
+    }
+
+    // Category 9: Minified Sibling Skipping Tests (TinyMCE pattern)
+
+    public function test_mix_manifest_skips_file_when_min_sibling_exists(): void
+    {
+        // TinyMCE pattern: plugin.js (unminified) + plugin.min.js (minified) both in manifest
+        // The unminified version should be skipped since the .min. sibling exists on disk
+        $unminifiedJs = <<<'JS'
+/**
+ * TinyMCE Accordion Plugin
+ * @module accordion
+ */
+(function() {
+    'use strict';
+
+    var plugin = function(editor) {
+        editor.addCommand('mceAccordion', function() {
+            console.log('accordion');
+        });
+    };
+
+    tinymce.PluginManager.add('accordion', plugin);
+})();
+JS;
+
+        $minifiedJs = str_repeat('!function(){tinymce.PluginManager.add("accordion",function(e){e.addCommand("mceAccordion",function(){})})}();', 5);
+
+        $mixManifest = json_encode([
+            '/tinymce/plugins/accordion/plugin.js' => '/tinymce/plugins/accordion/plugin.js?id=abc123',
+            '/tinymce/plugins/accordion/plugin.min.js' => '/tinymce/plugins/accordion/plugin.min.js?id=def456',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $mixManifest,
+            'public/tinymce/plugins/accordion/plugin.js' => $unminifiedJs,
+            'public/tinymce/plugins/accordion/plugin.min.js' => $minifiedJs,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - plugin.js is skipped because plugin.min.js exists
+        $this->assertPassed($result);
+    }
+
+    public function test_mix_manifest_skips_css_when_min_sibling_exists(): void
+    {
+        // Same pattern for CSS: skin.css + skin.min.css
+        $unminifiedCss = str_repeat("body {\n    color: red;\n}\n", 10);
+        $minifiedCss = str_repeat('body{color:red;}', 100);
+
+        $mixManifest = json_encode([
+            '/tinymce/skins/ui/oxide/skin.css' => '/tinymce/skins/ui/oxide/skin.css?id=abc123',
+            '/tinymce/skins/ui/oxide/skin.min.css' => '/tinymce/skins/ui/oxide/skin.min.css?id=def456',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $mixManifest,
+            'public/tinymce/skins/ui/oxide/skin.css' => $unminifiedCss,
+            'public/tinymce/skins/ui/oxide/skin.min.css' => $minifiedCss,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - skin.css is skipped because skin.min.css exists
+        $this->assertPassed($result);
+    }
+
+    public function test_mix_manifest_flags_unminified_js_without_min_sibling(): void
+    {
+        // If there's NO .min.js sibling, the unminified file should still be flagged
+        $unminifiedJs = <<<'JS'
+/**
+ * Application module
+ * @module app
+ */
+function init() {
+    console.log('init');
+}
+
+
+function setup() {
+    return true;
+}
+
+module.exports = { init, setup };
+JS;
+
+        $mixManifest = json_encode([
+            '/js/app.js' => '/js/app.js?id=abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $mixManifest,
+            'public/js/app.js' => $unminifiedJs,
+            // No app.min.js exists
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should warn - no minified sibling, so the unminified file is checked and flagged
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('Mix', $result);
+    }
+
+    public function test_mix_manifest_skips_pre_minified_entries(): void
+    {
+        // Entries with .min. in the name should be skipped entirely (consistent with standalone)
+        $minifiedJs = str_repeat('function x(){return 1;}', 100);
+
+        $mixManifest = json_encode([
+            '/js/vendor.min.js' => '/js/vendor.min.js?id=abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $mixManifest,
+            'public/js/vendor.min.js' => $minifiedJs,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - .min. files are always skipped
+        $this->assertPassed($result);
+    }
 }

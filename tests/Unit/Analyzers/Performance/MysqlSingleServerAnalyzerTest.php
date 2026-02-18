@@ -1012,6 +1012,174 @@ class MysqlSingleServerAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('/var/lib/mysql/mysql.sock', $recommendation);
     }
 
+    // Category 8: SSL Connection Detection (False Positive Prevention)
+
+    public function test_skips_connection_with_ssl_ca_configured(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'database' => [
+                'default' => 'mysql',
+                'connections' => [
+                    'mysql' => [
+                        'driver' => 'mysql',
+                        'host' => '127.0.0.1',
+                        'options' => [
+                            \PDO::MYSQL_ATTR_SSL_CA => '/path/to/ca.pem',
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString('optimally configured', $result->getMessage());
+    }
+
+    public function test_mixed_ssl_and_non_ssl_connections_only_flags_non_ssl(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'database' => [
+                'default' => 'mysql',
+                'connections' => [
+                    'mysql' => [
+                        'driver' => 'mysql',
+                        'host' => '127.0.0.1',
+                        'database' => 'laravel',
+                    ],
+                    'mysql_ssl' => [
+                        'driver' => 'mysql',
+                        'host' => '127.0.0.1',
+                        'database' => 'laravel',
+                        'options' => [
+                            \PDO::MYSQL_ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA', '/path/to/rds-ca.pem'),
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertEquals('mysql', $issues[0]->metadata['connection_name']);
+    }
+
+    public function test_ssl_with_multiple_ssl_attributes(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'database' => [
+                'default' => 'mysql',
+                'connections' => [
+                    'mysql' => [
+                        'driver' => 'mysql',
+                        'host' => 'localhost',
+                        'options' => [
+                            \PDO::MYSQL_ATTR_SSL_KEY => '/path/to/client-key.pem',
+                            \PDO::MYSQL_ATTR_SSL_CERT => '/path/to/client-cert.pem',
+                            \PDO::MYSQL_ATTR_SSL_CA => '/path/to/ca.pem',
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_empty_options_array_does_not_suppress_warning(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'database' => [
+                'default' => 'mysql',
+                'connections' => [
+                    'mysql' => [
+                        'driver' => 'mysql',
+                        'host' => 'localhost',
+                        'options' => [],
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('Unix socket', $result);
+    }
+
+    public function test_null_ssl_value_does_not_suppress_warning(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'database' => [
+                'default' => 'mysql',
+                'connections' => [
+                    'mysql' => [
+                        'driver' => 'mysql',
+                        'host' => 'localhost',
+                        'options' => [
+                            \PDO::MYSQL_ATTR_SSL_CA => null,
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('Unix socket', $result);
+    }
+
+    public function test_empty_string_ssl_value_does_not_suppress_warning(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'database' => [
+                'default' => 'mysql',
+                'connections' => [
+                    'mysql' => [
+                        'driver' => 'mysql',
+                        'host' => 'localhost',
+                        'options' => [
+                            \PDO::MYSQL_ATTR_SSL_CA => '',
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('Unix socket', $result);
+    }
+
+    public function test_non_array_options_does_not_suppress_warning(): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'database' => [
+                'default' => 'mysql',
+                'connections' => [
+                    'mysql' => [
+                        'driver' => 'mysql',
+                        'host' => 'localhost',
+                        'options' => 'not-an-array',
+                    ],
+                ],
+            ],
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('Unix socket', $result);
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();

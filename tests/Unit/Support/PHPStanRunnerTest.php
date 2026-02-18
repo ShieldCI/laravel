@@ -121,6 +121,168 @@ class PHPStanRunnerTest extends TestCase
         $this->assertCount(2, $issues);
     }
 
+    public function test_filters_faker_generator_unknown_class_false_positive(): void
+    {
+        $this->createMockPHPStan([
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 10,
+                'message' => 'Call to method unique() on an unknown class Faker\Generator.',
+            ],
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 15,
+                'message' => 'Undefined variable: $realIssue',
+            ],
+        ]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $issues = $runner->getIssues();
+
+        $this->assertCount(1, $issues);
+        $firstIssue = $issues->first();
+        $this->assertNotNull($firstIssue);
+        $this->assertStringContainsString('Undefined variable', $firstIssue['message']);
+    }
+
+    public function test_filters_faker_undefined_method_false_positive(): void
+    {
+        $this->createMockPHPStan([
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 10,
+                'message' => 'Call to an undefined method Faker\Generator::randomNumber().',
+            ],
+        ]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $issues = $runner->getIssues();
+
+        $this->assertCount(0, $issues);
+    }
+
+    public function test_filters_faker_proxy_generators_false_positives(): void
+    {
+        $this->createMockPHPStan([
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 10,
+                'message' => 'Call to method randomNumber() on an unknown class Faker\UniqueGenerator.',
+            ],
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 15,
+                'message' => 'Call to method name() on an unknown class Faker\ValidGenerator.',
+            ],
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 20,
+                'message' => 'Call to method boolean() on an unknown class Faker\ChanceGenerator.',
+            ],
+        ]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $issues = $runner->getIssues();
+
+        $this->assertCount(0, $issues);
+    }
+
+    public function test_filters_faker_property_access_false_positives(): void
+    {
+        $this->createMockPHPStan([
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 10,
+                'message' => 'Access to property $name on an unknown class Faker\Generator.',
+            ],
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 15,
+                'message' => 'Access to an undefined property Faker\Generator::$name.',
+            ],
+        ]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $issues = $runner->getIssues();
+
+        $this->assertCount(0, $issues);
+    }
+
+    public function test_does_not_filter_non_faker_namespace_issues(): void
+    {
+        $this->createMockPHPStan([
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 10,
+                'message' => 'Call to an undefined method App\Services\FakerService::generate().',
+            ],
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 15,
+                'message' => 'Call to an undefined method App\Models\User::fake().',
+            ],
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 20,
+                'message' => 'Class Faker\Generator not found.',
+            ],
+        ]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $issues = $runner->getIssues();
+
+        // All three are real issues — none should be filtered
+        $this->assertCount(3, $issues);
+    }
+
+    public function test_filters_faker_false_positives_while_keeping_real_issues(): void
+    {
+        $this->createMockPHPStan([
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 10,
+                'message' => 'Call to method unique() on an unknown class Faker\Generator.',
+            ],
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 15,
+                'message' => 'Undefined variable: $faker',
+            ],
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 20,
+                'message' => 'Call to an undefined method Faker\Generator::randomNumber().',
+            ],
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 25,
+                'message' => 'Method App\Services\UserService::create() has no return type specified.',
+            ],
+        ]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $issues = $runner->getIssues();
+
+        // 2 Faker FPs removed, 2 real issues kept
+        $this->assertCount(2, $issues);
+
+        $messages = $issues->pluck('message')->toArray();
+        $this->assertContains('Undefined variable: $faker', $messages);
+        $this->assertContains('Method App\Services\UserService::create() has no return type specified.', $messages);
+    }
+
     public function test_generates_config_with_larastan_extension(): void
     {
         // Create mock Larastan extension

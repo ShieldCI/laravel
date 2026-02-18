@@ -9,6 +9,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
+use ShieldCI\AnalyzersCore\Support\PlatformDetector;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
@@ -126,9 +127,31 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         $this->extensionLoadedOverride = $loaded;
     }
 
+    /**
+     * Override the php.ini path (testing only).
+     */
+    public function setPhpIniPath(string $phpIniPath): void
+    {
+        $this->phpIniPathOverride = $phpIniPath;
+        $this->phpIniLinesCache = null;
+    }
+
+    /**
+     * Override deployment platform detection (testing only).
+     */
+    public function setDeploymentPlatform(string $platform): void
+    {
+        $this->deploymentPlatformOverride = $platform;
+    }
+
+    /** @var array<string, mixed>|null */
     private ?array $configurationOverride = null;
 
     private ?bool $extensionLoadedOverride = null;
+
+    private ?string $phpIniPathOverride = null;
+
+    private ?string $deploymentPlatformOverride = null;
 
     private ?string $cachedPhpIniPath = null;
 
@@ -206,6 +229,10 @@ class OpcacheAnalyzer extends AbstractAnalyzer
      */
     private function getPhpIniPath(): string
     {
+        if (is_string($this->phpIniPathOverride) && $this->phpIniPathOverride !== '') {
+            return $this->phpIniPathOverride;
+        }
+
         $phpIniPath = php_ini_loaded_file();
 
         return $phpIniPath !== false && is_string($phpIniPath) ? $phpIniPath : 'php.ini';
@@ -218,6 +245,39 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         }
 
         return extension_loaded('Zend OPcache') || extension_loaded('opcache');
+    }
+
+    /**
+     * Check if the deployment platform is Laravel Vapor or another serverless environment.
+     */
+    private function isVaporOrServerless(): bool
+    {
+        if ($this->deploymentPlatformOverride !== null) {
+            return in_array($this->deploymentPlatformOverride, ['vapor', 'serverless'], true);
+        }
+
+        return PlatformDetector::isLaravelVapor($this->getBasePath())
+            || PlatformDetector::isServerless();
+    }
+
+    /**
+     * Build a Vapor-specific recommendation that replaces the original.
+     *
+     * Uses relative path and Vapor-appropriate guidance (redeploy, not restart).
+     */
+    private function buildVaporRecommendation(string $setting, string $recommendation): string
+    {
+        // Extract the setting value from the original recommendation (e.g., "opcache.validate_timestamps=0")
+        if (preg_match('/["\']('.preg_quote($setting, '/').'[^"\']*)["\']/', $recommendation, $matches) === 1) {
+            $settingDirective = $matches[1];
+        } else {
+            $settingDirective = $setting;
+        }
+
+        return sprintf(
+            'Set "%s" in your project\'s php/conf.d/php.ini (system php.ini is read-only on Laravel Vapor). Redeploy after changes.',
+            $settingDirective
+        );
     }
 
     /**
@@ -424,6 +484,11 @@ class OpcacheAnalyzer extends AbstractAnalyzer
     ): Issue {
         $line = $this->getSettingLine($phpIniPath, $setting);
 
+        if ($this->isVaporOrServerless()) {
+            $recommendation = $this->buildVaporRecommendation($setting, $recommendation);
+            $metadata['deployment_platform'] = $this->deploymentPlatformOverride ?? 'vapor';
+        }
+
         // Try to get code snippet, but handle open_basedir restrictions gracefully
         return $this->createIssueWithSnippet(
             message: $message,
@@ -442,14 +507,13 @@ class OpcacheAnalyzer extends AbstractAnalyzer
     private function getSettingLine(string $phpIniPath, string $setting): int
     {
         $lines = $this->getPhpIniLines($phpIniPath);
-        $commentedLine = null;
 
         foreach ($lines as $index => $line) {
             if (! is_string($line)) {
                 continue;
             }
 
-            // First, check for active (uncommented) settings
+            // Only match active (uncommented) settings — skip commented lines
             $lineWithoutComments = preg_replace('/[;#].*$/', '', $line);
             $lineWithoutComments = preg_replace('/\/\/.*$/', '', $lineWithoutComments ?? '');
 
@@ -457,18 +521,9 @@ class OpcacheAnalyzer extends AbstractAnalyzer
             if (preg_match($pattern, $lineWithoutComments ?? '') === 1) {
                 return $index + 1;
             }
-
-            // Also check for commented settings (as fallback)
-            if ($commentedLine === null) {
-                $commentedPattern = '/^\s*[;#]\s*'.preg_quote($setting, '/').'\s*=/i';
-                if (preg_match($commentedPattern, $line) === 1) {
-                    $commentedLine = $index + 1;
-                }
-            }
         }
 
-        // Return commented line if found, otherwise default to 1
-        return $commentedLine ?? 1;
+        return 1;
     }
 
     /**

@@ -1577,62 +1577,13 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 }
             }
 
-            // Check for 'password' in model $fillable or $hidden arrays
-            if ($this->hasPasswordInModelProperty($ast)) {
-                return $this->projectUsesPasswordsCache = true;
-            }
-
             // Check for Hash::make()/bcrypt()/password_hash() with password-related args
             if ($this->hasPasswordHashingCall($ast)) {
                 return $this->projectUsesPasswordsCache = true;
             }
-
-            // Check for $table->string('password') in migrations
-            if (str_contains($file, '/migrations/')) {
-                if ($this->hasMigrationPasswordColumn($ast)) {
-                    return $this->projectUsesPasswordsCache = true;
-                }
-            }
         }
 
         return $this->projectUsesPasswordsCache = false;
-    }
-
-    /**
-     * Check if AST contains a model $fillable or $hidden property with 'password'.
-     *
-     * @param  array<Node>  $ast
-     */
-    private function hasPasswordInModelProperty(array $ast): bool
-    {
-        /** @var array<Node\Stmt\Property> $properties */
-        $properties = $this->parser->findNodes($ast, Node\Stmt\Property::class);
-
-        foreach ($properties as $prop) {
-            if (! $prop instanceof Node\Stmt\Property) {
-                continue;
-            }
-
-            $propName = $prop->props[0]->name->name ?? '';
-            if (! in_array($propName, ['fillable', 'hidden'], true)) {
-                continue;
-            }
-
-            $defaultValue = $prop->props[0]->default ?? null;
-            if (! $defaultValue instanceof Node\Expr\Array_) {
-                continue;
-            }
-
-            foreach ($defaultValue->items as $item) {
-                if ($item instanceof Node\Expr\ArrayItem
-                    && $item->value instanceof Node\Scalar\String_
-                    && $item->value->value === 'password') {
-                    return true;
-                }
-            }
-        }
-
-        return false;
     }
 
     /**
@@ -1672,37 +1623,6 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 && isset($call->args[0])
                 && $call->args[0] instanceof Node\Arg
                 && $this->isPasswordRelatedArgument($call->args[0]->value)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Check if AST contains $table->string('password') migration column.
-     *
-     * @param  array<Node>  $ast
-     */
-    private function hasMigrationPasswordColumn(array $ast): bool
-    {
-        /** @var array<Node\Expr\MethodCall> $methodCalls */
-        $methodCalls = $this->parser->findNodes($ast, Node\Expr\MethodCall::class);
-
-        foreach ($methodCalls as $call) {
-            if (! $call instanceof Node\Expr\MethodCall) {
-                continue;
-            }
-
-            if (! $call->name instanceof Node\Identifier || $call->name->name !== 'string') {
-                continue;
-            }
-
-            if (! empty($call->args)
-                && isset($call->args[0])
-                && $call->args[0] instanceof Node\Arg
-                && $call->args[0]->value instanceof Node\Scalar\String_
-                && $call->args[0]->value->value === 'password') {
                 return true;
             }
         }

@@ -1079,20 +1079,25 @@ class AppServiceProvider
 }
 PHP;
 
-        $userModel = <<<'PHP'
+        $controller = <<<'PHP'
 <?php
 
-namespace App\Models;
+namespace App\Http\Controllers;
 
-class User
+use Illuminate\Support\Facades\Auth;
+
+class LoginController
 {
-    protected $fillable = ['name', 'email', 'password'];
+    public function login($request)
+    {
+        Auth::attempt($request->only('email', 'password'));
+    }
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
             'app/Providers/AppServiceProvider.php' => $providerCode,
-            'app/Models/User.php' => $userModel,
+            'app/Http/Controllers/LoginController.php' => $controller,
             'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
         ]);
 
@@ -5127,7 +5132,7 @@ PHP;
 
     // ==================== Password Detection Coverage Tests ====================
 
-    public function test_detects_password_usage_via_migration_column(): void
+    public function test_no_password_defaults_issue_for_migration_only(): void
     {
         $providerCode = <<<'PHP'
 <?php
@@ -5173,10 +5178,17 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertHasIssueContaining('No Password::defaults()', $result);
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringNotContainsString(
+                'No Password::defaults()',
+                $issue->message,
+                'Migration password column alone should not trigger Password::defaults() warning'
+            );
+        }
+        $this->addToAssertionCount(1);
     }
 
-    public function test_detects_password_usage_via_fillable_property(): void
+    public function test_no_password_defaults_issue_for_fillable_only(): void
     {
         $providerCode = <<<'PHP'
 <?php
@@ -5212,10 +5224,17 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertHasIssueContaining('No Password::defaults()', $result);
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringNotContainsString(
+                'No Password::defaults()',
+                $issue->message,
+                'Model $fillable with password alone should not trigger Password::defaults() warning'
+            );
+        }
+        $this->addToAssertionCount(1);
     }
 
-    public function test_detects_password_usage_via_hidden_property(): void
+    public function test_no_password_defaults_issue_for_hidden_only(): void
     {
         $providerCode = <<<'PHP'
 <?php
@@ -5251,7 +5270,14 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertHasIssueContaining('No Password::defaults()', $result);
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringNotContainsString(
+                'No Password::defaults()',
+                $issue->message,
+                'Model $hidden with password alone should not trigger Password::defaults() warning'
+            );
+        }
+        $this->addToAssertionCount(1);
     }
 
     public function test_detects_password_usage_via_auth_attempt(): void

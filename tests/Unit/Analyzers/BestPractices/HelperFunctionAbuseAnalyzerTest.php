@@ -33,9 +33,9 @@ class HelperFunctionAbuseAnalyzerTest extends AnalyzerTestCase
         $code = <<<'PHP'
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Services;
 
-class OrderController
+class OrderService
 {
     public function store()
     {
@@ -50,7 +50,7 @@ class OrderController
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/OrderController.php' => $code,
+            'app/Services/OrderService.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -68,12 +68,12 @@ PHP;
         $code = <<<'PHP'
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Services;
 
-class OrderController
+class OrderService
 {
     public function __construct(
-        private OrderService $orders,
+        private OrderRepository $orders,
         private CacheManager $cache
     ) {}
 
@@ -87,7 +87,7 @@ class OrderController
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/OrderController.php' => $code,
+            'app/Services/OrderService.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -104,9 +104,9 @@ PHP;
         $code = <<<'PHP'
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Services;
 
-class OrderController
+class OrderService
 {
     public function store()
     {
@@ -121,7 +121,7 @@ class OrderController
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/OrderController.php' => $code,
+            'app/Services/OrderService.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -138,9 +138,9 @@ PHP;
         $code = <<<'PHP'
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Services;
 
-class OrderController
+class OrderService
 {
     public function store()
     {
@@ -154,7 +154,7 @@ class OrderController
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/OrderController.php' => $code,
+            'app/Services/OrderService.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -171,9 +171,9 @@ PHP;
         $code = <<<'PHP'
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Services;
 
-class OrderController
+class OrderService
 {
     public function store()
     {
@@ -185,21 +185,21 @@ class OrderController
         event(new E1());
         session()->put('a', 'b');
         config('app.name');
-        route('home');
         view('home');
-        url('home');
         redirect()->back();
         response()->json([]);
         app()->make('service');
         abort(404);
         dispatch(new Job());
+        resolve(Service::class);
+        validator([], []);
         // 15 dependency-hiding helpers = 10 over threshold (Medium severity)
     }
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/OrderController.php' => $code,
+            'app/Services/OrderService.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -219,9 +219,9 @@ PHP;
         $code = <<<'PHP'
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Services;
 
-class MassiveController
+class MassiveService
 {
     public function store()
     {
@@ -237,10 +237,8 @@ class MassiveController
         redirect()->back();
         request()->all();
         response()->json([]);
-        route('home');
         session()->put('a', 'b');
         storage_path('app');
-        url('home');
         view('home');
         abort(404);
         abort_if(false, 404);
@@ -253,13 +251,15 @@ class MassiveController
         report(new Exception());
         // Need more to hit 26 total (21+ over threshold = High)
         auth()->check();
+        app()->make('service2');
+        cache()->get('key');
         // 26 dependency-hiding helpers = 21 over threshold (High severity)
     }
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/MassiveController.php' => $code,
+            'app/Services/MassiveService.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -293,9 +293,9 @@ PHP;
         $code = <<<'PHP'
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Services;
 
-class OrderController
+class OrderService
 {
     public function store()
     {
@@ -309,7 +309,7 @@ class OrderController
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/OrderController.php' => $code,
+            'app/Services/OrderService.php' => $code,
         ]);
 
         $analyzer->setBasePath($tempDir);
@@ -340,9 +340,9 @@ PHP;
         $code = <<<'PHP'
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Services;
 
-class OrderController
+class OrderService
 {
     public function store()
     {
@@ -358,7 +358,7 @@ class OrderController
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/OrderController.php' => $code,
+            'app/Services/OrderService.php' => $code,
         ]);
 
         $analyzer->setBasePath($tempDir);
@@ -389,9 +389,9 @@ PHP;
         $code = <<<'PHP'
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Services;
 
-class OrderController
+class OrderService
 {
     public function store()
     {
@@ -407,7 +407,7 @@ class OrderController
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/OrderController.php' => $code,
+            'app/Services/OrderService.php' => $code,
         ]);
 
         $analyzer->setBasePath($tempDir);
@@ -423,9 +423,9 @@ PHP;
         $code = <<<'PHP'
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Services;
 
-class GoodController
+class GoodService
 {
     public function index()
     {
@@ -433,7 +433,7 @@ class GoodController
     }
 }
 
-class BadController
+class BadService
 {
     public function store()
     {
@@ -449,7 +449,7 @@ class BadController
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/Controllers.php' => $code,
+            'app/Services/Services.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -461,7 +461,7 @@ PHP;
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertStringContainsString('BadController', $issues[0]->message);
+        $this->assertStringContainsString('BadService', $issues[0]->message);
     }
 
     public function test_anonymous_classes_are_skipped(): void
@@ -610,9 +610,9 @@ PHP;
         $code = <<<'PHP'
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Services;
 
-class OrderController
+class OrderService
 {
     public function store()
     {
@@ -628,7 +628,7 @@ class OrderController
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/OrderController.php' => $code,
+            'app/Services/OrderService.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -755,9 +755,9 @@ PHP;
         $code = <<<'PHP'
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Services;
 
-class OrderController
+class OrderService
 {
     public function store()
     {
@@ -774,7 +774,7 @@ class OrderController
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/OrderController.php' => $code,
+            'app/Services/OrderService.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -795,9 +795,9 @@ PHP;
         $code = <<<'PHP'
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Services;
 
-class OrderController
+class OrderService
 {
     public function store()
     {
@@ -812,7 +812,7 @@ class OrderController
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/OrderController.php' => $code,
+            'app/Services/OrderService.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -1013,9 +1013,9 @@ PHP;
         $code = <<<'PHP'
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Services;
 
-class OrderController
+class OrderService
 {
     public function store()
     {
@@ -1035,7 +1035,7 @@ class OrderController
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/OrderController.php' => $code,
+            'app/Services/OrderService.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -1052,9 +1052,9 @@ PHP;
         $code = <<<'PHP'
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Services;
 
-class OrderController
+class OrderService
 {
     public function store()
     {
@@ -1072,7 +1072,7 @@ class OrderController
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/OrderController.php' => $code,
+            'app/Services/OrderService.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -1182,36 +1182,35 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_controller_with_mixed_helpers(): void
+    public function test_excludes_controllers(): void
     {
         $code = <<<'PHP'
 <?php
 
 namespace App\Http\Controllers;
 
-class OrderController
+class AdminController
 {
-    public function store()
+    public function dashboard()
     {
-        // 5 dependency-hiding helpers (at threshold - passes)
-        auth()->user();
-        request()->all();
-        cache()->put('key', 'value');
-        logger()->info('test');
-        event(new Event());
-
-        // These should NOT be counted:
-        collect([1, 2, 3]);  // utility
-        tap($obj, fn($x) => $x);  // utility
-        now();  // utility
-        dd($debug);  // debug
-        bcrypt('password');  // low priority
+        response()->json([]);
+        response()->view('admin');
+        response()->download('file');
+        response()->stream(fn() => null);
+        response()->redirect('/');
+        view('admin.dashboard');
+        view('admin.users');
+        view('admin.settings');
+        view('admin.reports');
+        config('admin.theme');
+        config('admin.locale');
+        // 11 helpers but in Controller - should pass (whitelisted)
     }
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/OrderController.php' => $code,
+            'app/Http/Controllers/AdminController.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -1220,6 +1219,154 @@ PHP;
 
         $result = $analyzer->analyze();
 
+        $this->assertPassed($result);
+    }
+
+    public function test_excludes_jobs(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Jobs;
+
+class DispatchDealEmail
+{
+    public function handle()
+    {
+        config('services.postmark.token');
+        config('services.postmark.timeout');
+        config('mail.from.address');
+        config('services.slack.webhook.url');
+        config('services.slack.webhook.url');
+        config('services.slack.webhook.url');
+        // 6 config() calls but in app/Jobs - should pass (whitelisted directory)
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Jobs/DispatchDealEmail.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_excludes_listeners(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Listeners;
+
+class SendWelcomeEmail
+{
+    public function handle()
+    {
+        auth()->user();
+        config('mail.from.address');
+        cache()->put('key', 'value');
+        logger()->info('order created');
+        event(new NotificationSent());
+        session()->put('last_order', 'id');
+        // 6 helpers but in app/Listeners - should pass (whitelisted directory)
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Listeners/SendWelcomeEmail.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_excludes_middleware(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class EnsureTokenIsValid
+{
+    public function handle()
+    {
+        auth()->check();
+        request()->ip();
+        config('admin.allowed_ips');
+        logger()->info('admin access');
+        redirect()->route('login');
+        abort(403);
+        // 6 helpers but in app/Http/Middleware - should pass (whitelisted directory)
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Middleware/EnsureTokenIsValid.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_route_and_url_not_counted_by_default(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Deal
+{
+    public function getUrls(): array
+    {
+        // URL helpers should NOT be counted
+        route('deals.index');
+        route('deals.show', $this);
+        route('deals.edit', $this);
+        route('deals.update', $this);
+        route('deals.delete', $this);
+        url('/deals');
+        url('/deals/' . $this->id);
+
+        // Only 4 dependency-hiding helpers (below threshold)
+        config('deals.enabled');
+        cache()->get('deals');
+        auth()->user();
+        logger()->info('urls generated');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Deal.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // route() and url() are NOT counted, so only 4 dependency-hiding helpers (below threshold of 5)
         $this->assertPassed($result);
     }
 
@@ -1244,9 +1391,9 @@ PHP;
         $code = <<<'PHP'
 <?php
 
-namespace App\Http\Controllers;
+namespace App\Services;
 
-class OrderController
+class OrderService
 {
     public function store()
     {
@@ -1260,7 +1407,7 @@ class OrderController
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Controllers/OrderController.php' => $code,
+            'app/Services/OrderService.php' => $code,
         ]);
 
         $analyzer->setBasePath($tempDir);
@@ -1281,7 +1428,7 @@ PHP;
 
 namespace App\Contests;
 
-class GameController
+class GameService
 {
     public function play()
     {
@@ -1297,7 +1444,7 @@ class GameController
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/contests/GameController.php' => $code,
+            'app/contests/GameService.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();

@@ -1229,7 +1229,7 @@ PHP;
 
 namespace App\Jobs;
 
-class DispatchDealEmailJob
+class DispatchDealEmail
 {
     public function handle()
     {
@@ -1239,13 +1239,13 @@ class DispatchDealEmailJob
         config('services.slack.webhook.url');
         config('services.slack.webhook.url');
         config('services.slack.webhook.url');
-        // 6 config() calls but in Job - should pass (whitelisted)
+        // 6 config() calls but in app/Jobs - should pass (whitelisted directory)
     }
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Jobs/DispatchDealEmailJob.php' => $code,
+            'app/Jobs/DispatchDealEmail.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -1264,7 +1264,7 @@ PHP;
 
 namespace App\Listeners;
 
-class OrderCreatedListener
+class SendWelcomeEmail
 {
     public function handle()
     {
@@ -1274,13 +1274,13 @@ class OrderCreatedListener
         logger()->info('order created');
         event(new NotificationSent());
         session()->put('last_order', 'id');
-        // 6 helpers but in Listener - should pass (whitelisted)
+        // 6 helpers but in app/Listeners - should pass (whitelisted directory)
     }
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Listeners/OrderCreatedListener.php' => $code,
+            'app/Listeners/SendWelcomeEmail.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -1299,7 +1299,7 @@ PHP;
 
 namespace App\Http\Middleware;
 
-class EnsureAdminMiddleware
+class EnsureTokenIsValid
 {
     public function handle()
     {
@@ -1309,13 +1309,13 @@ class EnsureAdminMiddleware
         logger()->info('admin access');
         redirect()->route('login');
         abort(403);
-        // 6 helpers but in Middleware - should pass (whitelisted)
+        // 6 helpers but in app/Http/Middleware - should pass (whitelisted directory)
     }
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Middleware/EnsureAdminMiddleware.php' => $code,
+            'app/Http/Middleware/EnsureTokenIsValid.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();

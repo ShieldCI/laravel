@@ -109,6 +109,9 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
         'database/migrations',
         'database/seeders',
         'database/factories',
+        'app/Jobs',
+        'app/Listeners',
+        'app/Http/Middleware',
     ];
 
     /** @var array<string> Default class patterns to whitelist */

@@ -545,7 +545,7 @@ PHP;
         $metadata = $analyzer->getMetadata();
 
         $this->assertSame('phpstan', $metadata->id);
-        $this->assertSame('PHPStan Static Analysis', $metadata->name);
+        $this->assertSame('PHPStan Static Analyzer', $metadata->name);
         $this->assertStringContainsString('PHPStan', $metadata->description);
         $this->assertStringContainsString('static analysis', $metadata->description);
     }

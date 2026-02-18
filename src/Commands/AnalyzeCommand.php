@@ -155,11 +155,9 @@ class AnalyzeCommand extends Command
             $analyzerIds = array_map('trim', explode(',', $analyzerOption));
             $analyzerIds = array_filter($analyzerIds, fn (string $id) => $id !== '');
 
-            if (count($analyzerIds) === 1) {
-                $this->line("Running analyzer: {$analyzerIds[0]}");
-            } else {
-                $this->line('Running analyzers: '.implode(', ', $analyzerIds));
-            }
+            $displayName = $this->resolveAnalyzerDisplayName($manager, $analyzerIds);
+            $label = count($analyzerIds) === 1 ? 'Running analyzer' : 'Running analyzers';
+            $this->line("{$label}: {$displayName}");
             $this->newLine();
 
             $current = 0;
@@ -375,11 +373,9 @@ class AnalyzeCommand extends Command
             $analyzerIds = array_map('trim', explode(',', $analyzerOption));
             $analyzerIds = array_filter($analyzerIds, fn (string $id) => $id !== '');
 
-            if (count($analyzerIds) === 1) {
-                $this->line("Running analyzer: {$analyzerIds[0]}");
-            } else {
-                $this->line('Running analyzers: '.implode(', ', $analyzerIds));
-            }
+            $displayName = $this->resolveAnalyzerDisplayName($manager, $analyzerIds);
+            $label = count($analyzerIds) === 1 ? 'Running analyzer' : 'Running analyzers';
+            $this->line("{$label}: {$displayName}");
 
             $results = [];
             foreach ($analyzerIds as $analyzerId) {
@@ -1522,6 +1518,37 @@ class AnalyzeCommand extends Command
         }
 
         return $message;
+    }
+
+    /**
+     * Resolve analyzer IDs to a human-readable display string.
+     *
+     * Single: "SQL Injection Analyzer"
+     * Multiple: "SQL Injection, XSS Vulnerabilities and PHPStan Static Analyzers"
+     *
+     * @param  array<int, string>  $analyzerIds
+     */
+    private function resolveAnalyzerDisplayName(AnalyzerManager $manager, array $analyzerIds): string
+    {
+        $names = array_map(function (string $id) use ($manager) {
+            $analyzer = $manager->getAnalyzers()->first(fn ($a) => $a->getId() === $id);
+
+            return $analyzer ? $analyzer->getMetadata()->name : $id;
+        }, $analyzerIds);
+
+        if (count($names) === 1) {
+            return $names[0];
+        }
+
+        // Strip " Analyzer" suffix from each name, join naturally, append "Analyzers"
+        $shortNames = array_map(
+            fn (string $name) => str_ends_with($name, ' Analyzer') ? substr($name, 0, -9) : $name,
+            $names
+        );
+
+        $last = array_pop($shortNames);
+
+        return implode(', ', $shortNames).' and '.$last.' Analyzers';
     }
 
     /**

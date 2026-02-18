@@ -253,7 +253,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
     {
         return new AnalyzerMetadata(
             id: 'phpstan',
-            name: 'PHPStan Static Analysis',
+            name: 'PHPStan Static Analyzer',
             description: 'Comprehensive static analysis using PHPStan to detect type errors, undefined references, and code quality issues',
             category: Category::Reliability,
             severity: Severity::High,

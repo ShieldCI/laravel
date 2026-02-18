@@ -249,6 +249,27 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
                 $normalizedPath = ltrim($path, DIRECTORY_SEPARATOR.'/');
             }
 
+            // Only check JS and CSS files - skip fonts, images, and other assets
+            $extension = strtolower(pathinfo($normalizedPath, PATHINFO_EXTENSION));
+            if ($extension !== 'js' && $extension !== 'css') {
+                continue;
+            }
+
+            // Skip pre-minified files (consistent with checkStandaloneAssets)
+            if (str_contains($normalizedPath, '.min.')) {
+                continue;
+            }
+
+            // Skip if a minified sibling exists on disk (e.g., plugin.js when plugin.min.js exists)
+            // Vendors like TinyMCE ship both unminified and minified versions
+            $minifiedPath = preg_replace('/\.(js|css)$/', '.min.$1', $normalizedPath);
+            if (is_string($minifiedPath) && $minifiedPath !== $normalizedPath) {
+                $minifiedFullPath = $this->joinPaths($publicPath, $minifiedPath);
+                if (file_exists($minifiedFullPath)) {
+                    continue;
+                }
+            }
+
             $fullPath = $this->joinPaths($publicPath, $normalizedPath);
 
             if (file_exists($fullPath) && $this->isUnminified($fullPath)) {
@@ -401,7 +422,9 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         // formatted JSDoc/PHPDoc style comments, not preserved license banners.
         // Minified files may have: /*! license */, /* @preserve */, /* harmony export */
         // Pattern matches: /* or /** followed by newline, then indented asterisk continuation
-        $match = preg_match('/\/\*\*?\s*\n\s*\*.*\n\s*\*/', $content);
+        // Strip license banners first so they don't trigger false positives
+        $contentWithoutBanners = $this->stripLicenseBanners($content);
+        $match = preg_match('/\/\*\*?\s*\n\s*\*.*\n\s*\*/', $contentWithoutBanners);
         if (is_int($match) && $match === 1) {
             return true;
         }
@@ -414,6 +437,30 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         }
 
         return false;
+    }
+
+    /**
+     * Strip preserved license banners that build tools keep in production output.
+     *
+     * TerserPlugin preserves comments starting with /*! and comments containing
+     * license-related annotations (@license, @preserve, @copyright).
+     */
+    private function stripLicenseBanners(string $content): string
+    {
+        // Remove /*! ... */ comments (TerserPlugin preserve marker)
+        $result = preg_replace('/\/\*![\s\S]*?\*\//', '', $content);
+        if (! is_string($result)) {
+            $result = $content;
+        }
+
+        // Remove /* or /** comments containing license keywords
+        $result = preg_replace(
+            '/\/\*\*?[\s\S]*?(?:@license|@preserve|@copyright|\bCopyright\b|\bLicensed\s+under\b)[\s\S]*?\*\//',
+            '',
+            $result
+        );
+
+        return is_string($result) ? $result : $content;
     }
 
     /**

@@ -379,8 +379,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $func = strtolower($call->name->toString());
-            if (! $call->name instanceof Node\Name || $func === 'password_hash' || $func === '\password_hash') {
+            if (! $call->name instanceof Node\Name || $call->name->toString() !== 'password_hash') {
                 continue;
             }
 
@@ -590,6 +589,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         $assignments = $this->parser->findNodes($ast, Node\Expr\Assign::class);
 
         $hasherVars = $this->findHasherVariables($assignments);
+        $taintedVars = $this->findTaintedPasswordVariables($assignments, $hasherVars);
 
         foreach ($assignments as $assign) {
             if (! $assign instanceof Node\Expr\Assign) {
@@ -604,7 +604,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            if (! $this->isRawPasswordInput($assign->expr)) {
+            if (! $this->isRawPasswordInput($assign->expr) && ! $this->isTaintedVariable($assign->expr, $taintedVars)) {
                 continue;
             }
 
@@ -628,7 +628,8 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         /** @var array<Node\Expr\Assign> $assignments */
         $assignments = $this->parser->findNodes($ast, Node\Expr\Assign::class);
         $hasherVars = $this->findHasherVariables($assignments);
-        $plaintextVars = $this->findPlaintextPasswordArrayVariables($assignments, $hasherVars);
+        $taintedVars = $this->findTaintedPasswordVariables($assignments, $hasherVars);
+        $plaintextVars = $this->findPlaintextPasswordArrayVariables($assignments, $hasherVars, $taintedVars);
 
         /** @var array<Node\Expr\MethodCall> $methodCalls */
         $methodCalls = $this->parser->findNodes($ast, Node\Expr\MethodCall::class);
@@ -643,7 +644,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $this->checkArgsForPlaintextPassword($file, $call->args, $call->getStartLine(), $hasherVars, $plaintextVars, $issues);
+            $this->checkArgsForPlaintextPassword($file, $call->args, $call->getStartLine(), $hasherVars, $plaintextVars, $taintedVars, $issues);
         }
 
         /** @var array<Node\Expr\StaticCall> $staticCalls */
@@ -659,7 +660,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $this->checkArgsForPlaintextPassword($file, $call->args, $call->getStartLine(), $hasherVars, $plaintextVars, $issues);
+            $this->checkArgsForPlaintextPassword($file, $call->args, $call->getStartLine(), $hasherVars, $plaintextVars, $taintedVars, $issues);
         }
     }
 
@@ -667,6 +668,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
      * @param  array<Node\Arg|Node\VariadicPlaceholder>  $args
      * @param  array<string>  $hasherVars
      * @param  array<string>  $plaintextVars
+     * @param  array<string>  $taintedVars
      * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
      */
     private function checkArgsForPlaintextPassword(
@@ -675,6 +677,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         int $lineNumber,
         array $hasherVars,
         array $plaintextVars,
+        array $taintedVars,
         array &$issues,
     ): void {
         foreach ($args as $arg) {
@@ -715,7 +718,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                if (! $this->isRawPasswordInput($item->value)) {
+                if (! $this->isRawPasswordInput($item->value) && ! $this->isTaintedVariable($item->value, $taintedVars)) {
                     continue;
                 }
 
@@ -895,9 +898,10 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
      *
      * @param  array<Node\Expr\Assign>  $assignments
      * @param  array<string>  $hasherVars
+     * @param  array<string>  $taintedVars
      * @return array<string>
      */
-    private function findPlaintextPasswordArrayVariables(array $assignments, array $hasherVars): array
+    private function findPlaintextPasswordArrayVariables(array $assignments, array $hasherVars, array $taintedVars = []): array
     {
         $plaintextVars = [];
 
@@ -923,7 +927,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                         continue;
                     }
 
-                    if (! $this->isRawPasswordInput($item->value)) {
+                    if (! $this->isRawPasswordInput($item->value) && ! $this->isTaintedVariable($item->value, $taintedVars)) {
                         continue;
                     }
 
@@ -938,13 +942,59 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 && $assign->var->var instanceof Node\Expr\Variable
                 && is_string($assign->var->var->name)) {
                 if (! $this->isHashedValue($assign->expr, $hasherVars)
-                    && $this->isRawPasswordInput($assign->expr)) {
+                    && ($this->isRawPasswordInput($assign->expr) || $this->isTaintedVariable($assign->expr, $taintedVars))) {
                     $plaintextVars[] = $assign->var->var->name;
                 }
             }
         }
 
         return $plaintextVars;
+    }
+
+    /**
+     * Find variables assigned directly from password-related expressions without hashing.
+     *
+     * Tracks taint through scalar assignments like: $pw = $request->password
+     *
+     * @param  array<Node\Expr\Assign>  $assignments
+     * @param  array<string>  $hasherVars
+     * @return array<string>
+     */
+    private function findTaintedPasswordVariables(array $assignments, array $hasherVars): array
+    {
+        $tainted = [];
+
+        foreach ($assignments as $assign) {
+            if (! $assign instanceof Node\Expr\Assign) {
+                continue;
+            }
+
+            if (! $assign->var instanceof Node\Expr\Variable || ! is_string($assign->var->name)) {
+                continue;
+            }
+
+            if ($this->isHashedValue($assign->expr, $hasherVars)) {
+                continue;
+            }
+
+            if ($this->isRawPasswordInput($assign->expr)) {
+                $tainted[] = $assign->var->name;
+            }
+        }
+
+        return $tainted;
+    }
+
+    /**
+     * Check if a node is a variable in the tainted set.
+     *
+     * @param  array<string>  $taintedVars
+     */
+    private function isTaintedVariable(Node $node, array $taintedVars): bool
+    {
+        return $node instanceof Node\Expr\Variable
+            && is_string($node->name)
+            && in_array($node->name, $taintedVars, true);
     }
 
     private function isRawPasswordInput(Node $node): bool

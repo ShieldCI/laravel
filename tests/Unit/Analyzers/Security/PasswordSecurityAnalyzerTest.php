@@ -234,6 +234,7 @@ PHP;
 <?php
 
 return [
+    'driver' => 'argon2id',
     'argon' => [
         'memory' => 1024,
     ],
@@ -265,6 +266,7 @@ PHP;
 <?php
 
 return [
+    'driver' => 'argon2id',
     'argon' => [
         'memory' => 65536,
         'time' => 1,
@@ -289,6 +291,7 @@ PHP;
 <?php
 
 return [
+    'driver' => 'argon2id',
     'argon' => [
         'time' => 1,
     ],
@@ -320,6 +323,7 @@ PHP;
 <?php
 
 return [
+    'driver' => 'argon2id',
     'argon' => [
         'memory' => 65536,
         'time' => 2,
@@ -345,6 +349,7 @@ PHP;
 <?php
 
 return [
+    'driver' => 'argon2id',
     'argon' => [
         'threads' => 1,
     ],
@@ -407,7 +412,7 @@ PHP;
         $this->assertFalse($hasArgonIssue, 'Should not flag argon params when driver is bcrypt');
     }
 
-    public function test_flags_argon_when_no_driver_specified(): void
+    public function test_skips_argon_checks_when_no_driver_specified(): void
     {
         $config = <<<'PHP'
 <?php
@@ -428,9 +433,14 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertHasIssueContaining('Argon2 memory', $result);
-        $this->assertHasIssueContaining('Argon2 time cost', $result);
-        $this->assertHasIssueContaining('Argon2 threads', $result);
+        $hasArgonIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (str_contains($issue->message, 'Argon2')) {
+                $hasArgonIssue = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasArgonIssue, 'Should not flag argon params when driver is not specified (Laravel defaults to bcrypt)');
     }
 
     // ==================== Weak Driver Tests ====================
@@ -3523,6 +3533,179 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertHasIssueContaining('plain-text password', $result);
+    }
+
+    // ==================== Taint Tracking Tests ====================
+
+    public function test_detects_tainted_variable_in_property_assignment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function store($request, $user)
+    {
+        $pw = $request->password;
+        $user->password = $pw;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_does_not_flag_tainted_variable_when_hashed(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Hash;
+
+class AuthController
+{
+    public function store($request, $user)
+    {
+        $pw = Hash::make($request->password);
+        $user->password = $pw;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertNoPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_tainted_variable_in_inline_array_create(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function store($request)
+    {
+        $pw = $request->password;
+        \App\Models\User::create(['email' => $request->email, 'password' => $pw]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_tainted_variable_in_indirect_array_create(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function store($request)
+    {
+        $pw = $request->password;
+        $data = ['email' => $request->email, 'password' => $pw];
+        \App\Models\User::create($data);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_tainted_variable_from_request_input(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function store($request, $user)
+    {
+        $pass = $request->input('password');
+        $user->password = $pass;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
+    }
+
+    public function test_detects_tainted_variable_from_array_access(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AuthController
+{
+    public function store($data, $user)
+    {
+        $pw = $data['password'];
+        $user->password = $pw;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/AuthController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasPlainTextPasswordIssue($result);
     }
 
     // ==================== hash() Function Weak Algorithm Detection (Bug 3) ====================

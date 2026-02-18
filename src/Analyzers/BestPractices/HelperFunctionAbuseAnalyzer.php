@@ -29,12 +29,17 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  * Whitelisted contexts (where helper usage is acceptable):
  * - Service Providers: Need helpers for bootstrapping
  * - Console Commands: Often need dynamic resolution
+ * - Controllers: HTTP boundary layer, naturally uses view/response/redirect
+ * - Jobs: Constructor used for serialization, can't DI config/services
+ * - Listeners: Event-driven infrastructure, similar to Jobs
+ * - Middleware: HTTP pipeline infrastructure, needs request/response/config
  * - Tests: Flexibility for testing
  * - Seeders: Need service resolution for data generation
  * - Migrations: Don't support constructor DI
  *
  * Helper categories:
  * - DEPENDENCY_HIDING_HELPERS: Counted (hide real dependencies)
+ * - URL_HELPERS: Not counted (URL-generation utilities, don't hide testable dependencies)
  * - DEBUG_HELPERS: Not counted (handled by DebugModeAnalyzer)
  * - LOW_PRIORITY_HELPERS: Not counted (simple utilities, rarely abused)
  *
@@ -56,10 +61,19 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
      */
     public const DEPENDENCY_HIDING_HELPERS = [
         'app', 'auth', 'cache', 'config', 'cookie', 'event', 'logger', 'old',
-        'redirect', 'request', 'response', 'route', 'session', 'storage_path',
-        'url', 'view', 'abort', 'abort_if', 'abort_unless', 'dispatch',
+        'redirect', 'request', 'response', 'session', 'storage_path',
+        'view', 'abort', 'abort_if', 'abort_unless', 'dispatch',
         'info', 'policy', 'resolve', 'validator', 'report',
     ];
+
+    /**
+     * URL-generation helpers - not counted by default.
+     * These are stateless URL utilities that don't hide testable dependencies
+     * or create implicit service container coupling.
+     *
+     * @var array<string>
+     */
+    public const URL_HELPERS = ['route', 'url'];
 
     /**
      * Debug helpers - handled by DebugModeAnalyzer.
@@ -101,6 +115,10 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
     private const DEFAULT_WHITELIST_CLASSES = [
         '*ServiceProvider',
         '*Command',
+        '*Controller',
+        '*Job',
+        '*Listener',
+        '*Middleware',
         '*Seeder',
         '*Test',
         '*TestCase',

@@ -1307,12 +1307,54 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
     private function extractMinFromMethodChain(Node\Expr\MethodCall $call): ?int
     {
         $current = $call;
+        /** @var array<Node\Expr\MethodCall> $methodCalls */
+        $methodCalls = [];
 
         while ($current instanceof Node\Expr\MethodCall) {
+            $methodCalls[] = $current;
+
             if ($current->var instanceof Node\Expr\StaticCall) {
-                return $this->extractMinFromPasswordCall($current->var);
+                // Password::min(N)->letters()...
+                $min = $this->extractMinFromPasswordCall($current->var);
+                if ($min !== null) {
+                    return $min;
+                }
+
+                // Rule::password()->min(N)->letters()...
+                if ($this->isRulePasswordCall($current->var)) {
+                    return $this->extractMinFromChainMethods($methodCalls);
+                }
+
+                break;
             }
             $current = $current->var;
+        }
+
+        return null;
+    }
+
+    private function isRulePasswordCall(Node\Expr\StaticCall $call): bool
+    {
+        return $call->class instanceof Node\Name
+            && $call->class->toString() === 'Rule'
+            && $call->name instanceof Node\Identifier
+            && $call->name->name === 'password';
+    }
+
+    /**
+     * @param  array<Node\Expr\MethodCall>  $methodCalls
+     */
+    private function extractMinFromChainMethods(array $methodCalls): ?int
+    {
+        foreach ($methodCalls as $call) {
+            if ($call->name instanceof Node\Identifier
+                && $call->name->name === 'min'
+                && ! empty($call->args)
+                && isset($call->args[0])
+                && $call->args[0] instanceof Node\Arg
+                && $call->args[0]->value instanceof Node\Scalar\Int_) {
+                return $call->args[0]->value->value;
+            }
         }
 
         return null;

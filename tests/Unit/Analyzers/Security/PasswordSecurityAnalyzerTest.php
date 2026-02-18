@@ -1386,6 +1386,117 @@ PHP;
         $this->assertFalse($hasWeakValidation, 'Password::min(8) should not trigger weak validation issue');
     }
 
+    // ==================== Rule::password() Validation Tests ====================
+
+    public function test_detects_weak_min_via_rule_password(): void
+    {
+        $requestCode = <<<'PHP'
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Validation\Rule;
+
+class RegisterRequest
+{
+    public function rules()
+    {
+        return [
+            'password' => Rule::password()->min(6),
+        ];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Requests/RegisterRequest.php' => $requestCode,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('Password validation requires only 6 characters', $result);
+    }
+
+    public function test_detects_weak_min_via_rule_password_with_chained_methods(): void
+    {
+        $requestCode = <<<'PHP'
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Validation\Rule;
+
+class RegisterRequest
+{
+    public function rules()
+    {
+        return [
+            'password' => Rule::password()->min(5)->letters()->mixedCase(),
+        ];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Requests/RegisterRequest.php' => $requestCode,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('Password validation requires only 5 characters', $result);
+    }
+
+    public function test_passes_strong_rule_password_min(): void
+    {
+        $requestCode = <<<'PHP'
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Validation\Rule;
+
+class RegisterRequest
+{
+    public function rules()
+    {
+        return [
+            'password' => Rule::password()->min(8)->letters()->mixedCase(),
+        ];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Requests/RegisterRequest.php' => $requestCode,
+            'config/hashing.php' => '<?php return ["driver" => "bcrypt", "bcrypt" => ["rounds" => 12]];',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasWeakValidation = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'weak_validation_min_length') {
+                $hasWeakValidation = true;
+                break;
+            }
+        }
+        $this->assertFalse($hasWeakValidation, 'Rule::password()->min(8) should not trigger weak validation issue');
+    }
+
     // ==================== Timeout Tests ====================
 
     public function test_detects_long_password_confirmation_timeout(): void

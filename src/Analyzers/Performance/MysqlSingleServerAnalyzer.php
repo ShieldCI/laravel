@@ -31,6 +31,23 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
 class MysqlSingleServerAnalyzer extends AbstractAnalyzer
 {
     /**
+     * MySQL SSL-related PDO attributes (constants 1007–1011).
+     *
+     * When any of these are set with a non-empty value, the connection
+     * is using SSL — indicating a remote database where Unix socket
+     * recommendations are irrelevant.
+     *
+     * @var array<int>
+     */
+    private const MYSQL_SSL_ATTRIBUTES = [
+        \PDO::MYSQL_ATTR_SSL_KEY,    // 1007
+        \PDO::MYSQL_ATTR_SSL_CERT,   // 1008
+        \PDO::MYSQL_ATTR_SSL_CA,     // 1009
+        \PDO::MYSQL_ATTR_SSL_CAPATH, // 1010
+        \PDO::MYSQL_ATTR_SSL_CIPHER, // 1011
+    ];
+
+    /**
      * MySQL server configuration is not applicable in CI environments.
      */
     public static bool $runInCI = false;
@@ -186,6 +203,11 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
      */
     private function checkConnectionOptimization(string $connectionName, array $connection, string $defaultConnection): ?\ShieldCI\AnalyzersCore\ValueObjects\Issue
     {
+        // SSL-configured connections target remote databases — skip socket recommendation
+        if ($this->hasSSLConfiguration($connection)) {
+            return null;
+        }
+
         $host = $this->getConnectionHost($connection);
         $unixSocket = $this->getConnectionUnixSocket($connection);
 
@@ -280,6 +302,39 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
     private function isEmptySocket(string $socket): bool
     {
         return trim($socket) === '';
+    }
+
+    /**
+     * Check if a connection has SSL configuration, indicating a remote database.
+     *
+     * When MySQL SSL attributes (like PDO::MYSQL_ATTR_SSL_CA) are set with
+     * meaningful values, the connection targets a remote database (e.g., AWS RDS)
+     * where Unix socket recommendations are irrelevant.
+     *
+     * @param  array<string, mixed>  $connection
+     */
+    private function hasSSLConfiguration(array $connection): bool
+    {
+        $options = $connection['options'] ?? null;
+
+        if (! is_array($options)) {
+            return false;
+        }
+
+        foreach (self::MYSQL_SSL_ATTRIBUTES as $attribute) {
+            if (! array_key_exists($attribute, $options)) {
+                continue;
+            }
+
+            $value = $options[$attribute];
+
+            // Accept non-empty strings (e.g., '/path/to/ca.pem') or boolean true
+            if ((is_string($value) && $value !== '') || $value === true) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function parseUrlHost(mixed $url): ?string

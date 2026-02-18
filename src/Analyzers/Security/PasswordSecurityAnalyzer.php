@@ -45,6 +45,8 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         'updateOrCreate', 'upsert', 'firstOrCreate', 'firstOrNew',
     ];
 
+    private ?bool $projectUsesPasswordsCache = null;
+
     public function __construct(
         private ParserInterface $parser
     ) {}
@@ -86,6 +88,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
+        $this->projectUsesPasswordsCache = null;
         $issues = [];
 
         $this->checkHashingConfig($issues);
@@ -158,7 +161,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        $isArgonDriver = ($driver === null || in_array($driver, ['argon2id', 'argon2i', 'argon'], true));
+        $isArgonDriver = in_array($driver, ['argon2id', 'argon2i', 'argon'], true);
 
         if (! $isArgonDriver) {
             return;
@@ -586,6 +589,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         $assignments = $this->parser->findNodes($ast, Node\Expr\Assign::class);
 
         $hasherVars = $this->findHasherVariables($assignments);
+        $taintedVars = $this->findTaintedPasswordVariables($assignments, $hasherVars);
 
         foreach ($assignments as $assign) {
             if (! $assign instanceof Node\Expr\Assign) {
@@ -600,7 +604,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            if (! $this->isRawPasswordInput($assign->expr)) {
+            if (! $this->isRawPasswordInput($assign->expr) && ! $this->isTaintedVariable($assign->expr, $taintedVars)) {
                 continue;
             }
 
@@ -624,7 +628,8 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         /** @var array<Node\Expr\Assign> $assignments */
         $assignments = $this->parser->findNodes($ast, Node\Expr\Assign::class);
         $hasherVars = $this->findHasherVariables($assignments);
-        $plaintextVars = $this->findPlaintextPasswordArrayVariables($assignments, $hasherVars);
+        $taintedVars = $this->findTaintedPasswordVariables($assignments, $hasherVars);
+        $plaintextVars = $this->findPlaintextPasswordArrayVariables($assignments, $hasherVars, $taintedVars);
 
         /** @var array<Node\Expr\MethodCall> $methodCalls */
         $methodCalls = $this->parser->findNodes($ast, Node\Expr\MethodCall::class);
@@ -639,7 +644,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $this->checkArgsForPlaintextPassword($file, $call->args, $call->getStartLine(), $hasherVars, $plaintextVars, $issues);
+            $this->checkArgsForPlaintextPassword($file, $call->args, $call->getStartLine(), $hasherVars, $plaintextVars, $taintedVars, $issues);
         }
 
         /** @var array<Node\Expr\StaticCall> $staticCalls */
@@ -655,7 +660,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $this->checkArgsForPlaintextPassword($file, $call->args, $call->getStartLine(), $hasherVars, $plaintextVars, $issues);
+            $this->checkArgsForPlaintextPassword($file, $call->args, $call->getStartLine(), $hasherVars, $plaintextVars, $taintedVars, $issues);
         }
     }
 
@@ -663,6 +668,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
      * @param  array<Node\Arg|Node\VariadicPlaceholder>  $args
      * @param  array<string>  $hasherVars
      * @param  array<string>  $plaintextVars
+     * @param  array<string>  $taintedVars
      * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
      */
     private function checkArgsForPlaintextPassword(
@@ -671,6 +677,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         int $lineNumber,
         array $hasherVars,
         array $plaintextVars,
+        array $taintedVars,
         array &$issues,
     ): void {
         foreach ($args as $arg) {
@@ -711,7 +718,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                if (! $this->isRawPasswordInput($item->value)) {
+                if (! $this->isRawPasswordInput($item->value) && ! $this->isTaintedVariable($item->value, $taintedVars)) {
                     continue;
                 }
 
@@ -891,9 +898,10 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
      *
      * @param  array<Node\Expr\Assign>  $assignments
      * @param  array<string>  $hasherVars
+     * @param  array<string>  $taintedVars
      * @return array<string>
      */
-    private function findPlaintextPasswordArrayVariables(array $assignments, array $hasherVars): array
+    private function findPlaintextPasswordArrayVariables(array $assignments, array $hasherVars, array $taintedVars = []): array
     {
         $plaintextVars = [];
 
@@ -919,7 +927,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                         continue;
                     }
 
-                    if (! $this->isRawPasswordInput($item->value)) {
+                    if (! $this->isRawPasswordInput($item->value) && ! $this->isTaintedVariable($item->value, $taintedVars)) {
                         continue;
                     }
 
@@ -934,13 +942,59 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 && $assign->var->var instanceof Node\Expr\Variable
                 && is_string($assign->var->var->name)) {
                 if (! $this->isHashedValue($assign->expr, $hasherVars)
-                    && $this->isRawPasswordInput($assign->expr)) {
+                    && ($this->isRawPasswordInput($assign->expr) || $this->isTaintedVariable($assign->expr, $taintedVars))) {
                     $plaintextVars[] = $assign->var->var->name;
                 }
             }
         }
 
         return $plaintextVars;
+    }
+
+    /**
+     * Find variables assigned directly from password-related expressions without hashing.
+     *
+     * Tracks taint through scalar assignments like: $pw = $request->password
+     *
+     * @param  array<Node\Expr\Assign>  $assignments
+     * @param  array<string>  $hasherVars
+     * @return array<string>
+     */
+    private function findTaintedPasswordVariables(array $assignments, array $hasherVars): array
+    {
+        $tainted = [];
+
+        foreach ($assignments as $assign) {
+            if (! $assign instanceof Node\Expr\Assign) {
+                continue;
+            }
+
+            if (! $assign->var instanceof Node\Expr\Variable || ! is_string($assign->var->name)) {
+                continue;
+            }
+
+            if ($this->isHashedValue($assign->expr, $hasherVars)) {
+                continue;
+            }
+
+            if ($this->isRawPasswordInput($assign->expr)) {
+                $tainted[] = $assign->var->name;
+            }
+        }
+
+        return $tainted;
+    }
+
+    /**
+     * Check if a node is a variable in the tainted set.
+     *
+     * @param  array<string>  $taintedVars
+     */
+    private function isTaintedVariable(Node $node, array $taintedVars): bool
+    {
+        return $node instanceof Node\Expr\Variable
+            && is_string($node->name)
+            && in_array($node->name, $taintedVars, true);
     }
 
     private function isRawPasswordInput(Node $node): bool
@@ -1032,6 +1086,10 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         }
 
         if (! $foundPasswordDefaults) {
+            if (! $this->projectUsesPasswords()) {
+                return;
+            }
+
             $issues[] = $this->createIssue(
                 message: 'No Password::defaults() configured in service providers',
                 location: new \ShieldCI\AnalyzersCore\ValueObjects\Location('app/Providers/AppServiceProvider.php'),
@@ -1043,6 +1101,10 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
+        // Laravel Password::defaults() calls overwrite previous ones.
+        // Since static analysis cannot determine execution order,
+        // ALL detected defaults() definitions must be secure.
+        // If any are incomplete, the effective runtime configuration may be weak.
         $hasUncompromised = ! empty($callResults);
         $hasMinLength = ! empty($callResults);
         $hasMixedCase = ! empty($callResults);
@@ -1245,12 +1307,54 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
     private function extractMinFromMethodChain(Node\Expr\MethodCall $call): ?int
     {
         $current = $call;
+        /** @var array<Node\Expr\MethodCall> $methodCalls */
+        $methodCalls = [];
 
         while ($current instanceof Node\Expr\MethodCall) {
+            $methodCalls[] = $current;
+
             if ($current->var instanceof Node\Expr\StaticCall) {
-                return $this->extractMinFromPasswordCall($current->var);
+                // Password::min(N)->letters()...
+                $min = $this->extractMinFromPasswordCall($current->var);
+                if ($min !== null) {
+                    return $min;
+                }
+
+                // Rule::password()->min(N)->letters()...
+                if ($this->isRulePasswordCall($current->var)) {
+                    return $this->extractMinFromChainMethods($methodCalls);
+                }
+
+                break;
             }
             $current = $current->var;
+        }
+
+        return null;
+    }
+
+    private function isRulePasswordCall(Node\Expr\StaticCall $call): bool
+    {
+        return $call->class instanceof Node\Name
+            && $call->class->toString() === 'Rule'
+            && $call->name instanceof Node\Identifier
+            && $call->name->name === 'password';
+    }
+
+    /**
+     * @param  array<Node\Expr\MethodCall>  $methodCalls
+     */
+    private function extractMinFromChainMethods(array $methodCalls): ?int
+    {
+        foreach ($methodCalls as $call) {
+            if ($call->name instanceof Node\Identifier
+                && $call->name->name === 'min'
+                && ! empty($call->args)
+                && isset($call->args[0])
+                && $call->args[0] instanceof Node\Arg
+                && $call->args[0]->value instanceof Node\Scalar\Int_) {
+                return $call->args[0]->value->value;
+            }
         }
 
         return null;
@@ -1412,6 +1516,201 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Detect whether this project genuinely uses password-based authentication.
+     *
+     * Scans for concrete password indicators to avoid false positives on projects
+     * that use SSO, OAuth, or other passwordless authentication methods.
+     */
+    private function projectUsesPasswords(): bool
+    {
+        if ($this->projectUsesPasswordsCache !== null) {
+            return $this->projectUsesPasswordsCache;
+        }
+
+        // Check service providers for Password::defaults() or Password::min()
+        foreach ($this->getPasswordPolicyPaths() as $providerPath) {
+            if (! file_exists($providerPath)) {
+                continue;
+            }
+
+            $ast = $this->parser->parseFile($providerPath);
+            if (empty($ast)) {
+                continue;
+            }
+
+            if (! empty($this->parser->findStaticCalls($ast, 'Password', 'defaults'))
+                || ! empty($this->parser->findStaticCalls($ast, 'Password', 'min'))) {
+                return $this->projectUsesPasswordsCache = true;
+            }
+        }
+
+        foreach ($this->getPhpFiles() as $file) {
+            if (str_contains($file, '/vendor/') || str_contains($file, '/tests/') || str_contains($file, '/Tests/')) {
+                continue;
+            }
+
+            $ast = $this->parser->parseFile($file);
+            if (empty($ast)) {
+                continue;
+            }
+
+            // Auth::attempt() is the only Auth method that implies password comparison
+            if (! empty($this->parser->findStaticCalls($ast, 'Auth', 'attempt'))) {
+                return $this->projectUsesPasswordsCache = true;
+            }
+
+            if ($this->hasAuthHelperAttempt($ast)) {
+                return $this->projectUsesPasswordsCache = true;
+            }
+
+            // Check for password in validation rules (in Requests/ or Controllers/)
+            if (str_contains($file, '/Requests/') || str_contains($file, '/Controllers/')) {
+                /** @var array<Node\Expr\ArrayItem> $arrayItems */
+                $arrayItems = $this->parser->findNodes($ast, Node\Expr\ArrayItem::class);
+
+                foreach ($arrayItems as $item) {
+                    if ($item instanceof Node\Expr\ArrayItem
+                        && $item->key instanceof Node\Scalar\String_
+                        && $item->key->value === 'password') {
+                        return $this->projectUsesPasswordsCache = true;
+                    }
+                }
+            }
+
+            // Check for 'password' in model $fillable or $hidden arrays
+            if ($this->hasPasswordInModelProperty($ast)) {
+                return $this->projectUsesPasswordsCache = true;
+            }
+
+            // Check for Hash::make()/bcrypt()/password_hash() with password-related args
+            if ($this->hasPasswordHashingCall($ast)) {
+                return $this->projectUsesPasswordsCache = true;
+            }
+
+            // Check for $table->string('password') in migrations
+            if (str_contains($file, '/migrations/')) {
+                if ($this->hasMigrationPasswordColumn($ast)) {
+                    return $this->projectUsesPasswordsCache = true;
+                }
+            }
+        }
+
+        return $this->projectUsesPasswordsCache = false;
+    }
+
+    /**
+     * Check if AST contains a model $fillable or $hidden property with 'password'.
+     *
+     * @param  array<Node>  $ast
+     */
+    private function hasPasswordInModelProperty(array $ast): bool
+    {
+        /** @var array<Node\Stmt\Property> $properties */
+        $properties = $this->parser->findNodes($ast, Node\Stmt\Property::class);
+
+        foreach ($properties as $prop) {
+            if (! $prop instanceof Node\Stmt\Property) {
+                continue;
+            }
+
+            $propName = $prop->props[0]->name->name ?? '';
+            if (! in_array($propName, ['fillable', 'hidden'], true)) {
+                continue;
+            }
+
+            $defaultValue = $prop->props[0]->default ?? null;
+            if (! $defaultValue instanceof Node\Expr\Array_) {
+                continue;
+            }
+
+            foreach ($defaultValue->items as $item) {
+                if ($item instanceof Node\Expr\ArrayItem
+                    && $item->value instanceof Node\Scalar\String_
+                    && $item->value->value === 'password') {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if AST contains Hash::make()/bcrypt()/password_hash() with password-related arguments.
+     *
+     * @param  array<Node>  $ast
+     */
+    private function hasPasswordHashingCall(array $ast): bool
+    {
+        /** @var array<Node\Expr\StaticCall> $hashMakeCalls */
+        $hashMakeCalls = $this->parser->findStaticCalls($ast, 'Hash', 'make');
+
+        foreach ($hashMakeCalls as $call) {
+            if ($call instanceof Node\Expr\StaticCall
+                && ! empty($call->args)
+                && isset($call->args[0])
+                && $call->args[0] instanceof Node\Arg
+                && $this->isPasswordRelatedArgument($call->args[0]->value)) {
+                return true;
+            }
+        }
+
+        /** @var array<Node\Expr\FuncCall> $funcCalls */
+        $funcCalls = $this->parser->findNodes($ast, Node\Expr\FuncCall::class);
+
+        foreach ($funcCalls as $call) {
+            if (! $call instanceof Node\Expr\FuncCall || ! $call->name instanceof Node\Name) {
+                continue;
+            }
+
+            $func = $call->name->toString();
+            if (! in_array($func, ['bcrypt', 'password_hash'], true)) {
+                continue;
+            }
+
+            if (! empty($call->args)
+                && isset($call->args[0])
+                && $call->args[0] instanceof Node\Arg
+                && $this->isPasswordRelatedArgument($call->args[0]->value)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if AST contains $table->string('password') migration column.
+     *
+     * @param  array<Node>  $ast
+     */
+    private function hasMigrationPasswordColumn(array $ast): bool
+    {
+        /** @var array<Node\Expr\MethodCall> $methodCalls */
+        $methodCalls = $this->parser->findNodes($ast, Node\Expr\MethodCall::class);
+
+        foreach ($methodCalls as $call) {
+            if (! $call instanceof Node\Expr\MethodCall) {
+                continue;
+            }
+
+            if (! $call->name instanceof Node\Identifier || $call->name->name !== 'string') {
+                continue;
+            }
+
+            if (! empty($call->args)
+                && isset($call->args[0])
+                && $call->args[0] instanceof Node\Arg
+                && $call->args[0]->value instanceof Node\Scalar\String_
+                && $call->args[0]->value->value === 'password') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * @return array<int, string>
      */
     private function getPasswordPolicyPaths(): array
@@ -1511,17 +1810,15 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             }
 
             if (! $hasLoginFlow) {
-                foreach (['attempt', 'login', 'loginUsingId'] as $method) {
-                    if (! $hasLoginFlow && ! empty($this->parser->findStaticCalls($ast, 'Auth', $method))) {
-                        $hasLoginFlow = true;
-                        $loginFlowFile = $file;
-                    }
+                if (! empty($this->parser->findStaticCalls($ast, 'Auth', 'attempt'))) {
+                    $hasLoginFlow = true;
+                    $loginFlowFile = $file;
                 }
                 if (! $hasLoginFlow && ! empty($this->parser->findStaticCalls($ast, 'Fortify', 'authenticateUsing'))) {
                     $hasLoginFlow = true;
                     $loginFlowFile = $file;
                 }
-                if (! $hasLoginFlow && $this->hasAuthHelperLogin($ast)) {
+                if (! $hasLoginFlow && $this->hasAuthHelperAttempt($ast)) {
                     $hasLoginFlow = true;
                     $loginFlowFile = $file;
                 }
@@ -1579,10 +1876,8 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
     /**
      * @param  array<Node>  $ast
      */
-    private function hasAuthHelperLogin(array $ast): bool
+    private function hasAuthHelperAttempt(array $ast): bool
     {
-        $loginMethods = ['attempt', 'login', 'loginUsingId'];
-
         /** @var array<Node\Expr\MethodCall> $methodCalls */
         $methodCalls = $this->parser->findNodes($ast, Node\Expr\MethodCall::class);
 
@@ -1590,7 +1885,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             if (! $call instanceof Node\Expr\MethodCall) {
                 continue;
             }
-            if (! $call->name instanceof Node\Identifier || ! in_array($call->name->name, $loginMethods, true)) {
+            if (! $call->name instanceof Node\Identifier || $call->name->name !== 'attempt') {
                 continue;
             }
             if ($call->var instanceof Node\Expr\FuncCall

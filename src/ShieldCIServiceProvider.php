@@ -51,6 +51,7 @@ class ShieldCIServiceProvider extends ServiceProvider
         // Register bindings
         $this->app->singleton(ParserInterface::class, AstParser::class);
         $this->app->singleton(ReporterInterface::class, Reporter::class);
+        $this->app->singleton(\ShieldCI\Contracts\ClientInterface::class, \ShieldCI\Http\Client\ShieldCIClient::class);
 
         // Register Composer with correct working path
         $this->app->singleton(\ShieldCI\Support\Composer::class, function ($app) {

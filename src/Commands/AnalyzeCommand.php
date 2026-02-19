@@ -21,7 +21,8 @@ class AnalyzeCommand extends Command
                             {--category= : Run analyzers in category}
                             {--format=console : Output format (console|json)}
                             {--output= : Save report to file}
-                            {--baseline : Compare against baseline and only report new issues}';
+                            {--baseline : Compare against baseline and only report new issues}
+                            {--no-send : Skip sending report to ShieldCI platform}';
 
     protected $description = 'Run ShieldCI security and code quality analysis';
 
@@ -30,6 +31,7 @@ class AnalyzeCommand extends Command
     public function handle(
         AnalyzerManager $manager,
         ReporterInterface $reporter,
+        \ShieldCI\Contracts\ClientInterface $client,
     ): int {
         $this->suppressionParser = new InlineSuppressionParser;
         // Validate options
@@ -132,6 +134,11 @@ class AnalyzeCommand extends Command
 
         if ($output && is_string($output)) {
             $this->saveReport($report, $reporter, $output);
+        }
+
+        // Send to API if configured
+        if ($this->shouldSendToApi()) {
+            $this->sendToApi($client, $reporter, $report);
         }
 
         // Determine exit code
@@ -735,6 +742,42 @@ class AnalyzeCommand extends Command
         $this->info("Report saved to: {$path}");
     }
 
+    /**
+     * Check if the report should be sent to the ShieldCI API.
+     */
+    protected function shouldSendToApi(): bool
+    {
+        if ($this->option('no-send')) {
+            return false;
+        }
+
+        return (bool) config('shieldci.report.send_to_api', false);
+    }
+
+    /**
+     * Send the analysis report to the ShieldCI platform API.
+     */
+    protected function sendToApi(\ShieldCI\Contracts\ClientInterface $client, ReporterInterface $reporter, AnalysisReport $report): void
+    {
+        $this->info('Sending report to ShieldCI platform...');
+
+        try {
+            $payload = $reporter->toApi($report);
+            $response = $client->sendReport($payload);
+
+            if (isset($response['success']) && $response['success'] === true) {
+                $this->info('Report sent successfully.');
+            } else {
+                $message = isset($response['message']) && is_string($response['message'])
+                    ? $response['message']
+                    : 'Unknown error';
+                $this->warn("Failed to send report: {$message}");
+            }
+        } catch (\Exception $e) {
+            $this->warn("Failed to send report to API: {$e->getMessage()}");
+        }
+    }
+
     protected function determineExitCode(AnalysisReport $report): int
     {
         $failOn = config('shieldci.fail_on', 'high');
@@ -1091,6 +1134,7 @@ class AnalyzeCommand extends Command
 
         // Return new report with filtered results
         return new AnalysisReport(
+            projectId: $report->projectId,
             laravelVersion: $report->laravelVersion,
             packageVersion: $report->packageVersion,
             results: $filteredResults,
@@ -1157,6 +1201,7 @@ class AnalyzeCommand extends Command
         });
 
         return new AnalysisReport(
+            projectId: $report->projectId,
             laravelVersion: $report->laravelVersion,
             packageVersion: $report->packageVersion,
             results: $filteredResults,
@@ -1279,6 +1324,7 @@ class AnalyzeCommand extends Command
 
         // Return new report with filtered results
         return new AnalysisReport(
+            projectId: $report->projectId,
             laravelVersion: $report->laravelVersion,
             packageVersion: $report->packageVersion,
             results: $filteredResults,

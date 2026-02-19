@@ -93,7 +93,7 @@ class MaintenanceModeAnalyzer extends AbstractFileAnalyzer
                 [$this->createIssue(
                     message: $message,
                     location: null,
-                    severity: Severity::High,
+                    severity: $this->metadata()->severity,
                     recommendation: $recommendation,
                     metadata: [
                         'is_down' => true,

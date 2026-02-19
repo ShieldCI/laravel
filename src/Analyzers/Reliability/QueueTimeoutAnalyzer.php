@@ -119,7 +119,7 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
                 $issues[] = $this->createIssue(
                     message: "Queue connection '{$name}' has improper timeout configuration",
                     location: $location,
-                    severity: Severity::High,
+                    severity: $this->metadata()->severity,
                     recommendation: $this->getRecommendation($name, $timeout, $retryAfter, $minimumBuffer),
                     metadata: $metadata
                 );

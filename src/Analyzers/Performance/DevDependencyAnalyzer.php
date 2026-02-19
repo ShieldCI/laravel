@@ -100,7 +100,7 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
             $issues[] = $this->createIssue(
                 message: sprintf('composer.lock file not found in %s', $this->getEnvironment()),
                 location: null,
-                severity: Severity::High,
+                severity: $this->metadata()->severity,
                 recommendation: sprintf('Always commit composer.lock to ensure consistent dependency versions across environments. Run "composer install" instead of "composer update" in %s.', $this->getEnvironment()),
                 metadata: [
                     'environment' => $this->getEnvironment(),
@@ -197,7 +197,7 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
             return $this->createIssue(
                 message: sprintf('Dev dependencies are installed in %s environment', $this->getEnvironment()),
                 location: null,
-                severity: Severity::High,
+                severity: $this->metadata()->severity,
                 recommendation: sprintf('Use "composer install --no-dev" in %s to exclude development dependencies. Dev packages like Ignition and Debugbar can cause memory leaks and slow down your application. Add --no-dev flag to your deployment script.', $this->getEnvironment()),
                 metadata: [
                     'detection_method' => 'composer_dry_run',
@@ -298,7 +298,7 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
         return $this->createIssue(
             message: sprintf('Found %d dev dependencies installed in %s environment', count($installedDevPackages), $this->getEnvironment()),
             location: null,
-            severity: Severity::High,
+            severity: $this->metadata()->severity,
             recommendation: sprintf('Use "composer install --no-dev" in %s to exclude development dependencies. Dev packages like Ignition and Debugbar can cause memory leaks and slow down your application. Add --no-dev flag to your deployment script.', $this->getEnvironment()),
             metadata: [
                 'detection_method' => 'file_system',

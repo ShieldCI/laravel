@@ -156,7 +156,7 @@ class DebugLogAnalyzer extends AbstractAnalyzer
                 message: "Log channel '{$channel}' is set to debug level in {$environment} environment",
                 filePath: $configPath,
                 lineNumber: $lineNumber,
-                severity: Severity::High,
+                severity: $this->metadata()->severity,
                 recommendation: "Change the log level to 'info' or higher in production. Debug logging causes significant performance degradation, generates massive log files that can exhaust disk space, and exposes sensitive data in logs. Update your logging configuration or set LOG_LEVEL environment variable to 'info', 'warning', or 'error'.",
                 code: 'debug-log-level',
                 metadata: [

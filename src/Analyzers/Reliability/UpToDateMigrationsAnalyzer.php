@@ -83,7 +83,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                         message: 'The migrations table has not been created yet',
                         filePath: $migrationsPath,
                         lineNumber: null,
-                        severity: Severity::High,
+                        severity: $this->metadata()->severity,
                         recommendation: 'This appears to be a new installation. Run "php artisan migrate:install" to create the migrations table, then run "php artisan migrate" to execute all migrations.',
                         code: 'migrations-table-missing',
                         metadata: [
@@ -143,7 +143,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                         message: 'Migration status check failed due to database connection issue',
                         filePath: $migrationsPath,
                         lineNumber: null,
-                        severity: Severity::High,
+                        severity: $this->metadata()->severity,
                         recommendation: $this->getDatabaseErrorRecommendation($e),
                         code: 'database-error',
                         metadata: [
@@ -159,7 +159,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                         message: 'Migration status check failed: '.$e->getMessage(),
                         filePath: $migrationsPath,
                         lineNumber: null,
-                        severity: Severity::High,
+                        severity: $this->metadata()->severity,
                         recommendation: 'Ensure the database connection is working and the migrations table exists. If this is a new installation, run "php artisan migrate:install" followed by "php artisan migrate". Error: '.$e->getMessage(),
                         code: 'migration-check-error',
                         metadata: [

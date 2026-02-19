@@ -65,7 +65,7 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
                         message: "Potential N+1 query: accessing '{$issue['relationship']}' inside loop",
                         filePath: $file,
                         lineNumber: $issue['line'],
-                        severity: Severity::High,
+                        severity: $this->metadata()->severity,
                         recommendation: $this->getRecommendation($issue['relationship'], $issue['loop_type']),
                         metadata: [
                             'relationship' => $issue['relationship'],
@@ -82,7 +82,7 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
                         message: "N+1 query: executing '{$issue['query']}' inside loop",
                         filePath: $file,
                         lineNumber: $issue['line'],
-                        severity: Severity::High,
+                        severity: $this->metadata()->severity,
                         recommendation: $this->getQueryRecommendation($issue['query'], $issue['loop_type']),
                         metadata: [
                             'query' => $issue['query'],

@@ -165,7 +165,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('does not log', $result);
     }
 
@@ -194,7 +194,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('suppression', $result);
     }
 
@@ -732,7 +732,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('suppression', $result);
     }
 
@@ -841,7 +841,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Event dispatching doesn't count as logging - should be flagged
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertCount(1, $result->getIssues());
     }
 
@@ -875,7 +875,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Job dispatching doesn't count as logging - should be flagged
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertCount(1, $result->getIssues());
     }
 
@@ -1076,7 +1076,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('does not log', $result);
     }
 
@@ -1193,7 +1193,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Static event dispatching doesn't count as logging - should be flagged
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertCount(1, $result->getIssues());
     }
 
@@ -1227,7 +1227,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Broadcasting doesn't count as logging - should be flagged
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertCount(1, $result->getIssues());
     }
 
@@ -1756,7 +1756,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('non-whitelisted type(s): RuntimeException', $result);
     }
 
@@ -1793,7 +1793,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('non-whitelisted type(s): RuntimeException', $result);
     }
 
@@ -1898,7 +1898,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('non-whitelisted type(s): RuntimeException|LogicException', $result);
     }
 
@@ -2168,7 +2168,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('does not log', $result);
     }
 
@@ -2203,7 +2203,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('does not log', $result);
     }
 
@@ -2237,7 +2237,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('does not log', $result);
     }
 
@@ -2270,7 +2270,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('does not log', $result);
     }
 
@@ -2305,7 +2305,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('does not log', $result);
     }
 
@@ -2492,7 +2492,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         // Should have the "does not log" issue
         $this->assertHasIssueContaining('does not log', $result);
@@ -2792,7 +2792,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('suppression', $result);
     }
 
@@ -2821,7 +2821,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('suppression', $result);
     }
 
@@ -2999,7 +2999,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should be flagged because Throwable is too broad
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('overly broad', $result);
     }
 
@@ -3035,7 +3035,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should be flagged because Exception is too broad
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('overly broad', $result);
     }
 
@@ -3043,7 +3043,7 @@ PHP;
     // BUG 3: BROAD EXCEPTION TYPE DETECTION TESTS
     // ========================================================================
 
-    public function test_flags_catch_throwable_even_with_logging(): void
+    public function test_broad_catch_throwable_with_logging_and_exception_var_is_low_severity(): void
     {
         $code = <<<'PHP'
 <?php
@@ -3059,7 +3059,7 @@ class ProcessService
         try {
             $this->doWork();
         } catch (\Throwable $e) {
-            // Logging is present, but catching Throwable is still dangerous
+            // Properly handled: logging with exception variable
             Log::error('Error occurred', ['exception' => $e]);
         }
     }
@@ -3074,13 +3074,16 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should be flagged for catching Throwable even with logging
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('Throwable', $result);
-        $this->assertHasIssueContaining('overly broad', $result);
+        // Broad catch with logging + uses $e → Low severity (architectural note), Warning status
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $broadIssue = collect($issues)->first(fn ($i) => str_contains($i->message, 'Throwable'));
+        $this->assertNotNull($broadIssue);
+        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $broadIssue->severity);
+        $this->assertStringContainsString('Consider catching', $broadIssue->recommendation);
     }
 
-    public function test_flags_catch_exception_with_high_severity(): void
+    public function test_broad_catch_exception_with_logging_and_exception_var_is_low_severity(): void
     {
         $code = <<<'PHP'
 <?php
@@ -3096,7 +3099,7 @@ class GenericService
         try {
             $this->doWork();
         } catch (\Exception $e) {
-            // Even with logging, catching Exception is a code smell
+            // Properly handled: logging with exception details
             Log::warning('Something failed', ['error' => $e->getMessage()]);
         }
     }
@@ -3111,11 +3114,12 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should be flagged for catching Exception
-        $this->assertFailed($result);
+        // Broad catch with logging + uses $e → Low severity (architectural note), Warning status
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertStringContainsString('Exception', $issues[0]->message);
+        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
+        $this->assertStringContainsString('Consider catching', $issues[0]->recommendation);
     }
 
     public function test_passes_catch_throwable_with_rethrow(): void
@@ -3390,7 +3394,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
@@ -3458,5 +3462,124 @@ PHP;
         $this->assertCount(1, $issues);
         $this->assertStringContainsString('Dynamic', $issues[0]->message);
         $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+    }
+
+    // ========================================================================
+    // BROAD EXCEPTION SEVERITY DOWNGRADE TESTS
+    // ========================================================================
+
+    public function test_broad_catch_with_fallback_but_no_exception_var_is_medium(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UnhandledService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\Exception $e) {
+            // return null is a graceful fallback but $e is unused
+            return null;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UnhandledService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Broad catch with fallback but $e unused → Medium (hygiene), Warning status
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $broadIssue = collect($issues)->first(fn ($i) => str_contains($i->message, 'overly broad'));
+        $this->assertNotNull($broadIssue);
+        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $broadIssue->severity);
+        $this->assertStringContainsString('include the exception variable', $broadIssue->recommendation);
+    }
+
+    public function test_broad_catch_with_no_handling_at_all_is_high_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class SilentService
+{
+    public function process(): void
+    {
+        try {
+            $this->doWork();
+        } catch (\Exception $e) {
+            // Completely empty — no logging, no fallback, nothing
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/SilentService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Empty broad catch → High severity (empty catch block issue), Failed status
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $highIssue = collect($issues)->first(fn ($i) => $i->severity === \ShieldCI\AnalyzersCore\Enums\Severity::High);
+        $this->assertNotNull($highIssue);
+    }
+
+    public function test_broad_catch_with_logging_but_no_exception_var_is_medium_severity(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Log;
+
+class StaticLogService
+{
+    public function process()
+    {
+        try {
+            $this->doWork();
+        } catch (\Exception $e) {
+            // Logging is present but exception variable is NOT used
+            Log::error('Something went wrong');
+            return null;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/StaticLogService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Broad catch with logging but $e unused → Medium severity (hygiene issue), Warning status
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $broadIssue = collect($issues)->first(fn ($i) => str_contains($i->message, 'overly broad'));
+        $this->assertNotNull($broadIssue);
+        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $broadIssue->severity);
+        $this->assertStringContainsString('include the exception variable', $broadIssue->recommendation);
     }
 }

@@ -97,7 +97,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
             return $this->passed('No business logic found in Blade templates');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d Blade template(s) with business logic', count($issues)),
             $issues
         );

@@ -167,7 +167,7 @@ class HardcodedStoragePathsAnalyzer extends AbstractFileAnalyzer
             return $this->passed('All paths use Laravel helpers');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d hardcoded path(s)', count($issues)),
             $issues
         );

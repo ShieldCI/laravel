@@ -59,7 +59,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('helper', $result);
     }
 
@@ -208,7 +208,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
         $this->assertEquals('medium', $issues[0]->severity->value);
@@ -317,7 +317,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_custom_helper_functions_list(): void
@@ -415,7 +415,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_multiple_classes_in_same_file(): void
@@ -458,7 +458,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertStringContainsString('BadService', $issues[0]->message);
@@ -637,7 +637,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertEquals(6, $issues[0]->metadata['count']);
     }
@@ -720,7 +720,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('LoggableTrait', $result);
     }
 
@@ -783,7 +783,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertEquals(7, $issues[0]->metadata['count']);
         $this->assertEquals(2, $issues[0]->metadata['helpers']['auth']);
@@ -821,7 +821,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertNotNull($issues[0]->codeSnippet);
         $this->assertNotEmpty($issues[0]->codeSnippet->getLines());
@@ -1415,7 +1415,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertEquals(3, $issues[0]->metadata['count']);
     }
@@ -1454,6 +1454,6 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should NOT be whitelisted - "contests" contains "test" but isn't tests directory
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 }

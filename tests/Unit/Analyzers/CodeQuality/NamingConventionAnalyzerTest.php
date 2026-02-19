@@ -116,7 +116,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertStringContainsString("Class 'user_controller' does not follow PascalCase convention", $issues[0]->message);
@@ -147,7 +147,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining("Interface 'user_repository' does not follow PascalCase convention", $result);
     }
 
@@ -175,7 +175,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining("Trait 'has_timestamps' does not follow PascalCase convention", $result);
         $issues = $result->getIssues();
         $this->assertSame('HasTimestamps', $issues[0]->metadata['suggestion']);
@@ -206,7 +206,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining("Enum 'user_status' does not follow PascalCase convention", $result);
     }
 
@@ -236,7 +236,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(2, $issues);
         $this->assertStringContainsString("Method 'get_user_by_id' does not follow camelCase convention", $issues[0]->message);
@@ -299,7 +299,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(2, $issues);
         $this->assertStringContainsString("Property 'first_name' does not follow camelCase convention", $issues[0]->message);
@@ -334,7 +334,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(3, $issues);
         $this->assertStringContainsString("Public constant 'maxRetries' does not follow SCREAMING_SNAKE_CASE convention", $issues[0]->message);
@@ -395,7 +395,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(4, $issues);
 
@@ -448,7 +448,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(3, $issues);
         $this->assertStringContainsString("Property 'first_name' does not follow camelCase convention", $issues[0]->message);
@@ -482,7 +482,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertSame('userFirstName', $issues[0]->metadata['suggestion']);
         $this->assertSame('getUserById', $issues[1]->metadata['suggestion']);
@@ -513,7 +513,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertSame('MAX_RETRY_ATTEMPTS', $issues[0]->metadata['suggestion']);
         $this->assertSame('API_BASE_URL', $issues[1]->metadata['suggestion']);
@@ -548,7 +548,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(6, $issues);
 
@@ -626,7 +626,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
 
         // Only 2 issues for the public constants
@@ -699,7 +699,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertStringContainsString("Laravel table name 'user' should be plural", $issues[0]->message);
@@ -732,7 +732,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertStringContainsString("Laravel table name 'UserAccounts' should use snake_case convention", $issues[0]->message);
@@ -799,7 +799,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertStringContainsString("Laravel table name 'person' should be plural", $issues[0]->message);
@@ -832,7 +832,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertSame('categories', $issues[0]->metadata['suggestion']);
@@ -867,7 +867,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should only flag 'custom_data' for camelCase, not check table naming
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
 
         // Should have issues for camelCase properties, not table naming

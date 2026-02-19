@@ -103,7 +103,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('commented-out code', $result);
     }
 
@@ -141,7 +141,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('commented-out code', $result);
     }
 
@@ -336,7 +336,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('3 consecutive lines', $result);
     }
 
@@ -369,7 +369,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     #[Test]
@@ -401,7 +401,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     #[Test]
@@ -433,7 +433,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     #[Test]
@@ -465,7 +465,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     #[Test]
@@ -497,7 +497,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     #[Test]
@@ -538,7 +538,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(2, $issues);
     }
@@ -580,7 +580,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $issue = $issues[0];
         $this->assertEquals(Severity::Low, $issue->severity);
@@ -618,7 +618,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $issue = $issues[0];
         $this->assertEquals(Severity::Medium, $issue->severity);
@@ -654,7 +654,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $issue = $issues[0];
         $metadata = $issue->metadata;
@@ -700,7 +700,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $issue = $issues[0];
 
@@ -742,7 +742,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $issue = $issues[0];
 
@@ -831,7 +831,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('commented-out code', $result);
 
         $issues = $result->getIssues();
@@ -926,7 +926,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         // Should detect both block comments
@@ -968,7 +968,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         // Should detect both single-line and block comments
@@ -1007,7 +1007,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         // Should detect as ONE block despite blank comment lines (within tolerance)
@@ -1187,7 +1187,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should fail - the second block has actual code with assignments and method calls
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('3 consecutive lines', $result);
     }
 
@@ -1232,7 +1232,7 @@ PHP;
         // Should FAIL - strong code indicators (public function, private function)
         // should be detected even with TODO/FIXME markers
         // This demonstrates inverted logic: code signals win over documentation markers
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('commented-out code', $result);
     }
 
@@ -1344,7 +1344,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should FAIL - block has code
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         // The fix ensures lineCount represents code lines only (4), not total lines (8)
         // Block has: 1 prose, 1 blank, 4 code lines, 1 blank, 1 prose = 8 total
@@ -1387,7 +1387,7 @@ PHP;
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['app']);
         $result = $analyzer->analyze();
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     #[Test]
@@ -1426,7 +1426,7 @@ PHP;
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['app']);
         $result = $analyzer->analyze();
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     #[Test]
@@ -1470,6 +1470,6 @@ PHP;
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['app']);
         $result = $analyzer->analyze();
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 }

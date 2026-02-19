@@ -97,7 +97,7 @@ class NestingDepthAnalyzer extends AbstractFileAnalyzer
 
         $totalIssues = count($issues);
 
-        return $this->failed(
+        return $this->resultBySeverity(
             "Found {$totalIssues} deeply nested code block(s)",
             $issues
         );

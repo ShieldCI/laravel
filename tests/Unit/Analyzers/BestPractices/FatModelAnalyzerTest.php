@@ -94,7 +94,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('business methods', $result);
     }
 
@@ -130,7 +130,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('lines', $result);
     }
 
@@ -162,7 +162,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertGreaterThan(0, count($issues));
         $this->assertStringContainsString('service', $issues[0]->recommendation);
@@ -604,7 +604,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('complexity', $result);
     }
 
@@ -669,7 +669,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertEquals(Severity::Low, $issues[0]->severity);
@@ -704,7 +704,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertEquals(Severity::Medium, $issues[0]->severity);
@@ -776,7 +776,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertGreaterThanOrEqual(2, count($issues)); // At least 2 issues
     }
@@ -810,7 +810,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('business methods', $result);
     }
 
@@ -842,7 +842,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('business methods', $result);
     }
 
@@ -906,7 +906,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result); // 8 > 5, should fail
+        $this->assertWarning($result); // 8 > 5, should warn (Low severity)
         $this->assertHasIssueContaining('threshold: 5', $result);
     }
 
@@ -945,7 +945,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('lines', $result);
     }
 
@@ -987,7 +987,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('complexity', $result);
     }
 
@@ -1019,7 +1019,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('business methods', $result);
     }
 
@@ -1051,7 +1051,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('business methods', $result);
     }
 
@@ -1083,7 +1083,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('business methods', $result);
     }
 
@@ -1321,7 +1321,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('complexity', $result);
     }
 
@@ -1369,7 +1369,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('complexity', $result);
     }
 
@@ -1423,7 +1423,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         // Should show "2 issue(s) across 2 fat model(s)"
         $this->assertStringContainsString('2 issue(s)', $result->getMessage());
         $this->assertStringContainsString('2 fat model(s)', $result->getMessage());
@@ -1600,7 +1600,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('business methods', $result);
     }
 
@@ -1634,7 +1634,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('business methods', $result);
     }
 
@@ -1702,7 +1702,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should be detected as a model and flagged for too many business methods
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('business methods', $result);
     }
 }

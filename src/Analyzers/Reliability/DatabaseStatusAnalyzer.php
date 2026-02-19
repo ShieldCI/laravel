@@ -91,7 +91,7 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
             return $this->passed('All database connections are accessible');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Failed to connect to %d database connection(s)', count($issues)),
             $issues
         );

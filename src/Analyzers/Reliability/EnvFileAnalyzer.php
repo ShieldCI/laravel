@@ -42,13 +42,13 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
         if (is_link($envPath) && ! file_exists($envPath)) {
             $target = readlink($envPath);
 
-            return $this->failed(
+            return $this->resultBySeverity(
                 'Application .env symlink is broken',
                 [$this->createIssueWithSnippet(
                     message: 'The .env file is a broken symlink',
                     filePath: $envPath,
                     lineNumber: null,
-                    severity: Severity::Critical,
+                    severity: $this->metadata()->severity,
                     recommendation: sprintf('Fix the broken symlink. Target: %s', $target ?: 'unknown'),
                     code: 'broken-symlink',
                     metadata: [
@@ -68,13 +68,13 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
 
         // Check if .env is readable
         if (! is_readable($envPath)) {
-            return $this->failed(
+            return $this->resultBySeverity(
                 'Application .env file is not readable',
                 [$this->createIssueWithSnippet(
                     message: 'The .env file exists but is not readable',
                     filePath: $envPath,
                     lineNumber: null,
-                    severity: Severity::Critical,
+                    severity: $this->metadata()->severity,
                     recommendation: 'Fix file permissions to make .env readable. Run: chmod 600 .env',
                     code: 'not-readable',
                     metadata: [
@@ -88,13 +88,13 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
         // Check if .env is empty
         $stat = @stat($envPath);
         if ($stat !== false && $stat['size'] === 0) {
-            return $this->failed(
+            return $this->resultBySeverity(
                 'Application .env file is empty',
                 [$this->createIssueWithSnippet(
                     message: 'The .env file exists but contains no configuration',
                     filePath: $envPath,
                     lineNumber: null,
-                    severity: Severity::Critical,
+                    severity: $this->metadata()->severity,
                     recommendation: 'Add environment variables to your .env file. At minimum, configure: APP_KEY, APP_ENV, APP_DEBUG, DB_CONNECTION',
                     code: 'empty-file',
                     metadata: [
@@ -116,7 +116,7 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
         $envExamplePath = $this->getEnvExamplePath($basePath);
         $envExampleExists = file_exists($envExamplePath);
 
-        return $this->failed(
+        return $this->resultBySeverity(
             'Application .env file is missing',
             [$this->createIssueWithSnippet(
                 message: 'The .env file does not exist',

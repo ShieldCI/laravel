@@ -110,7 +110,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_passes_with_boot_method(): void
@@ -410,7 +410,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertGreaterThan(0, count($issues));
         $this->assertEquals('medium', $issues[0]->severity->value);
@@ -445,7 +445,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertEquals('medium', $issues[0]->severity->value);
     }
@@ -871,7 +871,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertStringContainsString('query scopes', $issues[0]->recommendation);
         $this->assertStringContainsString('scopeActive', $issues[0]->recommendation);

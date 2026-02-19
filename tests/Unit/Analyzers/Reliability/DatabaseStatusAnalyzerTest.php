@@ -921,7 +921,7 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertSame('medium', $issues[0]->severity->value);

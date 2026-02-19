@@ -120,7 +120,7 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
 
         $totalIssues = count($issues);
 
-        return $this->failed(
+        return $this->resultBySeverity(
             "Found {$totalIssues} method(s) or function(s) exceeding recommended length",
             $issues
         );

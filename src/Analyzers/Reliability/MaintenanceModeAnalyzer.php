@@ -88,12 +88,12 @@ class MaintenanceModeAnalyzer extends AbstractFileAnalyzer
                 $environment
             );
 
-            return $this->failed(
+            return $this->resultBySeverity(
                 'Application is in maintenance mode',
                 [$this->createIssue(
                     message: $message,
                     location: null,
-                    severity: Severity::High,
+                    severity: $this->metadata()->severity,
                     recommendation: $recommendation,
                     metadata: [
                         'is_down' => true,

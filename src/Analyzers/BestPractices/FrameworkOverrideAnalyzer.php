@@ -154,7 +154,7 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
             return $this->passed('No dangerous framework overrides detected');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d framework override(s)', count($issues)),
             $issues
         );

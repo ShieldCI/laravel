@@ -72,7 +72,7 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
                     message: $issue['message'],
                     filePath: $file,
                     lineNumber: $issue['line'],
-                    severity: Severity::Low,
+                    severity: $this->metadata()->severity,
                     recommendation: $this->getRecommendation($issue['type'], $issue['method']),
                     column: null,
                     contextLines: null,
@@ -104,7 +104,7 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
         $issueWord = $totalIssues === 1 ? 'issue' : 'issues';
         $methodWord = $affectedMethodCount === 1 ? 'method' : 'methods';
 
-        return $this->failed(
+        return $this->resultBySeverity(
             "Found {$totalIssues} documentation {$issueWord} across {$affectedMethodCount} public {$methodWord}",
             $issues
         );

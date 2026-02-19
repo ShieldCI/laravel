@@ -97,7 +97,7 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
             return $this->passed('Configuration is properly externalized');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d hardcoded configuration value(s)', count($issues)),
             $issues
         );

@@ -170,7 +170,7 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
 
         $totalIssues = count($issues);
 
-        return $this->failed(
+        return $this->resultBySeverity(
             "Found {$totalIssues} block(s) of commented-out code",
             $issues
         );

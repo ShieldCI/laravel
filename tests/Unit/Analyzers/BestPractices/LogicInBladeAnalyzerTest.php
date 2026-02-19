@@ -89,7 +89,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('calculation', $result);
     }
 
@@ -112,7 +112,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('calculation', $result);
     }
 
@@ -353,7 +353,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('11 lines', $result);
     }
 
@@ -425,7 +425,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Inline PHP', $result);
     }
 
@@ -447,7 +447,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Business logic', $result);
     }
 
@@ -469,7 +469,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_detects_collection_map_in_foreach(): void
@@ -490,7 +490,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_detects_overly_complex_if_conditions(): void
@@ -511,7 +511,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_allows_reasonable_if_conditions(): void
@@ -653,7 +653,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertEquals('medium', $issues[0]->severity->value);
     }
@@ -674,7 +674,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertEquals('low', $issues[0]->severity->value);
     }
@@ -763,7 +763,7 @@ BLADE;
         $result = $analyzer->analyze();
 
         // Should fail with custom threshold of 5
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_passes_when_no_views_directory(): void
@@ -866,7 +866,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
 
         $this->assertArrayHasKey('block_lines', $issues[0]->metadata);
@@ -1051,7 +1051,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     // =========================================================================
@@ -1207,7 +1207,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_detects_collection_unique_in_foreach(): void
@@ -1228,7 +1228,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_detects_collection_group_by_in_foreach(): void
@@ -1249,7 +1249,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_detects_collect_helper_with_filter(): void
@@ -1270,7 +1270,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     // =========================================================================
@@ -2228,7 +2228,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Nested @foreach', $result);
     }
 
@@ -2252,7 +2252,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $nestedIssue = null;
         foreach ($issues as $issue) {
@@ -2307,7 +2307,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Expensive computation', $result);
     }
 
@@ -2329,7 +2329,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Expensive computation', $result);
     }
 
@@ -2373,7 +2373,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Expensive computation', $result);
     }
 
@@ -2395,7 +2395,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Expensive computation', $result);
     }
 
@@ -2438,7 +2438,7 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $computeIssue = null;
         foreach ($issues as $issue) {

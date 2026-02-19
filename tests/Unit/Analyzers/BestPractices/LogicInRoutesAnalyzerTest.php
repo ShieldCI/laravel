@@ -125,7 +125,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('database queries', $result);
     }
 
@@ -380,7 +380,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('lines', $result);
     }
 
@@ -531,7 +531,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertEquals('medium', $issues[0]->severity->value);
     }
@@ -618,7 +618,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertEquals('route-closure-too-long', $issues[0]->code);
     }
@@ -772,7 +772,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should fail with custom threshold of 3
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_provides_controller_recommendation_for_db_writes(): void
@@ -1666,7 +1666,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // In strict mode, even simple reads are flagged
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('database queries (strict mode)', $result);
         $issues = $result->getIssues();
         $this->assertEquals('low', $issues[0]->severity->value);
@@ -1694,7 +1694,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Complex reads (3+ method chain) should be flagged as medium
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('complex database queries', $result);
         $issues = $result->getIssues();
         $this->assertEquals('medium', $issues[0]->severity->value);
@@ -1775,7 +1775,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertEquals('route-has-complex-queries', $issues[0]->code);
     }
@@ -1905,7 +1905,7 @@ PHP;
 
         // 2-method chain without terminal read (where + orderBy) is complex
         // The separate ->get() creates a 3-chain which is also complex
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('complex database queries', $result);
     }
 

@@ -1735,6 +1735,7 @@ PHP);
         $mockResult->shouldReceive('toArray')->andReturn([]);
 
         $report = new \ShieldCI\ValueObjects\AnalysisReport(
+            projectId: 'test-project-id',
             laravelVersion: '11.0',
             packageVersion: '1.0.0',
             results: collect([$mockResult]),

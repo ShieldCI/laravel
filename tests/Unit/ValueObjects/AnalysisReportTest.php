@@ -185,6 +185,7 @@ class AnalysisReportTest extends TestCase
     public function it_includes_version_info_in_array(): void
     {
         $report = new AnalysisReport(
+            projectId: 'test-project-id',
             laravelVersion: '10.0.0',
             packageVersion: '1.0.0',
             results: collect(),
@@ -204,6 +205,7 @@ class AnalysisReportTest extends TestCase
         $datetime = new DateTimeImmutable('2024-06-15T10:30:00+00:00');
 
         $report = new AnalysisReport(
+            projectId: 'test-project-id',
             laravelVersion: '10.0.0',
             packageVersion: '1.0.0',
             results: collect(),
@@ -220,6 +222,7 @@ class AnalysisReportTest extends TestCase
     public function it_includes_metadata_in_array(): void
     {
         $report = new AnalysisReport(
+            projectId: 'test-project-id',
             laravelVersion: '10.0.0',
             packageVersion: '1.0.0',
             results: collect(),
@@ -260,6 +263,7 @@ class AnalysisReportTest extends TestCase
         $datetime = new DateTimeImmutable;
 
         $report = new AnalysisReport(
+            projectId: 'test-project-id',
             laravelVersion: '10.0.0',
             packageVersion: '1.0.0',
             results: collect(),
@@ -276,6 +280,7 @@ class AnalysisReportTest extends TestCase
     private function createReport(Collection $results): AnalysisReport
     {
         return new AnalysisReport(
+            projectId: 'test-project-id',
             laravelVersion: app()->version(),
             packageVersion: '1.0.0',
             results: $results,

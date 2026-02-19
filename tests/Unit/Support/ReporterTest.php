@@ -72,9 +72,29 @@ class ReporterTest extends TestCase
         $this->assertJson($json);
 
         $decoded = json_decode($json, true);
+        $this->assertArrayHasKey('project_id', $decoded);
         $this->assertArrayHasKey('summary', $decoded);
         $this->assertArrayHasKey('score', $decoded['summary']);
         $this->assertArrayHasKey('results', $decoded);
+    }
+
+    #[Test]
+    public function it_can_format_to_api(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('test-analyzer', 'All checks passed'),
+        ]);
+
+        $report = $this->reporter->generate($results);
+        $apiPayload = $this->reporter->toApi($report);
+
+        $this->assertIsArray($apiPayload);
+        $this->assertArrayHasKey('project_id', $apiPayload);
+        $this->assertArrayHasKey('summary', $apiPayload);
+        $this->assertArrayHasKey('results', $apiPayload);
+        $this->assertArrayHasKey('laravel_version', $apiPayload);
+        $this->assertArrayHasKey('package_version', $apiPayload);
+        $this->assertEquals('test-project-id', $apiPayload['project_id']);
     }
 
     #[Test]

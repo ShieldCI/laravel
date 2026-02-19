@@ -69,7 +69,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
@@ -192,7 +192,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
@@ -234,7 +234,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
@@ -276,7 +276,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
@@ -361,7 +361,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
@@ -405,7 +405,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
@@ -449,7 +449,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
@@ -531,7 +531,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('nesting depth of 5', $result);
     }
 
@@ -618,7 +618,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
@@ -668,7 +668,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         // Only badMethod should have issues
         $issues = $result->getIssues();
@@ -715,7 +715,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
@@ -868,7 +868,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
@@ -931,7 +931,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         $this->assertEquals('global scope (file-level code)', $issues[0]->metadata['context']);

@@ -403,7 +403,7 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
             return $this->passed('Consistent use of Eloquent or Query Builder');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d file(s) mixing Query Builder and Eloquent inconsistently', count($issues)),
             $issues
         );

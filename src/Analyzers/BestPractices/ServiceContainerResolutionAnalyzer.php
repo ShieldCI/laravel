@@ -320,7 +320,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
 
         $totalIssues = count($issues);
 
-        return $this->failed(
+        return $this->resultBySeverity(
             "Found {$totalIssues} instance(s) of manual service container resolution",
             $issues
         );

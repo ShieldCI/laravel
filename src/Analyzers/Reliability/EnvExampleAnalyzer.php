@@ -48,7 +48,7 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
 
         // Check if .env.example exists
         if (! file_exists($envExamplePath)) {
-            return $this->failed(
+            return $this->resultBySeverity(
                 '.env.example file not found',
                 [$this->createIssue(
                     message: '.env.example file is missing',
@@ -71,7 +71,7 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
             return $this->passed('All environment variables are documented in .env.example');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d undocumented environment variable(s)', count($undocumentedVars)),
             [$this->createIssueWithSnippet(
                 message: 'Undocumented environment variables',

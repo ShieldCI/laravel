@@ -75,7 +75,7 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
 
         $totalIssues = count($missingDirs) + count($nonWritableDirs) + count($brokenSymlinks);
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d filesystem issue(s)', $totalIssues),
             $issues
         );

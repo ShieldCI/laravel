@@ -151,7 +151,7 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
         $composer = $this->parseComposerJson($composerPath);
         if ($composer === null) {
             // Malformed JSON - fail with error
-            return $this->failed(
+            return $this->resultBySeverity(
                 'composer.json contains invalid JSON',
                 [$this->createIssue(
                     message: 'composer.json contains invalid JSON and cannot be parsed',
@@ -186,7 +186,7 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
             return $this->passed('Error tracking service is configured');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             'No error tracking service detected',
             $issues
         );

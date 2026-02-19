@@ -225,7 +225,7 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
 
         $totalIssues = count($issues);
 
-        return $this->failed(
+        return $this->resultBySeverity(
             "Found {$totalIssues} class(es) with excessive helper function usage",
             $issues
         );

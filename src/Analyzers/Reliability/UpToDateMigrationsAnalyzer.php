@@ -77,7 +77,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
         try {
             // Check if migrations table exists
             if (! Schema::hasTable('migrations')) {
-                return $this->failed(
+                return $this->resultBySeverity(
                     'Migrations table does not exist',
                     [$this->createIssueWithSnippet(
                         message: 'The migrations table has not been created yet',
@@ -117,7 +117,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                 return $this->passed('All migrations are up to date');
             }
 
-            return $this->failed(
+            return $this->resultBySeverity(
                 sprintf('Found %d pending migration(s)', count($pendingMigrations)),
                 [$this->createIssueWithSnippet(
                     message: 'Pending migrations detected',

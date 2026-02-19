@@ -48,7 +48,7 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
 
         // Check if .env exists
         if (! file_exists($envPath)) {
-            return $this->failed(
+            return $this->resultBySeverity(
                 '.env file not found',
                 [$this->createIssue(
                     message: '.env file is missing',
@@ -67,7 +67,7 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
 
         // Handle parsing failures
         if ($exampleResult['error'] !== null) {
-            return $this->failed(
+            return $this->resultBySeverity(
                 'Failed to parse .env.example file',
                 [$this->createIssue(
                     message: 'Unable to parse .env.example file',
@@ -84,7 +84,7 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
         }
 
         if ($actualResult['error'] !== null) {
-            return $this->failed(
+            return $this->resultBySeverity(
                 'Failed to parse .env file',
                 [$this->createIssue(
                     message: 'Unable to parse .env file',
@@ -181,7 +181,7 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
 
         $totalCount = count($missingVars) + count($commentedOnlyVars);
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d environment variable issue(s)', $totalCount),
             $issues
         );

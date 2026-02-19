@@ -259,7 +259,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_provides_consistency_recommendation(): void
@@ -918,7 +918,7 @@ PHP;
         $analyzer->setPaths(['Services']);
 
         $result = $analyzer->analyze();
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         // With higher threshold, it should pass
         $analyzer2 = $this->createAnalyzer([

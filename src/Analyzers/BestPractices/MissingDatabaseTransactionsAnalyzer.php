@@ -102,7 +102,7 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
             return $this->passed('All multiple write operations are properly wrapped in transactions');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d method(s) with multiple writes missing transaction protection', count($issues)),
             $issues
         );

@@ -111,7 +111,7 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
             return $this->passed('All models have appropriate size and complexity');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf(
                 'Found %d issue(s) across %d fat model(s) that should be refactored',
                 count($issues),

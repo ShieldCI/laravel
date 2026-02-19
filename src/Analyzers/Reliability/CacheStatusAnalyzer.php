@@ -70,7 +70,7 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
                 // Clean up test key before returning
                 $this->cleanupTestKey($testKey);
 
-                return $this->failed(
+                return $this->resultBySeverity(
                     'Cache storage is not working correctly - values are not being retrieved as expected',
                     [$this->createIssue(
                         message: 'Cache write/read test failed',
@@ -114,7 +114,7 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
             // Ensure cleanup on exception
             $this->cleanupTestKey($testKey);
 
-            return $this->failed(
+            return $this->resultBySeverity(
                 'Cache is not accessible or not functioning properly',
                 [$this->createIssue(
                     message: 'Cache connection/operation failed',

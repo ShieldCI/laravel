@@ -59,7 +59,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('lines', $result);
     }
 
@@ -164,7 +164,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should fail because large methods are not excluded, even if they start with "get"
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('getUsersWithComplexFiltering', $result);
     }
 
@@ -314,7 +314,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should fail because these methods are too large to be simple accessors
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('setConfigurationFromMultipleSources', $result);
         $this->assertHasIssueContaining('isOrderValidForProcessing', $result);
         $this->assertHasIssueContaining('hasAdvancedPermissions', $result);
@@ -385,7 +385,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should fail because we're over threshold
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     #[Test]
@@ -418,7 +418,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertSame(Severity::Low, $issues[0]->severity);
@@ -454,7 +454,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertSame(Severity::Medium, $issues[0]->severity);
@@ -487,7 +487,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('processHelper', $result);
     }
 
@@ -566,7 +566,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(2, $issues);
         $this->assertHasIssueContaining('firstMethod', $result);
@@ -602,7 +602,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
 
@@ -649,7 +649,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
 
@@ -686,7 +686,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
 
@@ -727,7 +727,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(2, $issues);
 
@@ -785,7 +785,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('getUser', $result);
 
         // Test with low main threshold (5) but lenient accessor threshold (10)

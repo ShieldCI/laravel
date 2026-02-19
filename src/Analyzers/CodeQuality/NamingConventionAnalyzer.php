@@ -89,7 +89,7 @@ class NamingConventionAnalyzer extends AbstractFileAnalyzer
 
         $totalIssues = count($issues);
 
-        return $this->failed(
+        return $this->resultBySeverity(
             "Found {$totalIssues} naming convention violation(s)",
             $issues
         );

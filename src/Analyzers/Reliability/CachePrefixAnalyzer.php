@@ -83,7 +83,7 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
 
         // Check if prefix is empty
         if ($prefix === '') {
-            return $this->failed(
+            return $this->resultBySeverity(
                 'Cache prefix is not configured',
                 [$this->createIssue(
                     message: 'Cache prefix is empty or not set',
@@ -101,7 +101,7 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
 
         // Check if prefix is too generic
         if ($this->isGenericPrefix($prefix)) {
-            return $this->failed(
+            return $this->resultBySeverity(
                 'Cache prefix is too generic',
                 [$this->createIssue(
                     message: "Cache prefix '{$prefix}' is too generic and may cause collisions",

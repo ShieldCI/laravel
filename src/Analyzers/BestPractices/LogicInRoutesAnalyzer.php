@@ -103,7 +103,7 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
             return $this->passed('No business logic found in route files');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d route(s) with business logic that should be moved to controllers', count($issues)),
             $issues
         );

@@ -194,7 +194,7 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('No error tracking service detected', $result);
     }
 
@@ -231,7 +231,7 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertGreaterThan(0, count($issues));
         $this->assertStringContainsString('Sentry', $issues[0]->recommendation);
@@ -425,7 +425,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('No error tracking service detected', $result);
     }
 
@@ -551,7 +551,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('No error tracking service detected', $result);
     }
 
@@ -594,7 +594,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('No error tracking service detected', $result);
     }
 
@@ -639,7 +639,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('No error tracking service detected', $result);
     }
 
@@ -687,7 +687,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('No error tracking service detected', $result);
     }
 }

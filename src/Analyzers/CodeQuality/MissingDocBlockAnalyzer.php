@@ -104,7 +104,7 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
         $issueWord = $totalIssues === 1 ? 'issue' : 'issues';
         $methodWord = $affectedMethodCount === 1 ? 'method' : 'methods';
 
-        return $this->failed(
+        return $this->resultBySeverity(
             "Found {$totalIssues} documentation {$issueWord} across {$affectedMethodCount} public {$methodWord}",
             $issues
         );

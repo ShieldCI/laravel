@@ -1833,15 +1833,21 @@ PHP);
     }
 
     #[Test]
-    public function it_does_not_send_to_api_when_no_send_flag_is_used(): void
+    public function it_sends_to_api_when_report_flag_is_used(): void
     {
         $this->registerTestAnalyzers();
 
-        config(['shieldci.report.send_to_api' => true]);
+        config(['shieldci.report.send_to_api' => false]);
 
-        $this->artisan('shield:analyze', ['--format' => 'json', '--no-send' => true])
+        \Illuminate\Support\Facades\Http::fake([
+            'api.test.shieldci.com/api/v1/reports' => \Illuminate\Support\Facades\Http::response([
+                'success' => true,
+            ]),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json', '--report' => true])
             ->assertSuccessful()
-            ->doesntExpectOutputToContain('Sending report to ShieldCI platform');
+            ->expectsOutputToContain('Report sent successfully');
     }
 
     #[Test]

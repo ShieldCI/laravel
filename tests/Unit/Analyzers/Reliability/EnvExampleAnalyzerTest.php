@@ -63,7 +63,7 @@ APP_ENV=local';
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('Undocumented environment variables', $result);
     }
 
@@ -152,7 +152,7 @@ APP_ENV=local';
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertStringContainsString('5 undocumented environment variable(s)', $result->getMessage());
     }
 
@@ -302,7 +302,7 @@ NEW_VAR_3=value3';
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
 
@@ -329,7 +329,7 @@ CUSTOM_VAR=value';
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
 
@@ -384,7 +384,7 @@ STRIPE_SECRET=sk_test';
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
 
@@ -429,7 +429,7 @@ APP_ENV=production';
         $result = $analyzer->analyze();
 
         // Should fail - variables need to be documented
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertStringContainsString('2 undocumented environment variable(s)', $result->getMessage());
     }
 
@@ -476,7 +476,7 @@ APP_ENV=production';
         chmod($examplePath, 0644);
 
         // Should fail - can't read .env.example, all variables appear undocumented
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_handles_empty_basepath(): void
@@ -523,7 +523,7 @@ APP_ENV=local';
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertStringContainsString('1 undocumented environment variable(s)', $result->getMessage());
 
         $issues = $result->getIssues();

@@ -102,7 +102,7 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
 
         $resourcesViewsPath = $this->getResourcesViewsPath();
 
-        return $this->warning(
+        return $this->resultBySeverity(
             'Application does not define conventional Laravel error page templates',
             [$this->createIssue(
                 message: 'Custom error pages not configured for: '.implode(', ', $missing),

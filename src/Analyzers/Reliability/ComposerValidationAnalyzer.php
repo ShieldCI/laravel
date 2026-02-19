@@ -44,7 +44,7 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
         $composerJsonPath = $this->buildPath('composer.json');
 
         if (! file_exists($composerJsonPath)) {
-            return $this->failed(
+            return $this->resultBySeverity(
                 'composer.json file not found',
                 [$this->createIssue(
                     message: 'composer.json file is missing',
@@ -66,7 +66,7 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
         $result = $this->composerValidator->validate($basePath);
 
         if (! $result->successful) {
-            return $this->failed(
+            return $this->resultBySeverity(
                 'composer.json validation failed',
                 [$this->createIssue(
                     message: 'composer validate command reported issues',
@@ -90,7 +90,7 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
     {
         $content = FileParser::readFile($composerJsonPath);
         if ($content === null) {
-            return $this->failed(
+            return $this->resultBySeverity(
                 'Unable to read composer.json file',
                 [$this->createIssue(
                     message: 'composer.json file exists but cannot be read',
@@ -106,7 +106,7 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
         $jsonError = json_last_error();
 
         if ($jsonError !== JSON_ERROR_NONE) {
-            return $this->failed(
+            return $this->resultBySeverity(
                 'composer.json contains invalid JSON',
                 [$this->createIssue(
                     message: 'composer.json is not valid JSON: '.json_last_error_msg(),
@@ -124,7 +124,7 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
         // Validate that decoded JSON is an object (composer.json should be an object, not an array or primitive)
         // Note: array_is_list([]) returns true, but empty objects are valid, so check non-empty arrays only
         if (! is_array($decoded) || (! empty($decoded) && array_is_list($decoded))) {
-            return $this->failed(
+            return $this->resultBySeverity(
                 'composer.json is not a valid JSON object',
                 [$this->createIssue(
                     message: 'composer.json must be a JSON object, not a primitive value or array',

@@ -43,7 +43,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('PHPDoc', $result);
     }
 
@@ -306,7 +306,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('@param', $result);
     }
 
@@ -343,7 +343,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         // Should flag that 4 out of 5 parameters are missing @param tags
         $this->assertHasIssueContaining('4 parameter(s) missing @param', $result);
         $this->assertHasIssueContaining('found 1, need 5', $result);
@@ -422,7 +422,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('@throws', $result);
     }
 
@@ -465,7 +465,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('@throws', $result);
     }
 
@@ -506,7 +506,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('@throws', $result);
     }
 
@@ -547,7 +547,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('@throws', $result);
     }
 
@@ -633,7 +633,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should fail - new exception in catch block propagates
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('@throws', $result);
     }
 
@@ -770,7 +770,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should fail - methods without return type need @return documentation
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('@return', $result);
     }
 
@@ -811,7 +811,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         // These should be flagged (missing @return)
         $this->assertHasIssueContaining('needsReturnMixed', $result);
@@ -926,7 +926,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(2, $issues);
         $this->assertHasIssueContaining('firstMethod', $result);
@@ -963,7 +963,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
 
         // This method has 3 issues: missing @param (2 params), missing @throws, and missing @return (no return type)
@@ -1000,7 +1000,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
 

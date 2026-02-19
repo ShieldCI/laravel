@@ -85,7 +85,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('storage', $result);
     }
 
@@ -113,7 +113,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_detects_hardcoded_log_paths(): void
@@ -140,7 +140,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     public function test_provides_helper_recommendation(): void
@@ -168,7 +168,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertGreaterThan(0, count($issues));
         $this->assertStringContainsString('storage_path', $issues[0]->recommendation);
@@ -245,7 +245,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('storage', $result);
     }
 
@@ -273,7 +273,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('public', $result);
     }
 
@@ -306,7 +306,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(2, $issues);
     }
@@ -335,7 +335,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertStringContainsString('app_path', $issues[0]->recommendation);
     }
@@ -364,7 +364,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertStringContainsString('resource_path', $issues[0]->recommendation);
     }
@@ -393,7 +393,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertStringContainsString('database_path', $issues[0]->recommendation);
     }
@@ -422,7 +422,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertStringContainsString('config_path', $issues[0]->recommendation);
     }
@@ -455,7 +455,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('storage', $result);
     }
 
@@ -494,7 +494,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertGreaterThanOrEqual(3, count($issues));
     }
@@ -570,7 +570,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertStringContainsString('custom_upload_path', $issues[0]->recommendation);
     }
@@ -603,7 +603,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertGreaterThanOrEqual(2, count($issues));
     }
@@ -631,7 +631,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertGreaterThanOrEqual(2, count($issues));
     }
@@ -663,7 +663,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('storage', $result);
     }
 
@@ -731,7 +731,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
     }
 
     // =========================================================================
@@ -866,7 +866,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertGreaterThanOrEqual(3, count($issues));
     }
@@ -908,7 +908,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertGreaterThanOrEqual(3, count($issues));
     }
@@ -938,7 +938,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('storage', $result);
     }
 
@@ -971,7 +971,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertGreaterThanOrEqual(2, count($issues));
     }
@@ -1005,7 +1005,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertGreaterThanOrEqual(2, count($issues));
     }
@@ -1042,7 +1042,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertGreaterThanOrEqual(2, count($issues));
     }
@@ -1111,7 +1111,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should fail (flag) - strong context
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('public', $result);
     }
 
@@ -1144,7 +1144,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should fail (flag) - weak context sufficient for /storage/
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('storage', $result);
     }
 
@@ -1210,7 +1210,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('storage', $result);
     }
 
@@ -1243,7 +1243,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertGreaterThanOrEqual(2, count($issues));
     }
@@ -1277,7 +1277,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertGreaterThanOrEqual(2, count($issues));
     }
@@ -1307,7 +1307,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('storage', $result);
     }
 
@@ -1336,7 +1336,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('storage', $result);
     }
 
@@ -1369,7 +1369,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertStringContainsString('public_path', $issues[0]->recommendation);
@@ -1402,7 +1402,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertStringContainsString('public_path', $issues[0]->recommendation);

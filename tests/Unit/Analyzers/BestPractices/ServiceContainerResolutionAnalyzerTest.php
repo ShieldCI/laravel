@@ -407,7 +407,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Bindings (bind, singleton) should be skipped, but resolution (app()->make()) should be flagged
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertHasIssueContaining('app()->make()', $result);
@@ -627,7 +627,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertSame(Severity::Medium, $issues[0]->severity);
         $this->assertSame('class', $issues[0]->metadata['argument_type']);
@@ -694,7 +694,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertSame(Severity::Medium, $issues[0]->severity);
         $this->assertSame('variable', $issues[0]->metadata['argument_type']);
@@ -783,7 +783,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('global scope', $result);
     }
 
@@ -928,7 +928,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should detect because it doesn't extend ServiceProvider
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('app()', $result);
     }
 
@@ -1101,7 +1101,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertSame(Severity::Low, $issues[0]->severity);
@@ -1410,7 +1410,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('new PaymentHandler()', $result);
     }
 
@@ -1508,7 +1508,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertSame(Severity::Low, $issues[0]->severity);
@@ -1547,7 +1547,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Resolution in closure with string argument gets Medium severity
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertSame(Severity::Medium, $issues[0]->severity);
@@ -1587,7 +1587,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Bindings are skipped (service provider), resolution in closure with string arg is Medium
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertSame(Severity::Medium, $issues[0]->severity);
@@ -1623,7 +1623,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertSame(Severity::Medium, $issues[0]->severity);
@@ -1725,7 +1725,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertSame(Severity::Low, $issues[0]->severity);
@@ -1810,7 +1810,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should fail - PaymentServiceProviderFake doesn't extend Illuminate ServiceProvider
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('app()', $result);
     }
 
@@ -1849,7 +1849,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Binding in register() should be skipped, but app() resolution in boot() should be flagged
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertHasIssueContaining('app()', $result);
@@ -1923,7 +1923,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Resolution inside closure is now reported at Low severity
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertSame(Severity::Low, $issues[0]->severity);
@@ -2144,7 +2144,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
 
         // Should remain Medium severity (not escalated)
@@ -2374,7 +2374,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertSame(Severity::Low, $issues[0]->severity);
@@ -2483,7 +2483,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertStringContainsString('sometimes necessary when dependency injection is unavailable', $issues[0]->recommendation);
         $this->assertStringContainsString('extracting to an injectable class', $issues[0]->recommendation);
@@ -2521,7 +2521,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should fail - PaymentService matches *Service and no exclusion
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('new PaymentService()', $result);
     }
 }

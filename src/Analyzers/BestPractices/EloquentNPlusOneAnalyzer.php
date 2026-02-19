@@ -103,7 +103,7 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
 
         $totalIssues = count($issues);
 
-        return $this->failed(
+        return $this->resultBySeverity(
             "Found {$totalIssues} potential N+1 query issue(s)",
             $issues
         );

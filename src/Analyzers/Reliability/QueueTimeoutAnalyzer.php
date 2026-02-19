@@ -130,7 +130,7 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
             return $this->passed('Queue timeout configurations are correct');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d queue configuration issue(s)', count($issues)),
             $issues
         );

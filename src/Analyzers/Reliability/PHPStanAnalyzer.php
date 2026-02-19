@@ -349,7 +349,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         $displayedCount = count($allIssueObjects);
         $message = $this->formatIssueCountMessage($totalIssues, $displayedCount, 'PHPStan issue(s)');
 
-        return $this->failed($message, $allIssueObjects);
+        return $this->resultBySeverity($message, $allIssueObjects);
     }
 
     /**

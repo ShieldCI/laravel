@@ -79,7 +79,7 @@ class ChunkMissingAnalyzer extends AbstractFileAnalyzer
             $count === 1 ? 'query' : 'queries'
         );
 
-        return $this->failed($message, $issues);
+        return $this->resultBySeverity($message, $issues);
     }
 }
 

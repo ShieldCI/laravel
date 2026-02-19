@@ -141,7 +141,7 @@ class PhpSideFilteringAnalyzer extends AbstractFileAnalyzer
             return $this->passed('No PHP-side filtering detected (filter/reject/whereIn/whereNotIn after fetch)');
         }
 
-        return $this->failed(
+        return $this->resultBySeverity(
             sprintf('Found %d instance(s) of PHP-side filtering that should be done in database', count($issues)),
             $issues
         );

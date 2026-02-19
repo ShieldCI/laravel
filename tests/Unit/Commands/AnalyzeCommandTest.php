@@ -1817,6 +1817,130 @@ PHP);
         $this->assertSame('All issues are suppressed via @shieldci-ignore', $result);
     }
 
+    // ─── API Integration Tests ────────────────────────────────────────────
+
+    #[Test]
+    public function it_does_not_send_to_api_when_config_is_not_set(): void
+    {
+        $this->registerTestAnalyzers();
+
+        // Ensure send_to_api is not set (default)
+        config(['shieldci.report.send_to_api' => false]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->doesntExpectOutputToContain('Sending report to ShieldCI platform');
+    }
+
+    #[Test]
+    public function it_does_not_send_to_api_when_no_send_flag_is_used(): void
+    {
+        $this->registerTestAnalyzers();
+
+        config(['shieldci.report.send_to_api' => true]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json', '--no-send' => true])
+            ->assertSuccessful()
+            ->doesntExpectOutputToContain('Sending report to ShieldCI platform');
+    }
+
+    #[Test]
+    public function it_sends_to_api_when_configured_and_reports_success(): void
+    {
+        $this->registerTestAnalyzers();
+
+        config(['shieldci.report.send_to_api' => true]);
+
+        \Illuminate\Support\Facades\Http::fake([
+            'api.test.shieldci.com/api/v1/reports' => \Illuminate\Support\Facades\Http::response([
+                'success' => true,
+            ]),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('Sending report to ShieldCI platform')
+            ->expectsOutputToContain('Report sent successfully');
+    }
+
+    #[Test]
+    public function it_sends_to_api_and_reports_failure_response(): void
+    {
+        $this->registerTestAnalyzers();
+
+        config(['shieldci.report.send_to_api' => true]);
+
+        \Illuminate\Support\Facades\Http::fake([
+            'api.test.shieldci.com/api/v1/reports' => \Illuminate\Support\Facades\Http::response([
+                'success' => false,
+                'message' => 'Invalid token',
+            ]),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('Failed to send report: Invalid token');
+    }
+
+    #[Test]
+    public function it_sends_to_api_and_handles_failure_without_message(): void
+    {
+        $this->registerTestAnalyzers();
+
+        config(['shieldci.report.send_to_api' => true]);
+
+        \Illuminate\Support\Facades\Http::fake([
+            'api.test.shieldci.com/api/v1/reports' => \Illuminate\Support\Facades\Http::response([
+                'error' => 'something',
+            ]),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('Failed to send report: Unknown error');
+    }
+
+    #[Test]
+    public function it_sends_to_api_and_handles_connection_exception(): void
+    {
+        $this->registerTestAnalyzers();
+
+        config(['shieldci.report.send_to_api' => true]);
+
+        // Mock the ClientInterface to throw an exception
+        $this->app->singleton(\ShieldCI\Contracts\ClientInterface::class, function () {
+            $mock = Mockery::mock(\ShieldCI\Contracts\ClientInterface::class);
+            /** @phpstan-ignore-next-line */
+            $mock->shouldReceive('sendReport')
+                ->andThrow(new \Exception('Connection timed out'));
+
+            return $mock;
+        });
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('Failed to send report to API: Connection timed out');
+    }
+
+    #[Test]
+    public function it_sends_to_api_in_streaming_mode(): void
+    {
+        $this->registerTestAnalyzers();
+
+        config(['shieldci.report.send_to_api' => true]);
+
+        \Illuminate\Support\Facades\Http::fake([
+            'api.test.shieldci.com/api/v1/reports' => \Illuminate\Support\Facades\Http::response([
+                'success' => true,
+            ]),
+        ]);
+
+        // Console format triggers streaming mode
+        $this->artisan('shield:analyze', ['--format' => 'console'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('Report sent successfully');
+    }
+
     /**
      * Register test analyzers that produce failures.
      */

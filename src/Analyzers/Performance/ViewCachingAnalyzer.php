@@ -108,7 +108,7 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
                 $this->createIssue(
                     message: 'Compiled views directory does not exist - view cache has not been generated',
                     location: null,
-                    severity: Severity::Medium,
+                    severity: $this->metadata()->severity,
                     recommendation: 'Run "php artisan view:cache" as part of your deployment process to generate compiled views.',
                     metadata: [
                         'environment' => $environment,
@@ -129,7 +129,7 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
                 $this->createIssue(
                     message: 'No compiled views found - view cache has not been generated',
                     location: null,
-                    severity: Severity::Medium,
+                    severity: $this->metadata()->severity,
                     recommendation: 'Run "php artisan view:cache" as part of your deployment process to pre-compile all Blade templates. This eliminates on-demand compilation overhead in production.',
                     metadata: [
                         'environment' => $environment,
@@ -153,7 +153,7 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
                         $this->humanDuration($staleDuration)
                     ),
                     location: null,
-                    severity: Severity::Medium,
+                    severity: $this->metadata()->severity,
                     recommendation: 'Run "php artisan view:cache" to regenerate the view cache. Add this command to your deployment script after any code changes.',
                     metadata: [
                         'environment' => $environment,

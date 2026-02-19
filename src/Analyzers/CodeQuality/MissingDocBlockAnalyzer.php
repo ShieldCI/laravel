@@ -72,7 +72,7 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
                     message: $issue['message'],
                     filePath: $file,
                     lineNumber: $issue['line'],
-                    severity: Severity::Low,
+                    severity: $this->metadata()->severity,
                     recommendation: $this->getRecommendation($issue['type'], $issue['method']),
                     column: null,
                     contextLines: null,

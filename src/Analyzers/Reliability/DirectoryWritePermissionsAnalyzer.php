@@ -234,7 +234,7 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
         $issues[] = $this->createIssue(
             message: $message,
             location: new Location($this->getRelativePath($locationPath)),
-            severity: Severity::Critical,
+            severity: $this->metadata()->severity,
             recommendation: $this->buildRecommendation($formattedMissing, $formattedNonWritable),
             code: null,
             metadata: [
@@ -481,7 +481,7 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
         $issues[] = $this->createIssue(
             message: $message,
             location: new Location($this->getRelativePath($locationPath)),
-            severity: Severity::Critical,
+            severity: $this->metadata()->severity,
             recommendation: $this->buildSymlinkRecommendation($formattedSymlinks),
             code: null,
             metadata: [

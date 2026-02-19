@@ -86,7 +86,7 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
                 message: "Unused global middleware detected: {$middleware['name']}",
                 filePath: $kernelPath,
                 lineNumber: $middlewareLine,
-                severity: Severity::Low,
+                severity: $this->metadata()->severity,
                 recommendation: $middleware['recommendation'],
                 code: $middleware['name'],
                 metadata: [

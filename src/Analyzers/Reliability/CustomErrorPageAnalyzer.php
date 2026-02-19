@@ -107,7 +107,7 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
             [$this->createIssue(
                 message: 'Custom error pages not configured for: '.implode(', ', $missing),
                 location: new Location($this->getRelativePath($resourcesViewsPath)),
-                severity: Severity::Low,
+                severity: $this->metadata()->severity,
                 recommendation: $this->getCustomErrorPagesRecommendation(),
                 metadata: [
                     'missing_templates' => $missing,

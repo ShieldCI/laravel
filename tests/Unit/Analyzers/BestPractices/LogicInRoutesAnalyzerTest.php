@@ -2131,6 +2131,120 @@ PHP;
         $this->assertHasIssueContaining('database write operations', $result);
     }
 
+    public function test_route_group_closure_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\AirportController;
+
+Route::group(['as' => 'airports.', 'prefix' => 'airports'], function () {
+    Route::get('/', [AirportController::class, 'index'])->name('index');
+    Route::get('/create', [AirportController::class, 'create'])->name('create');
+    Route::post('/', [AirportController::class, 'store'])->name('store');
+    Route::get('/{airport}', [AirportController::class, 'show'])->name('show');
+    Route::get('/{airport}/edit', [AirportController::class, 'edit'])->name('edit');
+    Route::put('/{airport}', [AirportController::class, 'update'])->name('update');
+    Route::delete('/{airport}', [AirportController::class, 'destroy'])->name('destroy');
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Route::group() closures contain route definitions, not business logic
+        $this->assertPassed($result);
+    }
+
+    public function test_route_middleware_group_closure_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\ProfileController;
+
+Route::middleware(['auth', 'verified'])->group(function () {
+    Route::get('/dashboard', [DashboardController::class, 'index']);
+    Route::get('/profile', [ProfileController::class, 'show']);
+    Route::put('/profile', [ProfileController::class, 'update']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Route grouping closures should not be flagged
+        $this->assertPassed($result);
+    }
+
+    public function test_route_prefix_group_closure_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\Api\PostController;
+
+Route::prefix('api/v1')->group(function () {
+    Route::get('/users', [UserController::class, 'index']);
+    Route::get('/posts', [PostController::class, 'index']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Route grouping closures should not be flagged
+        $this->assertPassed($result);
+    }
+
+    public function test_route_group_with_bad_handler_inside_still_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Models\User;
+
+Route::group(['prefix' => 'admin'], function () {
+    Route::post('/users', function () {
+        return User::create(['name' => 'Test']);
+    });
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // The inner Route::post handler closure should still be flagged
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('database write operations', $result);
+    }
+
     public function test_does_not_flag_unresolved_pascalcase_class(): void
     {
         $code = <<<'PHP'

@@ -22,7 +22,7 @@ class AnalyzeCommand extends Command
                             {--format=console : Output format (console|json)}
                             {--output= : Save report to file}
                             {--baseline : Compare against baseline and only report new issues}
-                            {--no-send : Skip sending report to ShieldCI platform}';
+                            {--report : Send report to ShieldCI platform}';
 
     protected $description = 'Run ShieldCI security and code quality analysis';
 
@@ -747,8 +747,8 @@ class AnalyzeCommand extends Command
      */
     protected function shouldSendToApi(): bool
     {
-        if ($this->option('no-send')) {
-            return false;
+        if ($this->option('report')) {
+            return true;
         }
 
         return (bool) config('shieldci.report.send_to_api', false);

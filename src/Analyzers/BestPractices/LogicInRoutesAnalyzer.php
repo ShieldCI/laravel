@@ -115,6 +115,11 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
  */
 class LogicInRoutesVisitor extends NodeVisitorAbstract
 {
+    /** @var list<string> Route methods that define handlers (closures with business logic) */
+    private const ROUTE_HANDLER_METHODS = [
+        'get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match', 'fallback',
+    ];
+
     /** @var list<string> Functions that indicate business logic */
     private const BUSINESS_LOGIC_FUNCTIONS = [
         'dispatch', 'dispatch_sync', 'dispatch_now',  // Jobs
@@ -312,6 +317,15 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
     {
         if (empty($node->args)) {
             return;
+        }
+
+        // Only analyze closures in route handler methods (get, post, etc.)
+        // Skip grouping methods (group, middleware, prefix, etc.) whose closures
+        // contain route definitions, not business logic.
+        if ($node->name instanceof Node\Identifier) {
+            if (! in_array($node->name->toString(), self::ROUTE_HANDLER_METHODS, true)) {
+                return;
+            }
         }
 
         // Check each argument for closures

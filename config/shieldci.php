@@ -34,7 +34,7 @@ return [
 
     'project_id' => env('SHIELDCI_PROJECT_ID'),
 
-    'api_url' => env('SHIELDCI_API_URL', 'https://api.shieldci.com'),
+    'api_url' => env('SHIELDCI_API_URL', 'https://shieldci.com'),
 
     /*
     |--------------------------------------------------------------------------

@@ -19,8 +19,8 @@ class ShieldCIClient implements ClientInterface
 
     public function __construct()
     {
-        $configUrl = config('shieldci.api_url', 'https://api.shieldci.com');
-        $this->baseUrl = is_string($configUrl) ? rtrim($configUrl, '/') : 'https://api.shieldci.com';
+        $configUrl = config('shieldci.api_url', 'https://shieldci.com');
+        $this->baseUrl = is_string($configUrl) ? rtrim($configUrl, '/') : 'https://shieldci.com';
 
         $configToken = config('shieldci.token', '');
         $this->token = is_string($configToken) ? $configToken : '';
@@ -38,7 +38,7 @@ class ShieldCIClient implements ClientInterface
     {
         $response = Http::withToken($this->token)
             ->timeout(30)
-            ->post("{$this->baseUrl}/api/v1/reports", $payload);
+            ->post("{$this->baseUrl}/api/reports", $payload);
 
         /** @var array<string, mixed> $data */
         $data = $response->json() ?? [];
@@ -57,7 +57,7 @@ class ShieldCIClient implements ClientInterface
     {
         $response = Http::withToken($this->token)
             ->timeout(10)
-            ->get("{$this->baseUrl}/api/v1/auth/verify");
+            ->get("{$this->baseUrl}/api/token/verify");
 
         /** @var array<string, mixed> $data */
         $data = $response->json() ?? [];
@@ -72,11 +72,11 @@ class ShieldCIClient implements ClientInterface
      *
      * @throws ConnectionException
      */
-    public function getProject(string $projectId): array
+    public function getProject(): array
     {
         $response = Http::withToken($this->token)
             ->timeout(10)
-            ->get("{$this->baseUrl}/api/v1/projects/{$projectId}");
+            ->get("{$this->baseUrl}/api/project");
 
         /** @var array<string, mixed> $data */
         $data = $response->json() ?? [];

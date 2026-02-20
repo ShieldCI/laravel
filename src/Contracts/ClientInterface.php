@@ -29,5 +29,5 @@ interface ClientInterface
      *
      * @return array<string, mixed>
      */
-    public function getProject(string $projectId): array;
+    public function getProject(): array;
 }

@@ -38,7 +38,7 @@ class ShieldCIClientTest extends TestCase
         $result = $client->verifyToken();
 
         Http::assertSent(function ($request) {
-            return str_contains($request->url(), 'custom-api.example.com/api/v1/auth/verify')
+            return str_contains($request->url(), 'custom-api.example.com/api/token/verify')
                 && $request->hasHeader('Authorization', 'Bearer custom-token-123');
         });
 
@@ -57,7 +57,7 @@ class ShieldCIClientTest extends TestCase
         $client->verifyToken();
 
         Http::assertSent(function ($request) {
-            return $request->url() === 'https://api.example.com/api/v1/auth/verify';
+            return $request->url() === 'https://api.example.com/api/token/verify';
         });
     }
 
@@ -68,12 +68,12 @@ class ShieldCIClientTest extends TestCase
 
         $client = new ShieldCIClient;
 
-        Http::fake(['api.shieldci.com/*' => Http::response([])]);
+        Http::fake(['shieldci.com/*' => Http::response([])]);
 
         $client->verifyToken();
 
         Http::assertSent(function ($request) {
-            return str_contains($request->url(), 'api.shieldci.com');
+            return str_contains($request->url(), 'shieldci.com');
         });
     }
 
@@ -97,7 +97,7 @@ class ShieldCIClientTest extends TestCase
     public function send_report_posts_payload_to_reports_endpoint(): void
     {
         Http::fake([
-            'api.test.shieldci.com/api/v1/reports' => Http::response([
+            'api.test.shieldci.com/api/reports' => Http::response([
                 'success' => true,
                 'id' => 'report-123',
             ]),
@@ -111,7 +111,7 @@ class ShieldCIClientTest extends TestCase
         $this->assertEquals(['success' => true, 'id' => 'report-123'], $result);
 
         Http::assertSent(function ($request) {
-            return $request->url() === 'https://api.test.shieldci.com/api/v1/reports'
+            return $request->url() === 'https://api.test.shieldci.com/api/reports'
                 && $request->method() === 'POST'
                 && $request['project_id'] === 'proj-1'
                 && $request['score'] === 85;
@@ -132,43 +132,42 @@ class ShieldCIClientTest extends TestCase
     }
 
     #[Test]
-    public function verify_token_calls_auth_verify_endpoint(): void
+    public function verify_token_calls_token_verify_endpoint(): void
     {
         Http::fake([
-            'api.test.shieldci.com/api/v1/auth/verify' => Http::response([
+            'api.test.shieldci.com/api/token/verify' => Http::response([
                 'valid' => true,
-                'user' => 'test@example.com',
+                'project' => ['id' => 'test-uuid', 'name' => 'Test Project'],
             ]),
         ]);
 
         $client = new ShieldCIClient;
         $result = $client->verifyToken();
 
-        $this->assertEquals(['valid' => true, 'user' => 'test@example.com'], $result);
+        $this->assertEquals(['valid' => true, 'project' => ['id' => 'test-uuid', 'name' => 'Test Project']], $result);
 
         Http::assertSent(function ($request) {
-            return $request->url() === 'https://api.test.shieldci.com/api/v1/auth/verify'
+            return $request->url() === 'https://api.test.shieldci.com/api/token/verify'
                 && $request->method() === 'GET';
         });
     }
 
     #[Test]
-    public function get_project_calls_projects_endpoint_with_id(): void
+    public function get_project_calls_project_endpoint(): void
     {
         Http::fake([
-            'api.test.shieldci.com/api/v1/projects/proj-456' => Http::response([
-                'id' => 'proj-456',
-                'name' => 'My Project',
+            'api.test.shieldci.com/api/project' => Http::response([
+                'project' => ['uuid' => 'proj-456', 'name' => 'My Project'],
             ]),
         ]);
 
         $client = new ShieldCIClient;
-        $result = $client->getProject('proj-456');
+        $result = $client->getProject();
 
-        $this->assertEquals(['id' => 'proj-456', 'name' => 'My Project'], $result);
+        $this->assertEquals(['project' => ['uuid' => 'proj-456', 'name' => 'My Project']], $result);
 
         Http::assertSent(function ($request) {
-            return $request->url() === 'https://api.test.shieldci.com/api/v1/projects/proj-456'
+            return $request->url() === 'https://api.test.shieldci.com/api/project'
                 && $request->method() === 'GET';
         });
     }
@@ -181,7 +180,7 @@ class ShieldCIClientTest extends TestCase
         ]);
 
         $client = new ShieldCIClient;
-        $result = $client->getProject('proj-789');
+        $result = $client->getProject();
 
         $this->assertEquals([], $result);
     }

@@ -1840,7 +1840,7 @@ PHP);
         config(['shieldci.report.send_to_api' => false]);
 
         \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/v1/reports' => \Illuminate\Support\Facades\Http::response([
+            'api.test.shieldci.com/api/reports' => \Illuminate\Support\Facades\Http::response([
                 'success' => true,
             ]),
         ]);
@@ -1858,7 +1858,7 @@ PHP);
         config(['shieldci.report.send_to_api' => true]);
 
         \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/v1/reports' => \Illuminate\Support\Facades\Http::response([
+            'api.test.shieldci.com/api/reports' => \Illuminate\Support\Facades\Http::response([
                 'success' => true,
             ]),
         ]);
@@ -1877,7 +1877,7 @@ PHP);
         config(['shieldci.report.send_to_api' => true]);
 
         \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/v1/reports' => \Illuminate\Support\Facades\Http::response([
+            'api.test.shieldci.com/api/reports' => \Illuminate\Support\Facades\Http::response([
                 'success' => false,
                 'message' => 'Invalid token',
             ]),
@@ -1896,7 +1896,7 @@ PHP);
         config(['shieldci.report.send_to_api' => true]);
 
         \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/v1/reports' => \Illuminate\Support\Facades\Http::response([
+            'api.test.shieldci.com/api/reports' => \Illuminate\Support\Facades\Http::response([
                 'error' => 'something',
             ]),
         ]);
@@ -1936,7 +1936,7 @@ PHP);
         config(['shieldci.report.send_to_api' => true]);
 
         \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/v1/reports' => \Illuminate\Support\Facades\Http::response([
+            'api.test.shieldci.com/api/reports' => \Illuminate\Support\Facades\Http::response([
                 'success' => true,
             ]),
         ]);

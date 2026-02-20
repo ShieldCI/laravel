@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Status;
+use ShieldCI\Enums\TriggerSource;
 
 /**
  * Complete analysis report
@@ -24,6 +25,7 @@ final class AnalysisReport
         public readonly Collection $results,
         public readonly float $totalExecutionTime,
         public readonly DateTimeImmutable $analyzedAt,
+        public readonly TriggerSource $triggeredBy = TriggerSource::Manual,
         public readonly array $metadata = [],
     ) {}
 
@@ -95,6 +97,7 @@ final class AnalysisReport
             'project_id' => $this->projectId,
             'laravel_version' => $this->laravelVersion,
             'package_version' => $this->packageVersion,
+            'triggered_by' => $this->triggeredBy->value,
             'analyzed_at' => $this->analyzedAt->format('c'),
             'total_execution_time' => $this->totalExecutionTime,
             'summary' => $this->summary(),

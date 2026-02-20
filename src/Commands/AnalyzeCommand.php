@@ -22,7 +22,8 @@ class AnalyzeCommand extends Command
                             {--format=console : Output format (console|json)}
                             {--output= : Save report to file}
                             {--baseline : Compare against baseline and only report new issues}
-                            {--report : Send report to ShieldCI platform}';
+                            {--report : Send report to ShieldCI platform}
+                            {--triggered-by= : Override trigger source (manual|ci_cd|scheduled)}';
 
     protected $description = 'Run ShieldCI security and code quality analysis';
 
@@ -38,6 +39,9 @@ class AnalyzeCommand extends Command
         if (! $this->validateOptions($manager)) {
             return self::FAILURE;
         }
+
+        // Resolve trigger source
+        $triggeredBy = $this->resolveTriggerSource();
 
         // Apply memory limit
         $memoryLimit = config('shieldci.memory_limit');
@@ -99,7 +103,7 @@ class AnalyzeCommand extends Command
         }
 
         // Generate report
-        $report = $reporter->generate($results);
+        $report = $reporter->generate($results, $triggeredBy);
 
         // Filter against ignore_errors config (already applied in streaming, but needed for non-streaming)
         $report = $this->filterAgainstIgnoreErrors($report);
@@ -1140,6 +1144,7 @@ class AnalyzeCommand extends Command
             results: $filteredResults,
             totalExecutionTime: $report->totalExecutionTime,
             analyzedAt: $report->analyzedAt,
+            triggeredBy: $report->triggeredBy,
         );
     }
 
@@ -1207,6 +1212,7 @@ class AnalyzeCommand extends Command
             results: $filteredResults,
             totalExecutionTime: $report->totalExecutionTime,
             analyzedAt: $report->analyzedAt,
+            triggeredBy: $report->triggeredBy,
         );
     }
 
@@ -1330,6 +1336,7 @@ class AnalyzeCommand extends Command
             results: $filteredResults,
             totalExecutionTime: $report->totalExecutionTime,
             analyzedAt: $report->analyzedAt,
+            triggeredBy: $report->triggeredBy,
         );
     }
 
@@ -1837,6 +1844,46 @@ class AnalyzeCommand extends Command
             }
         }
 
+        // Validate triggered-by option
+        $triggeredBy = $this->option('triggered-by');
+        if ($triggeredBy !== null) {
+            if (! is_string($triggeredBy) || $triggeredBy === '') {
+                $this->error('❌ Invalid triggered-by value provided.');
+
+                return false;
+            }
+
+            $validValues = array_map(fn ($case) => $case->value, \ShieldCI\Enums\TriggerSource::cases());
+            if (! in_array($triggeredBy, $validValues, true)) {
+                $this->error("❌ Trigger source '{$triggeredBy}' is not valid. Must be one of: ".implode(', ', $validValues));
+
+                return false;
+            }
+        }
+
         return true;
+    }
+
+    /**
+     * Resolve the trigger source from CLI option, config, or default.
+     */
+    protected function resolveTriggerSource(): \ShieldCI\Enums\TriggerSource
+    {
+        // 1. Explicit CLI flag takes priority
+        $option = $this->option('triggered-by');
+        if (is_string($option) && $option !== '') {
+            $source = \ShieldCI\Enums\TriggerSource::tryFrom($option);
+            if ($source !== null) {
+                return $source;
+            }
+        }
+
+        // 2. CI mode config implies ci_cd
+        if (config('shieldci.ci_mode')) {
+            return \ShieldCI\Enums\TriggerSource::CiCd;
+        }
+
+        // 3. Default to manual
+        return \ShieldCI\Enums\TriggerSource::Manual;
     }
 }

@@ -11,11 +11,55 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Results\AnalysisResult;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Enums\TriggerSource;
 use ShieldCI\Tests\TestCase;
 use ShieldCI\ValueObjects\AnalysisReport;
 
 class AnalysisReportTest extends TestCase
 {
+    #[Test]
+    public function it_defaults_triggered_by_to_manual(): void
+    {
+        $report = $this->createReport(collect());
+
+        $this->assertEquals(TriggerSource::Manual, $report->triggeredBy);
+    }
+
+    #[Test]
+    public function it_accepts_custom_triggered_by(): void
+    {
+        $report = new AnalysisReport(
+            projectId: 'test-project-id',
+            laravelVersion: '10.0.0',
+            packageVersion: '1.0.0',
+            results: collect(),
+            totalExecutionTime: 1.0,
+            analyzedAt: new DateTimeImmutable,
+            triggeredBy: TriggerSource::CiCd,
+        );
+
+        $this->assertEquals(TriggerSource::CiCd, $report->triggeredBy);
+    }
+
+    #[Test]
+    public function it_includes_triggered_by_in_to_array(): void
+    {
+        $report = new AnalysisReport(
+            projectId: 'test-project-id',
+            laravelVersion: '10.0.0',
+            packageVersion: '1.0.0',
+            results: collect(),
+            totalExecutionTime: 1.0,
+            analyzedAt: new DateTimeImmutable,
+            triggeredBy: TriggerSource::Scheduled,
+        );
+
+        $array = $report->toArray();
+
+        $this->assertArrayHasKey('triggered_by', $array);
+        $this->assertEquals('scheduled', $array['triggered_by']);
+    }
+
     #[Test]
     public function it_calculates_score_correctly(): void
     {
@@ -174,6 +218,7 @@ class AnalysisReportTest extends TestCase
 
         $this->assertArrayHasKey('laravel_version', $array);
         $this->assertArrayHasKey('package_version', $array);
+        $this->assertArrayHasKey('triggered_by', $array);
         $this->assertArrayHasKey('analyzed_at', $array);
         $this->assertArrayHasKey('total_execution_time', $array);
         $this->assertArrayHasKey('summary', $array);

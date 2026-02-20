@@ -6,6 +6,7 @@ namespace ShieldCI\Contracts;
 
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\Enums\TriggerSource;
 use ShieldCI\ValueObjects\AnalysisReport;
 
 /**
@@ -18,7 +19,7 @@ interface ReporterInterface
      *
      * @param  Collection<int, ResultInterface>  $results
      */
-    public function generate(Collection $results): AnalysisReport;
+    public function generate(Collection $results, TriggerSource $triggeredBy = TriggerSource::Manual): AnalysisReport;
 
     /**
      * Format the report for console output.

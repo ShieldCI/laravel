@@ -9,6 +9,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Results\AnalysisResult;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Enums\TriggerSource;
 use ShieldCI\Support\Reporter;
 use ShieldCI\Tests\TestCase;
 use ShieldCI\ValueObjects\AnalysisReport;
@@ -21,6 +22,44 @@ class ReporterTest extends TestCase
     {
         parent::setUp();
         $this->reporter = new Reporter;
+    }
+
+    #[Test]
+    public function it_generates_report_with_default_trigger_source(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+        ]);
+
+        $report = $this->reporter->generate($results);
+
+        $this->assertEquals(TriggerSource::Manual, $report->triggeredBy);
+    }
+
+    #[Test]
+    public function it_generates_report_with_custom_trigger_source(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+        ]);
+
+        $report = $this->reporter->generate($results, TriggerSource::CiCd);
+
+        $this->assertEquals(TriggerSource::CiCd, $report->triggeredBy);
+    }
+
+    #[Test]
+    public function api_payload_includes_triggered_by(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+        ]);
+
+        $report = $this->reporter->generate($results, TriggerSource::Scheduled);
+        $payload = $this->reporter->toApi($report);
+
+        $this->assertArrayHasKey('triggered_by', $payload);
+        $this->assertEquals('scheduled', $payload['triggered_by']);
     }
 
     #[Test]

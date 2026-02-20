@@ -10,6 +10,7 @@ use Illuminate\Support\Collection;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\Contracts\ReporterInterface;
+use ShieldCI\Enums\TriggerSource;
 use ShieldCI\ValueObjects\AnalysisReport;
 
 /**
@@ -17,7 +18,7 @@ use ShieldCI\ValueObjects\AnalysisReport;
  */
 class Reporter implements ReporterInterface
 {
-    public function generate(Collection $results): AnalysisReport
+    public function generate(Collection $results, TriggerSource $triggeredBy = TriggerSource::Manual): AnalysisReport
     {
         $projectIdConfig = config('shieldci.project_id', 'unknown');
 
@@ -28,6 +29,7 @@ class Reporter implements ReporterInterface
             results: $results,
             totalExecutionTime: $results->sum(fn (ResultInterface $result) => $result->getExecutionTime()),
             analyzedAt: new DateTimeImmutable,
+            triggeredBy: $triggeredBy,
         );
     }
 

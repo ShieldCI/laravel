@@ -1947,6 +1947,101 @@ PHP);
             ->expectsOutputToContain('Report sent successfully');
     }
 
+    #[Test]
+    public function it_rejects_invalid_triggered_by_value(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', [
+            '--triggered-by' => 'invalid_source',
+        ])->assertFailed();
+    }
+
+    #[Test]
+    public function it_accepts_valid_triggered_by_values(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', [
+            '--triggered-by' => 'manual',
+            '--format' => 'json',
+        ])->assertSuccessful();
+    }
+
+    #[Test]
+    public function it_accepts_ci_cd_triggered_by(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', [
+            '--triggered-by' => 'ci_cd',
+            '--format' => 'json',
+        ])->assertSuccessful();
+    }
+
+    #[Test]
+    public function it_accepts_scheduled_triggered_by(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', [
+            '--triggered-by' => 'scheduled',
+            '--format' => 'json',
+        ])->assertSuccessful();
+    }
+
+    #[Test]
+    public function json_output_includes_triggered_by_field(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', [
+            '--triggered-by' => 'ci_cd',
+            '--format' => 'json',
+        ])->assertSuccessful()
+            ->expectsOutputToContain('"triggered_by": "ci_cd"');
+    }
+
+    #[Test]
+    public function json_output_defaults_triggered_by_to_manual(): void
+    {
+        $this->registerTestAnalyzers();
+
+        config(['shieldci.ci_mode' => false]);
+
+        $this->artisan('shield:analyze', [
+            '--format' => 'json',
+        ])->assertSuccessful()
+            ->expectsOutputToContain('"triggered_by": "manual"');
+    }
+
+    #[Test]
+    public function ci_mode_config_sets_triggered_by_to_ci_cd(): void
+    {
+        $this->registerTestAnalyzers();
+
+        config(['shieldci.ci_mode' => true]);
+
+        $this->artisan('shield:analyze', [
+            '--format' => 'json',
+        ])->assertSuccessful()
+            ->expectsOutputToContain('"triggered_by": "ci_cd"');
+    }
+
+    #[Test]
+    public function cli_flag_overrides_ci_mode_config(): void
+    {
+        $this->registerTestAnalyzers();
+
+        config(['shieldci.ci_mode' => true]);
+
+        $this->artisan('shield:analyze', [
+            '--triggered-by' => 'scheduled',
+            '--format' => 'json',
+        ])->assertSuccessful()
+            ->expectsOutputToContain('"triggered_by": "scheduled"');
+    }
+
     /**
      * Register test analyzers that produce failures.
      */

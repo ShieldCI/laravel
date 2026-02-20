@@ -76,6 +76,20 @@ Send results to ShieldCI platform:
 php artisan shield:analyze --report
 ```
 
+Schedule analysis with trigger tracking:
+```php
+// Laravel 11+ (routes/console.php)
+Schedule::command('shield:analyze --triggered-by=scheduled --report')->daily();
+
+// Laravel 11+ (bootstrap/app.php)
+->withSchedule(function (Schedule $schedule) {
+    $schedule->command('shield:analyze --triggered-by=scheduled --report')->daily();
+})
+
+// Laravel 9-10 (app/Console/Kernel.php)
+$schedule->command('shield:analyze --triggered-by=scheduled --report')->daily();
+```
+
 ### Advanced Features
 
 #### Baseline Support (Gradual Adoption)

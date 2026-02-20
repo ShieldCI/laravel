@@ -4,10 +4,11 @@ declare(strict_types=1);
 
 namespace ShieldCI\Support;
 
+use Composer\InstalledVersions;
 use DateTimeImmutable;
 use Illuminate\Support\Collection;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
-use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\ValueObjects\AnalysisReport;
 
@@ -25,7 +26,7 @@ class Reporter implements ReporterInterface
             laravelVersion: app()->version(),
             packageVersion: $this->getPackageVersion(),
             results: $results,
-            totalExecutionTime: $results->sum('executionTime'),
+            totalExecutionTime: $results->sum(fn (ResultInterface $result) => $result->getExecutionTime()),
             analyzedAt: new DateTimeImmutable,
         );
     }
@@ -510,14 +511,10 @@ class Reporter implements ReporterInterface
 
     protected function getPackageVersion(): string
     {
-        $composerPath = __DIR__.'/../../composer.json';
-
-        if (file_exists($composerPath)) {
-            $content = FileParser::readFile($composerPath);
-            if ($content !== null) {
-                $composer = json_decode($content, true);
-
-                return is_array($composer) && isset($composer['version']) ? $composer['version'] : 'dev';
+        if (class_exists(InstalledVersions::class)) {
+            $version = InstalledVersions::getPrettyVersion('shieldci/laravel');
+            if ($version !== null) {
+                return $version;
             }
         }
 

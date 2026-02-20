@@ -18,8 +18,9 @@ interface ReporterInterface
      * Generate a report from analysis results.
      *
      * @param  Collection<int, ResultInterface>  $results
+     * @param  array<string, string>  $gitContext
      */
-    public function generate(Collection $results, TriggerSource $triggeredBy = TriggerSource::Manual): AnalysisReport;
+    public function generate(Collection $results, TriggerSource $triggeredBy = TriggerSource::Manual, array $gitContext = []): AnalysisReport;
 
     /**
      * Format the report for console output.

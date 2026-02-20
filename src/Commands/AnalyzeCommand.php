@@ -23,7 +23,9 @@ class AnalyzeCommand extends Command
                             {--output= : Save report to file}
                             {--baseline : Compare against baseline and only report new issues}
                             {--report : Send report to ShieldCI platform}
-                            {--triggered-by= : Override trigger source (manual|ci_cd|scheduled)}';
+                            {--triggered-by= : Override trigger source (manual|ci_cd|scheduled)}
+                            {--git-branch= : Git branch name for report metadata}
+                            {--git-commit= : Git commit SHA for report metadata}';
 
     protected $description = 'Run ShieldCI security and code quality analysis';
 
@@ -102,8 +104,11 @@ class AnalyzeCommand extends Command
             return self::FAILURE;
         }
 
+        // Build git context from CLI flags
+        $gitContext = $this->buildGitContext();
+
         // Generate report
-        $report = $reporter->generate($results, $triggeredBy);
+        $report = $reporter->generate($results, $triggeredBy, $gitContext);
 
         // Filter against ignore_errors config (already applied in streaming, but needed for non-streaming)
         $report = $this->filterAgainstIgnoreErrors($report);
@@ -1145,6 +1150,7 @@ class AnalyzeCommand extends Command
             totalExecutionTime: $report->totalExecutionTime,
             analyzedAt: $report->analyzedAt,
             triggeredBy: $report->triggeredBy,
+            metadata: $report->metadata,
         );
     }
 
@@ -1213,6 +1219,7 @@ class AnalyzeCommand extends Command
             totalExecutionTime: $report->totalExecutionTime,
             analyzedAt: $report->analyzedAt,
             triggeredBy: $report->triggeredBy,
+            metadata: $report->metadata,
         );
     }
 
@@ -1337,6 +1344,7 @@ class AnalyzeCommand extends Command
             totalExecutionTime: $report->totalExecutionTime,
             analyzedAt: $report->analyzedAt,
             triggeredBy: $report->triggeredBy,
+            metadata: $report->metadata,
         );
     }
 
@@ -1885,5 +1893,27 @@ class AnalyzeCommand extends Command
 
         // 3. Default to manual
         return \ShieldCI\Enums\TriggerSource::Manual;
+    }
+
+    /**
+     * Build git context array from CLI flags.
+     *
+     * @return array<string, string>
+     */
+    protected function buildGitContext(): array
+    {
+        $context = [];
+
+        $branch = $this->option('git-branch');
+        if (is_string($branch) && $branch !== '') {
+            $context['branch'] = $branch;
+        }
+
+        $commit = $this->option('git-commit');
+        if (is_string($commit) && $commit !== '') {
+            $context['commit'] = $commit;
+        }
+
+        return $context;
     }
 }

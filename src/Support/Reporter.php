@@ -18,7 +18,11 @@ use ShieldCI\ValueObjects\AnalysisReport;
  */
 class Reporter implements ReporterInterface
 {
-    public function generate(Collection $results, TriggerSource $triggeredBy = TriggerSource::Manual): AnalysisReport
+    /**
+     * @param  Collection<int, ResultInterface>  $results
+     * @param  array<string, string>  $gitContext
+     */
+    public function generate(Collection $results, TriggerSource $triggeredBy = TriggerSource::Manual, array $gitContext = []): AnalysisReport
     {
         $projectIdConfig = config('shieldci.project_id', 'unknown');
 
@@ -28,8 +32,9 @@ class Reporter implements ReporterInterface
             packageVersion: $this->getPackageVersion(),
             results: $results,
             totalExecutionTime: $results->sum(fn (ResultInterface $result) => $result->getExecutionTime()),
-            analyzedAt: new DateTimeImmutable,
+            analyzedAt: new DateTimeImmutable('now', new \DateTimeZone('UTC')),
             triggeredBy: $triggeredBy,
+            metadata: $this->buildMetadata($gitContext),
         );
     }
 
@@ -521,6 +526,56 @@ class Reporter implements ReporterInterface
         }
 
         return 'dev';
+    }
+
+    /**
+     * Build the metadata array for the report payload.
+     *
+     * @param  array<string, string>  $gitContext
+     * @return array<string, string>
+     */
+    private function buildMetadata(array $gitContext): array
+    {
+        $appName = config('app.name');
+        $appUrl = config('app.url');
+
+        $metadata = [
+            'php_version' => PHP_VERSION,
+            'environment' => $this->resolveEnvironment(),
+            'app_name' => is_string($appName) ? $appName : '',
+            'app_url' => is_string($appUrl) ? $appUrl : '',
+            'os' => PHP_OS_FAMILY,
+        ];
+
+        if (isset($gitContext['branch']) && $gitContext['branch'] !== '') {
+            $metadata['git_branch'] = $gitContext['branch'];
+        }
+
+        if (isset($gitContext['commit']) && $gitContext['commit'] !== '') {
+            $metadata['git_commit'] = $gitContext['commit'];
+        }
+
+        return $metadata;
+    }
+
+    /**
+     * Resolve the current environment, applying shieldci.environment_mapping if configured.
+     *
+     * Mirrors the logic in analyzers-core AbstractAnalyzer::getEnvironment().
+     */
+    private function resolveEnvironment(): string
+    {
+        $rawEnv = config('app.env');
+        if (! is_string($rawEnv) || $rawEnv === '') {
+            $rawEnv = 'production';
+        }
+
+        $mapping = config('shieldci.environment_mapping', []);
+        if (is_array($mapping) && isset($mapping[$rawEnv]) && is_string($mapping[$rawEnv])) {
+            return $mapping[$rawEnv];
+        }
+
+        return $rawEnv;
     }
 
     /**

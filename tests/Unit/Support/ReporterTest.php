@@ -914,4 +914,167 @@ class ReporterTest extends TestCase
 
         $this->assertStringContainsString('Unknown', $output);
     }
+
+    #[Test]
+    public function it_generates_analyzed_at_in_utc(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+        ]);
+
+        $report = $this->reporter->generate($results);
+
+        $this->assertEquals('UTC', $report->analyzedAt->getTimezone()->getName());
+        $this->assertStringContainsString('+00:00', $report->analyzedAt->format('c'));
+    }
+
+    #[Test]
+    public function it_populates_auto_collected_metadata(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+        ]);
+
+        $report = $this->reporter->generate($results);
+
+        $this->assertArrayHasKey('php_version', $report->metadata);
+        $this->assertArrayHasKey('environment', $report->metadata);
+        $this->assertArrayHasKey('app_name', $report->metadata);
+        $this->assertArrayHasKey('app_url', $report->metadata);
+        $this->assertArrayHasKey('os', $report->metadata);
+
+        $this->assertEquals(PHP_VERSION, $report->metadata['php_version']);
+        $this->assertEquals(PHP_OS_FAMILY, $report->metadata['os']);
+    }
+
+    #[Test]
+    public function it_includes_git_context_in_metadata_when_provided(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+        ]);
+
+        $report = $this->reporter->generate($results, TriggerSource::Manual, [
+            'branch' => 'feature/test',
+            'commit' => 'abc1234',
+        ]);
+
+        $this->assertEquals('feature/test', $report->metadata['git_branch']);
+        $this->assertEquals('abc1234', $report->metadata['git_commit']);
+    }
+
+    #[Test]
+    public function it_excludes_git_context_from_metadata_when_empty(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+        ]);
+
+        $report = $this->reporter->generate($results, TriggerSource::Manual, []);
+
+        $this->assertArrayNotHasKey('git_branch', $report->metadata);
+        $this->assertArrayNotHasKey('git_commit', $report->metadata);
+    }
+
+    #[Test]
+    public function it_excludes_git_context_when_values_are_empty_strings(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+        ]);
+
+        $report = $this->reporter->generate($results, TriggerSource::Manual, [
+            'branch' => '',
+            'commit' => '',
+        ]);
+
+        $this->assertArrayNotHasKey('git_branch', $report->metadata);
+        $this->assertArrayNotHasKey('git_commit', $report->metadata);
+    }
+
+    #[Test]
+    public function metadata_appears_in_json_output(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+        ]);
+
+        $report = $this->reporter->generate($results, TriggerSource::Manual, [
+            'branch' => 'main',
+        ]);
+
+        $json = $this->reporter->toJson($report);
+        $decoded = json_decode($json, true);
+
+        $this->assertArrayHasKey('metadata', $decoded);
+        $this->assertEquals(PHP_VERSION, $decoded['metadata']['php_version']);
+        $this->assertEquals('main', $decoded['metadata']['git_branch']);
+    }
+
+    #[Test]
+    public function metadata_appears_in_api_payload(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+        ]);
+
+        $report = $this->reporter->generate($results, TriggerSource::CiCd, [
+            'branch' => 'develop',
+            'commit' => 'def5678',
+        ]);
+
+        $payload = $this->reporter->toApi($report);
+
+        $this->assertArrayHasKey('metadata', $payload);
+        $this->assertEquals(PHP_VERSION, $payload['metadata']['php_version']);
+        $this->assertEquals('develop', $payload['metadata']['git_branch']);
+        $this->assertEquals('def5678', $payload['metadata']['git_commit']);
+    }
+
+    #[Test]
+    public function it_applies_environment_mapping_to_metadata(): void
+    {
+        config(['app.env' => 'production-us']);
+        config(['shieldci.environment_mapping' => [
+            'production-us' => 'production',
+            'staging-preview' => 'staging',
+        ]]);
+
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+        ]);
+
+        $report = $this->reporter->generate($results);
+
+        $this->assertEquals('production', $report->metadata['environment']);
+    }
+
+    #[Test]
+    public function it_uses_raw_environment_when_no_mapping_configured(): void
+    {
+        config(['app.env' => 'staging']);
+        config(['shieldci.environment_mapping' => []]);
+
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+        ]);
+
+        $report = $this->reporter->generate($results);
+
+        $this->assertEquals('staging', $report->metadata['environment']);
+    }
+
+    #[Test]
+    public function it_defaults_environment_to_production_when_not_set(): void
+    {
+        config(['app.env' => null]);
+
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+        ]);
+
+        $report = $this->reporter->generate($results);
+
+        $this->assertEquals('production', $report->metadata['environment']);
+    }
 }

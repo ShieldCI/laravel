@@ -2042,6 +2042,100 @@ PHP);
             ->expectsOutputToContain('"triggered_by": "scheduled"');
     }
 
+    #[Test]
+    public function json_output_includes_php_version_in_metadata(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('"php_version": "'.PHP_VERSION.'"');
+    }
+
+    #[Test]
+    public function json_output_includes_os_in_metadata(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('"os": "'.PHP_OS_FAMILY.'"');
+    }
+
+    #[Test]
+    public function json_output_includes_environment_in_metadata(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('"environment":');
+    }
+
+    #[Test]
+    public function json_output_includes_git_branch_when_provided(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', [
+            '--format' => 'json',
+            '--git-branch' => 'feature/test-branch',
+        ])->assertSuccessful()
+            ->expectsOutputToContain('"git_branch": "feature/test-branch"');
+    }
+
+    #[Test]
+    public function json_output_includes_git_commit_when_provided(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', [
+            '--format' => 'json',
+            '--git-commit' => 'abc1234def5678',
+        ])->assertSuccessful()
+            ->expectsOutputToContain('"git_commit": "abc1234def5678"');
+    }
+
+    #[Test]
+    public function json_output_includes_git_branch_and_commit_together(): void
+    {
+        $this->registerTestAnalyzers();
+
+        // Use Artisan::call to capture full output and assert both fields
+        \Illuminate\Support\Facades\Artisan::call('shield:analyze', [
+            '--format' => 'json',
+            '--git-branch' => 'main',
+            '--git-commit' => 'deadbeef',
+        ]);
+
+        $output = \Illuminate\Support\Facades\Artisan::output();
+
+        $this->assertStringContainsString('"git_branch": "main"', $output);
+        $this->assertStringContainsString('"git_commit": "deadbeef"', $output);
+    }
+
+    #[Test]
+    public function json_output_excludes_git_fields_when_flags_not_provided(): void
+    {
+        $this->registerTestAnalyzers();
+
+        \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
+        $output = \Illuminate\Support\Facades\Artisan::output();
+
+        $this->assertStringNotContainsString('"git_branch"', $output);
+        $this->assertStringNotContainsString('"git_commit"', $output);
+    }
+
+    #[Test]
+    public function analyzed_at_is_in_utc(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('+00:00');
+    }
+
     /**
      * Register test analyzers that produce failures.
      */

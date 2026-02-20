@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.0.2 - 2026-02-20
+
+### Fixed
+- Fix "Documentation URL:" never appearing in console output by using `getDocsUrl()` accessor instead of raw `docsUrl` property in `AnalyzeCommand`
+
 ## v1.0.1 - 2026-02-20
 
 ### Fixed

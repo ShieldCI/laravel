@@ -204,7 +204,7 @@ class AnalyzeCommand extends Command
                         'description' => $metadata->description,
                         'category' => $metadata->category,
                         'severity' => $metadata->severity,
-                        'docsUrl' => $metadata->docsUrl,
+                        'docsUrl' => $metadata->getDocsUrl(),
                         'timeToFix' => $metadata->timeToFix,
                     ],
                 );
@@ -327,7 +327,7 @@ class AnalyzeCommand extends Command
                         'description' => $metadata->description,
                         'category' => $metadata->category,
                         'severity' => $metadata->severity,
-                        'docsUrl' => $metadata->docsUrl,
+                        'docsUrl' => $metadata->getDocsUrl(),
                         'timeToFix' => $metadata->timeToFix,
                     ],
                 );
@@ -496,7 +496,7 @@ class AnalyzeCommand extends Command
                     'description' => $metadata->description,
                     'category' => $metadata->category,
                     'severity' => $metadata->severity,
-                    'docsUrl' => $metadata->docsUrl,
+                    'docsUrl' => $metadata->getDocsUrl(),
                 ],
             );
         });

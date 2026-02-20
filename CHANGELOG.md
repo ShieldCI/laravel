@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.0.1 - 2026-02-20
+
+### Fixed
+- Widen `larastan/larastan` from `^2.0` to `^2.0|^3.0` and `phpstan/phpstan` from `^1.10` to `^1.10|^2.0` to fix installation on Laravel 12 projects (#89)
+
 ## v1.0.0 - 2026-02-19
 
 First stable release. Graduated from 14 pre-release versions (v0.1.0–v0.1.13).

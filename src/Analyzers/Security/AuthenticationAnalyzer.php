@@ -218,7 +218,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 // Explicit public route always wins
                 if (
                     $this->isPublicRouteLine($line) ||
-                    $this->routeHasExplicitAuthRemoval($lineNumber, $lines)
+                    $this->routeHasExplicitAuthRemoval($lineNumber, $lines) ||
+                    $this->isRouteInGuestGroup($lineNumber, $routeGroups)
                 ) {
                     $this->publicControllerMethods[$method] = true;
 
@@ -320,18 +321,19 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             // Check for route groups without middleware
             if (preg_match('/Route::group\s*\(/i', $line)) {
                 $hasAuthMiddleware = $this->checkRouteGroupForAuth($lines, $lineNumber);
+                $hasGuestMiddleware = $this->checkRouteGroupForGuest($lines, $lineNumber);
 
                 // Check if this route group is inside a protected parent group
                 // If it is, don't flag it (routes inside will be protected by parent)
                 $isInProtectedParentGroup = $this->isRouteGroupInProtectedParentGroup($lineNumber, $routeGroups);
 
-                if (! $hasAuthMiddleware && ! $isInProtectedParentGroup && ! $this->isPublicRouteLine($line)) {
+                if (! $hasAuthMiddleware && ! $hasGuestMiddleware && ! $isInProtectedParentGroup && ! $this->isPublicRouteLine($line)) {
                     $issues[] = $this->createIssueWithSnippet(
                         message: 'Route group without authentication middleware',
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
                         severity: Severity::High,
-                        recommendation: 'Add auth middleware to this route group',
+                        recommendation: 'Add auth middleware to this route group, or use Route::middleware("guest")->group() if routes are intentionally public',
                         metadata: ['route_type' => 'group', 'file' => basename($file)]
                     );
                 }
@@ -341,8 +343,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             if (preg_match('/Route::(get|post|put|patch|delete|resource|apiResource)\s*\(/i', $line, $matches)) {
                 $method = strtoupper($matches[1]);
 
-                // Skip if it's clearly a public route
-                if ($this->isPublicRouteLine($line)) {
+                // Skip if it's clearly a public route or inside a guest middleware group
+                if ($this->isPublicRouteLine($line) || $this->isRouteInGuestGroup($lineNumber, $routeGroups)) {
                     continue;
                 }
 
@@ -388,8 +390,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                         lineNumber: $lineNumber + 1,
                         severity: Severity::High,
                         recommendation: $isClosure
-                            ? 'Add auth middleware: ->middleware("auth") or wrap in Route::middleware(["auth"])->group(). Consider moving closure logic to a controller.'
-                            : 'Protect this route with auth middleware or wrap in Route::middleware(["auth"])->group()',
+                            ? 'Add auth middleware: ->middleware("auth") or wrap in Route::middleware(["auth"])->group(). If intentionally public, use ->middleware("guest"). Consider moving closure logic to a controller.'
+                            : 'Protect this route with auth middleware or wrap in Route::middleware(["auth"])->group(). If intentionally public, use ->middleware("guest") or Route::middleware(["guest"])->group()',
                         metadata: [
                             'type' => 'authentication',
                             'method' => $method,
@@ -483,7 +485,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                                 filePath: $file,
                                 lineNumber: $stmt->getLine(),
                                 severity: Severity::High,
-                                recommendation: 'Add $this->middleware("auth") in constructor or protect all routes to this method with route-level auth middleware'
+                                recommendation: 'Add $this->middleware("auth") in constructor, protect all routes to this method with route-level auth middleware, or use ->middleware("guest") if intentionally public'
                             );
 
                             continue;
@@ -1006,7 +1008,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      * Check if a route is authenticated.
      *
      * @param  array<int, string>  $lines
-     * @param  array<int, array{startLine: int, endLine: int, hasAuth: bool}>  $routeGroups
+     * @param  array<int, array{startLine: int, endLine: int, hasAuth: bool, hasGuest: bool}>  $routeGroups
      */
     private function isRouteAuthenticated(int $lineNumber, array $lines, array $routeGroups): bool
     {
@@ -1092,7 +1094,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      * Identify all route groups in the file and determine their auth status.
      *
      * @param  array<int, string>  $lines
-     * @return array<int, array{startLine: int, endLine: int, hasAuth: bool}>
+     * @return array<int, array{startLine: int, endLine: int, hasAuth: bool, hasGuest: bool}>
      */
     private function identifyRouteGroups(array $lines): array
     {
@@ -1113,6 +1115,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     'startLine' => $lineNumber,
                     'endLine' => $endLine,
                     'hasAuth' => $hasAuth,
+                    'hasGuest' => $this->checkRouteGroupForGuest($lines, $lineNumber),
                 ];
             }
         }
@@ -1179,7 +1182,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      * Handles nested groups: if a route is inside multiple nested groups,
      * it's considered protected if ANY of those groups has auth middleware.
      *
-     * @param  array<int, array{startLine: int, endLine: int, hasAuth: bool}>  $routeGroups
+     * @param  array<int, array{startLine: int, endLine: int, hasAuth: bool, hasGuest: bool}>  $routeGroups
      */
     private function isRouteInProtectedGroup(int $routeLineNumber, array $routeGroups): bool
     {
@@ -1203,7 +1206,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      * as routes inside it will be protected by the parent's middleware.
      *
      * @param  int  $groupLineNumber  The line number where the route group starts
-     * @param  array<int, array{startLine: int, endLine: int, hasAuth: bool}>  $routeGroups
+     * @param  array<int, array{startLine: int, endLine: int, hasAuth: bool, hasGuest: bool}>  $routeGroups
      */
     private function isRouteGroupInProtectedParentGroup(int $groupLineNumber, array $routeGroups): bool
     {
@@ -1221,6 +1224,73 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     return true;
                 }
             }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a route at the given line number is inside a guest middleware group.
+     *
+     * @param  array<int, array{startLine: int, endLine: int, hasAuth: bool, hasGuest: bool}>  $routeGroups
+     */
+    private function isRouteInGuestGroup(int $routeLineNumber, array $routeGroups): bool
+    {
+        foreach ($routeGroups as $group) {
+            if (
+                $routeLineNumber >= $group['startLine'] &&
+                $routeLineNumber <= $group['endLine'] &&
+                $group['hasGuest']
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if route group has guest middleware.
+     * Supports both string and array syntax for middleware.
+     *
+     * Examples:
+     * - Route::middleware('guest')->group()
+     * - Route::middleware(['guest'])->group()
+     * - 'middleware' => 'guest'
+     * - 'middleware' => ['guest']
+     *
+     * @param  array<int, string>  $lines
+     */
+    private function checkRouteGroupForGuest(array $lines, int $startLine): bool
+    {
+        $searchRange = min($startLine + 20, count($lines));
+        $groupDefinition = '';
+
+        for ($i = $startLine; $i < $searchRange; $i++) {
+            if (! isset($lines[$i]) || ! is_string($lines[$i])) {
+                continue;
+            }
+
+            $groupDefinition .= $lines[$i]."\n";
+
+            if (str_contains($lines[$i], '],') || str_contains($lines[$i], '], function')) {
+                break;
+            }
+        }
+
+        // Check for chained middleware: Route::middleware('guest')->group() or Route::middleware(['guest', ...])->group()
+        if (preg_match('/(->|::)middleware\s*\(\s*["\']guest["\']\s*\)|(->|::)middleware\s*\(\s*\[[^\]]*["\']guest["\'][^\]]*\]\s*\)/i', $groupDefinition)) {
+            return true;
+        }
+
+        // Check for string middleware: 'middleware' => 'guest'
+        if (preg_match('/["\']middleware["\']\s*=>\s*["\']guest["\']/i', $groupDefinition)) {
+            return true;
+        }
+
+        // Check for array middleware: 'middleware' => ['guest', ...]
+        if (preg_match('/["\']middleware["\']\s*=>\s*\[[^\]]*["\']guest["\'][^\]]*\]/i', $groupDefinition)) {
+            return true;
         }
 
         return false;

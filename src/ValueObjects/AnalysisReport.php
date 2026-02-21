@@ -78,6 +78,17 @@ final class AnalysisReport
         );
     }
 
+    public function totalIssues(): int
+    {
+        $total = 0;
+
+        foreach ($this->results as $result) {
+            $total += count($result->getIssues());
+        }
+
+        return $total;
+    }
+
     public function summary(): array
     {
         return [
@@ -87,6 +98,7 @@ final class AnalysisReport
             'warnings' => $this->warnings()->count(),
             'skipped' => $this->skipped()->count(),
             'errors' => $this->errors()->count(),
+            'total_issues' => $this->totalIssues(),
             'score' => $this->score(),
         ];
     }

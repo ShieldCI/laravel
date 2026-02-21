@@ -185,11 +185,18 @@ class AnalysisReportTest extends TestCase
     #[Test]
     public function it_generates_summary(): void
     {
+        $issue = new Issue(
+            message: 'Test issue',
+            location: new Location('/test.php', 1),
+            severity: Severity::High,
+            recommendation: 'Fix it',
+        );
+
         $results = collect([
             AnalysisResult::passed('analyzer-1', 'Passed'),
             AnalysisResult::passed('analyzer-2', 'Passed'),
-            AnalysisResult::failed('analyzer-3', 'Failed', []),
-            AnalysisResult::warning('analyzer-4', 'Warning', []),
+            AnalysisResult::failed('analyzer-3', 'Failed', [$issue, $issue]),
+            AnalysisResult::warning('analyzer-4', 'Warning', [$issue]),
             AnalysisResult::skipped('analyzer-5', 'Skipped'),
             AnalysisResult::error('analyzer-6', 'Error'),
         ]);
@@ -203,7 +210,31 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals(1, $summary['warnings']);
         $this->assertEquals(1, $summary['skipped']);
         $this->assertEquals(1, $summary['errors']);
+        $this->assertEquals(3, $summary['total_issues']);
         $this->assertEquals(33, $summary['score']); // 2 passed out of 6
+    }
+
+    #[Test]
+    public function it_counts_total_issues_across_all_results(): void
+    {
+        $issue = new Issue(
+            message: 'Found a problem',
+            location: new Location('/app/Http/Controller.php', 42),
+            severity: Severity::High,
+            recommendation: 'Fix the problem',
+        );
+
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'All good'),
+            AnalysisResult::failed('analyzer-2', 'Found issues', [$issue, $issue, $issue]),
+            AnalysisResult::warning('analyzer-3', 'Some warnings', [$issue, $issue]),
+            AnalysisResult::failed('analyzer-4', 'More issues', [$issue]),
+        ]);
+
+        $report = $this->createReport($results);
+
+        // 0 + 3 + 2 + 1 = 6 total issues
+        $this->assertEquals(6, $report->totalIssues());
     }
 
     #[Test]

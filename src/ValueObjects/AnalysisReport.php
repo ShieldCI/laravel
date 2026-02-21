@@ -89,6 +89,28 @@ final class AnalysisReport
         return $total;
     }
 
+    /**
+     * @return array{critical: int, high: int, medium: int, low: int, info: int}
+     */
+    public function issuesBySeverity(): array
+    {
+        $counts = [
+            'critical' => 0,
+            'high' => 0,
+            'medium' => 0,
+            'low' => 0,
+            'info' => 0,
+        ];
+
+        foreach ($this->results as $result) {
+            foreach ($result->getIssues() as $issue) {
+                $counts[$issue->severity->value]++;
+            }
+        }
+
+        return $counts;
+    }
+
     public function summary(): array
     {
         return [
@@ -99,6 +121,7 @@ final class AnalysisReport
             'skipped' => $this->skipped()->count(),
             'errors' => $this->errors()->count(),
             'total_issues' => $this->totalIssues(),
+            'issues_by_severity' => $this->issuesBySeverity(),
             'score' => $this->score(),
         ];
     }

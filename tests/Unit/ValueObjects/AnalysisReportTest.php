@@ -211,6 +211,13 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals(1, $summary['skipped']);
         $this->assertEquals(1, $summary['errors']);
         $this->assertEquals(3, $summary['total_issues']);
+        $this->assertEquals([
+            'critical' => 0,
+            'high' => 3,
+            'medium' => 0,
+            'low' => 0,
+            'info' => 0,
+        ], $summary['issues_by_severity']);
         $this->assertEquals(33, $summary['score']); // 2 passed out of 6
     }
 
@@ -235,6 +242,80 @@ class AnalysisReportTest extends TestCase
 
         // 0 + 3 + 2 + 1 = 6 total issues
         $this->assertEquals(6, $report->totalIssues());
+    }
+
+    #[Test]
+    public function it_breaks_down_issues_by_severity(): void
+    {
+        $critical = new Issue(
+            message: 'Critical issue',
+            location: new Location('/app/Http/Controller.php', 10),
+            severity: Severity::Critical,
+            recommendation: 'Fix immediately',
+        );
+
+        $high = new Issue(
+            message: 'High issue',
+            location: new Location('/app/Http/Controller.php', 20),
+            severity: Severity::High,
+            recommendation: 'Fix soon',
+        );
+
+        $medium = new Issue(
+            message: 'Medium issue',
+            location: new Location('/app/Http/Controller.php', 30),
+            severity: Severity::Medium,
+            recommendation: 'Consider fixing',
+        );
+
+        $low = new Issue(
+            message: 'Low issue',
+            location: new Location('/app/Http/Controller.php', 40),
+            severity: Severity::Low,
+            recommendation: 'Nice to fix',
+        );
+
+        $info = new Issue(
+            message: 'Info issue',
+            location: new Location('/app/Http/Controller.php', 50),
+            severity: Severity::Info,
+            recommendation: 'Informational',
+        );
+
+        $results = collect([
+            AnalysisResult::failed('analyzer-1', 'Issues', [$critical, $critical, $high]),
+            AnalysisResult::warning('analyzer-2', 'Warnings', [$medium, $low]),
+            AnalysisResult::failed('analyzer-3', 'More issues', [$info, $high, $critical]),
+        ]);
+
+        $report = $this->createReport($results);
+
+        $this->assertEquals([
+            'critical' => 3,
+            'high' => 2,
+            'medium' => 1,
+            'low' => 1,
+            'info' => 1,
+        ], $report->issuesBySeverity());
+    }
+
+    #[Test]
+    public function it_returns_zero_counts_when_no_issues(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'All good'),
+            AnalysisResult::skipped('analyzer-2', 'Skipped'),
+        ]);
+
+        $report = $this->createReport($results);
+
+        $this->assertEquals([
+            'critical' => 0,
+            'high' => 0,
+            'medium' => 0,
+            'low' => 0,
+            'info' => 0,
+        ], $report->issuesBySeverity());
     }
 
     #[Test]

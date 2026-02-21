@@ -1529,6 +1529,145 @@ PHP;
     }
 
     // ==========================================
+    // Guest Middleware Group Tests
+    // ==========================================
+
+    public function test_passes_routes_in_guest_middleware_group(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('guest')->group(function () {
+    Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/register', [AuthController::class, 'register']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Routes inside guest group should not be flagged
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_routes_in_guest_middleware_array_group(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware(['guest'])->group(function () {
+    Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/register', [AuthController::class, 'register']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Routes inside guest array group should not be flagged
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_routes_in_guest_route_group_array_syntax(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['middleware' => 'guest', 'prefix' => 'auth'], function () {
+    Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/register', [AuthController::class, 'register']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Routes inside guest Route::group array syntax should not be flagged
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_mixed_auth_and_guest_groups(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('auth')->group(function () {
+    Route::post('/posts', [PostController::class, 'store']);
+    Route::delete('/posts/{id}', [PostController::class, 'destroy']);
+});
+
+Route::middleware('guest')->group(function () {
+    Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/register', [AuthController::class, 'register']);
+});
+
+Route::post('/unprotected', [PublicController::class, 'store']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Only the unprotected route outside both groups should be flagged
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
+    public function test_controller_method_in_guest_group_not_flagged(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware(['guest'])->group(function () {
+    Route::post('/login', [AuthController::class, 'store']);
+});
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+
+class AuthController extends Controller
+{
+    public function store()
+    {
+        return response()->json(['status' => 'authenticated']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+            'app/Http/Controllers/AuthController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Controller method routed from guest group should not be flagged
+        $this->assertPassed($result);
+    }
+
+    // ==========================================
     // Auth::user() Safety Tests
     // ==========================================
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.3 - 2026-02-20
+
+### Fixed
+- `AuthenticationAnalyzer` now recognises `Route::middleware('guest')->group()` wrappers so routes inside guest groups are no longer false-positived as "missing auth middleware"
+- Route groups using array syntax (`Route::group(['middleware' => 'guest', ...])`) are also recognised
+- Controller methods pointed to by routes in guest groups are correctly marked as intentionally public
+- Improved recommendation strings to mention `->middleware("guest")` as a valid alternative for intentionally public routes
+
 ## v1.0.2 - 2026-02-20
 
 ### Fixed

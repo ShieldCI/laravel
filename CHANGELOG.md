@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.0.4 - 2026-02-23
+
+### Fixed
+- Remove `preload` from HSTS missing-header recommendation to match default config (`require_preload => false`) and avoid encouraging an irreversible browser preload list submission
+
 ## v1.0.3 - 2026-02-20
 
 ### Fixed

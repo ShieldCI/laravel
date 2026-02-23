@@ -247,7 +247,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
                 message: 'HTTPS-only application missing HSTS (Strict-Transport-Security) header',
                 location: new Location($middlewarePath),
                 severity: Severity::High,
-                recommendation: 'Add middleware to set Strict-Transport-Security header: "max-age=31536000; includeSubDomains; preload"',
+                recommendation: 'Add middleware to set Strict-Transport-Security header: "max-age=31536000; includeSubDomains"',
                 metadata: [
                     'issue_type' => 'missing_hsts',
                     'https_only' => true,

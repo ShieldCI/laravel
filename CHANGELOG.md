@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.0.5 - 2026-02-24
+
+### Fixed
+- `XssAnalyzer` no longer flags literal-output ternaries inside `<script>` tags as JavaScript XSS (e.g. `{{ $coll->contains(request()->route()->getName()) ? 'true' : 'false' }}`) — both branches are string/boolean/numeric/null literals so the output can never contain user-controlled data
+
 ## v1.0.4 - 2026-02-23
 
 ### Fixed

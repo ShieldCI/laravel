@@ -1336,6 +1336,221 @@ BLADE;
         $this->assertHasIssueContaining('href attribute', $result);
     }
 
+    // ==========================================
+    // Literal-Output Ternary Tests (False Positive Prevention)
+    // ==========================================
+
+    public function test_does_not_flag_literal_ternary_with_request_in_condition(): void
+    {
+        $bladeCode = <<<'BLADE'
+<script>
+    const alwaysLightMode = {{ ($routesThatAreAlwaysLightMode->contains(request()->route()->getName())) ? 'true' : 'false' }};
+</script>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['theme.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_numeric_literal_ternary_in_script(): void
+    {
+        $bladeCode = <<<'BLADE'
+<script>
+    const debugLevel = {{ request()->has('debug') ? 3 : 0 }};
+</script>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['debug.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_boolean_literal_ternary_in_script(): void
+    {
+        $bladeCode = <<<'BLADE'
+<script>
+    const isAdmin = {{ request()->user()?->isAdmin() ? true : false }};
+</script>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['admin.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_null_literal_in_ternary_branch(): void
+    {
+        $bladeCode = <<<'BLADE'
+<script>
+    const value = {{ request()->has('key') ? 'found' : null }};
+</script>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['null-branch.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_multiple_safe_ternaries_on_one_line(): void
+    {
+        $bladeCode = <<<'BLADE'
+<script>var a = {{ request()->has('x') ? 'yes' : 'no' }}; var b = {{ request()->has('y') ? 1 : 0 }};</script>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['multi-ternary.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_flags_direct_request_output_in_script(): void
+    {
+        $bladeCode = <<<'BLADE'
+<script>
+    const search = {{ request('search') }};
+</script>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['direct-request.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('JavaScript', $result);
+    }
+
+    public function test_still_flags_user_input_in_ternary_true_branch(): void
+    {
+        $bladeCode = <<<'BLADE'
+<script>
+    const name = {{ $condition ? request('name') : 'default' }};
+</script>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['tainted-true.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('JavaScript', $result);
+    }
+
+    public function test_still_flags_user_input_in_ternary_false_branch(): void
+    {
+        $bladeCode = <<<'BLADE'
+<script>
+    const name = {{ $condition ? 'default' : request('name') }};
+</script>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['tainted-false.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('JavaScript', $result);
+    }
+
+    public function test_still_flags_elvis_operator_with_request_in_script(): void
+    {
+        $bladeCode = <<<'BLADE'
+<script>
+    const name = '{{ request('name') ?: 'anonymous' }}';
+</script>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['elvis.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('JavaScript', $result);
+    }
+
+    public function test_still_flags_mixed_safe_and_unsafe_expressions_on_line(): void
+    {
+        $bladeCode = <<<'BLADE'
+<script>var safe = {{ request()->has('x') ? 'yes' : 'no' }}; var unsafe = {{ request('data') }};</script>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['mixed-expr.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('JavaScript', $result);
+    }
+
+    public function test_still_flags_variable_in_ternary_branch_in_script(): void
+    {
+        $bladeCode = <<<'BLADE'
+<script>
+    const val = {{ request('admin') ? $value : 'default' }};
+</script>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['var-branch.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('JavaScript', $result);
+    }
+
     public function test_does_not_flag_urlencode_in_src_attribute(): void
     {
         $bladeCode = <<<'BLADE'

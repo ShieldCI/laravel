@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.7 - 2026-02-24
+
+### Fixed
+- `HSTSHeaderAnalyzer` no longer false-positives on multi-line header definitions (e.g. `$response->headers->set(\n  'Strict-Transport-Security',\n  'max-age=31536000; includeSubDomains'\n)`) — now gathers a context window across subsequent lines (#95)
+- `includeSubDomains` and `preload` directive checks are now case-insensitive per RFC 6797
+
 ## v1.0.6 - 2026-02-24
 
 ### Added

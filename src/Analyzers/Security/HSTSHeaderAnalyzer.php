@@ -270,8 +270,12 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
             }
 
             if (str_contains($line, 'Strict-Transport-Security')) {
+                // Gather context: current line + next 5 lines to handle multi-line definitions
+                $contextLines = array_slice($lines, $lineNumber, 6);
+                $context = implode(' ', array_filter($contextLines, 'is_string'));
+
                 // Check max-age value
-                if (preg_match('/max-age\s*=\s*(\d+)/i', $line, $matches)) {
+                if (preg_match('/max-age\s*=\s*(\d+)/i', $context, $matches)) {
                     $maxAge = (int) $matches[1];
 
                     // Check against configured minimum
@@ -297,8 +301,8 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
                     }
                 }
 
-                // Check for includeSubDomains
-                if ($config['require_include_subdomains'] && ! str_contains($line, 'includeSubDomains')) {
+                // Check for includeSubDomains (case-insensitive per RFC 6797)
+                if ($config['require_include_subdomains'] && stripos($context, 'includeSubDomains') === false) {
                     $issues[] = $this->createIssue(
                         message: 'HSTS header missing "includeSubDomains" directive',
                         location: new Location($this->getRelativePath($file), $lineNumber + 1),
@@ -313,8 +317,8 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
                     );
                 }
 
-                // Check for preload (if required by configuration)
-                if ($config['require_preload'] && ! str_contains($line, 'preload')) {
+                // Check for preload (case-insensitive per RFC 6797)
+                if ($config['require_preload'] && stripos($context, 'preload') === false) {
                     $issues[] = $this->createIssue(
                         message: 'HSTS header missing "preload" directive',
                         location: new Location($this->getRelativePath($file), $lineNumber + 1),

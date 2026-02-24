@@ -604,6 +604,134 @@ PHP;
     }
 
     // ============================================
+    // Multi-line Header Definition Tests
+    // ============================================
+
+    public function test_passes_with_multiline_header_definition(): void
+    {
+        $sessionConfig = <<<'PHP'
+<?php
+
+return [
+    'secure' => true,
+];
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class SecurityHeaders
+{
+    public function handle($request, $next)
+    {
+        $response = $next($request);
+        $response->headers->set(
+            'Strict-Transport-Security',
+            'max-age=31536000; includeSubDomains; preload'
+        );
+        return $response;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/session.php' => $sessionConfig,
+            'app/Http/Middleware/SecurityHeaders.php' => $middleware,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_weak_max_age_in_multiline_header(): void
+    {
+        $sessionConfig = <<<'PHP'
+<?php
+
+return [
+    'secure' => true,
+];
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class SecurityHeaders
+{
+    public function handle($request, $next)
+    {
+        $response = $next($request);
+        $response->headers->set(
+            'Strict-Transport-Security',
+            'max-age=86400; includeSubDomains'
+        );
+        return $response;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/session.php' => $sessionConfig,
+            'app/Http/Middleware/SecurityHeaders.php' => $middleware,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('max-age', $result);
+    }
+
+    public function test_passes_with_case_insensitive_includesubdomains(): void
+    {
+        $sessionConfig = <<<'PHP'
+<?php
+
+return [
+    'secure' => true,
+];
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class SecurityHeaders
+{
+    public function handle($request, $next)
+    {
+        $response = $next($request);
+        $response->headers->set('Strict-Transport-Security', 'max-age=31536000; includesubdomains');
+        return $response;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/session.php' => $sessionConfig,
+            'app/Http/Middleware/SecurityHeaders.php' => $middleware,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    // ============================================
     // preload Directive Tests
     // ============================================
 

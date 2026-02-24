@@ -5,6 +5,7 @@
 [![Laravel Version](https://img.shields.io/badge/laravel-9.x--12.x-red.svg)](https://packagist.org/packages/shieldci/laravel)
 [![License](https://img.shields.io/packagist/l/shieldci/laravel.svg)](https://packagist.org/packages/shieldci/laravel)
 [![Tests](https://github.com/ShieldCI/laravel/actions/workflows/tests.yml/badge.svg)](https://github.com/ShieldCI/laravel/actions/workflows/tests.yml)
+[![codecov](https://codecov.io/gh/ShieldCI/laravel/branch/master/graph/badge.svg)](https://codecov.io/gh/ShieldCI/laravel)
 
 Open-source AI-powered code quality analysis for Laravel applications with 73 comprehensive analyzers covering security, performance, reliability, code quality, and best practices.
 

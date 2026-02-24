@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.0.6 - 2026-02-24
+
+### Added
+- `--triggered-by` option to `shield:analyze` for tracking how analysis was triggered (manual, ci_cd, scheduled)
+- `--git-branch` and `--git-commit` options for attaching git context to reports
+- `TriggerSource` enum for type-safe trigger source handling
+- `total_issues` and `issues_by_severity` fields in report summary
+- Report metadata enrichment: PHP version, environment, app name, OS, and git context
+
+### Changed
+- `Reporter` now resolves package version via `Composer\InstalledVersions` instead of parsing `composer.json`
+- Report timestamps are always UTC
+- Aligned platform API endpoints for forward compatibility
+
 ## v1.0.5 - 2026-02-24
 
 ### Fixed

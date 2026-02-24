@@ -1,13 +1,19 @@
 # ShieldCI Laravel Package
 
-Modern security and code quality analysis for Laravel applications with 73 comprehensive analyzers covering security, performance, reliability, and code quality.
+[![Latest Version on Packagist](https://img.shields.io/packagist/v/shieldci/laravel.svg)](https://packagist.org/packages/shieldci/laravel)
+[![PHP Version](https://img.shields.io/packagist/php-v/shieldci/laravel.svg)](https://packagist.org/packages/shieldci/laravel)
+[![Laravel Version](https://img.shields.io/badge/laravel-9.x--12.x-red.svg)](https://packagist.org/packages/shieldci/laravel)
+[![License](https://img.shields.io/packagist/l/shieldci/laravel.svg)](https://packagist.org/packages/shieldci/laravel)
+[![Tests](https://github.com/ShieldCI/laravel/actions/workflows/tests.yml/badge.svg)](https://github.com/ShieldCI/laravel/actions/workflows/tests.yml)
 
-Built on top of [`shieldci/analyzers-core`](https://github.com/shieldci/analyzers-core) (v1.x) - a shared, framework-agnostic foundation for static analysis tools.
+Open-source AI-powered code quality analysis for Laravel applications with 73 comprehensive analyzers covering security, performance, reliability, code quality, and best practices.
+
+Built on top of [`shieldci/analyzers-core`](https://github.com/ShieldCI/analyzers-core) (v1.x) - a shared, framework-agnostic foundation for static analysis tools.
 
 ## Requirements
 
 - PHP 8.1 or higher
-- Laravel 9.0 or higher
+- Laravel 9.x, 10.x, 11.x, 12.x
 
 ## Architecture
 
@@ -89,12 +95,15 @@ php artisan shield:analyze --baseline
 
 #### CI Mode (Optimized for CI/CD)
 Skip slow or network-dependent analyzers in CI/CD:
-```bash
-# Configure in config/shieldci.php
-'ci_mode' => env('SHIELDCI_CI_MODE', false),
-'ci_mode_analyzers' => ['sql-injection', 'xss-detection', 'csrf-analyzer'],
-'ci_mode_exclude_analyzers' => ['vulnerable-dependency', 'unused-view'],
 
+```php
+// config/shieldci.php
+'ci_mode' => env('SHIELDCI_CI_MODE', false),
+'ci_mode_analyzers' => ['sql-injection', 'xss-vulnerabilities', 'csrf-protection'],
+'ci_mode_exclude_analyzers' => ['vulnerable-dependencies', 'frontend-vulnerable-dependencies'],
+```
+
+```bash
 # Run in CI
 SHIELDCI_CI_MODE=true php artisan shield:analyze
 ```
@@ -105,7 +114,7 @@ Run informational analyzers without failing CI:
 // config/shieldci.php
 'dont_report' => [
     'missing-docblock',    // Informational only
-    'select-asterisk',     // Won't fail CI
+    'commented-code',      // Won't fail CI
 ],
 ```
 
@@ -157,7 +166,7 @@ ShieldCI includes **73 comprehensive analyzers** across five categories:
 
 Providing complete OWASP Top 10 2021 coverage:
 
-### Injection Vulnerabilities (A03:2021)
+#### Injection Vulnerabilities (A03:2021)
 - **SQL Injection Analyzer** - Detects unsafe database queries with string concatenation or user input
 - **XSS Analyzer (Dual Protection)** ⭐ **ENHANCED**
   - **Static Code Analysis** (always runs in CI/Production):
@@ -170,30 +179,30 @@ Providing complete OWASP Top 10 2021 coverage:
     - Ensures script-src/default-src directives present
     - Blocks unsafe-inline and unsafe-eval directives
 
-### Broken Access Control (A01:2021)
+#### Broken Access Control (A01:2021)
 - **Authentication Analyzer** - Validates route authentication and authorization
 - **Fillable Foreign Key Analyzer** - Detects foreign key fields in mass assignment fillable arrays
 - **CSRF Analyzer** - Ensures CSRF protection on forms and AJAX requests
 
-### Cryptographic Failures (A02:2021)
+#### Cryptographic Failures (A02:2021)
 - **App Key Analyzer** - Validates APP_KEY configuration and cipher settings
 - **Password Security Analyzer** - Validates hashing configuration, password policy defaults, plain-text storage, weak validation rules, and rehash-on-login
 - **Cookie Security Analyzer** - Validates HttpOnly, Secure, and SameSite cookie flags
 - **HSTS Header Analyzer** - Ensures Strict-Transport-Security header for HTTPS applications
 
-### Insecure Design (A04:2021)
+#### Insecure Design (A04:2021)
 - **Mass Assignment Analyzer** - Detects models without fillable/guarded and unsafe create()/update() calls
 - **Unguarded Models Analyzer** - Identifies Model::unguard() usage that disables protection
 - **Login Throttling Analyzer** - Validates rate limiting on authentication endpoints
 
-### Security Misconfiguration (A05:2021)
+#### Security Misconfiguration (A05:2021)
 - **Debug Mode Analyzer** - Detects debug mode enabled in production and exposed debug data
 - **PHP Ini Analyzer** - Validates PHP configuration security settings
 - **File Permissions Analyzer** - Checks directory and file permissions for security issues
 - **Environment File Security Analyzer** - Validates .env location, permissions, git exclusion, and secrets
 - **Environment File HTTP Accessibility Analyzer** - Verifies .env is not accessible via web server (runtime check)
 
-### Vulnerable and Outdated Components (A06:2021)
+#### Vulnerable and Outdated Components (A06:2021)
 - **Vulnerable Dependency Analyzer** - Scans Composer dependencies for known CVEs using `composer audit`
 - **Frontend Vulnerable Dependency Analyzer** - Scans npm/yarn packages for security vulnerabilities
 - **Up-to-Date Dependency Analyzer** - Checks for outdated packages with available security patches
@@ -375,7 +384,9 @@ class MyAnalyzer extends AbstractFileAnalyzer
 ## Testing
 
 ```bash
-composer test
+composer test           # 400+ tests
+composer test-coverage  # 98%+ code coverage
+composer analyse        # PHPStan Level 9
 ```
 
 ## Documentation

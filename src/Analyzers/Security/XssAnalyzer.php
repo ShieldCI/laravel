@@ -275,7 +275,8 @@ class XssAnalyzer extends AbstractFileAnalyzer
                 $isTainted = $this->mightContainUserInput($line);
                 $isEncoded = preg_match('/@json\s*\(|json_encode\s*\(|Js::from\s*\(/', $line);
                 $isJsString = preg_match('/([=\(,]\s*[\'"]\s*\{\{.*?\}\}\s*[\'"])/', $line);
-                if ($inScriptTag && ! $rawBladeMatched && $isBladeOutput && $isTainted && ! $isEncoded) {
+                if ($inScriptTag && ! $rawBladeMatched && $isBladeOutput && $isTainted && ! $isEncoded
+                    && ! $this->allBladeExpressionsAreLiteralOutputs($line)) {
                     // Check for unescaped Blade output or superglobals in JavaScript
                     $severity = $isRawBlade || $isJsString
                         ? Severity::Critical
@@ -562,6 +563,38 @@ class XssAnalyzer extends AbstractFileAnalyzer
         }
 
         return false;
+    }
+
+    /**
+     * Check if all Blade {{ }} expressions on a line are ternaries that output only literals.
+     *
+     * When both branches of a ternary are string, boolean, numeric, or null literals,
+     * the output is safe regardless of whether the condition references user input.
+     * The Elvis operator (?:) is NOT considered safe since it outputs the condition value.
+     */
+    private function allBladeExpressionsAreLiteralOutputs(string $line): bool
+    {
+        if (! preg_match_all('/\{\{\s*(.*?)\s*\}\}/', $line, $matches)) {
+            return false;
+        }
+
+        $literal = "(?:'[^']*'|\"[^\"]*\"|true|false|null|\\d+(?:\\.\\d+)?)";
+        $ternaryPattern = '/\?\s*'.$literal.'\s*:\s*'.$literal.'\s*$/';
+
+        foreach ($matches[1] as $expression) {
+            $expression = trim($expression);
+
+            // Elvis operator (?:) outputs the condition value when truthy — NOT safe
+            if (preg_match('/\?\s*:/', $expression)) {
+                return false;
+            }
+
+            if (! preg_match($ternaryPattern, $expression)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

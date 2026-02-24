@@ -33,12 +33,10 @@ Publish the configuration file:
 php artisan vendor:publish --tag=shieldci-config
 ```
 
-Add your ShieldCI credentials to `.env`:
+Enable ShieldCI in your `.env`:
 
 ```env
 SHIELDCI_ENABLED=true
-SHIELDCI_TOKEN=your-api-token
-SHIELDCI_PROJECT_ID=your-project-id
 ```
 
 ## Usage
@@ -69,25 +67,6 @@ php artisan shield:analyze --format=json
 Save report to file:
 ```bash
 php artisan shield:analyze --output=report.json
-```
-
-Send results to ShieldCI platform:
-```bash
-php artisan shield:analyze --report
-```
-
-Schedule analysis with trigger tracking:
-```php
-// Laravel 11+ (routes/console.php)
-Schedule::command('shield:analyze --triggered-by=scheduled --report')->daily();
-
-// Laravel 11+ (bootstrap/app.php)
-->withSchedule(function (Schedule $schedule) {
-    $schedule->command('shield:analyze --triggered-by=scheduled --report')->daily();
-})
-
-// Laravel 9-10 (app/Console/Kernel.php)
-$schedule->command('shield:analyze --triggered-by=scheduled --report')->daily();
 ```
 
 ### Advanced Features

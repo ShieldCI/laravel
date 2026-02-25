@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.0.8 - 2026-02-25
+
+### Fixed
+- `MassAssignmentAnalyzer` recommendations no longer suggest `request()->validated()` as a universal alternative — clarified that `validated()` requires a `FormRequest` subclass, with `request()->only([...])` as the universal safe option (#96)
+
 ## v1.0.7 - 2026-02-24
 
 ### Fixed

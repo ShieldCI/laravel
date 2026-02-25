@@ -703,7 +703,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     filePath: $file,
                     lineNumber: $call->getLine(),
                     severity: Severity::High,
-                    recommendation: 'Use request()->only([...]) or request()->validated() instead of except() for better security. Whitelist (only) is safer than blacklist (except) as new fields are excluded by default',
+                    recommendation: 'Use request()->only([...]) instead of except(), or use a FormRequest with $request->validated(). Whitelist filtering is safer than blacklist as new fields are excluded by default',
                     metadata: [
                         'method' => $method,
                         'call_type' => $callType,
@@ -729,7 +729,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     filePath: $file,
                     lineNumber: $call->getLine(),
                     severity: Severity::Critical,
-                    recommendation: 'Use request()->only([...]) or request()->validated() to specify allowed fields explicitly',
+                    recommendation: 'Use request()->only([...]) to specify allowed fields, or use a FormRequest with $request->validated() for full validation',
                     metadata: [
                         'method' => $method,
                         'call_type' => $callType,
@@ -1208,7 +1208,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                             filePath: $file,
                             lineNumber: $call->getLine(),
                             severity: Severity::High,
-                            recommendation: 'Use request()->only([...]) or request()->validated() to filter data before passing to relationship methods',
+                            recommendation: 'Use request()->only([...]) to filter data, or use a FormRequest with $request->validated(), before passing to relationship methods',
                             metadata: [
                                 'method' => $method,
                                 'issue_type' => 'relationship_mass_assignment',

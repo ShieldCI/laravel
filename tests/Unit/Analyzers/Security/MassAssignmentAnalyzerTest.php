@@ -2650,4 +2650,140 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    public function test_unfiltered_request_recommendation_mentions_form_request(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController extends Controller
+{
+    public function store()
+    {
+        User::create(request()->all());
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $requestDataIssue = null;
+
+        foreach ($issues as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'dangerous_method_with_request_data') {
+                $requestDataIssue = $issue;
+                break;
+            }
+        }
+
+        $this->assertNotNull($requestDataIssue, 'Expected an unfiltered request data issue');
+        $this->assertStringContainsString('FormRequest', $requestDataIssue->recommendation);
+    }
+
+    public function test_blacklist_filtering_recommendation_mentions_form_request(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController extends Controller
+{
+    public function store()
+    {
+        User::create(request()->except('_token'));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $blacklistIssue = null;
+
+        foreach ($issues as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'dangerous_method_with_blacklist_filtering') {
+                $blacklistIssue = $issue;
+                break;
+            }
+        }
+
+        $this->assertNotNull($blacklistIssue, 'Expected a blacklist filtering issue');
+        $this->assertStringContainsString('FormRequest', $blacklistIssue->recommendation);
+    }
+
+    public function test_relationship_operation_recommendation_mentions_form_request(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+
+class UserController extends Controller
+{
+    public function attachRoles()
+    {
+        $user = User::find(1);
+        $user->roles()->sync(request()->all());
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $relationshipIssue = null;
+
+        foreach ($issues as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'relationship_mass_assignment') {
+                $relationshipIssue = $issue;
+                break;
+            }
+        }
+
+        $this->assertNotNull($relationshipIssue, 'Expected a relationship mass assignment issue');
+        $this->assertStringContainsString('FormRequest', $relationshipIssue->recommendation);
+    }
 }

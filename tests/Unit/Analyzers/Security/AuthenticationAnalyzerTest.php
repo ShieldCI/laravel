@@ -841,6 +841,83 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_skips_public_login_route_with_nested_uri_path(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/auth/login', [AuthController::class, 'login']);
+Route::post('/api/v1/register', [AuthController::class, 'register']);
+Route::post('/auth/forgot-password', [PasswordController::class, 'forgot']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_public_route_with_dotted_route_name(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/sign-in', [AuthController::class, 'login'])->name('auth.login');
+Route::post('/create-account', [AuthController::class, 'register'])->name('admin.auth.register');
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_skip_routes_with_keyword_as_substring_in_uri(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/loginhistory', [HistoryController::class, 'store']);
+Route::post('/admin/loginlogs', [LogController::class, 'store']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    public function test_does_not_skip_routes_with_keyword_as_prefix_in_route_name(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/log-history', [HistoryController::class, 'store'])->name('login.history');
+Route::post('/action', [ActionController::class, 'store'])->name('loginAction');
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
     // ==========================================
     // Route Group Tests
     // ==========================================

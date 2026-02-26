@@ -40,6 +40,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             'alwaysFlag' => false,
             'checkStatic' => true,
             'checkInstance' => false,
+            'strictConcatenation' => true,
             'severity' => Severity::Critical,  // Full query construction
             'recommendation' => 'Use parameter binding instead of string concatenation. Example: DB::raw("SELECT * FROM users WHERE id = ?", [$id])',
         ],
@@ -47,6 +48,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             'alwaysFlag' => true,
             'checkStatic' => true,
             'checkInstance' => false,
+            'strictConcatenation' => true,
             'severity' => Severity::Critical,  // Inherently unsafe
             'recommendation' => 'Avoid DB::unprepared() - use prepared statements with DB::select(), DB::insert(), etc. with parameter binding',
         ],
@@ -54,6 +56,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             'alwaysFlag' => false,
             'checkStatic' => false,
             'checkInstance' => true,
+            'strictConcatenation' => false,
             'severity' => Severity::High,  // Query fragment only
             'recommendation' => 'Use parameter binding: ->whereRaw(\'column = ?\', [$value]) instead of concatenation',
         ],
@@ -61,6 +64,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             'alwaysFlag' => false,
             'checkStatic' => false,
             'checkInstance' => true,
+            'strictConcatenation' => false,
             'severity' => Severity::High,  // Query fragment only
             'recommendation' => 'Use parameter binding: ->havingRaw(\'column = ?\', [$value]) instead of concatenation',
         ],
@@ -68,6 +72,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             'alwaysFlag' => false,
             'checkStatic' => false,
             'checkInstance' => true,
+            'strictConcatenation' => false,
             'severity' => Severity::High,  // Query fragment only
             'recommendation' => 'Use parameter binding: ->orderByRaw(\'column = ?\', [$value]) instead of concatenation',
         ],
@@ -75,6 +80,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             'alwaysFlag' => false,
             'checkStatic' => false,
             'checkInstance' => true,
+            'strictConcatenation' => false,
             'severity' => Severity::High,  // Query fragment only
             'recommendation' => 'Use parameter binding: ->selectRaw(\'column = ?\', [$value]) instead of concatenation',
         ],
@@ -82,6 +88,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             'alwaysFlag' => false,
             'checkStatic' => true,
             'checkInstance' => false,
+            'strictConcatenation' => true,
             'severity' => Severity::Critical,  // Full query construction
             'recommendation' => 'Use parameter binding with placeholders',
         ],
@@ -89,6 +96,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             'alwaysFlag' => false,
             'checkStatic' => true,
             'checkInstance' => false,
+            'strictConcatenation' => true,
             'severity' => Severity::Critical,  // Full query construction
             'recommendation' => 'Use parameter binding with placeholders',
         ],
@@ -96,6 +104,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             'alwaysFlag' => false,
             'checkStatic' => true,
             'checkInstance' => false,
+            'strictConcatenation' => true,
             'severity' => Severity::Critical,  // Full query construction
             'recommendation' => 'Use parameter binding with placeholders',
         ],
@@ -103,6 +112,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             'alwaysFlag' => false,
             'checkStatic' => true,
             'checkInstance' => false,
+            'strictConcatenation' => true,
             'severity' => Severity::Critical,  // Full query construction
             'recommendation' => 'Use parameter binding with placeholders',
         ],
@@ -194,7 +204,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
                                 $config['severity']
                             );
                         } else {
-                            $result = $this->isVulnerable($call);
+                            $result = $this->isVulnerable($call, $config['strictConcatenation'] ?? true);
                             if ($result['vulnerable']) {
                                 $issues[] = $this->createSqlInjectionIssue(
                                     $file,
@@ -223,7 +233,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
                                 $config['severity']
                             );
                         } else {
-                            $result = $this->isVulnerable($call);
+                            $result = $this->isVulnerable($call, $config['strictConcatenation'] ?? true);
                             if ($result['vulnerable']) {
                                 $issues[] = $this->createSqlInjectionIssue(
                                     $file,
@@ -314,11 +324,11 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
      *
      * @return array{vulnerable: bool, node: ?Node} Returns vulnerability status and the specific vulnerable node
      */
-    private function isVulnerable(Node $node): array
+    private function isVulnerable(Node $node, bool $strictConcatenation = true): array
     {
         // For method calls and static calls, check if they support parameter binding
         if ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\StaticCall) {
-            return $this->isVulnerableCall($node);
+            return $this->isVulnerableCall($node, $strictConcatenation);
         }
 
         // For function calls (mysqli_query, pg_query, etc.), check only the SQL argument
@@ -347,24 +357,40 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
      *
      * @return array{vulnerable: bool, node: ?Node}
      */
-    private function isVulnerableCall(Node\Expr\MethodCall|Node\Expr\StaticCall $call): array
-    {
+    private function isVulnerableCall(
+        Node\Expr\MethodCall|Node\Expr\StaticCall $call,
+        bool $strictConcatenation = true
+    ): array {
         // Get the first argument (SQL query)
         if (empty($call->args)) {
             return ['vulnerable' => false, 'node' => null];
         }
 
         $firstArg = $call->args[0]->value;
+        $hasBindings = count($call->args) >= 2;
 
-        // Always flag concatenation or interpolation in SQL - these are construction issues
-        $vulnerableNode = $this->findVulnerableNode($firstArg);
+        // Determine effective strictness:
+        // - Lenient when: fragment methods (*Raw) OR when bindings are present
+        // - Strict when: full query methods (DB::select, etc.) WITHOUT bindings
+        //
+        // Rationale: if bindings are present, the developer understands parameterized
+        // queries — any concatenation is likely structural (table names, dynamic
+        // placeholders like ?,?,?) rather than data injection.
+        $effectiveStrict = $strictConcatenation && ! $hasBindings;
+
+        if ($effectiveStrict) {
+            $vulnerableNode = $this->findVulnerableNode($firstArg);
+        } else {
+            $vulnerableNode = $this->findVulnerableNodeWithUserInput($firstArg);
+        }
+
         if ($vulnerableNode !== null) {
             return ['vulnerable' => true, 'node' => $vulnerableNode];
         }
 
-        // If bindings are present (2+ arguments), trust the parameter binding
+        // If bindings are present, trust the parameter binding
         // Don't flag user input in bindings - that's the correct, safe pattern
-        if (count($call->args) >= 2) {
+        if ($hasBindings) {
             return ['vulnerable' => false, 'node' => null];
         }
 
@@ -464,6 +490,28 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
         // Check for interpolation
         $interpolationNode = $this->findInterpolationNode($node);
         if ($interpolationNode !== null) {
+            return $interpolationNode;
+        }
+
+        return null;
+    }
+
+    /**
+     * Find concatenation or interpolation that directly contains user input.
+     *
+     * Used for query fragment methods (whereRaw, orderByRaw, etc.) where
+     * table/column name concatenation is common and safe. Only returns a
+     * node when BOTH concatenation/interpolation AND user input are present.
+     */
+    private function findVulnerableNodeWithUserInput(Node $node): ?Node
+    {
+        $concatNode = $this->findConcatenationNode($node);
+        if ($concatNode !== null && $this->findUserInputNodeRecursive($concatNode) !== null) {
+            return $concatNode;
+        }
+
+        $interpolationNode = $this->findInterpolationNode($node);
+        if ($interpolationNode !== null && $this->findUserInputNodeRecursive($interpolationNode) !== null) {
             return $interpolationNode;
         }
 

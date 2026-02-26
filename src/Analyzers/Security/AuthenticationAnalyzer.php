@@ -333,7 +333,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
                         severity: Severity::High,
-                        recommendation: 'Add auth middleware to this route group, or use Route::middleware("guest")->group() if routes are intentionally public',
+                        recommendation: 'Add auth middleware to this route group, or use Route::middleware("guest")->group() if routes are intentionally public. You can also add route URIs to the public_routes config option',
                         metadata: ['route_type' => 'group', 'file' => basename($file)]
                     );
                 }
@@ -390,8 +390,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                         lineNumber: $lineNumber + 1,
                         severity: Severity::High,
                         recommendation: $isClosure
-                            ? 'Add auth middleware: ->middleware("auth") or wrap in Route::middleware(["auth"])->group(). If intentionally public, use ->middleware("guest"). Consider moving closure logic to a controller.'
-                            : 'Protect this route with auth middleware or wrap in Route::middleware(["auth"])->group(). If intentionally public, use ->middleware("guest") or Route::middleware(["guest"])->group()',
+                            ? 'Add auth middleware: ->middleware("auth") or wrap in Route::middleware(["auth"])->group(). If intentionally public, use ->middleware("guest") or add the route URI to the public_routes config option. Consider moving closure logic to a controller.'
+                            : 'Protect this route with auth middleware or wrap in Route::middleware(["auth"])->group(). If intentionally public, use ->middleware("guest") or add the route URI to the public_routes config option',
                         metadata: [
                             'type' => 'authentication',
                             'method' => $method,
@@ -485,7 +485,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                                 filePath: $file,
                                 lineNumber: $stmt->getLine(),
                                 severity: Severity::High,
-                                recommendation: 'Add $this->middleware("auth") in constructor, protect all routes to this method with route-level auth middleware, or use ->middleware("guest") if intentionally public'
+                                recommendation: 'Add $this->middleware("auth") in constructor, protect all routes to this method with route-level auth middleware, or use ->middleware("guest") if intentionally public. You can also add route URIs to the public_routes config option'
                             );
 
                             continue;
@@ -1425,7 +1425,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     {
         foreach ($this->publicRoutes as $route) {
             if (preg_match(
-                '/Route::\w+\s*\(\s*[\'"]\/?'.preg_quote($route, '/').'(?:\/|\'|")/i',
+                '/Route::\w+\s*\(\s*[\'"]\/?(?:[^\'\"\/]+\/)*'.preg_quote($route, '/').'(?:\/|\'|")/i',
                 $line
             )) {
                 return true;
@@ -1442,7 +1442,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     {
         foreach ($this->publicRoutes as $route) {
             if (preg_match(
-                '/->name\s*\(\s*[\'"]'.preg_quote($route, '/').'[\'"]\s*\)/i',
+                '/->name\s*\(\s*[\'"](?:[a-zA-Z0-9_-]+\.)*'.preg_quote($route, '/').'[\'"]\s*\)/i',
                 $line
             )) {
                 return true;

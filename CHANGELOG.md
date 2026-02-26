@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.10 - 2026-02-26
+
+### Fixed
+- `AuthenticationAnalyzer` no longer false-positives on nested public route URIs (e.g. `/auth/login`, `/api/v1/register`) — the public-route regex now allows path segments before the keyword
+- `AuthenticationAnalyzer` no longer false-positives on dotted public route names (e.g. `auth.login`, `admin.auth.register`) — the route-name regex now allows dotted prefixes
+- Recommendation text now mentions the `public_routes` config option as an alternative to `->middleware("guest")`
+
 ## v1.0.9 - 2026-02-25
 
 ### Fixed

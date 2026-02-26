@@ -17,6 +17,12 @@
             "email": "support@shieldci.com"
         }
     ],
+    "homepage": "https://docs.shieldci.com",
+    "support": {
+        "docs": "https://docs.shieldci.com",
+        "issues": "https://github.com/ShieldCI/laravel/issues",
+        "source": "https://github.com/ShieldCI/laravel"
+    },
     "require": {
         "php": "^8.1",
         "guzzlehttp/guzzle": "^7.0",

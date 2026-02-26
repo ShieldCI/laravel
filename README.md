@@ -6,6 +6,7 @@
 [![License](https://img.shields.io/packagist/l/shieldci/laravel.svg)](https://packagist.org/packages/shieldci/laravel)
 [![Tests](https://github.com/ShieldCI/laravel/actions/workflows/tests.yml/badge.svg)](https://github.com/ShieldCI/laravel/actions/workflows/tests.yml)
 [![codecov](https://codecov.io/gh/ShieldCI/laravel/branch/master/graph/badge.svg)](https://codecov.io/gh/ShieldCI/laravel)
+[![Documentation](https://img.shields.io/badge/docs-docs.shieldci.com-blue.svg)](https://docs.shieldci.com)
 
 Open-source AI-powered code quality analysis for Laravel applications with 73 comprehensive analyzers covering security, performance, reliability, code quality, and best practices.
 
@@ -392,6 +393,9 @@ composer analyse        # PHPStan Level 9
 
 ## Documentation
 
+- [Full Documentation](https://docs.shieldci.com) - Installation, configuration, and analyzer guides
+- [Getting Started](https://docs.shieldci.com/getting-started/installation) - Quick start guide
+- [Analyzer Reference](https://docs.shieldci.com/analyzers/) - All 73 analyzers with examples and fix guidance
 - [Analyzers Core](https://github.com/ShieldCI/analyzers-core/blob/master/README.md) - Core package documentation
 
 ## License

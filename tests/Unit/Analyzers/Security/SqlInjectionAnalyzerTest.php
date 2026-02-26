@@ -88,10 +88,10 @@ PHP;
 
 class UserRepository
 {
-    public function findByName($name)
+    public function findByName()
     {
         return DB::table('users')
-            ->whereRaw("name = '" . $name . "'")
+            ->whereRaw("name = '" . $_GET['name'] . "'")
             ->first();
     }
 }
@@ -116,10 +116,10 @@ PHP;
 
 class UserController
 {
-    public function list($sortBy)
+    public function list()
     {
         return DB::table('users')
-            ->orderByRaw($sortBy . ' DESC')
+            ->orderByRaw(request('sort') . ' DESC')
             ->get();
     }
 }
@@ -146,9 +146,8 @@ class ReportController
 {
     public function generate()
     {
-        $field = request('field');
         return DB::table('reports')
-            ->selectRaw('SUM(' . $field . ') as total')
+            ->selectRaw('SUM(' . request('field') . ') as total')
             ->get();
     }
 }
@@ -173,11 +172,11 @@ PHP;
 
 class AnalyticsController
 {
-    public function stats($minCount)
+    public function stats()
     {
         return DB::table('stats')
             ->groupBy('category')
-            ->havingRaw('count(*) > ' . $minCount)
+            ->havingRaw('count(*) > ' . $_POST['count'])
             ->get();
     }
 }
@@ -348,10 +347,9 @@ class ProductController
     public function search()
     {
         $name = $_POST['name'];
-        $category = request('category');
 
         $query1 = DB::select("SELECT * FROM products WHERE name = '" . $name . "'");
-        $query2 = DB::table('products')->whereRaw("category = '" . $category . "'")->get();
+        $query2 = DB::table('products')->whereRaw("category = '" . request('category') . "'")->get();
 
         return compact('query1', 'query2');
     }
@@ -407,10 +405,10 @@ use Illuminate\Support\Facades\DB;
 
 class UserController
 {
-    public function find($userName)
+    public function find()
     {
-        // Variable interpolation with curly braces
-        return DB::table('users')->whereRaw("name = '{$userName}'")->first();
+        // Variable interpolation with curly braces using superglobal
+        return DB::table('users')->whereRaw("name = '{$_GET['name']}'")->first();
     }
 }
 PHP;
@@ -672,14 +670,15 @@ use Illuminate\Support\Facades\DB;
 
 class QueryBuilder
 {
-    public function dangerousQueries($value)
+    public function dangerousQueries()
     {
-        // DB::raw is both a static call AND finds 'raw' as a method
-        DB::raw("query " . $value);
-        DB::table('users')->whereRaw("col = " . $value)->get();
-        DB::table('users')->havingRaw("count > " . $value)->get();
-        DB::table('users')->orderByRaw($value . " DESC")->get();
-        DB::table('users')->selectRaw("col, " . $value)->get();
+        // DB::raw with concatenation (strict mode - any concat flagged)
+        DB::raw("query " . $_GET['val']);
+        // *Raw methods with direct user input (lenient mode - only user input flagged)
+        DB::table('users')->whereRaw("col = " . $_POST['val'])->get();
+        DB::table('users')->havingRaw("count > " . request('sort'))->get();
+        DB::table('users')->orderByRaw(Request::input('col') . " DESC")->get();
+        DB::table('users')->selectRaw("col, " . $_GET['val'])->get();
     }
 }
 PHP;
@@ -695,6 +694,204 @@ PHP;
         $this->assertFailed($result);
         // 5 dangerous methods: raw, whereRaw, havingRaw, orderByRaw, selectRaw
         $this->assertIssueCount(5, $result);
+    }
+
+    public function test_safe_order_by_raw_with_table_name_concatenation(): void
+    {
+        $code = <<<'PHP'
+<?php
+use Illuminate\Support\Facades\DB;
+
+class LeaderboardController
+{
+    public function index()
+    {
+        $goalTable = (new Goal)->getTable();
+
+        return DB::table('deals')
+            ->join($goalTable, 'deals.goal_id', '=', $goalTable.'.id')
+            ->orderByRaw('(sent_deals_count/'.$goalTable.'.goal) ASC')
+            ->get();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['LeaderboardController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass: $goalTable is a model table name, not user input
+        $this->assertPassed($result);
+    }
+
+    public function test_safe_where_raw_with_variable_concatenation(): void
+    {
+        $code = <<<'PHP'
+<?php
+use Illuminate\Support\Facades\DB;
+
+class ReportController
+{
+    public function show()
+    {
+        $column = 'email';
+        $table = (new User)->getTable();
+
+        return DB::table($table)
+            ->whereRaw($column . ' IS NOT NULL')
+            ->selectRaw('COUNT(' . $column . ') as total')
+            ->get();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['ReportController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass: $column and $table are not user input
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_raw_methods_with_superglobal_in_concatenation(): void
+    {
+        $code = <<<'PHP'
+<?php
+use Illuminate\Support\Facades\DB;
+
+class UnsafeController
+{
+    public function index()
+    {
+        DB::table('users')->whereRaw("name = '" . $_GET['name'] . "'")->get();
+        DB::table('users')->havingRaw('count(*) > ' . $_POST['count'])->get();
+        DB::table('users')->orderByRaw(request('sort') . ' DESC')->get();
+        DB::table('users')->selectRaw('SUM(' . Request::input('col') . ')')->get();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['UnsafeController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // All 4 *Raw methods with direct user input should be flagged
+        $this->assertFailed($result);
+        $this->assertIssueCount(4, $result);
+    }
+
+    public function test_strict_concatenation_for_db_static_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+use Illuminate\Support\Facades\DB;
+
+class QueryController
+{
+    public function queries($table, $column)
+    {
+        // DB static methods should flag ALL concatenation, even without user input
+        DB::select("SELECT * FROM " . $table . " WHERE id = 1");
+        DB::insert("INSERT INTO " . $table . " (name) VALUES ('test')");
+        DB::update("UPDATE " . $table . " SET name = 'test'");
+        DB::delete("DELETE FROM " . $table . " WHERE id = 1");
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['QueryController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // All 4 DB:: static methods flag any concatenation (strict mode)
+        $this->assertFailed($result);
+        $this->assertIssueCount(4, $result);
+    }
+
+    public function test_safe_db_select_with_dynamic_placeholders_and_bindings(): void
+    {
+        $code = <<<'PHP'
+<?php
+use Illuminate\Support\Facades\DB;
+
+class MemberController
+{
+    public function getDirectMembers()
+    {
+        $airportIDsArray = [1, 2, 3];
+        $airportPlaceholders = implode(',', array_fill(0, count($airportIDsArray), '?'));
+
+        // SAFE: concatenation is structural (dynamic placeholders), bindings handle the data
+        $members = DB::select(
+            'SELECT email FROM members WHERE airport_id IN (' . $airportPlaceholders . ') AND subscribed = ?',
+            [...$airportIDsArray, 1]
+        );
+
+        return $members;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['MemberController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass: bindings are present, concatenation is structural (placeholders)
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_db_select_with_user_input_in_concat_despite_bindings(): void
+    {
+        $code = <<<'PHP'
+<?php
+use Illuminate\Support\Facades\DB;
+
+class UnsafeController
+{
+    public function search()
+    {
+        // DANGEROUS: user input concatenated into SQL even though bindings exist
+        $results = DB::select(
+            "SELECT * FROM " . $_GET['table'] . " WHERE id = ?",
+            [1]
+        );
+
+        return $results;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['UnsafeController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail: even with bindings, direct user input in SQL concat is dangerous
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('DB::select()', $result);
     }
 
     public function test_detects_multiple_native_functions_with_injection(): void

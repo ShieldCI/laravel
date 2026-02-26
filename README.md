@@ -41,12 +41,6 @@ Publish the configuration file:
 php artisan vendor:publish --tag=shieldci-config
 ```
 
-Enable ShieldCI in your `.env`:
-
-```env
-SHIELDCI_ENABLED=true
-```
-
 ## Usage
 
 Run the analysis:

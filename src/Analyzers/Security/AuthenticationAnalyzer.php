@@ -44,6 +44,20 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     private array $publicRoutes = [];
 
     /**
+     * Cache of resolved custom middleware auth status.
+     *
+     * @var array<string, bool>
+     */
+    private array $resolvedAuthMiddleware = [];
+
+    /**
+     * Map of short class name to FQCN from use imports in the current route file.
+     *
+     * @var array<string, string>
+     */
+    private array $useImports = [];
+
+    /**
      * Map of controller methods that are intentionally public.
      * Format: ['ControllerClass::method' => true]
      *
@@ -149,26 +163,26 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     private function loadPublicRoutes(): void
     {
         $defaultRoutes = [
-            'login',
-            'register',
-            'password',
-            'forgot-password',
-            'reset-password',
-            'verify',
-            'health',
-            'status',
-            'up',
-            'webhook',
+            '/login',
+            '/register',
+            '/password/reset',
+            '/password/email',
+            '/forgot-password',
+            '/reset-password',
+            '/email/verify',
+            '/health',
+            '/status',
+            '/up',
         ];
 
-        $configRoutes = $this->config->get('shieldci.analyzers.security.authentication-authorization.public_routes', []);
+        $configRoutes = $this->config->get(
+            'shieldci.analyzers.security.authentication-authorization.public_routes', []
+        );
 
-        // Ensure configRoutes is an array
         if (! is_array($configRoutes)) {
             $configRoutes = [];
         }
 
-        // Merge config routes with defaults, ensuring no duplicates
         $this->publicRoutes = array_values(array_unique(array_merge($defaultRoutes, $configRoutes)));
     }
 
@@ -182,6 +196,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     private function buildPublicControllerMap(string $file): void
     {
         $lines = FileParser::getLines($file);
+        $this->useImports = $this->extractUseImports($lines);
         $routeGroups = $this->identifyRouteGroups($lines);
 
         foreach ($lines as $lineNumber => $line) {
@@ -302,15 +317,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      */
     private function checkRouteFile(string $file, array &$issues): void
     {
-        // Skip api.php if it uses sanctum/passport
-        if (str_contains($file, 'api.php')) {
-            $content = FileParser::readFile($file);
-            if ($content !== null && (str_contains($content, 'sanctum') || str_contains($content, 'passport'))) {
-                return;
-            }
-        }
-
         $lines = FileParser::getLines($file);
+        $this->useImports = $this->extractUseImports($lines);
 
         // First pass: Identify route groups and their auth status
         // Track groups as [startLine => endLine, hasAuth => bool]
@@ -1087,6 +1095,18 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             return true;
         }
 
+        // Check for ::class middleware references (custom middleware classes)
+        if (preg_match('/->middleware\s*\(\s*(?:\[([^\]]*)\]|([^)]+))\)/s', $line, $m)) {
+            $middlewareContent = $m[1] !== '' ? $m[1] : ($m[2] ?? '');
+            if (preg_match_all('/([A-Z]\w+)::class/', $middlewareContent, $classMatches)) {
+                foreach ($classMatches[1] as $className) {
+                    if ($this->isCustomAuthMiddlewareClass($className)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
         return false;
     }
 
@@ -1404,6 +1424,15 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             }
         }
 
+        // Check for ::class middleware references in group definition
+        if (preg_match_all('/([A-Z]\w+)::class/', $groupDefinition, $classMatches)) {
+            foreach ($classMatches[1] as $className) {
+                if ($this->isCustomAuthMiddlewareClass($className)) {
+                    return true;
+                }
+            }
+        }
+
         return false;
     }
 
@@ -1412,37 +1441,18 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      */
     private function isPublicRouteLine(string $line): bool
     {
-        return
-            $this->hasPublicUri($line) ||
-            $this->hasPublicRouteName($line) ||
-            $this->hasGuestMiddleware($line);
+        return $this->hasPublicUri($line) || $this->hasGuestMiddleware($line);
     }
 
     /**
-     * Check if a line has a public URI.
+     * Check if a line has a public URI using exact path matching.
      */
     private function hasPublicUri(string $line): bool
     {
         foreach ($this->publicRoutes as $route) {
+            // Exact path match: '/login' matches Route::post('/login', ...)
             if (preg_match(
-                '/Route::\w+\s*\(\s*[\'"]\/?(?:[^\'\"\/]+\/)*'.preg_quote($route, '/').'(?:\/|\'|")/i',
-                $line
-            )) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Check if a line has a public route name.
-     */
-    private function hasPublicRouteName(string $line): bool
-    {
-        foreach ($this->publicRoutes as $route) {
-            if (preg_match(
-                '/->name\s*\(\s*[\'"](?:[a-zA-Z0-9_-]+\.)*'.preg_quote($route, '/').'[\'"]\s*\)/i',
+                '/Route::\w+\s*\(\s*[\'"]'.preg_quote($route, '/').'[\'"]/i',
                 $line
             )) {
                 return true;
@@ -1502,5 +1512,78 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         }
 
         return $files;
+    }
+
+    /**
+     * Extract use imports from file lines.
+     *
+     * Maps short class names to FQCNs, e.g.:
+     * 'use App\Http\Middleware\ValidateApiToken;' -> ['ValidateApiToken' => 'App\Http\Middleware\ValidateApiToken']
+     *
+     * @param  array<int, string>  $lines
+     * @return array<string, string>
+     */
+    private function extractUseImports(array $lines): array
+    {
+        $imports = [];
+
+        foreach ($lines as $line) {
+            if (! is_string($line)) {
+                continue;
+            }
+
+            if (preg_match('/^use\s+([\w\\\\]+?)(?:\s+as\s+(\w+))?\s*;/', trim($line), $matches)) {
+                $fqcn = $matches[1];
+                $alias = $matches[2] ?? null;
+
+                // Use alias if provided, otherwise extract short class name
+                $shortName = $alias ?? substr($fqcn, (int) strrpos($fqcn, '\\') + 1);
+                $imports[$shortName] = $fqcn;
+            }
+        }
+
+        return $imports;
+    }
+
+    /**
+     * Check if a custom middleware class is an auth middleware by introspecting its source code.
+     *
+     * Looks for auth signals: bearerToken(), getPassword(), AuthenticationException,
+     * AuthenticatesRequests, Illuminate\Contracts\Auth\Factory.
+     */
+    private function isCustomAuthMiddlewareClass(string $className): bool
+    {
+        // Look up FQCN from use imports, fall back to className if already FQCN
+        $fqcn = $this->useImports[$className] ?? $className;
+
+        // Check cache
+        if (isset($this->resolvedAuthMiddleware[$fqcn])) {
+            return $this->resolvedAuthMiddleware[$fqcn];
+        }
+
+        // Convert FQCN to file path via PSR-4 convention (App\ -> app/)
+        $relativePath = str_replace('\\', '/', $fqcn).'.php';
+        if (str_starts_with($relativePath, 'App/')) {
+            $relativePath = 'app'.substr($relativePath, 3);
+        }
+
+        $filePath = $this->buildPath($relativePath);
+        $content = FileParser::readFile($filePath);
+
+        if ($content === null) {
+            $this->resolvedAuthMiddleware[$fqcn] = false;
+
+            return false;
+        }
+
+        $isAuth = str_contains($content, 'bearerToken')
+            || str_contains($content, 'getPassword')
+            || str_contains($content, 'AuthenticationException')
+            || str_contains($content, 'AuthenticatesRequests')
+            || (bool) preg_match('/Illuminate\\\\Contracts\\\\Auth\\\\Factory|Auth\s+\$auth/', $content);
+
+        $this->resolvedAuthMiddleware[$fqcn] = $isAuth;
+
+        return $isAuth;
     }
 }

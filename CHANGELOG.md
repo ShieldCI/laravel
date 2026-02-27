@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.0.12 - 2026-02-27
+
+### Fixed
+- `AuthenticationAnalyzer` now detects custom auth middleware classes used via `->middleware(ValidateApiToken::class)` by introspecting the middleware source file for auth signals (`bearerToken()`, `AuthenticationException`, `getPassword()`, `AuthenticatesRequests`, `Auth\Factory`)
+- `AuthenticationAnalyzer` no longer silently skips entire `api.php` files when sanctum/passport is mentioned — unprotected routes in mixed api.php files are now correctly flagged
+
+### Changed
+- **Breaking:** `public_routes` config now uses exact path matching instead of keyword matching — entries must be full paths starting with `/` (e.g. `'/webhooks/stripe'` instead of `'webhook'`). Default `/login` no longer matches `/auth/login`; add `/auth/login` explicitly if needed
+- Default public routes updated: removed `'webhook'` and `'verify'`, added `/password/reset`, `/password/email`, `/email/verify` as exact paths
+- Removed route name matching (`->name('auth.login')`) — only route URI paths are matched
+
 ## v1.0.11 - 2026-02-26
 
 ### Fixed

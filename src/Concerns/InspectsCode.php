@@ -90,7 +90,7 @@ trait InspectsCode
      *
      * Handles value types: String_, LNumber, DNumber, ConstFetch (true/false/null), FuncCall (env()).
      *
-     * @return array<string, array{value: mixed, line: int, isEnvCall: bool, envDefault: mixed}>
+     * @return array<string, array{value: mixed, line: int, isEnvCall: bool, envDefault: mixed, envHasDefault: bool}>
      */
     protected function parseConfigArray(string $filePath): array
     {
@@ -126,6 +126,7 @@ trait InspectsCode
             $line = $item->getStartLine();
             $isEnvCall = false;
             $envDefault = null;
+            $envHasDefault = false;
             $value = $this->extractConfigValue($item->value);
 
             if ($item->value instanceof FuncCall
@@ -136,6 +137,7 @@ trait InspectsCode
                 $value = null;
 
                 if (isset($item->value->args[1])) {
+                    $envHasDefault = true;
                     $envDefault = $this->extractConfigValue($item->value->args[1]->value);
                 }
             }
@@ -145,10 +147,28 @@ trait InspectsCode
                 'line' => $line,
                 'isEnvCall' => $isEnvCall,
                 'envDefault' => $envDefault,
+                'envHasDefault' => $envHasDefault,
             ];
         }
 
         return $result;
+    }
+
+    /**
+     * Get the effective value from a parsed config entry.
+     *
+     * When the value is an env() call, returns its default argument;
+     * otherwise returns the literal value.
+     *
+     * @param  array{value: mixed, line: int, isEnvCall: bool, envDefault: mixed, envHasDefault: bool}  $entry
+     */
+    protected function resolveConfigValue(array $entry): mixed
+    {
+        if ($entry['isEnvCall']) {
+            return $entry['envDefault'];
+        }
+
+        return $entry['value'];
     }
 
     /**

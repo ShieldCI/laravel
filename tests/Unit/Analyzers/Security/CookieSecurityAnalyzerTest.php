@@ -308,6 +308,207 @@ PHP;
         $this->assertPassed($result);
     }
 
+    // ==================== ENV() CALL TESTS ====================
+
+    public function test_passes_when_same_site_uses_env_with_lax_default(): void
+    {
+        $sessionConfig = <<<'PHP'
+<?php
+
+return [
+    'http_only' => true,
+    'secure' => true,
+    'same_site' => env('SESSION_SAME_SITE', 'lax'),
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory(['config/session.php' => $sessionConfig]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_same_site_uses_env_with_strict_default(): void
+    {
+        $sessionConfig = <<<'PHP'
+<?php
+
+return [
+    'http_only' => true,
+    'secure' => true,
+    'same_site' => env('SESSION_SAME_SITE', 'strict'),
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory(['config/session.php' => $sessionConfig]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_same_site_uses_env_with_null_default(): void
+    {
+        $sessionConfig = <<<'PHP'
+<?php
+
+return [
+    'http_only' => true,
+    'secure' => true,
+    'same_site' => env('SESSION_SAME_SITE', null),
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory(['config/session.php' => $sessionConfig]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFalse($result->isSuccess());
+        $this->assertHasIssueContaining('SameSite', $result);
+    }
+
+    public function test_fails_when_same_site_uses_env_with_none_default(): void
+    {
+        $sessionConfig = <<<'PHP'
+<?php
+
+return [
+    'http_only' => true,
+    'secure' => true,
+    'same_site' => env('SESSION_SAME_SITE', 'none'),
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory(['config/session.php' => $sessionConfig]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFalse($result->isSuccess());
+        $this->assertHasIssueContaining('SameSite', $result);
+    }
+
+    public function test_passes_when_same_site_uses_env_without_default(): void
+    {
+        $sessionConfig = <<<'PHP'
+<?php
+
+return [
+    'http_only' => true,
+    'secure' => true,
+    'same_site' => env('SESSION_SAME_SITE'),
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory(['config/session.php' => $sessionConfig]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Indeterminate — should not flag (conservative)
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_http_only_uses_env_with_true_default(): void
+    {
+        $sessionConfig = <<<'PHP'
+<?php
+
+return [
+    'http_only' => env('SESSION_HTTP_ONLY', true),
+    'secure' => true,
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory(['config/session.php' => $sessionConfig]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_http_only_uses_env_with_false_default(): void
+    {
+        $sessionConfig = <<<'PHP'
+<?php
+
+return [
+    'http_only' => env('SESSION_HTTP_ONLY', false),
+    'secure' => true,
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory(['config/session.php' => $sessionConfig]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('HttpOnly', $result);
+    }
+
+    public function test_passes_when_secure_uses_env_with_true_default(): void
+    {
+        $sessionConfig = <<<'PHP'
+<?php
+
+return [
+    'http_only' => true,
+    'secure' => env('SESSION_SECURE_COOKIE', true),
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory(['config/session.php' => $sessionConfig]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_secure_uses_env_with_false_default(): void
+    {
+        $sessionConfig = <<<'PHP'
+<?php
+
+return [
+    'http_only' => true,
+    'secure' => env('SESSION_SECURE_COOKIE', false),
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory(['config/session.php' => $sessionConfig]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('secure', $result);
+    }
+
     // ==================== ENCRYPT_COOKIES MIDDLEWARE TESTS ====================
 
     public function test_fails_when_encrypt_cookies_middleware_missing(): void

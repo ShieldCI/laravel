@@ -364,6 +364,48 @@ class InspectsCodeTest extends TestCase
     }
 
     #[Test]
+    public function resolve_config_value_returns_literal_for_non_env_entries(): void
+    {
+        $inspector = new ConcreteInspectsCode;
+
+        $this->assertSame('lax', $inspector->publicResolveConfigValue([
+            'value' => 'lax', 'line' => 1, 'isEnvCall' => false, 'envDefault' => null, 'envHasDefault' => false,
+        ]));
+        $this->assertFalse($inspector->publicResolveConfigValue([
+            'value' => false, 'line' => 1, 'isEnvCall' => false, 'envDefault' => null, 'envHasDefault' => false,
+        ]));
+        $this->assertNull($inspector->publicResolveConfigValue([
+            'value' => null, 'line' => 1, 'isEnvCall' => false, 'envDefault' => null, 'envHasDefault' => false,
+        ]));
+    }
+
+    #[Test]
+    public function resolve_config_value_returns_env_default_for_env_entries(): void
+    {
+        $inspector = new ConcreteInspectsCode;
+
+        $this->assertSame('lax', $inspector->publicResolveConfigValue([
+            'value' => null, 'line' => 1, 'isEnvCall' => true, 'envDefault' => 'lax', 'envHasDefault' => true,
+        ]));
+        $this->assertFalse($inspector->publicResolveConfigValue([
+            'value' => null, 'line' => 1, 'isEnvCall' => true, 'envDefault' => false, 'envHasDefault' => true,
+        ]));
+        $this->assertTrue($inspector->publicResolveConfigValue([
+            'value' => null, 'line' => 1, 'isEnvCall' => true, 'envDefault' => true, 'envHasDefault' => true,
+        ]));
+    }
+
+    #[Test]
+    public function resolve_config_value_returns_null_for_env_without_default(): void
+    {
+        $inspector = new ConcreteInspectsCode;
+
+        $this->assertNull($inspector->publicResolveConfigValue([
+            'value' => null, 'line' => 1, 'isEnvCall' => true, 'envDefault' => null, 'envHasDefault' => false,
+        ]));
+    }
+
+    #[Test]
     public function parse_config_array_includes_line_numbers(): void
     {
         $inspector = new ConcreteInspectsCode;
@@ -408,11 +450,19 @@ class ConcreteInspectsCode
     }
 
     /**
-     * @return array<string, array{value: mixed, line: int, isEnvCall: bool, envDefault: mixed}>
+     * @return array<string, array{value: mixed, line: int, isEnvCall: bool, envDefault: mixed, envHasDefault: bool}>
      */
     public function publicParseConfigArray(string $filePath): array
     {
         return $this->parseConfigArray($filePath);
+    }
+
+    /**
+     * @param  array{value: mixed, line: int, isEnvCall: bool, envDefault: mixed, envHasDefault: bool}  $entry
+     */
+    public function publicResolveConfigValue(array $entry): mixed
+    {
+        return $this->resolveConfigValue($entry);
     }
 
     /**

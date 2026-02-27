@@ -18,18 +18,18 @@ class AuthenticationAnalyzerTest extends AnalyzerTestCase
      */
     protected function createAnalyzer(array $config = []): AnalyzerInterface
     {
-        // Default public routes (same as in config file)
+        // Default public routes (same as in config file — exact paths)
         $defaultPublicRoutes = [
-            'login',
-            'register',
-            'password',
-            'forgot-password',
-            'reset-password',
-            'verify',
-            'health',
-            'status',
-            'up',
-            'webhook',
+            '/login',
+            '/register',
+            '/password/reset',
+            '/password/email',
+            '/forgot-password',
+            '/reset-password',
+            '/email/verify',
+            '/health',
+            '/status',
+            '/up',
         ];
 
         // Get custom public routes from config if provided
@@ -757,12 +757,12 @@ PHP;
 
         $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
 
-        // Create analyzer with custom public routes
+        // Create analyzer with custom public routes (exact paths)
         $analyzer = $this->createAnalyzer([
             'authentication-authorization' => [
                 'public_routes' => [
-                    'api/public',
-                    'oauth/callback',
+                    '/api/public',
+                    '/oauth/callback',
                 ],
             ],
         ]);
@@ -789,8 +789,8 @@ PHP;
         $analyzer = $this->createAnalyzer([
             'authentication-authorization' => [
                 'public_routes' => [
-                    'api/public',
-                    'oauth/callback',
+                    '/api/public',
+                    '/oauth/callback',
                 ],
             ],
         ]);
@@ -810,6 +810,7 @@ PHP;
 
 Route::post('/password/reset', [PasswordController::class, 'reset']);
 Route::post('/forgot-password', [PasswordController::class, 'forgot']);
+Route::post('/reset-password', [PasswordController::class, 'resetNew']);
 PHP;
 
         $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
@@ -841,19 +842,45 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_skips_public_login_route_with_nested_uri_path(): void
+    public function test_exact_path_does_not_match_nested_uri(): void
     {
         $routes = <<<'PHP'
 <?php
 
 Route::post('/auth/login', [AuthController::class, 'login']);
 Route::post('/api/v1/register', [AuthController::class, 'register']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // With exact path matching, /auth/login does NOT match default /login
+        $this->assertFailed($result);
+    }
+
+    public function test_skips_nested_uris_when_added_to_config(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/auth/login', [AuthController::class, 'login']);
 Route::post('/auth/forgot-password', [PasswordController::class, 'forgot']);
 PHP;
 
         $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
 
-        $analyzer = $this->createAnalyzer();
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => [
+                    '/auth/login',
+                    '/auth/forgot-password',
+                ],
+            ],
+        ]);
         $analyzer->setBasePath($tempDir);
 
         $result = $analyzer->analyze();
@@ -861,13 +888,66 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_skips_public_route_with_dotted_route_name(): void
+    public function test_skips_route_matching_exact_public_path(): void
     {
         $routes = <<<'PHP'
 <?php
 
-Route::post('/sign-in', [AuthController::class, 'login'])->name('auth.login');
-Route::post('/create-account', [AuthController::class, 'register'])->name('admin.auth.register');
+Route::post('/satis/auth', [SatisAuthController::class, 'authenticate']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => [
+                    '/satis/auth',
+                ],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_multiple_exact_public_paths(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/webhooks/stripe', [StripeController::class, 'handle']);
+Route::post('/webhooks/github', [GithubController::class, 'handle']);
+Route::post('/api/oauth/token', [OAuthController::class, 'token']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => [
+                    '/webhooks/stripe',
+                    '/webhooks/github',
+                    '/api/oauth/token',
+                ],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_default_public_routes(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/login', [AuthController::class, 'login']);
+Route::post('/register', [AuthController::class, 'register']);
+Route::post('/forgot-password', [PasswordController::class, 'forgot']);
 PHP;
 
         $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
@@ -878,44 +958,6 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
-    }
-
-    public function test_does_not_skip_routes_with_keyword_as_substring_in_uri(): void
-    {
-        $routes = <<<'PHP'
-<?php
-
-Route::post('/loginhistory', [HistoryController::class, 'store']);
-Route::post('/admin/loginlogs', [LogController::class, 'store']);
-PHP;
-
-        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-    }
-
-    public function test_does_not_skip_routes_with_keyword_as_prefix_in_route_name(): void
-    {
-        $routes = <<<'PHP'
-<?php
-
-Route::post('/log-history', [HistoryController::class, 'store'])->name('login.history');
-Route::post('/action', [ActionController::class, 'store'])->name('loginAction');
-PHP;
-
-        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
     }
 
     // ==========================================
@@ -3221,9 +3263,11 @@ PHP;
         $routes = <<<'PHP'
 <?php
 
-Route::post('/webhook', function (Request $request) {
-    return response()->json(['status' => 'ok']);
-})->middleware('auth');
+Route::middleware('auth')->group(function () {
+    Route::post('/process', function (Request $request) {
+        return response()->json(['status' => 'ok']);
+    });
+});
 PHP;
 
         $tempDir = $this->createTempDirectory([
@@ -3288,5 +3332,331 @@ PHP;
 
         // Should detect issue - comment doesn't contain @shieldci-ignore
         $this->assertFalse($result->isSuccess());
+    }
+
+    // ==========================================
+    // Custom Middleware Introspection Tests
+    // ==========================================
+
+    public function test_passes_route_with_custom_auth_middleware_class(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Middleware\ValidateApiToken;
+
+Route::post('/reports', [ReportController::class, 'store'])
+    ->middleware(ValidateApiToken::class);
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+use Illuminate\Auth\AuthenticationException;
+
+class ValidateApiToken
+{
+    public function handle($request, $next)
+    {
+        $token = $request->bearerToken();
+        if (!$token) {
+            throw new AuthenticationException('Unauthenticated.');
+        }
+        return $next($request);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routes,
+            'app/Http/Middleware/ValidateApiToken.php' => $middleware,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_route_with_custom_auth_middleware_in_array(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Middleware\CustomAuth;
+
+Route::post('/reports', [ReportController::class, 'store'])
+    ->middleware([CustomAuth::class, 'throttle:60']);
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class CustomAuth
+{
+    public function handle($request, $next)
+    {
+        $token = $request->bearerToken();
+        if (!$token) {
+            abort(401);
+        }
+        return $next($request);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routes,
+            'app/Http/Middleware/CustomAuth.php' => $middleware,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_route_group_with_custom_auth_middleware_class(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Middleware\TokenAuth;
+
+Route::middleware(TokenAuth::class)->group(function () {
+    Route::post('/reports', [ReportController::class, 'store']);
+    Route::delete('/reports/{id}', [ReportController::class, 'destroy']);
+});
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class TokenAuth
+{
+    public function handle($request, $next)
+    {
+        $token = $request->bearerToken();
+        if (!$token) {
+            abort(401);
+        }
+        return $next($request);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routes,
+            'app/Http/Middleware/TokenAuth.php' => $middleware,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_route_with_non_auth_middleware_class(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Middleware\LogRequests;
+
+Route::post('/reports', [ReportController::class, 'store'])
+    ->middleware(LogRequests::class);
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class LogRequests
+{
+    public function handle($request, $next)
+    {
+        logger()->info('Request logged: ' . $request->url());
+        return $next($request);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routes,
+            'app/Http/Middleware/LogRequests.php' => $middleware,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
+    public function test_passes_route_with_middleware_throwing_authentication_exception(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Middleware\ApiKeyAuth;
+
+Route::post('/data', [DataController::class, 'store'])
+    ->middleware(ApiKeyAuth::class);
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+use Illuminate\Auth\AuthenticationException;
+
+class ApiKeyAuth
+{
+    public function handle($request, $next)
+    {
+        $key = $request->header('X-API-Key');
+        if (!$key || !$this->isValid($key)) {
+            throw new AuthenticationException('Invalid API key.');
+        }
+        return $next($request);
+    }
+
+    private function isValid(string $key): bool
+    {
+        return $key === config('services.api_key');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routes,
+            'app/Http/Middleware/ApiKeyAuth.php' => $middleware,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_route_with_http_basic_auth_middleware(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Middleware\BasicAuth;
+
+Route::post('/internal/sync', [SyncController::class, 'sync'])
+    ->middleware(BasicAuth::class);
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class BasicAuth
+{
+    public function handle($request, $next)
+    {
+        $user = $request->getUser();
+        $password = $request->getPassword();
+        if (!$user || !$password) {
+            abort(401);
+        }
+        return $next($request);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routes,
+            'app/Http/Middleware/BasicAuth.php' => $middleware,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_handles_unresolvable_middleware_class_gracefully(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Middleware\NonExistentMiddleware;
+
+Route::post('/reports', [ReportController::class, 'store'])
+    ->middleware(NonExistentMiddleware::class);
+PHP;
+
+        // No middleware file created — class file doesn't exist
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should flag it — can't resolve, so can't confirm it's auth middleware
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
+    // ==========================================
+    // API.php Skip Removal Tests
+    // ==========================================
+
+    public function test_flags_unprotected_route_in_api_php_with_sanctum_present(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\ReportController;
+use App\Http\Controllers\UserController;
+
+// Protected routes
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/user', [UserController::class, 'show']);
+});
+
+// This unprotected POST should be flagged even though sanctum is mentioned above
+Route::post('/reports', [ReportController::class, 'store']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
     }
 }

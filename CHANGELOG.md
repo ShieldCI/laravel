@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.11 - 2026-02-26
+
+### Fixed
+- `CookieSecurityAnalyzer` no longer false-positives on `env()` calls with secure defaults (e.g. `'same_site' => env('SESSION_SAME_SITE', 'lax')` was incorrectly flagged as weak SameSite protection)
+- `CookieSecurityAnalyzer` now detects insecure `env()` defaults for `http_only` and `secure` checks (e.g. `env('SESSION_HTTP_ONLY', false)` was previously missed)
+- `HSTSHeaderAnalyzer` now resolves `env()` defaults when detecting HTTPS-only apps and checking session cookie security (e.g. `'secure' => env('SESSION_SECURE_COOKIE', true)` is now recognised as HTTPS-only)
+- Added `resolveConfigValue()` helper and `envHasDefault` flag to `InspectsCode` trait for correct `env()` default resolution in config array parsing
+
 ## v1.0.10 - 2026-02-26
 
 ### Fixed

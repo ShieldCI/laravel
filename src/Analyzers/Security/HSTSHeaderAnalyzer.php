@@ -93,7 +93,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
         if (file_exists($sessionConfig)) {
             $config = $this->parseConfigArray($sessionConfig);
 
-            if (isset($config['secure']) && $config['secure']['value'] === true) {
+            if (isset($config['secure']) && $this->resolveConfigValue($config['secure']) === true) {
                 return true;
             }
         }
@@ -115,7 +115,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
         if (file_exists($appConfig)) {
             $config = $this->parseConfigArray($appConfig);
 
-            if (isset($config['force_https']) && $config['force_https']['value'] === true) {
+            if (isset($config['force_https']) && $this->resolveConfigValue($config['force_https']) === true) {
                 return true;
             }
         }
@@ -358,7 +358,9 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
         if (isset($configArray['secure'])) {
             $entry = $configArray['secure'];
 
-            if ($entry['value'] === false || $entry['value'] === 0) {
+            $effectiveValue = $this->resolveConfigValue($entry);
+
+            if ($effectiveValue === false || $effectiveValue === 0) {
                 $issues[] = $this->createIssue(
                     message: 'HTTPS-only application has secure cookies disabled',
                     location: new Location($this->getRelativePath($sessionConfig), $entry['line']),

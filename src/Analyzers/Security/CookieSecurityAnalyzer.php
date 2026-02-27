@@ -104,8 +104,9 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
         // Check HttpOnly flag
         if (isset($config['http_only'])) {
             $entry = $config['http_only'];
+            $effectiveValue = $this->resolveConfigValue($entry);
 
-            if ($entry['value'] === false || $entry['value'] === 0) {
+            if ($effectiveValue === false || $effectiveValue === 0) {
                 $issues[] = $this->createIssueWithSnippet(
                     message: 'Session cookies are not secured with HttpOnly flag',
                     filePath: $sessionConfig,
@@ -116,7 +117,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                     metadata: [
                         'file' => 'session.php',
                         'config_key' => 'http_only',
-                        'current_value' => $this->configValueToString($entry['value']),
+                        'current_value' => $this->configValueToString($effectiveValue),
                     ]
                 );
             }
@@ -125,8 +126,9 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
         // Check Secure flag (should be true for HTTPS sites)
         if (isset($config['secure'])) {
             $entry = $config['secure'];
+            $effectiveValue = $this->resolveConfigValue($entry);
 
-            if ($entry['value'] === false || $entry['value'] === 0) {
+            if ($effectiveValue === false || $effectiveValue === 0) {
                 $issues[] = $this->createIssueWithSnippet(
                     message: 'Session cookies are not restricted to HTTPS (secure flag disabled)',
                     filePath: $sessionConfig,
@@ -137,7 +139,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                     metadata: [
                         'file' => 'session.php',
                         'config_key' => 'secure',
-                        'current_value' => $this->configValueToString($entry['value']),
+                        'current_value' => $this->configValueToString($effectiveValue),
                     ]
                 );
             }
@@ -146,23 +148,30 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
         // Check SameSite attribute
         if (isset($config['same_site'])) {
             $entry = $config['same_site'];
-            $isWeak = $entry['value'] === null
-                || (is_string($entry['value']) && in_array(strtolower($entry['value']), ['null', 'none'], true));
 
-            if ($isWeak) {
-                $issues[] = $this->createIssueWithSnippet(
-                    message: 'Session cookies have weak SameSite protection',
-                    filePath: $sessionConfig,
-                    lineNumber: $entry['line'],
-                    severity: Severity::Medium,
-                    recommendation: 'Use "same_site" => "lax" or "strict" to protect against CSRF attacks',
-                    code: 'same_site',
-                    metadata: [
-                        'file' => 'session.php',
-                        'config_key' => 'same_site',
-                        'current_value' => $this->configValueToString($entry['value']),
-                    ]
-                );
+            // env() with no default — runtime-dependent, cannot determine statically
+            $hasIndeterminateDefault = $entry['isEnvCall'] && ! $entry['envHasDefault'];
+
+            if (! $hasIndeterminateDefault) {
+                $effectiveValue = $this->resolveConfigValue($entry);
+                $isWeak = $effectiveValue === null
+                    || (is_string($effectiveValue) && in_array(strtolower($effectiveValue), ['null', 'none'], true));
+
+                if ($isWeak) {
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: 'Session cookies have weak SameSite protection',
+                        filePath: $sessionConfig,
+                        lineNumber: $entry['line'],
+                        severity: Severity::Medium,
+                        recommendation: 'Use "same_site" => "lax" or "strict" to protect against CSRF attacks',
+                        code: 'same_site',
+                        metadata: [
+                            'file' => 'session.php',
+                            'config_key' => 'same_site',
+                            'current_value' => $this->configValueToString($effectiveValue),
+                        ]
+                    );
+                }
             }
         }
     }

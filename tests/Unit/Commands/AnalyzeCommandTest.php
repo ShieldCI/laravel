@@ -2118,12 +2118,14 @@ PHP);
     public function json_output_excludes_git_fields_when_flags_not_provided(): void
     {
         $this->registerTestAnalyzers();
+        $this->bindNullCiDetector();
 
         \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
         $output = \Illuminate\Support\Facades\Artisan::output();
 
         $this->assertStringNotContainsString('"git_branch"', $output);
         $this->assertStringNotContainsString('"git_commit"', $output);
+        $this->assertStringNotContainsString('"ci_provider"', $output);
     }
 
     #[Test]
@@ -3130,6 +3132,194 @@ PHP);
 
         \Illuminate\Support\Facades\Http::assertSent(function ($request) {
             return str_contains($request->url(), '/api/reports/failure');
+        });
+    }
+
+    // ─── CI Provider Detection Tests ──────────────────────────────────
+
+    #[Test]
+    public function it_includes_ci_provider_in_metadata_when_github_actions_detected(): void
+    {
+        $this->registerTestAnalyzers();
+
+        putenv('GITHUB_ACTIONS=true');
+        putenv('GITHUB_REF_NAME=main');
+        putenv('GITHUB_SHA=abc1234def5678');
+
+        try {
+            \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
+            $output = \Illuminate\Support\Facades\Artisan::output();
+        } finally {
+            putenv('GITHUB_ACTIONS');
+            putenv('GITHUB_REF_NAME');
+            putenv('GITHUB_SHA');
+        }
+
+        $this->assertStringContainsString('"ci_provider": "github_actions"', $output);
+    }
+
+    #[Test]
+    public function it_does_not_include_ci_provider_when_no_ci_detected(): void
+    {
+        $this->registerTestAnalyzers();
+        $this->bindNullCiDetector();
+
+        \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
+        $output = \Illuminate\Support\Facades\Artisan::output();
+
+        $this->assertStringNotContainsString('"ci_provider"', $output);
+    }
+
+    #[Test]
+    public function it_auto_detects_branch_from_github_head_ref(): void
+    {
+        $this->registerTestAnalyzers();
+
+        putenv('GITHUB_ACTIONS=true');
+        putenv('GITHUB_HEAD_REF=feature/auto-detect');
+        putenv('GITHUB_SHA=abc1234');
+
+        try {
+            \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
+            $output = \Illuminate\Support\Facades\Artisan::output();
+        } finally {
+            putenv('GITHUB_ACTIONS');
+            putenv('GITHUB_HEAD_REF');
+            putenv('GITHUB_SHA');
+        }
+
+        $this->assertStringContainsString('"git_branch": "feature/auto-detect"', $output);
+    }
+
+    #[Test]
+    public function it_auto_detects_commit_from_github_sha(): void
+    {
+        $this->registerTestAnalyzers();
+
+        putenv('GITHUB_ACTIONS=true');
+        putenv('GITHUB_REF_NAME=main');
+        putenv('GITHUB_SHA=deadbeef12345678');
+
+        try {
+            \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
+            $output = \Illuminate\Support\Facades\Artisan::output();
+        } finally {
+            putenv('GITHUB_ACTIONS');
+            putenv('GITHUB_REF_NAME');
+            putenv('GITHUB_SHA');
+        }
+
+        $this->assertStringContainsString('"git_commit": "deadbeef12345678"', $output);
+    }
+
+    #[Test]
+    public function it_prefers_cli_flag_over_ci_env_vars_for_branch(): void
+    {
+        $this->registerTestAnalyzers();
+
+        putenv('GITHUB_ACTIONS=true');
+        putenv('GITHUB_REF_NAME=main');
+        putenv('GITHUB_SHA=abc1234');
+
+        try {
+            \Illuminate\Support\Facades\Artisan::call('shield:analyze', [
+                '--format' => 'json',
+                '--git-branch' => 'cli-override-branch',
+            ]);
+            $output = \Illuminate\Support\Facades\Artisan::output();
+        } finally {
+            putenv('GITHUB_ACTIONS');
+            putenv('GITHUB_REF_NAME');
+            putenv('GITHUB_SHA');
+        }
+
+        $this->assertStringContainsString('"git_branch": "cli-override-branch"', $output);
+        $this->assertStringNotContainsString('"git_branch": "main"', $output);
+    }
+
+    #[Test]
+    public function it_prefers_cli_flag_over_ci_env_vars_for_commit(): void
+    {
+        $this->registerTestAnalyzers();
+
+        putenv('GITHUB_ACTIONS=true');
+        putenv('GITHUB_REF_NAME=main');
+        putenv('GITHUB_SHA=env-sha-000');
+
+        try {
+            \Illuminate\Support\Facades\Artisan::call('shield:analyze', [
+                '--format' => 'json',
+                '--git-commit' => 'cli-override-sha',
+            ]);
+            $output = \Illuminate\Support\Facades\Artisan::output();
+        } finally {
+            putenv('GITHUB_ACTIONS');
+            putenv('GITHUB_REF_NAME');
+            putenv('GITHUB_SHA');
+        }
+
+        $this->assertStringContainsString('"git_commit": "cli-override-sha"', $output);
+        $this->assertStringNotContainsString('"git_commit": "env-sha-000"', $output);
+    }
+
+    #[Test]
+    public function it_includes_ci_provider_in_failure_notification_metadata(): void
+    {
+        $this->registerTestAnalyzers();
+
+        putenv('GITHUB_ACTIONS=true');
+        putenv('GITHUB_REF_NAME=main');
+        putenv('GITHUB_SHA=abc1234');
+
+        \Illuminate\Support\Facades\Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        ]);
+
+        try {
+            $this->artisan('shield:analyze', [
+                '--analyzer' => 'non-existent-analyzer',
+                '--report' => true,
+            ])->assertFailed();
+        } finally {
+            putenv('GITHUB_ACTIONS');
+            putenv('GITHUB_REF_NAME');
+            putenv('GITHUB_SHA');
+        }
+
+        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+            $metadata = $request['metadata'] ?? [];
+
+            return str_contains($request->url(), '/api/reports/failure')
+                && ($metadata['ci_provider'] ?? '') === 'github_actions';
+        });
+    }
+
+    /**
+     * Bind a stub CiEnvironmentDetector that returns null for everything.
+     * Prevents the real detector from auto-detecting branch/commit from the
+     * package's own git repository during tests.
+     */
+    private function bindNullCiDetector(): void
+    {
+        /** @phpstan-ignore-next-line */
+        $this->app->bind(\ShieldCI\Support\CiEnvironmentDetector::class, function () {
+            return new class extends \ShieldCI\Support\CiEnvironmentDetector
+            {
+                public function detectProvider(): ?string
+                {
+                    return null;
+                }
+
+                public function resolveBranch(?string $provider): ?string
+                {
+                    return null;
+                }
+
+                public function resolveCommit(?string $provider): ?string
+                {
+                    return null;
+                }
+            };
         });
     }
 }

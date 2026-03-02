@@ -1077,4 +1077,70 @@ class ReporterTest extends TestCase
 
         $this->assertEquals('production', $report->metadata['environment']);
     }
+
+    #[Test]
+    public function it_includes_ci_provider_in_metadata_when_provided(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+        ]);
+
+        $report = $this->reporter->generate($results, TriggerSource::CiCd, [
+            'branch' => 'main',
+            'commit' => 'abc1234',
+            'ci_provider' => 'github_actions',
+        ]);
+
+        $this->assertEquals('github_actions', $report->metadata['ci_provider']);
+    }
+
+    #[Test]
+    public function it_excludes_ci_provider_from_metadata_when_not_in_context(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+        ]);
+
+        $report = $this->reporter->generate($results, TriggerSource::Manual, [
+            'branch' => 'main',
+            'commit' => 'abc1234',
+        ]);
+
+        $this->assertArrayNotHasKey('ci_provider', $report->metadata);
+    }
+
+    #[Test]
+    public function ci_provider_appears_in_json_output(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+        ]);
+
+        $report = $this->reporter->generate($results, TriggerSource::CiCd, [
+            'ci_provider' => 'gitlab_ci',
+        ]);
+
+        $json = $this->reporter->toJson($report);
+        $decoded = json_decode($json, true);
+
+        $this->assertEquals('gitlab_ci', $decoded['metadata']['ci_provider']);
+    }
+
+    #[Test]
+    public function ci_provider_appears_in_api_payload(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+        ]);
+
+        $report = $this->reporter->generate($results, TriggerSource::CiCd, [
+            'branch' => 'develop',
+            'commit' => 'def5678',
+            'ci_provider' => 'circleci',
+        ]);
+
+        $payload = $this->reporter->toApi($report);
+
+        $this->assertEquals('circleci', $payload['metadata']['ci_provider']);
+    }
 }

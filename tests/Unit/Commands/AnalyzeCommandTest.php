@@ -2884,4 +2884,252 @@ PHP);
 
         return $analyzer;
     }
+
+    // ─── Failure Notification Tests ──────────────────────────────────
+
+    #[Test]
+    public function it_sends_failure_notification_on_invalid_options(): void
+    {
+        $this->registerTestAnalyzers();
+
+        \Illuminate\Support\Facades\Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        ]);
+
+        $this->artisan('shield:analyze', [
+            '--analyzer' => 'non-existent-analyzer',
+            '--report' => true,
+        ])->assertFailed();
+
+        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+            return str_contains($request->url(), '/api/reports/failure')
+                && $request['status'] === 'failed'
+                && $request['failure_reason'] === 'invalid_options';
+        });
+    }
+
+    #[Test]
+    public function it_does_not_send_failure_notification_when_api_disabled(): void
+    {
+        $this->registerTestAnalyzers();
+
+        config(['shieldci.report.send_to_api' => false]);
+
+        \Illuminate\Support\Facades\Http::fake();
+
+        $this->artisan('shield:analyze', [
+            '--analyzer' => 'non-existent-analyzer',
+        ])->assertFailed();
+
+        \Illuminate\Support\Facades\Http::assertNothingSent();
+    }
+
+    #[Test]
+    public function it_sends_failure_notification_on_all_categories_disabled(): void
+    {
+        $this->registerTestAnalyzers();
+
+        config([
+            'shieldci.analyzers.security.enabled' => false,
+            'shieldci.analyzers.performance.enabled' => false,
+            'shieldci.analyzers.reliability.enabled' => false,
+            'shieldci.analyzers.code-quality.enabled' => false,
+            'shieldci.analyzers.best-practices.enabled' => false,
+        ]);
+
+        \Illuminate\Support\Facades\Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        ]);
+
+        $this->artisan('shield:analyze', ['--report' => true])
+            ->assertFailed();
+
+        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+            return str_contains($request->url(), '/api/reports/failure')
+                && $request['failure_reason'] === 'all_categories_disabled';
+        });
+    }
+
+    #[Test]
+    public function it_sends_failure_notification_on_no_analyzers_ran(): void
+    {
+        // Register a manager that returns empty results
+        /** @phpstan-ignore-next-line */
+        $this->app->singleton(AnalyzerManager::class, function () {
+            /** @var \Mockery\MockInterface&AnalyzerManager $manager */
+            $manager = Mockery::mock(AnalyzerManager::class);
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getAnalyzers')->andReturn(collect());
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getByCategory')->with(Mockery::any())->andReturn(collect());
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('runAll')->andReturn(collect());
+
+            return $manager;
+        });
+
+        \Illuminate\Support\Facades\Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json', '--report' => true])
+            ->assertFailed();
+
+        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+            return str_contains($request->url(), '/api/reports/failure')
+                && $request['failure_reason'] === 'no_analyzers_ran';
+        });
+    }
+
+    #[Test]
+    public function it_sends_failure_notification_on_uncaught_exception(): void
+    {
+        // Create an analyzer mock that throws during analyze()
+        /** @var AnalyzerInterface&MockInterface $throwingAnalyzer */
+        $throwingAnalyzer = Mockery::mock(AnalyzerInterface::class);
+        /** @phpstan-ignore-next-line */
+        $throwingAnalyzer->shouldReceive('getId')->andReturn('throwing-analyzer');
+        /** @phpstan-ignore-next-line */
+        $throwingAnalyzer->shouldReceive('getMetadata')->andReturn(new AnalyzerMetadata(
+            id: 'throwing-analyzer',
+            name: 'Throwing Analyzer',
+            description: 'An analyzer that throws',
+            category: Category::Security,
+            severity: Severity::High,
+        ));
+        /** @phpstan-ignore-next-line */
+        $throwingAnalyzer->shouldReceive('analyze')->andThrow(new \RuntimeException('AST parser crashed'));
+        /** @phpstan-ignore-next-line */
+        $throwingAnalyzer->shouldReceive('shouldRun')->andReturn(true);
+        /** @phpstan-ignore-next-line */
+        $throwingAnalyzer->shouldReceive('getSkipReason')->andReturn('');
+
+        /** @phpstan-ignore-next-line */
+        $this->app->singleton(AnalyzerManager::class, function () use ($throwingAnalyzer) {
+            /** @var \Mockery\MockInterface&AnalyzerManager $manager */
+            $manager = Mockery::mock(AnalyzerManager::class);
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getAnalyzers')->andReturn(collect([$throwingAnalyzer]));
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getByCategory')->with(Mockery::any())->andReturn(collect());
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
+
+            return $manager;
+        });
+
+        \Illuminate\Support\Facades\Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json', '--report' => true])
+            ->assertFailed()
+            ->expectsOutputToContain('Analysis failed with error: AST parser crashed');
+
+        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+            return str_contains($request->url(), '/api/reports/failure')
+                && $request['failure_reason'] === 'uncaught_exception'
+                && str_contains($request['error_message'], 'AST parser crashed');
+        });
+    }
+
+    #[Test]
+    public function it_silently_handles_failure_notification_api_error(): void
+    {
+        $this->registerTestAnalyzers();
+
+        // Mock the client to throw on sendFailureNotification
+        /** @phpstan-ignore-next-line */
+        $this->app->singleton(\ShieldCI\Contracts\ClientInterface::class, function () {
+            $mock = Mockery::mock(\ShieldCI\Contracts\ClientInterface::class);
+            /** @phpstan-ignore-next-line */
+            $mock->shouldReceive('sendFailureNotification')
+                ->andThrow(new \Exception('Connection refused'));
+
+            return $mock;
+        });
+
+        // Trigger a failure (invalid analyzer) with --report
+        $this->artisan('shield:analyze', [
+            '--analyzer' => 'non-existent-analyzer',
+            '--report' => true,
+        ])->assertFailed();
+
+        // Command should still return FAILURE, not crash
+    }
+
+    #[Test]
+    public function it_includes_metadata_in_failure_notification(): void
+    {
+        $this->registerTestAnalyzers();
+
+        \Illuminate\Support\Facades\Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        ]);
+
+        $this->artisan('shield:analyze', [
+            '--analyzer' => 'non-existent-analyzer',
+            '--report' => true,
+        ])->assertFailed();
+
+        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+            $metadata = $request['metadata'] ?? [];
+
+            return str_contains($request->url(), '/api/reports/failure')
+                && isset($request['laravel_version'])
+                && isset($request['package_version'])
+                && isset($metadata['php_version'])
+                && isset($metadata['environment'])
+                && isset($metadata['os']);
+        });
+    }
+
+    #[Test]
+    public function it_includes_git_context_in_failure_notification(): void
+    {
+        $this->registerTestAnalyzers();
+
+        \Illuminate\Support\Facades\Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        ]);
+
+        $this->artisan('shield:analyze', [
+            '--analyzer' => 'non-existent-analyzer',
+            '--report' => true,
+            '--git-branch' => 'feature/test',
+            '--git-commit' => 'abc123',
+        ])->assertFailed();
+
+        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+            $metadata = $request['metadata'] ?? [];
+
+            return str_contains($request->url(), '/api/reports/failure')
+                && ($metadata['git_branch'] ?? '') === 'feature/test'
+                && ($metadata['git_commit'] ?? '') === 'abc123';
+        });
+    }
+
+    #[Test]
+    public function it_sends_failure_notification_with_send_to_api_config(): void
+    {
+        $this->registerTestAnalyzers();
+
+        config(['shieldci.report.send_to_api' => true]);
+
+        \Illuminate\Support\Facades\Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        ]);
+
+        $this->artisan('shield:analyze', [
+            '--analyzer' => 'non-existent-analyzer',
+        ])->assertFailed();
+
+        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+            return str_contains($request->url(), '/api/reports/failure');
+        });
+    }
 }

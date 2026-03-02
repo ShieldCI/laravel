@@ -83,4 +83,24 @@ class ShieldCIClient implements ClientInterface
 
         return $data;
     }
+
+    /**
+     * Notify the ShieldCI platform that analysis failed before completion.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     *
+     * @throws ConnectionException
+     */
+    public function sendFailureNotification(array $payload): array
+    {
+        $response = Http::withToken($this->token)
+            ->timeout(15)
+            ->post("{$this->baseUrl}/api/reports/failure", $payload);
+
+        /** @var array<string, mixed> $data */
+        $data = $response->json() ?? [];
+
+        return $data;
+    }
 }

@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.1.0 - 2026-03-02
+
+### Added
+- Platform failure notifications: `shield:analyze` now POSTs to `/api/reports/failure` whenever analysis exits early, so the ShieldCI dashboard can record and surface failures that never produced a report
+- `AnalysisFailureReason` enum with four cases: `InvalidOptions`, `AllCategoriesDisabled`, `NoAnalyzersRan`, `UncaughtException`
+- `FailureNotification` value object whose `toArray()` output mirrors the `/api/reports` shape (`laravel_version` and `package_version` are top-level fields)
+- `ClientInterface::sendFailureNotification()` / `ShieldCIClient` implementation posting to `POST /api/reports/failure`
+- Failure notifications are sent silently — any API error is swallowed so notifications never interrupt command flow
+
 ## v1.0.12 - 2026-02-27
 
 ### Fixed

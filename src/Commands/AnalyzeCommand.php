@@ -825,6 +825,9 @@ class AnalyzeCommand extends Command
         if (isset($gitContext['commit']) && $gitContext['commit'] !== '') {
             $metadata['git_commit'] = $gitContext['commit'];
         }
+        if (isset($gitContext['ci_provider']) && $gitContext['ci_provider'] !== '') {
+            $metadata['ci_provider'] = $gitContext['ci_provider'];
+        }
 
         return $metadata;
     }
@@ -2013,24 +2016,43 @@ class AnalyzeCommand extends Command
     }
 
     /**
-     * Build git context array from CLI flags.
+     * Build git context array from CLI flags, CI env vars, or git shell commands.
+     *
+     * Priority: CLI flags → CI env vars → git shell fallback.
      *
      * @return array<string, string>
      */
     protected function buildGitContext(): array
     {
+        $detector = $this->makeCiDetector();
+        $provider = $detector->detectProvider();
+
         $context = [];
+        if ($provider !== null) {
+            $context['ci_provider'] = $provider;
+        }
 
         $branch = $this->option('git-branch');
+        if (! is_string($branch) || $branch === '') {
+            $branch = $detector->resolveBranch($provider);
+        }
         if (is_string($branch) && $branch !== '') {
             $context['branch'] = $branch;
         }
 
         $commit = $this->option('git-commit');
+        if (! is_string($commit) || $commit === '') {
+            $commit = $detector->resolveCommit($provider);
+        }
         if (is_string($commit) && $commit !== '') {
             $context['commit'] = $commit;
         }
 
         return $context;
+    }
+
+    protected function makeCiDetector(): \ShieldCI\Support\CiEnvironmentDetector
+    {
+        return app(\ShieldCI\Support\CiEnvironmentDetector::class);
     }
 }

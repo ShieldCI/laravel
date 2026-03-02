@@ -555,6 +555,10 @@ class Reporter implements ReporterInterface
             $metadata['git_commit'] = $gitContext['commit'];
         }
 
+        if (isset($gitContext['ci_provider']) && $gitContext['ci_provider'] !== '') {
+            $metadata['ci_provider'] = $gitContext['ci_provider'];
+        }
+
         return $metadata;
     }
 

@@ -11,8 +11,10 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\Contracts\ReporterInterface;
+use ShieldCI\Enums\AnalysisFailureReason;
 use ShieldCI\Support\InlineSuppressionParser;
 use ShieldCI\ValueObjects\AnalysisReport;
+use ShieldCI\ValueObjects\FailureNotification;
 
 class AnalyzeCommand extends Command
 {
@@ -37,14 +39,36 @@ class AnalyzeCommand extends Command
         \ShieldCI\Contracts\ClientInterface $client,
     ): int {
         $this->suppressionParser = new InlineSuppressionParser;
+
+        // Resolve trigger source early (needed for failure notifications)
+        $triggeredBy = $this->resolveTriggerSource();
+
         // Validate options
         if (! $this->validateOptions($manager)) {
+            $this->notifyFailure($client, AnalysisFailureReason::InvalidOptions, 'Command validation failed: invalid options provided', $triggeredBy);
+
             return self::FAILURE;
         }
 
-        // Resolve trigger source
-        $triggeredBy = $this->resolveTriggerSource();
+        try {
+            return $this->executeAnalysis($manager, $reporter, $client, $triggeredBy);
+        } catch (\Throwable $e) {
+            $this->error("Analysis failed with error: {$e->getMessage()}");
+            $this->notifyFailure($client, AnalysisFailureReason::UncaughtException, $e->getMessage(), $triggeredBy);
 
+            return self::FAILURE;
+        }
+    }
+
+    /**
+     * Execute the main analysis flow.
+     */
+    private function executeAnalysis(
+        AnalyzerManager $manager,
+        ReporterInterface $reporter,
+        \ShieldCI\Contracts\ClientInterface $client,
+        \ShieldCI\Enums\TriggerSource $triggeredBy,
+    ): int {
         // Apply memory limit
         $memoryLimit = config('shieldci.memory_limit');
         if ($memoryLimit !== null && is_string($memoryLimit)) {
@@ -88,6 +112,7 @@ class AnalyzeCommand extends Command
                 $this->line('');
                 $this->line('To enable categories, set their "enabled" flag to true in config/shieldci.php');
                 $this->line('or set the corresponding environment variables (e.g., SHIELDCI_SECURITY_ANALYZERS=true).');
+                $this->notifyFailure($client, AnalysisFailureReason::AllCategoriesDisabled, 'All analyzer categories are disabled in configuration', $triggeredBy);
 
                 return self::FAILURE;
             }
@@ -100,6 +125,7 @@ class AnalyzeCommand extends Command
 
         if ($results->isEmpty()) {
             $this->error('No analyzers were run.');
+            $this->notifyFailure($client, AnalysisFailureReason::NoAnalyzersRan, 'Analysis completed but no analyzers produced results', $triggeredBy);
 
             return self::FAILURE;
         }
@@ -738,6 +764,97 @@ class AnalyzeCommand extends Command
         $code = $colors[$color];
 
         return "\033[{$code}m{$text}\033[0m";
+    }
+
+    /**
+     * Send a failure notification to the ShieldCI platform API.
+     */
+    private function notifyFailure(
+        \ShieldCI\Contracts\ClientInterface $client,
+        AnalysisFailureReason $reason,
+        string $errorMessage,
+        \ShieldCI\Enums\TriggerSource $triggeredBy,
+    ): void {
+        if (! $this->shouldSendToApi()) {
+            return;
+        }
+
+        try {
+            $projectIdConfig = config('shieldci.project_id', 'unknown');
+            $projectId = is_string($projectIdConfig) ? $projectIdConfig : 'unknown';
+
+            $notification = new FailureNotification(
+                projectId: $projectId,
+                laravelVersion: app()->version(),
+                packageVersion: $this->resolvePackageVersion(),
+                reason: $reason,
+                errorMessage: $errorMessage,
+                triggeredBy: $triggeredBy,
+                occurredAt: new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
+                metadata: $this->buildFailureMetadata(),
+            );
+
+            $client->sendFailureNotification($notification->toArray());
+        } catch (\Exception $e) {
+            // Silently fail — failure notifications should never interrupt the command flow
+        }
+    }
+
+    /**
+     * Build metadata array for failure notifications.
+     *
+     * @return array<string, string>
+     */
+    private function buildFailureMetadata(): array
+    {
+        $appName = config('app.name');
+        $appUrl = config('app.url');
+
+        $metadata = [
+            'php_version' => PHP_VERSION,
+            'environment' => $this->resolveEnvironment(),
+            'app_name' => is_string($appName) ? $appName : '',
+            'app_url' => is_string($appUrl) ? $appUrl : '',
+            'os' => PHP_OS_FAMILY,
+        ];
+
+        $gitContext = $this->buildGitContext();
+        if (isset($gitContext['branch']) && $gitContext['branch'] !== '') {
+            $metadata['git_branch'] = $gitContext['branch'];
+        }
+        if (isset($gitContext['commit']) && $gitContext['commit'] !== '') {
+            $metadata['git_commit'] = $gitContext['commit'];
+        }
+
+        return $metadata;
+    }
+
+    /**
+     * Resolve the package version from Composer.
+     */
+    private function resolvePackageVersion(): string
+    {
+        if (class_exists(\Composer\InstalledVersions::class)) {
+            try {
+                $version = \Composer\InstalledVersions::getVersion('shieldci/laravel');
+
+                return is_string($version) ? $version : 'unknown';
+            } catch (\Exception $e) {
+                return 'unknown';
+            }
+        }
+
+        return 'unknown';
+    }
+
+    /**
+     * Resolve the current environment name.
+     */
+    private function resolveEnvironment(): string
+    {
+        $env = app()->environment();
+
+        return is_string($env) ? $env : 'unknown';
     }
 
     protected function saveReport(AnalysisReport $report, ReporterInterface $reporter, string $path): void

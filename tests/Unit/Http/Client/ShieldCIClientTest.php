@@ -197,4 +197,59 @@ class ShieldCIClientTest extends TestCase
             return $request->hasHeader('Authorization', 'Bearer test-token');
         });
     }
+
+    #[Test]
+    public function send_failure_notification_posts_to_failure_endpoint(): void
+    {
+        Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => Http::response([
+                'success' => true,
+            ]),
+        ]);
+
+        $client = new ShieldCIClient;
+        $payload = [
+            'project_id' => 'proj-1',
+            'status' => 'failed',
+            'failure_reason' => 'invalid_options',
+        ];
+
+        $result = $client->sendFailureNotification($payload);
+
+        $this->assertEquals(['success' => true], $result);
+
+        Http::assertSent(function ($request) {
+            return $request->url() === 'https://api.test.shieldci.com/api/reports/failure'
+                && $request->method() === 'POST'
+                && $request['project_id'] === 'proj-1'
+                && $request['status'] === 'failed';
+        });
+    }
+
+    #[Test]
+    public function send_failure_notification_includes_bearer_token(): void
+    {
+        Http::fake(['*' => Http::response([])]);
+
+        $client = new ShieldCIClient;
+        $client->sendFailureNotification(['data' => 'test']);
+
+        Http::assertSent(function ($request) {
+            return $request->hasHeader('Authorization', 'Bearer test-token')
+                && str_contains($request->url(), '/api/reports/failure');
+        });
+    }
+
+    #[Test]
+    public function send_failure_notification_returns_empty_array_on_null_json(): void
+    {
+        Http::fake([
+            'api.test.shieldci.com/*' => Http::response('', 204),
+        ]);
+
+        $client = new ShieldCIClient;
+        $result = $client->sendFailureNotification(['test' => true]);
+
+        $this->assertEquals([], $result);
+    }
 }

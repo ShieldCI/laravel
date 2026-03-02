@@ -30,4 +30,12 @@ interface ClientInterface
      * @return array<string, mixed>
      */
     public function getProject(): array;
+
+    /**
+     * Notify the ShieldCI platform that analysis failed before completion.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    public function sendFailureNotification(array $payload): array;
 }

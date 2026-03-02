@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.2.0 - 2026-03-02
+
+### Added
+- `CiEnvironmentDetector` class that auto-detects the active CI provider and resolves git branch/commit without manual configuration
+- Supported providers: GitHub Actions, GitLab CI, CircleCI, Bitbucket, Azure DevOps, Jenkins, Travis CI
+- Priority chain for branch and commit resolution: CLI flags (`--git-branch`, `--git-commit`) → CI platform env vars → `git` shell fallback
+- `ci_provider` field in report metadata (`POST /api/reports`) and failure notification payloads (`POST /api/reports/failure`) — only present when a known CI system is detected
+
 ## v1.1.0 - 2026-03-02
 
 ### Added

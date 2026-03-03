@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3.0 - 2026-03-02
+
+### Added
+- `CiEnvironmentDetector::resolvePrNumber()` — auto-detects the pull-request / merge-request number from CI env vars across all 7 supported providers; GitHub falls back from `GITHUB_REF_NUMBER` to parsing `refs/pull/N/` from `GITHUB_REF`
+- `CiEnvironmentDetector::resolveRepository()` — resolves `owner/repo` from CI env vars (GitHub, GitLab, CircleCI, Bitbucket, Travis CI; Azure DevOps and Jenkins are skipped — their vars don't reliably produce this format)
+- `CiEnvironmentDetector::resolveBaseBranch()` — resolves the PR target branch from CI env vars; absent on non-PR builds
+- `--git-pr-number`, `--git-repository`, `--git-base-branch` CLI flags on `shield:analyze` (CLI takes priority over auto-detected env vars, matching the `--git-branch` / `--git-commit` pattern)
+- `pr_number`, `repository`, `base_branch` fields in report metadata (`POST /api/reports`) and failure notification payloads (`POST /api/reports/failure`) — only present when on a PR build or when the corresponding CLI flag is set
+
 ## v1.2.0 - 2026-03-02
 
 ### Added

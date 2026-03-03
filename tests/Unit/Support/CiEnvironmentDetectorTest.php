@@ -433,4 +433,223 @@ BASH);
 
         return $path;
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // resolvePrNumber
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[Test]
+    public function it_reads_pr_number_from_github_ref_number(): void
+    {
+        $this->setEnv('GITHUB_REF_NUMBER', '42');
+        $this->assertEquals(42, $this->makeDetector()->resolvePrNumber('github_actions'));
+    }
+
+    #[Test]
+    public function it_parses_pr_number_from_github_ref_merge_event(): void
+    {
+        $this->clearEnv('GITHUB_REF_NUMBER');
+        $this->setEnv('GITHUB_REF', 'refs/pull/42/merge');
+        $this->assertEquals(42, $this->makeDetector()->resolvePrNumber('github_actions'));
+    }
+
+    #[Test]
+    public function it_parses_pr_number_from_github_ref_head_event(): void
+    {
+        $this->clearEnv('GITHUB_REF_NUMBER');
+        $this->setEnv('GITHUB_REF', 'refs/pull/42/head');
+        $this->assertEquals(42, $this->makeDetector()->resolvePrNumber('github_actions'));
+    }
+
+    #[Test]
+    public function it_returns_null_for_pr_number_when_github_ref_is_push(): void
+    {
+        $this->clearEnv('GITHUB_REF_NUMBER');
+        $this->setEnv('GITHUB_REF', 'refs/heads/main');
+        $this->assertNull($this->makeDetector()->resolvePrNumber('github_actions'));
+    }
+
+    #[Test]
+    public function it_reads_pr_number_for_gitlab_ci(): void
+    {
+        $this->setEnv('CI_MERGE_REQUEST_IID', '7');
+        $this->assertEquals(7, $this->makeDetector()->resolvePrNumber('gitlab_ci'));
+    }
+
+    #[Test]
+    public function it_reads_pr_number_for_circleci(): void
+    {
+        $this->setEnv('CIRCLE_PR_NUMBER', '15');
+        $this->assertEquals(15, $this->makeDetector()->resolvePrNumber('circleci'));
+    }
+
+    #[Test]
+    public function it_reads_pr_number_for_bitbucket(): void
+    {
+        $this->setEnv('BITBUCKET_PR_ID', '8');
+        $this->assertEquals(8, $this->makeDetector()->resolvePrNumber('bitbucket'));
+    }
+
+    #[Test]
+    public function it_reads_pr_number_for_azure_devops(): void
+    {
+        $this->setEnv('SYSTEM_PULLREQUEST_PULLREQUESTNUMBER', '33');
+        $this->assertEquals(33, $this->makeDetector()->resolvePrNumber('azure_devops'));
+    }
+
+    #[Test]
+    public function it_reads_pr_number_for_jenkins(): void
+    {
+        $this->setEnv('CHANGE_ID', '21');
+        $this->assertEquals(21, $this->makeDetector()->resolvePrNumber('jenkins'));
+    }
+
+    #[Test]
+    public function it_reads_pr_number_for_travis_ci(): void
+    {
+        $this->setEnv('TRAVIS_PULL_REQUEST', '99');
+        $this->assertEquals(99, $this->makeDetector()->resolvePrNumber('travis_ci'));
+    }
+
+    #[Test]
+    public function it_returns_null_for_travis_pr_number_when_not_a_pr(): void
+    {
+        $this->setEnv('TRAVIS_PULL_REQUEST', 'false');
+        $this->assertNull($this->makeDetector()->resolvePrNumber('travis_ci'));
+    }
+
+    #[Test]
+    public function it_returns_null_for_pr_number_when_env_var_missing(): void
+    {
+        $this->clearEnv('CI_MERGE_REQUEST_IID');
+        $this->assertNull($this->makeDetector()->resolvePrNumber('gitlab_ci'));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // resolveRepository
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[Test]
+    public function it_reads_repository_for_github_actions(): void
+    {
+        $this->setEnv('GITHUB_REPOSITORY', 'owner/repo');
+        $this->assertEquals('owner/repo', $this->makeDetector()->resolveRepository('github_actions'));
+    }
+
+    #[Test]
+    public function it_reads_repository_for_gitlab_ci(): void
+    {
+        $this->setEnv('CI_PROJECT_PATH', 'group/project');
+        $this->assertEquals('group/project', $this->makeDetector()->resolveRepository('gitlab_ci'));
+    }
+
+    #[Test]
+    public function it_reads_repository_for_circleci(): void
+    {
+        $this->setEnv('CIRCLE_PROJECT_USERNAME', 'myorg');
+        $this->setEnv('CIRCLE_PROJECT_REPONAME', 'myrepo');
+        $this->assertEquals('myorg/myrepo', $this->makeDetector()->resolveRepository('circleci'));
+    }
+
+    #[Test]
+    public function it_returns_null_for_circleci_repository_when_either_var_missing(): void
+    {
+        $this->setEnv('CIRCLE_PROJECT_USERNAME', 'myorg');
+        $this->clearEnv('CIRCLE_PROJECT_REPONAME');
+        $this->assertNull($this->makeDetector()->resolveRepository('circleci'));
+    }
+
+    #[Test]
+    public function it_reads_repository_for_bitbucket(): void
+    {
+        $this->setEnv('BITBUCKET_REPO_FULL_NAME', 'team/project');
+        $this->assertEquals('team/project', $this->makeDetector()->resolveRepository('bitbucket'));
+    }
+
+    #[Test]
+    public function it_reads_repository_for_travis_ci(): void
+    {
+        $this->setEnv('TRAVIS_REPO_SLUG', 'user/app');
+        $this->assertEquals('user/app', $this->makeDetector()->resolveRepository('travis_ci'));
+    }
+
+    #[Test]
+    public function it_returns_null_for_azure_devops_repository(): void
+    {
+        $this->assertNull($this->makeDetector()->resolveRepository('azure_devops'));
+    }
+
+    #[Test]
+    public function it_returns_null_for_jenkins_repository(): void
+    {
+        $this->assertNull($this->makeDetector()->resolveRepository('jenkins'));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // resolveBaseBranch
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[Test]
+    public function it_reads_base_branch_for_github_actions(): void
+    {
+        $this->setEnv('GITHUB_BASE_REF', 'main');
+        $this->assertEquals('main', $this->makeDetector()->resolveBaseBranch('github_actions'));
+    }
+
+    #[Test]
+    public function it_returns_null_for_base_branch_when_github_base_ref_is_empty(): void
+    {
+        $this->setEnv('GITHUB_BASE_REF', '');
+        $this->assertNull($this->makeDetector()->resolveBaseBranch('github_actions'));
+    }
+
+    #[Test]
+    public function it_reads_base_branch_for_gitlab_ci(): void
+    {
+        $this->setEnv('CI_MERGE_REQUEST_TARGET_BRANCH_NAME', 'develop');
+        $this->assertEquals('develop', $this->makeDetector()->resolveBaseBranch('gitlab_ci'));
+    }
+
+    #[Test]
+    public function it_reads_base_branch_for_bitbucket(): void
+    {
+        $this->setEnv('BITBUCKET_PR_DESTINATION_BRANCH', 'main');
+        $this->assertEquals('main', $this->makeDetector()->resolveBaseBranch('bitbucket'));
+    }
+
+    #[Test]
+    public function it_reads_base_branch_for_azure_devops(): void
+    {
+        $this->setEnv('SYSTEM_PULLREQUEST_TARGETBRANCH', 'main');
+        $this->assertEquals('main', $this->makeDetector()->resolveBaseBranch('azure_devops'));
+    }
+
+    #[Test]
+    public function it_reads_base_branch_for_jenkins(): void
+    {
+        $this->setEnv('CHANGE_TARGET', 'master');
+        $this->assertEquals('master', $this->makeDetector()->resolveBaseBranch('jenkins'));
+    }
+
+    #[Test]
+    public function it_reads_base_branch_for_travis_ci(): void
+    {
+        $this->setEnv('TRAVIS_PULL_REQUEST', '42');
+        $this->setEnv('TRAVIS_BRANCH', 'main');
+        $this->assertEquals('main', $this->makeDetector()->resolveBaseBranch('travis_ci'));
+    }
+
+    #[Test]
+    public function it_returns_null_for_travis_base_branch_when_not_a_pr(): void
+    {
+        $this->setEnv('TRAVIS_PULL_REQUEST', 'false');
+        $this->setEnv('TRAVIS_BRANCH', 'main');
+        $this->assertNull($this->makeDetector()->resolveBaseBranch('travis_ci'));
+    }
+
+    #[Test]
+    public function it_returns_null_for_circleci_base_branch(): void
+    {
+        $this->assertNull($this->makeDetector()->resolveBaseBranch('circleci'));
+    }
 }

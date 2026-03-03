@@ -27,7 +27,10 @@ class AnalyzeCommand extends Command
                             {--report : Send report to ShieldCI platform}
                             {--triggered-by= : Override trigger source (manual|ci_cd|scheduled)}
                             {--git-branch= : Git branch name for report metadata}
-                            {--git-commit= : Git commit SHA for report metadata}';
+                            {--git-commit= : Git commit SHA for report metadata}
+                            {--git-pr-number= : Pull request number for report metadata}
+                            {--git-repository= : Repository owner/repo for report metadata}
+                            {--git-base-branch= : PR target branch for report metadata}';
 
     protected $description = 'Run ShieldCI security and code quality analysis';
 
@@ -827,6 +830,11 @@ class AnalyzeCommand extends Command
         }
         if (isset($gitContext['ci_provider']) && $gitContext['ci_provider'] !== '') {
             $metadata['ci_provider'] = $gitContext['ci_provider'];
+        }
+        foreach (['pr_number', 'repository', 'base_branch'] as $key) {
+            if (isset($gitContext[$key]) && $gitContext[$key] !== '') {
+                $metadata[$key] = $gitContext[$key];
+            }
         }
 
         return $metadata;
@@ -2046,6 +2054,31 @@ class AnalyzeCommand extends Command
         }
         if (is_string($commit) && $commit !== '') {
             $context['commit'] = $commit;
+        }
+
+        $prNumber = $this->option('git-pr-number');
+        if (! is_string($prNumber) || $prNumber === '') {
+            $resolved = $detector->resolvePrNumber($provider);
+            $prNumber = $resolved !== null ? (string) $resolved : null;
+        }
+        if (is_string($prNumber) && $prNumber !== '') {
+            $context['pr_number'] = $prNumber;
+        }
+
+        $repository = $this->option('git-repository');
+        if (! is_string($repository) || $repository === '') {
+            $repository = $detector->resolveRepository($provider);
+        }
+        if (is_string($repository) && $repository !== '') {
+            $context['repository'] = $repository;
+        }
+
+        $baseBranch = $this->option('git-base-branch');
+        if (! is_string($baseBranch) || $baseBranch === '') {
+            $baseBranch = $detector->resolveBaseBranch($provider);
+        }
+        if (is_string($baseBranch) && $baseBranch !== '') {
+            $context['base_branch'] = $baseBranch;
         }
 
         return $context;

@@ -1143,4 +1143,90 @@ class ReporterTest extends TestCase
 
         $this->assertEquals('circleci', $payload['metadata']['ci_provider']);
     }
+
+    // ─── PR metadata tests ────────────────────────────────────────────────
+
+    #[Test]
+    public function it_includes_pr_number_in_metadata_when_provided(): void
+    {
+        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+
+        $report = $this->reporter->generate($results, TriggerSource::Manual, [
+            'pr_number' => '42',
+        ]);
+
+        $this->assertEquals('42', $report->metadata['pr_number']);
+    }
+
+    #[Test]
+    public function it_includes_repository_in_metadata_when_provided(): void
+    {
+        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+
+        $report = $this->reporter->generate($results, TriggerSource::Manual, [
+            'repository' => 'owner/repo',
+        ]);
+
+        $this->assertEquals('owner/repo', $report->metadata['repository']);
+    }
+
+    #[Test]
+    public function it_includes_base_branch_in_metadata_when_provided(): void
+    {
+        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+
+        $report = $this->reporter->generate($results, TriggerSource::Manual, [
+            'base_branch' => 'main',
+        ]);
+
+        $this->assertEquals('main', $report->metadata['base_branch']);
+    }
+
+    #[Test]
+    public function it_excludes_pr_fields_from_metadata_when_not_in_context(): void
+    {
+        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+
+        $report = $this->reporter->generate($results, TriggerSource::Manual, []);
+
+        $this->assertArrayNotHasKey('pr_number', $report->metadata);
+        $this->assertArrayNotHasKey('repository', $report->metadata);
+        $this->assertArrayNotHasKey('base_branch', $report->metadata);
+    }
+
+    #[Test]
+    public function pr_fields_appear_in_json_output(): void
+    {
+        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+
+        $report = $this->reporter->generate($results, TriggerSource::Manual, [
+            'pr_number' => '7',
+            'repository' => 'org/proj',
+            'base_branch' => 'develop',
+        ]);
+
+        $decoded = json_decode($this->reporter->toJson($report), true);
+
+        $this->assertEquals('7', $decoded['metadata']['pr_number']);
+        $this->assertEquals('org/proj', $decoded['metadata']['repository']);
+        $this->assertEquals('develop', $decoded['metadata']['base_branch']);
+    }
+
+    #[Test]
+    public function pr_fields_appear_in_api_payload(): void
+    {
+        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+
+        $report = $this->reporter->generate($results, TriggerSource::CiCd, [
+            'pr_number' => '15',
+            'repository' => 'acme/app',
+            'base_branch' => 'main',
+        ]);
+
+        $payload = $this->reporter->toApi($report);
+
+        $this->assertEquals('15', $payload['metadata']['pr_number']);
+        $this->assertEquals('acme/app', $payload['metadata']['repository']);
+        $this->assertEquals('main', $payload['metadata']['base_branch']);
+    }
 }

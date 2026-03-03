@@ -3319,7 +3319,174 @@ PHP);
                 {
                     return null;
                 }
+
+                public function resolvePrNumber(?string $provider): ?int
+                {
+                    return null;
+                }
+
+                public function resolveRepository(?string $provider): ?string
+                {
+                    return null;
+                }
+
+                public function resolveBaseBranch(?string $provider): ?string
+                {
+                    return null;
+                }
             };
+        });
+    }
+
+    // ─── PR metadata auto-detection tests ─────────────────────────────────
+
+    #[Test]
+    public function it_auto_detects_pr_number_from_github_ref_number(): void
+    {
+        $this->registerTestAnalyzers();
+
+        putenv('GITHUB_ACTIONS=true');
+        putenv('GITHUB_REF_NUMBER=42');
+        putenv('GITHUB_SHA=abc1234');
+        putenv('GITHUB_REF_NAME=main');
+
+        try {
+            \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
+            $output = \Illuminate\Support\Facades\Artisan::output();
+        } finally {
+            putenv('GITHUB_ACTIONS');
+            putenv('GITHUB_REF_NUMBER');
+            putenv('GITHUB_SHA');
+            putenv('GITHUB_REF_NAME');
+        }
+
+        $this->assertStringContainsString('"pr_number": "42"', $output);
+    }
+
+    #[Test]
+    public function it_auto_detects_repository_from_github_repository(): void
+    {
+        $this->registerTestAnalyzers();
+
+        putenv('GITHUB_ACTIONS=true');
+        putenv('GITHUB_REPOSITORY=owner/repo');
+        putenv('GITHUB_SHA=abc1234');
+        putenv('GITHUB_REF_NAME=main');
+
+        try {
+            \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
+            $output = \Illuminate\Support\Facades\Artisan::output();
+        } finally {
+            putenv('GITHUB_ACTIONS');
+            putenv('GITHUB_REPOSITORY');
+            putenv('GITHUB_SHA');
+            putenv('GITHUB_REF_NAME');
+        }
+
+        $this->assertStringContainsString('"repository": "owner/repo"', $output);
+    }
+
+    #[Test]
+    public function it_auto_detects_base_branch_from_github_base_ref(): void
+    {
+        $this->registerTestAnalyzers();
+
+        putenv('GITHUB_ACTIONS=true');
+        putenv('GITHUB_BASE_REF=main');
+        putenv('GITHUB_SHA=abc1234');
+        putenv('GITHUB_REF_NAME=feature/x');
+
+        try {
+            \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
+            $output = \Illuminate\Support\Facades\Artisan::output();
+        } finally {
+            putenv('GITHUB_ACTIONS');
+            putenv('GITHUB_BASE_REF');
+            putenv('GITHUB_SHA');
+            putenv('GITHUB_REF_NAME');
+        }
+
+        $this->assertStringContainsString('"base_branch": "main"', $output);
+    }
+
+    #[Test]
+    public function it_prefers_cli_flags_over_ci_env_vars_for_pr_number(): void
+    {
+        $this->registerTestAnalyzers();
+
+        putenv('GITHUB_ACTIONS=true');
+        putenv('GITHUB_REF_NUMBER=1');
+        putenv('GITHUB_SHA=abc1234');
+        putenv('GITHUB_REF_NAME=main');
+
+        try {
+            \Illuminate\Support\Facades\Artisan::call('shield:analyze', [
+                '--format' => 'json',
+                '--git-pr-number' => '99',
+            ]);
+            $output = \Illuminate\Support\Facades\Artisan::output();
+        } finally {
+            putenv('GITHUB_ACTIONS');
+            putenv('GITHUB_REF_NUMBER');
+            putenv('GITHUB_SHA');
+            putenv('GITHUB_REF_NAME');
+        }
+
+        $this->assertStringContainsString('"pr_number": "99"', $output);
+        $this->assertStringNotContainsString('"pr_number": "1"', $output);
+    }
+
+    #[Test]
+    public function it_does_not_include_pr_fields_when_not_on_a_pr(): void
+    {
+        $this->registerTestAnalyzers();
+        $this->bindNullCiDetector();
+
+        \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
+        $output = \Illuminate\Support\Facades\Artisan::output();
+
+        $this->assertStringNotContainsString('"pr_number"', $output);
+        $this->assertStringNotContainsString('"repository"', $output);
+        $this->assertStringNotContainsString('"base_branch"', $output);
+    }
+
+    #[Test]
+    public function it_includes_pr_fields_in_failure_notification_metadata(): void
+    {
+        $this->registerTestAnalyzers();
+
+        putenv('GITHUB_ACTIONS=true');
+        putenv('GITHUB_REF_NUMBER=42');
+        putenv('GITHUB_REPOSITORY=owner/repo');
+        putenv('GITHUB_BASE_REF=main');
+        putenv('GITHUB_SHA=abc1234');
+        putenv('GITHUB_REF_NAME=feature/x');
+
+        \Illuminate\Support\Facades\Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        ]);
+
+        try {
+            $this->artisan('shield:analyze', [
+                '--analyzer' => 'non-existent-analyzer',
+                '--report' => true,
+            ])->assertFailed();
+        } finally {
+            putenv('GITHUB_ACTIONS');
+            putenv('GITHUB_REF_NUMBER');
+            putenv('GITHUB_REPOSITORY');
+            putenv('GITHUB_BASE_REF');
+            putenv('GITHUB_SHA');
+            putenv('GITHUB_REF_NAME');
+        }
+
+        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+            $metadata = $request['metadata'] ?? [];
+
+            return str_contains($request->url(), '/api/reports/failure')
+                && ($metadata['pr_number'] ?? '') === '42'
+                && ($metadata['repository'] ?? '') === 'owner/repo'
+                && ($metadata['base_branch'] ?? '') === 'main';
         });
     }
 }

@@ -151,6 +151,144 @@ class CiEnvironmentDetector
     }
 
     /**
+     * Resolve the pull-request / merge-request number from CI env vars.
+     *
+     * Returns null when not on a PR build or when the env var is absent.
+     */
+    public function resolvePrNumber(?string $provider): ?int
+    {
+        return match ($provider) {
+            'github_actions' => $this->resolveNumericEnv('GITHUB_REF_NUMBER') ?? $this->parsePrFromGithubRef(),
+            'gitlab_ci' => $this->resolveNumericEnv('CI_MERGE_REQUEST_IID'),
+            'circleci' => $this->resolveNumericEnv('CIRCLE_PR_NUMBER'),
+            'bitbucket' => $this->resolveNumericEnv('BITBUCKET_PR_ID'),
+            'azure_devops' => $this->resolveNumericEnv('SYSTEM_PULLREQUEST_PULLREQUESTNUMBER'),
+            'jenkins' => $this->resolveNumericEnv('CHANGE_ID'),
+            'travis_ci' => $this->resolveTravisPrNumber(),
+            default => null,
+        };
+    }
+
+    /**
+     * Resolve the repository in owner/repo format from CI env vars.
+     *
+     * Returns null when the format is unavailable for the provider.
+     */
+    public function resolveRepository(?string $provider): ?string
+    {
+        return match ($provider) {
+            'github_actions' => $this->resolveNonEmptyEnv('GITHUB_REPOSITORY'),
+            'gitlab_ci' => $this->resolveNonEmptyEnv('CI_PROJECT_PATH'),
+            'circleci' => $this->resolveCircleCiRepository(),
+            'bitbucket' => $this->resolveNonEmptyEnv('BITBUCKET_REPO_FULL_NAME'),
+            'azure_devops' => null,
+            'jenkins' => null,
+            'travis_ci' => $this->resolveNonEmptyEnv('TRAVIS_REPO_SLUG'),
+            default => null,
+        };
+    }
+
+    /**
+     * Resolve the PR target (base) branch from CI env vars.
+     *
+     * Returns null on non-PR builds (the env var is typically absent or empty).
+     */
+    public function resolveBaseBranch(?string $provider): ?string
+    {
+        return match ($provider) {
+            'github_actions' => $this->resolveNonEmptyEnv('GITHUB_BASE_REF'),
+            'gitlab_ci' => $this->resolveNonEmptyEnv('CI_MERGE_REQUEST_TARGET_BRANCH_NAME'),
+            'circleci' => null,
+            'bitbucket' => $this->resolveNonEmptyEnv('BITBUCKET_PR_DESTINATION_BRANCH'),
+            'azure_devops' => $this->resolveNonEmptyEnv('SYSTEM_PULLREQUEST_TARGETBRANCH'),
+            'jenkins' => $this->resolveNonEmptyEnv('CHANGE_TARGET'),
+            'travis_ci' => $this->resolveTravisBaseBranch(),
+            default => null,
+        };
+    }
+
+    /**
+     * Read an env var and cast it to int if numeric, otherwise return null.
+     */
+    private function resolveNumericEnv(string $var): ?int
+    {
+        $value = getenv($var);
+        if (! is_string($value) || $value === '') {
+            return null;
+        }
+
+        return is_numeric($value) ? (int) $value : null;
+    }
+
+    /**
+     * Read an env var and return its value if non-empty, otherwise null.
+     */
+    private function resolveNonEmptyEnv(string $var): ?string
+    {
+        $value = getenv($var);
+
+        return (is_string($value) && $value !== '') ? $value : null;
+    }
+
+    /**
+     * Parse the PR number from GITHUB_REF (e.g. refs/pull/42/merge).
+     */
+    private function parsePrFromGithubRef(): ?int
+    {
+        $ref = getenv('GITHUB_REF');
+        if (! is_string($ref) || $ref === '') {
+            return null;
+        }
+
+        if (preg_match('#^refs/pull/(\d+)/#', $ref, $matches)) {
+            return (int) $matches[1];
+        }
+
+        return null;
+    }
+
+    /**
+     * Resolve PR number for Travis CI (TRAVIS_PULL_REQUEST is 'false' on non-PR builds).
+     */
+    private function resolveTravisPrNumber(): ?int
+    {
+        $value = getenv('TRAVIS_PULL_REQUEST');
+        if (! is_string($value) || $value === '' || $value === 'false') {
+            return null;
+        }
+
+        return is_numeric($value) ? (int) $value : null;
+    }
+
+    /**
+     * Resolve repository in owner/repo format for CircleCI.
+     */
+    private function resolveCircleCiRepository(): ?string
+    {
+        $username = getenv('CIRCLE_PROJECT_USERNAME');
+        $reponame = getenv('CIRCLE_PROJECT_REPONAME');
+
+        if (! is_string($username) || $username === '' || ! is_string($reponame) || $reponame === '') {
+            return null;
+        }
+
+        return $username.'/'.$reponame;
+    }
+
+    /**
+     * Resolve base branch for Travis CI (only available on PR builds).
+     */
+    private function resolveTravisBaseBranch(): ?string
+    {
+        $pr = getenv('TRAVIS_PULL_REQUEST');
+        if (! is_string($pr) || $pr === '' || $pr === 'false') {
+            return null;
+        }
+
+        return $this->resolveNonEmptyEnv('TRAVIS_BRANCH');
+    }
+
+    /**
      * Get a new Symfony Process instance.
      *
      * Overridable in tests to inject mock git scripts.

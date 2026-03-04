@@ -62,10 +62,9 @@ return [
     |--------------------------------------------------------------------------
     |
     | Configure ShieldCI behavior in CI/CD environments.
+    | Activate CI mode via the --ci flag: php artisan shield:analyze --ci
     |
     */
-
-    'ci_mode' => env('SHIELDCI_CI_MODE', false),
 
     'ci_mode_analyzers' => [
         // Whitelist: If specified, ONLY these analyzers run in CI mode

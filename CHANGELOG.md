@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.4.0 - 2026-03-03
+
+### Added
+- `--ci` flag on `shield:analyze` — activates CI mode directly from the command line without any environment variable or config file change
+
+### Changed
+- CI mode is now activated exclusively via `--ci` on `shield:analyze` (and the existing `--ci` on `shield:baseline`); the `SHIELDCI_CI_MODE` env var path is removed
+
+### Removed
+- `ci_mode` key from `config/shieldci.php` — the `SHIELDCI_CI_MODE` environment variable is no longer read; use `--ci` instead (`ci_mode_analyzers` and `ci_mode_exclude_analyzers` remain unchanged)
+
 ## v1.3.0 - 2026-03-02
 
 ### Added

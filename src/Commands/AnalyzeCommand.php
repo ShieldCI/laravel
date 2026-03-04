@@ -25,6 +25,7 @@ class AnalyzeCommand extends Command
                             {--output= : Save report to file}
                             {--baseline : Compare against baseline and only report new issues}
                             {--report : Send report to ShieldCI platform}
+                            {--ci : Run in CI mode (only CI-compatible analyzers)}
                             {--triggered-by= : Override trigger source (manual|ci_cd|scheduled)}
                             {--git-branch= : Git branch name for report metadata}
                             {--git-commit= : Git commit SHA for report metadata}
@@ -42,6 +43,11 @@ class AnalyzeCommand extends Command
         \ShieldCI\Contracts\ClientInterface $client,
     ): int {
         $this->suppressionParser = new InlineSuppressionParser;
+
+        // Activate CI mode for this run if --ci flag is passed
+        if ($this->option('ci')) {
+            config(['shieldci.ci_mode' => true]);
+        }
 
         // Resolve trigger source early (needed for failure notifications)
         $triggeredBy = $this->resolveTriggerSource();
@@ -2014,8 +2020,8 @@ class AnalyzeCommand extends Command
             }
         }
 
-        // 2. CI mode config implies ci_cd
-        if (config('shieldci.ci_mode')) {
+        // 2. --ci flag or CI mode config implies ci_cd
+        if ($this->option('ci') || config('shieldci.ci_mode')) {
             return \ShieldCI\Enums\TriggerSource::CiCd;
         }
 

@@ -2007,8 +2007,6 @@ PHP);
     {
         $this->registerTestAnalyzers();
 
-        config(['shieldci.ci_mode' => false]);
-
         $this->artisan('shield:analyze', [
             '--format' => 'json',
         ])->assertSuccessful()
@@ -2016,26 +2014,24 @@ PHP);
     }
 
     #[Test]
-    public function ci_mode_config_sets_triggered_by_to_ci_cd(): void
+    public function ci_flag_sets_triggered_by_to_ci_cd(): void
     {
         $this->registerTestAnalyzers();
 
-        config(['shieldci.ci_mode' => true]);
-
         $this->artisan('shield:analyze', [
+            '--ci' => true,
             '--format' => 'json',
         ])->assertSuccessful()
             ->expectsOutputToContain('"triggered_by": "ci_cd"');
     }
 
     #[Test]
-    public function cli_flag_overrides_ci_mode_config(): void
+    public function triggered_by_flag_overrides_ci_flag(): void
     {
         $this->registerTestAnalyzers();
 
-        config(['shieldci.ci_mode' => true]);
-
         $this->artisan('shield:analyze', [
+            '--ci' => true,
             '--triggered-by' => 'scheduled',
             '--format' => 'json',
         ])->assertSuccessful()

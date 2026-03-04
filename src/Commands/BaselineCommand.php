@@ -34,8 +34,7 @@ class BaselineCommand extends Command
      */
     public function handle(AnalyzerManager $manager, Config $config): int
     {
-        // If --ci flag is used, temporarily enable CI mode for baseline generation
-        $wasCiMode = $config->get('shieldci.ci_mode', false);
+        // If --ci flag is used, enable CI mode for baseline generation
         if ($this->option('ci')) {
             $config->set('shieldci.ci_mode', true);
             $this->info('🔍 Running analysis to generate baseline (CI mode)...');
@@ -44,13 +43,8 @@ class BaselineCommand extends Command
         }
         $this->newLine();
 
-        // Run all analyzers (respects CI mode from config or --ci flag)
+        // Run all analyzers (respects CI mode set above or via --ci flag)
         $results = $manager->runAll();
-
-        // Restore original CI mode setting
-        if ($this->option('ci')) {
-            $config->set('shieldci.ci_mode', $wasCiMode);
-        }
 
         // Get output path
         $outputPathRaw = $config->get('shieldci.baseline_file');

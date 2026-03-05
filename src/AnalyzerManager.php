@@ -153,6 +153,19 @@ class AnalyzerManager
     }
 
     /**
+     * Get analyzers by multiple categories.
+     *
+     * @param  array<string>  $categories
+     * @return Collection<int, AnalyzerInterface>
+     */
+    public function getByCategories(array $categories): Collection
+    {
+        return $this->getAnalyzers()
+            ->filter(fn (AnalyzerInterface $analyzer) => in_array($analyzer->getMetadata()->category->value, $categories, true)
+            );
+    }
+
+    /**
      * Run all analyzers.
      *
      * @return Collection<int, ResultInterface>

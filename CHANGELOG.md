@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5.0 - 2026-03-05
+
+### Added
+- `--category` now accepts comma-separated values to run multiple categories in one pass (e.g. `--category=security,performance`)
+- `AnalyzerManager::getByCategories(array $categories)` — filters the registered analyzer pool to any number of categories at once
+- Warning emitted when both `--analyzer` and `--category` are provided simultaneously (`--category` is silently ignored in that case; the warning makes the precedence explicit)
+
+### Changed
+- `--category` help text updated to document comma-separated usage
+
 ## v1.4.0 - 2026-03-03
 
 ### Added

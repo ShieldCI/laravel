@@ -98,6 +98,30 @@ class AnalyzeCommandTest extends TestCase
     }
 
     #[Test]
+    public function it_runs_multiple_categories_by_comma_separated_names(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', [
+            '--category' => 'security,performance',
+            '--format' => 'json',
+        ])->assertSuccessful();
+    }
+
+    #[Test]
+    public function it_warns_when_both_analyzer_and_category_are_provided(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', [
+            '--analyzer' => 'test-security-analyzer',
+            '--category' => 'performance',
+            '--format' => 'json',
+        ])->assertSuccessful()
+            ->expectsOutputToContain('--category will be ignored');
+    }
+
+    #[Test]
     public function it_outputs_json_format(): void
     {
         $this->registerTestAnalyzers();
@@ -682,6 +706,29 @@ class AnalyzeCommandTest extends TestCase
 
         $this->artisan('shield:analyze', ['--format' => 'json'])
             ->assertSuccessful();
+    }
+
+    #[Test]
+    public function it_succeeds_on_low_severity_when_fail_on_medium(): void
+    {
+        // fail_on=medium does not trigger on low severity (hits the break at L985)
+        config(['shieldci.fail_on' => 'medium']);
+        $this->registerFailedAnalyzersWithSeverity(Severity::Low);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful();
+    }
+
+    #[Test]
+    public function it_warns_about_valid_category_with_no_registered_analyzers(): void
+    {
+        $this->registerTestAnalyzers();
+
+        // 'reliability' is a valid Category enum value but no analyzers are
+        // registered for it in registerTestAnalyzers(), so getByCategory returns empty.
+        $this->artisan('shield:analyze', ['--category' => 'reliability'])
+            ->assertFailed()
+            ->expectsOutputToContain('No analyzers found for category');
     }
 
     #[Test]
@@ -2422,6 +2469,26 @@ PHP);
                 ->andReturn(collect());
 
             /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getByCategories')
+                ->with(['security'])
+                ->andReturn(collect([$securityAnalyzer]));
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getByCategories')
+                ->with(['performance'])
+                ->andReturn(collect([$performanceAnalyzer]));
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getByCategories')
+                ->with(['security', 'performance'])
+                ->andReturn(collect([$securityAnalyzer, $performanceAnalyzer]));
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getByCategories')
+                ->with(Mockery::any())
+                ->andReturn(collect());
+
+            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')
                 ->andReturn(collect());
 
@@ -2553,6 +2620,16 @@ PHP);
 
             /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategory')
+                ->with(Mockery::any())
+                ->andReturn(collect());
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getByCategories')
+                ->with(['security'])
+                ->andReturn(collect([$passedAnalyzer]));
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getByCategories')
                 ->with(Mockery::any())
                 ->andReturn(collect());
 

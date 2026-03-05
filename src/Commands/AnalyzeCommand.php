@@ -20,7 +20,7 @@ class AnalyzeCommand extends Command
 {
     protected $signature = 'shield:analyze
                             {--analyzer= : Run specific analyzer(s). Comma-separated for multiple (e.g., sql-injection,xss-detection)}
-                            {--category= : Run analyzers in category}
+                            {--category= : Run analyzers in category. Comma-separated for multiple (e.g., security,performance)}
                             {--format=console : Output format (console|json)}
                             {--output= : Save report to file}
                             {--baseline : Compare against baseline and only report new issues}
@@ -258,11 +258,14 @@ class AnalyzeCommand extends Command
             return $results;
         }
 
-        // Get analyzers (by category or all)
-        $normalizedCategory = null;
+        // Get analyzers (by category/categories or all)
+        $normalizedCategories = null;
         if ($category) {
-            $normalizedCategory = strtolower($category);
-            $analyzers = $manager->getByCategory($normalizedCategory);
+            $normalizedCategories = array_values(array_filter(
+                array_map(fn (string $c) => strtolower(trim($c)), explode(',', $category)),
+                fn (string $c) => $c !== ''
+            ));
+            $analyzers = $manager->getByCategories($normalizedCategories);
         } else {
             $analyzers = $manager->getAnalyzers();
         }
@@ -271,16 +274,16 @@ class AnalyzeCommand extends Command
 
         // Calculate skipped count
         $skippedCount = 0;
-        if ($normalizedCategory) {
+        if ($normalizedCategories) {
             $skippedCount = $manager->getSkippedAnalyzers()
-                ->filter(function (\ShieldCI\AnalyzersCore\Contracts\ResultInterface $result) use ($normalizedCategory): bool {
+                ->filter(function (\ShieldCI\AnalyzersCore\Contracts\ResultInterface $result) use ($normalizedCategories): bool {
                     $metadata = $result->getMetadata();
                     $resultCategory = $metadata['category'] ?? 'Unknown';
                     if (is_object($resultCategory) && isset($resultCategory->value)) {
                         $resultCategory = $resultCategory->value;
                     }
 
-                    return is_string($resultCategory) && strtolower($resultCategory) === $normalizedCategory;
+                    return is_string($resultCategory) && in_array(strtolower($resultCategory), $normalizedCategories, true);
                 })
                 ->count();
         } else {
@@ -379,16 +382,16 @@ class AnalyzeCommand extends Command
         }
 
         // Add skipped analyzers to results and stream them
-        if ($normalizedCategory) {
+        if ($normalizedCategories) {
             $skippedResults = $manager->getSkippedAnalyzers()
-                ->filter(function (\ShieldCI\AnalyzersCore\Contracts\ResultInterface $result) use ($normalizedCategory): bool {
+                ->filter(function (\ShieldCI\AnalyzersCore\Contracts\ResultInterface $result) use ($normalizedCategories): bool {
                     $metadata = $result->getMetadata();
                     $resultCategory = $metadata['category'] ?? 'Unknown';
                     if (is_object($resultCategory) && isset($resultCategory->value)) {
                         $resultCategory = $resultCategory->value;
                     }
 
-                    return is_string($resultCategory) && strtolower($resultCategory) === $normalizedCategory;
+                    return is_string($resultCategory) && in_array(strtolower($resultCategory), $normalizedCategories, true);
                 });
         } else {
             $skippedResults = $manager->getSkippedAnalyzers();
@@ -441,27 +444,31 @@ class AnalyzeCommand extends Command
 
         // Get category option (if specified)
         $category = $this->option('category');
-        $normalizedCategory = null;
+        $normalizedCategories = null;
 
         if ($category) {
-            $normalizedCategory = strtolower($category);
-            $categoryLabel = Category::from($normalizedCategory)->label();
+            $normalizedCategories = array_values(array_filter(
+                array_map(fn (string $c) => strtolower(trim($c)), explode(',', $category)),
+                fn (string $c) => $c !== ''
+            ));
+            $categoryLabels = array_map(fn (string $c) => Category::from($c)->label(), $normalizedCategories);
+            $categoryLabel = implode(', ', $categoryLabels);
 
-            $analyzers = $manager->getByCategory($normalizedCategory);
+            $analyzers = $manager->getByCategories($normalizedCategories);
             $enabledCount = $analyzers->count();
             // Get actual skipped count (may differ from calculated due to instantiation failures)
             $skippedCount = $manager->getSkippedAnalyzers()
-                ->filter(function (ResultInterface $result) use ($normalizedCategory): bool {
+                ->filter(function (ResultInterface $result) use ($normalizedCategories): bool {
                     $metadata = $result->getMetadata();
                     $resultCategory = $metadata['category'] ?? 'Unknown';
                     if (is_object($resultCategory) && isset($resultCategory->value)) {
                         $resultCategory = $resultCategory->value;
                     }
 
-                    return is_string($resultCategory) && strtolower($resultCategory) === $normalizedCategory;
+                    return is_string($resultCategory) && in_array(strtolower($resultCategory), $normalizedCategories, true);
                 })
                 ->count();
-            // Total count for this specific category (enabled + skipped)
+            // Total count for these categories (enabled + skipped)
             $totalCount = $enabledCount + $skippedCount;
 
             if ($skippedCount > 0) {
@@ -537,17 +544,17 @@ class AnalyzeCommand extends Command
         });
 
         // Add skipped analyzers
-        if ($normalizedCategory) {
-            // Add skipped analyzers for the specified category only
+        if ($normalizedCategories) {
+            // Add skipped analyzers for the specified categories only
             $skippedResults = $manager->getSkippedAnalyzers()
-                ->filter(function (ResultInterface $result) use ($normalizedCategory): bool {
+                ->filter(function (ResultInterface $result) use ($normalizedCategories): bool {
                     $metadata = $result->getMetadata();
                     $resultCategory = $metadata['category'] ?? 'Unknown';
                     if (is_object($resultCategory) && isset($resultCategory->value)) {
                         $resultCategory = $resultCategory->value;
                     }
 
-                    return is_string($resultCategory) && strtolower($resultCategory) === $normalizedCategory;
+                    return is_string($resultCategory) && in_array(strtolower($resultCategory), $normalizedCategories, true);
                 });
         } else {
             // Add all skipped analyzers when running all
@@ -1804,17 +1811,58 @@ class AnalyzeCommand extends Command
                 return false;
             }
 
+            // Parse comma-separated category IDs
+            $categoryIds = array_values(array_filter(
+                array_map('trim', explode(',', $category)),
+                fn (string $c) => $c !== ''
+            ));
+
+            if (empty($categoryIds)) {
+                $this->error('❌ No valid category provided.');
+
+                return false;
+            }
+
             // Get valid categories from Category enum
             $validCategories = array_map(
                 fn ($case) => $case->value,
                 \ShieldCI\AnalyzersCore\Enums\Category::cases()
             );
 
-            $normalizedCategory = strtolower($category);
-            $categoryExists = in_array($normalizedCategory, array_map('strtolower', $validCategories), true);
+            $analyzersConfig = config('shieldci.analyzers', []);
+            $analyzersConfig = is_array($analyzersConfig) ? $analyzersConfig : [];
 
-            if (! $categoryExists) {
-                $this->error("❌ Category '{$category}' is not valid.");
+            $invalidCategories = [];
+            $disabledCategories = [];
+            $emptyCategories = [];
+
+            foreach ($categoryIds as $cat) {
+                $normalized = strtolower($cat);
+                if (! in_array($normalized, array_map('strtolower', $validCategories), true)) {
+                    $invalidCategories[] = $cat;
+
+                    continue;
+                }
+
+                // Check if disabled in config
+                if (isset($analyzersConfig[$normalized])) {
+                    $cfg = $analyzersConfig[$normalized];
+                    if (is_array($cfg) && ($cfg['enabled'] ?? true) === false) {
+                        $disabledCategories[] = $cat;
+
+                        continue;
+                    }
+                }
+
+                // Check if any analyzers exist for this category
+                if ($manager->getByCategory($normalized)->isEmpty()) {
+                    $emptyCategories[] = $cat;
+                }
+            }
+
+            if (! empty($invalidCategories)) {
+                $invalidList = implode(', ', $invalidCategories);
+                $this->error("❌ Category '{$invalidList}' is not valid.");
                 $this->line('');
                 $this->line('Valid categories:');
                 foreach ($validCategories as $validCategory) {
@@ -1824,29 +1872,23 @@ class AnalyzeCommand extends Command
                 return false;
             }
 
-            // Check if category is enabled in config
-            $analyzersConfig = config('shieldci.analyzers', []);
-            $analyzersConfig = is_array($analyzersConfig) ? $analyzersConfig : [];
-
-            if (isset($analyzersConfig[$normalizedCategory])) {
-                $categoryConfig = $analyzersConfig[$normalizedCategory];
-                if (is_array($categoryConfig) && ($categoryConfig['enabled'] ?? true) === false) {
-                    $this->error("❌ Category '{$category}' is disabled in configuration.");
-                    $this->line('');
-                    $this->line("To enable it, set 'analyzers.{$normalizedCategory}.enabled' to true in config/shieldci.php");
-                    $envKey = 'SHIELDCI_'.strtoupper(str_replace('_', '_', $normalizedCategory)).'_ANALYZERS';
-                    $this->line("or set {$envKey}=true in your .env file.");
-
-                    return false;
-                }
-            }
-
-            // Check if category has any analyzers (after filtering by enabled categories)
-            $analyzersInCategory = $manager->getByCategory($normalizedCategory);
-            if ($analyzersInCategory->isEmpty()) {
-                $this->warn("⚠️  No analyzers found for category '{$category}'.");
+            if (! empty($disabledCategories)) {
+                $disabledList = implode(', ', $disabledCategories);
+                $this->error("❌ Category '{$disabledList}' is disabled in configuration.");
 
                 return false;
+            }
+
+            if (! empty($emptyCategories)) {
+                $emptyList = implode(', ', $emptyCategories);
+                $this->warn("⚠️  No analyzers found for category '{$emptyList}'.");
+
+                return false;
+            }
+
+            // Warn if both --analyzer and --category are provided (--category will be ignored)
+            if ($this->option('analyzer') !== null) {
+                $this->warn('⚠️  Both --analyzer and --category were provided. --category will be ignored.');
             }
         }
 

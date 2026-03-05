@@ -67,6 +67,23 @@ class AnalyzerManagerTest extends TestCase
     }
 
     #[Test]
+    public function it_can_filter_by_multiple_categories(): void
+    {
+        $manager = $this->createManager([
+            TestAnalyzer::class,
+            AnotherTestAnalyzer::class,
+        ]);
+
+        $both = $manager->getByCategories(['security', 'performance']);
+        $securityOnly = $manager->getByCategories(['security']);
+        $none = $manager->getByCategories(['reliability']);
+
+        $this->assertCount(2, $both);
+        $this->assertCount(1, $securityOnly);
+        $this->assertCount(0, $none);
+    }
+
+    #[Test]
     public function it_can_run_all_analyzers(): void
     {
         $manager = $this->createManager([

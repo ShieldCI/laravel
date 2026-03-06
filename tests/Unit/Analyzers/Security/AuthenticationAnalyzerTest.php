@@ -1786,6 +1786,133 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_invokable_controller_in_guest_group_not_flagged(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Auth\GoogleOneTapController;
+use Illuminate\Support\Facades\Route;
+
+Route::middleware('guest')->group(function () {
+    Route::post('/auth/google/one-tap', GoogleOneTapController::class)
+        ->name('auth.google.one-tap')
+        ->middleware('throttle:10,1');
+});
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers\Auth;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+
+class GoogleOneTapController extends Controller
+{
+    public function __invoke(Request $request): RedirectResponse
+    {
+        return redirect()->route('dashboard');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/auth.php' => $routes,
+            'app/Http/Controllers/Auth/GoogleOneTapController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']); // Required: ensures checkController() actually scans
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_public_get_invokable_controller_not_flagged(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Marketing\PrivacyController;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/privacy', PrivacyController::class)->name('privacy');
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers\Marketing;
+
+use App\Http\Controllers\Controller;
+use Inertia\Response;
+
+class PrivacyController extends Controller
+{
+    public function __invoke(): Response
+    {
+        return inertia('marketing/privacy');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+            'app/Http/Controllers/Marketing/PrivacyController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_post_invokable_controller_without_auth_flagged(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\SubmitController;
+use Illuminate\Support\Facades\Route;
+
+Route::post('/submit', SubmitController::class);
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+
+class SubmitController extends Controller
+{
+    public function __invoke()
+    {
+        return response()->json(['ok' => true]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+            'app/Http/Controllers/SubmitController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        // Route-level + controller-level checks both fire for an unprotected POST
+        $this->assertIssueCount(2, $result);
+    }
+
     // ==========================================
     // Auth::user() Safety Tests
     // ==========================================
@@ -2563,6 +2690,8 @@ PHP;
         $routes = <<<'PHP'
 <?php
 
+use App\Http\Controllers\WebhookController;
+
 Route::middleware('auth')->group(function () {
     Route::post('/webhook/callback', WebhookController::class);
 });
@@ -2590,6 +2719,7 @@ PHP;
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']); // Ensures checkController() actually scans
 
         $result = $analyzer->analyze();
 
@@ -2873,10 +3003,27 @@ class UpdatePostRequest extends FormRequest
 }
 PHP;
 
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Http\Requests\UpdatePostRequest;
+
+class PostController extends Controller
+{
+    public function update(UpdatePostRequest $request, $id)
+    {
+        // sensitive action — no auth middleware
+    }
+}
+PHP;
+
         $routes = '<?php';
 
         $tempDir = $this->createTempDirectory([
             'app/Http/Requests/UpdatePostRequest.php' => $formRequest,
+            'app/Http/Controllers/PostController.php' => $controller,
             'routes/web.php' => $routes,
         ]);
 
@@ -2886,7 +3033,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFalse($result->isSuccess());
+        $this->assertFailed($result);
         $this->assertHasIssueContaining('UpdatePostRequest::authorize() returns true without authorization checks', $result);
     }
 
@@ -2968,6 +3115,128 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should pass - has proper authorization logic
+        $this->assertPassed($result);
+    }
+
+    public function test_two_factor_challenge_request_not_flagged(): void
+    {
+        $formRequest = <<<'PHP'
+<?php
+namespace App\Http\Requests\Auth;
+use Illuminate\Foundation\Http\FormRequest;
+class TwoFactorChallengeRequest extends FormRequest
+{
+    public function authorize(): bool { return true; }
+    public function rules(): array
+    {
+        return ['code' => 'nullable|string', 'recovery_code' => 'nullable|string'];
+    }
+}
+PHP;
+
+        // No controller — FormRequest is orphaned, cannot determine risk
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => '<?php',
+            'app/Http/Requests/Auth/TwoFactorChallengeRequest.php' => $formRequest,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $result = $analyzer->analyze();
+        $this->assertPassed($result);
+    }
+
+    public function test_form_request_authorize_true_in_unprotected_store_flagged(): void
+    {
+        $routes = <<<'PHP'
+<?php
+use App\Http\Controllers\AccountController;
+use Illuminate\Support\Facades\Route;
+Route::post('/account/delete', [AccountController::class, 'store']);
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+use App\Http\Requests\DeleteAccountRequest;
+class AccountController extends Controller
+{
+    public function store(DeleteAccountRequest $request)
+    {
+        // sensitive action
+    }
+}
+PHP;
+
+        $formRequest = <<<'PHP'
+<?php
+namespace App\Http\Requests;
+use Illuminate\Foundation\Http\FormRequest;
+class DeleteAccountRequest extends FormRequest
+{
+    public function authorize(): bool { return true; }
+    public function rules(): array { return []; }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+            'app/Http/Controllers/AccountController.php' => $controller,
+            'app/Http/Requests/DeleteAccountRequest.php' => $formRequest,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertFailed($result);
+    }
+
+    public function test_form_request_authorize_true_in_auth_protected_route_not_flagged(): void
+    {
+        $routes = <<<'PHP'
+<?php
+use App\Http\Controllers\AccountController;
+use Illuminate\Support\Facades\Route;
+Route::middleware('auth')->group(function () {
+    Route::post('/account/delete', [AccountController::class, 'store']);
+});
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+use App\Http\Requests\DeleteAccountRequest;
+class AccountController extends Controller
+{
+    public function store(DeleteAccountRequest $request)
+    {
+        // sensitive action — but route is auth-protected
+    }
+}
+PHP;
+
+        $formRequest = <<<'PHP'
+<?php
+namespace App\Http\Requests;
+use Illuminate\Foundation\Http\FormRequest;
+class DeleteAccountRequest extends FormRequest
+{
+    public function authorize(): bool { return true; }
+    public function rules(): array { return []; }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+            'app/Http/Controllers/AccountController.php' => $controller,
+            'app/Http/Requests/DeleteAccountRequest.php' => $formRequest,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
         $this->assertPassed($result);
     }
 
@@ -3658,5 +3927,108 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
+    // ==========================================
+    // Auth Usage — Middleware-Protected Suppression
+    // ==========================================
+
+    public function test_request_user_not_flagged_in_auth_middleware_route(): void
+    {
+        $routes = <<<'PHP'
+<?php
+use App\Http\Controllers\Auth\EmailVerificationPromptController;
+use Illuminate\Support\Facades\Route;
+Route::middleware('auth')->group(function () {
+    Route::get('verify-email', EmailVerificationPromptController::class)
+        ->name('verification.notice');
+});
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers\Auth;
+use Illuminate\Http\Request;
+class EmailVerificationPromptController
+{
+    public function __invoke(Request $request)
+    {
+        return $request->user()->hasVerifiedEmail()
+            ? redirect('/dashboard')
+            : view('auth.verify-email');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/auth.php' => $routes,
+            'app/Http/Controllers/Auth/EmailVerificationPromptController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertPassed($result);
+    }
+
+    public function test_auth_user_not_flagged_in_constructor_auth_controller(): void
+    {
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+use Illuminate\Support\Facades\Auth;
+class ProfileController extends Controller
+{
+    public function __construct()
+    {
+        $this->middleware('auth');
+    }
+    public function show()
+    {
+        $name = Auth::user()->name;
+        return view('profile', compact('name'));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => '<?php',
+            'app/Http/Controllers/ProfileController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertPassed($result);
+    }
+
+    public function test_request_user_still_flagged_when_unprotected(): void
+    {
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+use Illuminate\Http\Request;
+class GuestController extends Controller
+{
+    public function show(Request $request)
+    {
+        return $request->user()->name;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => '<?php',
+            'app/Http/Controllers/GuestController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertFalse($result->isSuccess());
+        $this->assertHasIssueContaining('$request->user()', $result);
     }
 }

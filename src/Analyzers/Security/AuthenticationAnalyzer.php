@@ -246,9 +246,27 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
                 if ($isAuthenticated) {
                     $this->routeAuthStats[$method]['authenticated']++;
+                } elseif (preg_match('/Route::get\s*\(/i', $line)) {
+                    // Unauthenticated GET routes are read-only and treated as intentionally public,
+                    // consistent with `index`/`show` being absent from sensitiveControllerMethods.
+                    $this->publicControllerMethods[$method] = true;
                 }
             }
         }
+    }
+
+    /**
+     * Resolve a controller class name to its FQCN using use imports.
+     * Falls back to the input if no import is found.
+     */
+    private function resolveControllerFqcn(string $nameOrAlias): string
+    {
+        if (str_contains($nameOrAlias, '\\')) {
+            // Already qualified — just normalise leading backslash
+            return ltrim($nameOrAlias, '\\');
+        }
+
+        return $this->useImports[$nameOrAlias] ?? $nameOrAlias;
     }
 
     /**
@@ -276,37 +294,37 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        // Check if this is a resource or apiResource route
+        // Pattern 1 — resource routes
         if (preg_match('/Route::(resource|apiResource)\s*\(/i', $routeContent)) {
-            // Match: Route::resource('name', ControllerClass::class)
             if (preg_match('/Route::(?:resource|apiResource)\s*\([^,]+,\s*([A-Za-z_\\\\]+)::class/i', $routeContent, $matches)) {
-                $controller = $matches[1];
-
-                // Extract just the class name if it's fully qualified
-                $parts = explode('\\', $controller);
-                $className = end($parts);
-
-                // Return all resource methods
+                $fqcn = $this->resolveControllerFqcn($matches[1]);
                 $resourceMethods = ['index', 'create', 'store', 'show', 'edit', 'update', 'destroy'];
-                $results = [];
-                foreach ($resourceMethods as $method) {
-                    $results[] = "{$className}::{$method}";
-                }
 
-                return $results;
+                return array_map(fn ($m) => "{$fqcn}::{$m}", $resourceMethods);
             }
         }
 
-        // Match [SomeController::class, 'method'] pattern for regular routes
-        if (preg_match('/\[([A-Za-z_\\\\]+)::class,\s*[\'"]([a-zA-Z_][a-zA-Z0-9_]*)[\'"]/', $routeContent, $matches)) {
-            $controller = $matches[1];
-            $method = $matches[2];
+        // Pattern 2 — array syntax [Controller::class, 'method']
+        if (preg_match('/\[([A-Za-z_\\\\]+)::class,\s*[\'"]([a-zA-Z_][a-zA-Z0-9_]*)["\']\]/', $routeContent, $matches)) {
+            $fqcn = $this->resolveControllerFqcn($matches[1]);
 
-            // Extract just the class name if it's fully qualified
-            $parts = explode('\\', $controller);
-            $className = end($parts);
+            return "{$fqcn}::{$matches[2]}";
+        }
 
-            return "{$className}::{$method}";
+        // Pattern 3 — invokable ::class syntax: Route::verb('uri', Controller::class)
+        // Anchored to Route::verb('...', ...) so it cannot match ->middleware(SomeClass::class)
+        if (preg_match('/Route::\w+\s*\(\s*[\'"][^\'"]*[\'"]\s*,\s*([A-Za-z_\\\\]+)::class\s*\)/', $routeContent, $matches)) {
+            $fqcn = $this->resolveControllerFqcn($matches[1]);
+
+            return "{$fqcn}::__invoke";
+        }
+
+        // Pattern 4 — legacy string syntax: Route::verb('uri', 'Controller') or 'Controller@method'
+        if (preg_match('/Route::\w+\s*\(\s*[\'"][^\'"]*[\'"]\s*,\s*[\'"]([A-Za-z_\\\\]+)(?:@([a-zA-Z_][a-zA-Z0-9_]*))?[\'"]\s*\)/', $routeContent, $matches)) {
+            $fqcn = $this->resolveControllerFqcn($matches[1]);
+            $method = isset($matches[2]) && $matches[2] !== '' ? $matches[2] : '__invoke';
+
+            return "{$fqcn}::{$method}";
         }
 
         return null;
@@ -341,7 +359,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
                         severity: Severity::High,
-                        recommendation: 'Add auth middleware to this route group, or use Route::middleware("guest")->group() if routes are intentionally public. You can also add route URIs to the public_routes config option',
+                        recommendation: 'Add auth middleware to this route group: Route::middleware(["auth"])->group(). If these routes are intentionally public, add their URIs to the public_routes config option.',
                         metadata: ['route_type' => 'group', 'file' => basename($file)]
                     );
                 }
@@ -398,8 +416,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                         lineNumber: $lineNumber + 1,
                         severity: Severity::High,
                         recommendation: $isClosure
-                            ? 'Add auth middleware: ->middleware("auth") or wrap in Route::middleware(["auth"])->group(). If intentionally public, use ->middleware("guest") or add the route URI to the public_routes config option. Consider moving closure logic to a controller.'
-                            : 'Protect this route with auth middleware or wrap in Route::middleware(["auth"])->group(). If intentionally public, use ->middleware("guest") or add the route URI to the public_routes config option',
+                            ? 'Add auth middleware: ->middleware("auth") or wrap in Route::middleware(["auth"])->group(). If intentionally public, add the route URI to the public_routes config option. Consider moving closure logic to a controller.'
+                            : 'Protect this route with auth middleware or wrap in Route::middleware(["auth"])->group(). If intentionally public, add the route URI to the public_routes config option.',
                         metadata: [
                             'type' => 'authentication',
                             'method' => $method,
@@ -445,6 +463,13 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
+        // Extract namespace once per file for FQCN key construction
+        $namespaceNodes = $this->parser->findNodes($ast, Node\Stmt\Namespace_::class);
+        $namespace = '';
+        if (! empty($namespaceNodes) && $namespaceNodes[0] instanceof Node\Stmt\Namespace_ && $namespaceNodes[0]->name !== null) {
+            $namespace = $namespaceNodes[0]->name->toString();
+        }
+
         $classes = $this->parser->findClasses($ast);
 
         foreach ($classes as $class) {
@@ -473,17 +498,20 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
                     // Check sensitive methods (including invokable controllers)
                     if (in_array($methodName, $this->sensitiveControllerMethods) || $methodName === '__invoke') {
-                        // Skip if this controller method is intentionally public (from route analysis)
+                        // Build both short-name and FQCN keys for lookup
                         $controllerMethodKey = "{$className}::{$methodName}";
-                        if (isset($this->publicControllerMethods[$controllerMethodKey])) {
+                        $fqcnKey = $namespace !== '' ? "{$namespace}\\{$className}::{$methodName}" : $controllerMethodKey;
+
+                        // Skip if this controller method is intentionally public (check both key forms)
+                        if (isset($this->publicControllerMethods[$fqcnKey]) || isset($this->publicControllerMethods[$controllerMethodKey])) {
                             continue; // Method is intentionally public via route-level decision
                         }
 
                         // Check if method has controller-level auth middleware
                         $hasAuthMiddleware = $this->isControllerMethodAuthenticated($methodName, $constructorMiddlewareInfo, $middlewareMethodInfo);
 
-                        // Also consider method authenticated if protected at route level
-                        $stats = $this->routeAuthStats[$controllerMethodKey] ?? null;
+                        // Also consider method authenticated if protected at route level (check both key forms)
+                        $stats = $this->routeAuthStats[$fqcnKey] ?? $this->routeAuthStats[$controllerMethodKey] ?? null;
 
                         $isRouteProtected = $stats !== null && $stats['total'] > 0 && $stats['authenticated'] === $stats['total'];
 
@@ -493,7 +521,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                                 filePath: $file,
                                 lineNumber: $stmt->getLine(),
                                 severity: Severity::High,
-                                recommendation: 'Add $this->middleware("auth") in constructor, protect all routes to this method with route-level auth middleware, or use ->middleware("guest") if intentionally public. You can also add route URIs to the public_routes config option'
+                                recommendation: 'Add $this->middleware("auth") in constructor, or protect all routes to this method with route-level auth middleware. If intentionally public, add route URIs to the public_routes config option.'
                             );
 
                             continue;
@@ -524,6 +552,17 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
+            // Extract namespace for FQCN construction
+            $namespaceNodes = $this->parser->findNodes($ast, Node\Stmt\Namespace_::class);
+            $namespace = '';
+            if (! empty($namespaceNodes) && $namespaceNodes[0] instanceof Node\Stmt\Namespace_
+                    && $namespaceNodes[0]->name !== null) {
+                $namespace = $namespaceNodes[0]->name->toString();
+            }
+
+            // Build FQCN from namespace + short name
+            $fqcn = $namespace !== '' ? "{$namespace}\\{$className}" : $className;
+
             // Find authorize() method
             $authorizeMethod = null;
             foreach ($class->stmts as $stmt) {
@@ -540,17 +579,21 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
             // Check if authorize() returns true without any checks
             if ($this->authorizesWithoutChecks($authorizeMethod)) {
-                $issues[] = $this->createIssueWithSnippet(
-                    message: "{$className}::authorize() returns true without authorization checks",
-                    filePath: $file,
-                    lineNumber: $authorizeMethod->getLine(),
-                    severity: Severity::High,
-                    recommendation: 'Add proper authorization logic to the authorize() method or remove it to deny by default',
-                    metadata: [
-                        'type' => 'form_request_authorization',
-                        'class' => $className,
-                    ]
-                );
+                // Only flag if actually used in a sensitive, unprotected action.
+                // Without usage context, authorize() => true is ambiguous.
+                if ($this->isFormRequestUsedInUnprotectedSensitiveAction($className, $fqcn)) {
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: "{$className}::authorize() returns true without authorization checks",
+                        filePath: $file,
+                        lineNumber: $authorizeMethod->getLine(),
+                        severity: Severity::High,
+                        recommendation: 'Add authorization logic in authorize() (e.g., return $this->user()->can(\'delete\', $model)), add auth middleware to the route, or add $this->middleware(\'auth\') in the controller constructor.',
+                        metadata: [
+                            'type' => 'form_request_authorization',
+                            'class' => $className,
+                        ]
+                    );
+                }
             }
         }
     }
@@ -612,6 +655,139 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         }
 
         return $files;
+    }
+
+    /**
+     * Find all controller methods that type-hint the given FormRequest.
+     *
+     * Resolves parameter type names through each file's use imports so that
+     * imported short names (e.g. "DeleteAccountRequest") correctly match the FQCN.
+     *
+     * @return array<array{controllerClass: string, namespace: string, methodName: string, classNode: Node\Stmt\Class_}>
+     */
+    private function findFormRequestUsagesInControllers(string $shortClassName, string $fqcn): array
+    {
+        $usages = [];
+
+        foreach ($this->getControllerFiles() as $file) {
+            $ast = $this->parser->parseFile($file);
+            if (empty($ast)) {
+                continue;
+            }
+
+            // Resolve use imports so short names expand to their FQCN
+            $fileLines = FileParser::getLines($file);
+            $useImports = $this->extractUseImports($fileLines);
+
+            // Extract namespace
+            $namespaceNodes = $this->parser->findNodes($ast, Node\Stmt\Namespace_::class);
+            $ns = '';
+            if (! empty($namespaceNodes) && $namespaceNodes[0] instanceof Node\Stmt\Namespace_
+                    && $namespaceNodes[0]->name !== null) {
+                $ns = $namespaceNodes[0]->name->toString();
+            }
+
+            foreach ($this->parser->findClasses($ast) as $class) {
+                $controllerClass = $class->name ? $class->name->toString() : 'Unknown';
+
+                foreach ($class->stmts as $stmt) {
+                    if (! ($stmt instanceof Node\Stmt\ClassMethod) || ! $stmt->isPublic()) {
+                        continue;
+                    }
+
+                    foreach ($stmt->getParams() as $param) {
+                        if ($param->type === null) {
+                            continue;
+                        }
+
+                        $typeName = $param->type instanceof Node\Name
+                            ? $param->type->toString()
+                            : '';
+
+                        if ($typeName === '') {
+                            continue;
+                        }
+
+                        // Resolve through use imports (covers the common "imported short name" case)
+                        $resolvedType = $useImports[$typeName] ?? $typeName;
+
+                        $matches = $resolvedType === $fqcn
+                            || $typeName === $shortClassName
+                            || str_ends_with($resolvedType, '\\'.$shortClassName);
+
+                        if ($matches) {
+                            $usages[] = [
+                                'controllerClass' => $controllerClass,
+                                'namespace' => $ns,
+                                'methodName' => $stmt->name->toString(),
+                                'classNode' => $class,
+                            ];
+                            break; // Found usage in this method; skip remaining params
+                        }
+                    }
+                }
+            }
+        }
+
+        return $usages;
+    }
+
+    /**
+     * Return true only when the FormRequest with authorize() => true is injected into
+     * a sensitive controller action that is not protected by any auth signal.
+     */
+    private function isFormRequestUsedInUnprotectedSensitiveAction(
+        string $shortClassName,
+        string $fqcn
+    ): bool {
+        $usages = $this->findFormRequestUsagesInControllers($shortClassName, $fqcn);
+
+        if (empty($usages)) {
+            return false; // No usage found — cannot determine risk
+        }
+
+        foreach ($usages as $usage) {
+            $method = $usage['methodName'];
+            $controllerClass = $usage['controllerClass'];
+            $ns = $usage['namespace'];
+            $classNode = $usage['classNode'];
+
+            // Only flag if method is sensitive
+            if (! in_array($method, $this->sensitiveControllerMethods, true)
+                    && $method !== '__invoke') {
+                continue;
+            }
+
+            // Build lookup keys (same pattern as checkController())
+            $shortKey = "{$controllerClass}::{$method}";
+            $fqcnKey = $ns !== '' ? "{$ns}\\{$controllerClass}::{$method}" : $shortKey;
+
+            // 1. Intentionally public via route analysis
+            //    (covers guest groups, GET routes, explicit ->withoutMiddleware(['auth']))
+            if (isset($this->publicControllerMethods[$fqcnKey])
+                    || isset($this->publicControllerMethods[$shortKey])) {
+                continue;
+            }
+
+            // 2. Route-level auth/authorization middleware
+            $stats = $this->routeAuthStats[$fqcnKey] ?? $this->routeAuthStats[$shortKey] ?? null;
+            if ($stats !== null && $stats['total'] > 0
+                    && $stats['authenticated'] === $stats['total']) {
+                continue;
+            }
+
+            // 3. Controller constructor or middleware() method protection
+            $constructorInfo = $this->getConstructorMiddlewareInfo($classNode);
+            $middlewareMethodInfo = $this->getMiddlewareMethodInfo($classNode);
+            if ($this->isControllerMethodAuthenticated($method, $constructorInfo, $middlewareMethodInfo)) {
+                continue;
+            }
+
+            // Sensitive + unprotected across all signals → real risk
+            return true;
+        }
+
+        return false; // All usages are either non-sensitive or already protected
     }
 
     /**
@@ -884,6 +1060,15 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     {
         $lines = FileParser::getLines($file);
 
+        $ast = $this->parser->parseFile($file);
+
+        $namespaceNodes = $this->parser->findNodes($ast, Node\Stmt\Namespace_::class);
+        $namespace = '';
+        if (! empty($namespaceNodes) && $namespaceNodes[0] instanceof Node\Stmt\Namespace_
+                && $namespaceNodes[0]->name !== null) {
+            $namespace = $namespaceNodes[0]->name->toString();
+        }
+
         foreach ($lines as $lineNumber => $line) {
             // Check for Auth::user()-> (but NOT Auth::user()?-> which is safe)
             if (preg_match('/Auth::user\(\)\s*->/i', $line) && ! preg_match('/Auth::user\(\)\s*\?->/i', $line)) {
@@ -893,7 +1078,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     lineNumber: $lineNumber,
                     method: 'Auth::user()',
                     checkMethod: 'Auth::check()',
-                    issues: $issues
+                    issues: $issues,
+                    ast: $ast,
+                    namespace: $namespace
                 );
             }
 
@@ -905,7 +1092,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     lineNumber: $lineNumber,
                     method: 'auth()->user()',
                     checkMethod: 'auth()->check()',
-                    issues: $issues
+                    issues: $issues,
+                    ast: $ast,
+                    namespace: $namespace
                 );
             }
 
@@ -917,7 +1106,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     lineNumber: $lineNumber,
                     method: '$request->user()',
                     checkMethod: '$request->user()',
-                    issues: $issues
+                    issues: $issues,
+                    ast: $ast,
+                    namespace: $namespace
                 );
             }
         }
@@ -925,6 +1116,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if auth method is used with proper null safety.
+     *
+     * @param  array<int, string>  $lines
+     * @param  array<\PhpParser\Node>  $ast
      */
     private function checkAuthUsageWithNullSafety(
         string $file,
@@ -932,7 +1126,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         int $lineNumber,
         string $method,
         string $checkMethod,
-        array &$issues
+        array &$issues,
+        array $ast = [],
+        string $namespace = '',
     ): void {
         // Look for null checks in surrounding lines
         $searchRange = max(0, $lineNumber - 3);
@@ -946,6 +1142,11 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         }
 
         if (! $hasNullCheck) {
+            // Suppress when the enclosing method is guaranteed non-null by auth middleware
+            if (! empty($ast) && $this->isLineInAuthProtectedMethod($ast, $namespace, $lineNumber)) {
+                return;
+            }
+
             $issues[] = $this->createIssueWithSnippet(
                 message: "Unsafe {$method} usage without null check",
                 filePath: $file,
@@ -959,6 +1160,78 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 ]
             );
         }
+    }
+
+    /**
+     * Return true when the method enclosing $lineNumber is guaranteed to receive
+     * only authenticated requests, making Auth::user() / $request->user() non-null.
+     *
+     * @param  array<\PhpParser\Node>  $ast
+     */
+    private function isLineInAuthProtectedMethod(array $ast, string $namespace, int $lineNumber): bool
+    {
+        $enclosing = $this->findEnclosingClassMethod($ast, $lineNumber);
+        if ($enclosing === null) {
+            return false;
+        }
+
+        $className = $enclosing['className'];
+        $methodName = $enclosing['methodName'];
+        $classNode = $enclosing['classNode'];
+
+        $shortKey = "{$className}::{$methodName}";
+        $fqcnKey = $namespace !== '' ? "{$namespace}\\{$className}::{$methodName}" : $shortKey;
+
+        // Intentionally public (guest route, unauthenticated GET) → do not suppress
+        if (isset($this->publicControllerMethods[$fqcnKey])
+                || isset($this->publicControllerMethods[$shortKey])) {
+            return false;
+        }
+
+        // Route-level: every known route to this method is authenticated
+        $stats = $this->routeAuthStats[$fqcnKey] ?? $this->routeAuthStats[$shortKey] ?? null;
+        if ($stats !== null && $stats['total'] > 0
+                && $stats['authenticated'] === $stats['total']) {
+            return true;
+        }
+
+        // Controller-level: constructor $this->middleware('auth') or middleware() method
+        $constructorInfo = $this->getConstructorMiddlewareInfo($classNode);
+        $middlewareMethodInfo = $this->getMiddlewareMethodInfo($classNode);
+
+        return $this->isControllerMethodAuthenticated($methodName, $constructorInfo, $middlewareMethodInfo);
+    }
+
+    /**
+     * Find the class and method that encloses the given (0-indexed) line number.
+     *
+     * @param  array<\PhpParser\Node>  $ast
+     * @return array{className: string, methodName: string, classNode: Node\Stmt\Class_}|null
+     */
+    private function findEnclosingClassMethod(array $ast, int $lineNumber): ?array
+    {
+        // FileParser lines are 0-indexed; AST line numbers are 1-indexed
+        $oneBased = $lineNumber + 1;
+
+        foreach ($this->parser->findClasses($ast) as $class) {
+            $className = $class->name ? $class->name->toString() : 'Unknown';
+
+            foreach ($class->stmts as $stmt) {
+                if (! ($stmt instanceof Node\Stmt\ClassMethod)) {
+                    continue;
+                }
+
+                if ($oneBased >= $stmt->getStartLine() && $oneBased <= $stmt->getEndLine()) {
+                    return [
+                        'className' => $className,
+                        'methodName' => $stmt->name->toString(),
+                        'classNode' => $class,
+                    ];
+                }
+            }
+        }
+
+        return null;
     }
 
     /**

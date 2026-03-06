@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5.2 - 2026-03-06
+
+### Fixed
+- `AuthenticationAnalyzer` now correctly recognises custom auth middleware classes applied at the group level via `Route::middleware(ClassName::class)->group()` — the class name was previously unresolved due to a NameResolver timing issue in single-pass traversal
+- `AuthenticationAnalyzer` now correctly inherits middleware from multi-segment route chains such as `Route::prefix('api')->middleware('auth')->group()` — intermediate method calls between the `Route::` static call and `->group()` are now walked correctly
+- `AuthenticationAnalyzer` now correctly maps legacy string-format route handlers (`'Controller@method'`, `'Controller'`) to controller methods for auth-stat tracking
+
+### Changed
+- `AuthenticationAnalyzer` route file analysis fully migrated from regex/line-based parsing to PHP-Parser AST via a new `RouteAuthVisitor` — 17 regex methods removed; all valid PHP formatting variants (multiline chains, different indentation, etc.) are now handled without fragility
+
 ## v1.5.1 - 2026-03-06
 
 ### Fixed

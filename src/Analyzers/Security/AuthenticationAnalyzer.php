@@ -6,6 +6,9 @@ namespace ShieldCI\Analyzers\Security;
 
 use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
+use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\NameResolver;
+use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -49,13 +52,6 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      * @var array<string, bool>
      */
     private array $resolvedAuthMiddleware = [];
-
-    /**
-     * Map of short class name to FQCN from use imports in the current route file.
-     *
-     * @var array<string, string>
-     */
-    private array $useImports = [];
 
     /**
      * Map of controller methods that are intentionally public.
@@ -189,66 +185,58 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     /**
      * Build route-level authentication statistics per controller method.
      *
-     * - Tracks total routes pointing to each controller method
-     * - Tracks how many of those routes are authenticated
-     * - Tracks intentionally public controller methods
+     * Uses PHP-Parser AST via RouteAuthVisitor so that all valid PHP formatting
+     * variants are handled without regex fragility.
      */
     private function buildPublicControllerMap(string $file): void
     {
-        $lines = FileParser::getLines($file);
-        $this->useImports = $this->extractUseImports($lines);
-        $routeGroups = $this->identifyRouteGroups($lines);
+        $ast = $this->parser->parseFile($file);
+        if (empty($ast)) {
+            return;
+        }
 
-        foreach ($lines as $lineNumber => $line) {
-            if (! is_string($line)) {
-                continue;
+        // Two-pass: first resolve all names so ClassConstFetch nodes carry FQCNs
+        // when the visitor's enterNode fires (enterNode runs before children are visited,
+        // so a single-pass NameResolver won't have resolved children's names yet).
+        $nameTraverser = new NodeTraverser;
+        $nameTraverser->addVisitor(new NameResolver(null, ['replaceNodes' => false]));
+        $nameTraverser->traverse($ast);
+
+        $visitor = new RouteAuthVisitor;
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor($visitor);
+        $traverser->traverse($ast);
+
+        foreach ($visitor->getCollectedRoutes() as $route) {
+            $controller = $route['controller'];
+            if ($controller === null) {
+                continue; // closure routes: no controller to map
             }
 
-            // Match route definitions
-            if (! preg_match('/Route::(get|post|put|patch|delete|resource|apiResource)\s*\(/i', $line)) {
-                continue;
-            }
+            // Expand resource/apiResource routes to individual methods
+            $controllerMethods = $this->expandControllerMethods($controller, $route['action'], $route['http_methods']);
 
-            // Extract controller + method (can be string or array for resource routes)
-            $controllerMethod = $this->extractControllerMethod($line, $lines, $lineNumber);
-            if ($controllerMethod === null) {
-                continue;
-            }
+            $isGuestRoute = in_array('guest', $route['middleware'], true);
+            $isPublicUri = in_array($route['uri'], $this->publicRoutes, true);
+            $hasExplicitAuthRemoval = $this->routeDirectRemoveHasAuth($route['direct_remove']);
 
-            // Handle resource routes (array of methods) and regular routes (single string)
-            $methods = is_array($controllerMethod) ? $controllerMethod : [$controllerMethod];
-
-            foreach ($methods as $method) {
-                // Ensure stats bucket exists
+            foreach ($controllerMethods as $method) {
                 if (! isset($this->routeAuthStats[$method])) {
-                    $this->routeAuthStats[$method] = [
-                        'total' => 0,
-                        'authenticated' => 0,
-                    ];
+                    $this->routeAuthStats[$method] = ['total' => 0, 'authenticated' => 0];
                 }
-
-                // Count this route
                 $this->routeAuthStats[$method]['total']++;
 
-                // Explicit public route always wins
-                if (
-                    $this->isPublicRouteLine($line) ||
-                    $this->routeHasExplicitAuthRemoval($lineNumber, $lines) ||
-                    $this->isRouteInGuestGroup($lineNumber, $routeGroups)
-                ) {
+                // Explicit public signals win
+                if ($isPublicUri || $hasExplicitAuthRemoval || $isGuestRoute) {
                     $this->publicControllerMethods[$method] = true;
 
                     continue;
                 }
 
-                // Check if this specific route is authenticated
-                $isAuthenticated = $this->isRouteAuthenticated($lineNumber, $lines, $routeGroups);
-
-                if ($isAuthenticated) {
+                if ($this->isRouteMiddlewareAuthenticated($route['middleware'])) {
                     $this->routeAuthStats[$method]['authenticated']++;
-                } elseif (preg_match('/Route::get\s*\(/i', $line)) {
-                    // Unauthenticated GET routes are read-only and treated as intentionally public,
-                    // consistent with `index`/`show` being absent from sensitiveControllerMethods.
+                } elseif ($route['http_methods'] === ['GET']) {
+                    // Unauthenticated GET routes are read-only, intentionally public
                     $this->publicControllerMethods[$method] = true;
                 }
             }
@@ -256,205 +244,162 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Resolve a controller class name to its FQCN using use imports.
-     * Falls back to the input if no import is found.
-     */
-    private function resolveControllerFqcn(string $nameOrAlias): string
-    {
-        if (str_contains($nameOrAlias, '\\')) {
-            // Already qualified — just normalise leading backslash
-            return ltrim($nameOrAlias, '\\');
-        }
-
-        return $this->useImports[$nameOrAlias] ?? $nameOrAlias;
-    }
-
-    /**
-     * Extract controller and method from a route line.
-     * Returns format: 'ControllerClass::method' or null if not found.
-     * For resource routes, returns an array of all resource methods.
+     * Expand a controller + action into a list of 'Controller::method' keys,
+     * accounting for resource / apiResource expansion.
      *
-     * @return string|array<string>|null
+     * @param  list<string>  $httpMethods
+     * @return list<string>
      */
-    private function extractControllerMethod(string $line, array $lines, int $lineNumber)
+    private function expandControllerMethods(string $controller, ?string $action, array $httpMethods): array
     {
-        // Look for resource routes first
-        $searchRange = min($lineNumber + 10, count($lines));
-        $routeContent = '';
-
-        for ($i = $lineNumber; $i < $searchRange; $i++) {
-            if (! isset($lines[$i]) || ! is_string($lines[$i])) {
-                continue;
-            }
-
-            $routeContent .= $lines[$i];
-
-            if (str_contains($lines[$i], ';')) {
-                break;
-            }
+        if (in_array('RESOURCE', $httpMethods, true)) {
+            return array_map(
+                fn ($m) => "{$controller}::{$m}",
+                ['index', 'create', 'store', 'show', 'edit', 'update', 'destroy']
+            );
         }
 
-        // Pattern 1 — resource routes
-        if (preg_match('/Route::(resource|apiResource)\s*\(/i', $routeContent)) {
-            if (preg_match('/Route::(?:resource|apiResource)\s*\([^,]+,\s*([A-Za-z_\\\\]+)::class/i', $routeContent, $matches)) {
-                $fqcn = $this->resolveControllerFqcn($matches[1]);
-                $resourceMethods = ['index', 'create', 'store', 'show', 'edit', 'update', 'destroy'];
-
-                return array_map(fn ($m) => "{$fqcn}::{$m}", $resourceMethods);
-            }
+        if (in_array('APIRESOURCE', $httpMethods, true)) {
+            return array_map(
+                fn ($m) => "{$controller}::{$m}",
+                ['index', 'store', 'show', 'update', 'destroy']
+            );
         }
 
-        // Pattern 2 — array syntax [Controller::class, 'method']
-        if (preg_match('/\[([A-Za-z_\\\\]+)::class,\s*[\'"]([a-zA-Z_][a-zA-Z0-9_]*)["\']\]/', $routeContent, $matches)) {
-            $fqcn = $this->resolveControllerFqcn($matches[1]);
-
-            return "{$fqcn}::{$matches[2]}";
-        }
-
-        // Pattern 3 — invokable ::class syntax: Route::verb('uri', Controller::class)
-        // Anchored to Route::verb('...', ...) so it cannot match ->middleware(SomeClass::class)
-        if (preg_match('/Route::\w+\s*\(\s*[\'"][^\'"]*[\'"]\s*,\s*([A-Za-z_\\\\]+)::class\s*\)/', $routeContent, $matches)) {
-            $fqcn = $this->resolveControllerFqcn($matches[1]);
-
-            return "{$fqcn}::__invoke";
-        }
-
-        // Pattern 4 — legacy string syntax: Route::verb('uri', 'Controller') or 'Controller@method'
-        if (preg_match('/Route::\w+\s*\(\s*[\'"][^\'"]*[\'"]\s*,\s*[\'"]([A-Za-z_\\\\]+)(?:@([a-zA-Z_][a-zA-Z0-9_]*))?[\'"]\s*\)/', $routeContent, $matches)) {
-            $fqcn = $this->resolveControllerFqcn($matches[1]);
-            $method = isset($matches[2]) && $matches[2] !== '' ? $matches[2] : '__invoke';
-
-            return "{$fqcn}::{$method}";
-        }
-
-        return null;
+        return ["{$controller}::".($action ?? '__invoke')];
     }
 
     /**
-     * Check route files for missing authentication.
+     * Check whether a list of directly-removed middleware contains auth middleware.
+     *
+     * @param  list<string>  $directRemove
+     */
+    private function routeDirectRemoveHasAuth(array $directRemove): bool
+    {
+        foreach ($directRemove as $mw) {
+            if ($this->isAuthMiddleware($mw) || $this->isAuthorizationMiddleware($mw)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check whether the effective middleware list provides authentication.
+     *
+     * Handles: 'auth', 'auth:api', 'can:ability', 'role:admin', 'permission:x',
+     * and fully-qualified custom auth middleware class names.
+     *
+     * @param  list<string>  $middleware
+     */
+    private function isRouteMiddlewareAuthenticated(array $middleware): bool
+    {
+        foreach ($middleware as $mw) {
+            if ($this->isAuthMiddleware($mw) || $this->isAuthorizationMiddleware($mw)) {
+                return true;
+            }
+
+            // Class-like strings (contain backslash = FQCN from NameResolver)
+            if (str_contains($mw, '\\') && $this->isCustomAuthMiddlewareClass($mw)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check route files for missing authentication using AST-based visitor.
+     *
+     * @param  array<mixed>  $issues
      */
     private function checkRouteFile(string $file, array &$issues): void
     {
-        $lines = FileParser::getLines($file);
-        $this->useImports = $this->extractUseImports($lines);
-
-        // First pass: Identify route groups and their auth status
-        // Track groups as [startLine => endLine, hasAuth => bool]
-        $routeGroups = $this->identifyRouteGroups($lines);
-
-        // Second pass: Check individual routes and route groups
-        foreach ($lines as $lineNumber => $line) {
-            // Check for route groups without middleware
-            if (preg_match('/Route::group\s*\(/i', $line)) {
-                $hasAuthMiddleware = $this->checkRouteGroupForAuth($lines, $lineNumber);
-                $hasGuestMiddleware = $this->checkRouteGroupForGuest($lines, $lineNumber);
-
-                // Check if this route group is inside a protected parent group
-                // If it is, don't flag it (routes inside will be protected by parent)
-                $isInProtectedParentGroup = $this->isRouteGroupInProtectedParentGroup($lineNumber, $routeGroups);
-
-                if (! $hasAuthMiddleware && ! $hasGuestMiddleware && ! $isInProtectedParentGroup && ! $this->isPublicRouteLine($line)) {
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: 'Route group without authentication middleware',
-                        filePath: $file,
-                        lineNumber: $lineNumber + 1,
-                        severity: Severity::High,
-                        recommendation: 'Add auth middleware to this route group: Route::middleware(["auth"])->group(). If these routes are intentionally public, add their URIs to the public_routes config option.',
-                        metadata: ['route_type' => 'group', 'file' => basename($file)]
-                    );
-                }
-            }
-
-            // Check for routes without middleware
-            if (preg_match('/Route::(get|post|put|patch|delete|resource|apiResource)\s*\(/i', $line, $matches)) {
-                $method = strtoupper($matches[1]);
-
-                // Skip if it's clearly a public route or inside a guest middleware group
-                if ($this->isPublicRouteLine($line) || $this->isRouteInGuestGroup($lineNumber, $routeGroups)) {
-                    continue;
-                }
-
-                // Check if route has auth or authorization middleware directly (early optimization)
-                // Supports auth, auth:api, can:ability, role:admin, permission:delete-users, etc.
-                $searchRange = min($lineNumber + 10, count($lines));
-
-                for ($i = $lineNumber; $i < $searchRange; $i++) {
-                    if (! isset($lines[$i]) || ! is_string($lines[$i])) {
-                        continue;
-                    }
-
-                    // Check for auth or authorization middleware
-                    if (preg_match('/->middleware\s*\(\s*["\']auth(?::[a-zA-Z0-9_-]+)?["\']|->middleware\s*\(\s*\[[^\]]*["\']auth(?::[a-zA-Z0-9_-]+)?["\']/i', $lines[$i])) {
-                        break;
-                    }
-
-                    if (preg_match('/->middleware\s*\(\s*["\'](?:can|role|permission|ability):[^"\']+["\']|->middleware\s*\(\s*\[[^\]]*["\'](?:can|role|permission|ability):[^"\']+["\']/i', $lines[$i])) {
-                        break;
-                    }
-
-                    if (str_contains($lines[$i], ';')) {
-                        break;
-                    }
-                }
-
-                if ($this->routeHasExplicitAuthRemoval($lineNumber, $lines)) {
-                    continue; // explicit opt-out wins, skip entirely
-                }
-
-                $isAuthenticated = $this->isRouteAuthenticated($lineNumber, $lines, $routeGroups);
-                $isMutation = $this->isMutationRoute($method);
-
-                if (! $isAuthenticated && $isMutation) {
-                    // Check if this is a closure route
-                    $isClosure = $this->isClosureRoute($line, $lines, $lineNumber);
-
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: $isClosure
-                            ? "{$method} closure route without authentication middleware"
-                            : "{$method} route without authentication middleware",
-                        filePath: $file,
-                        lineNumber: $lineNumber + 1,
-                        severity: Severity::High,
-                        recommendation: $isClosure
-                            ? 'Add auth middleware: ->middleware("auth") or wrap in Route::middleware(["auth"])->group(). If intentionally public, add the route URI to the public_routes config option. Consider moving closure logic to a controller.'
-                            : 'Protect this route with auth middleware or wrap in Route::middleware(["auth"])->group(). If intentionally public, add the route URI to the public_routes config option.',
-                        metadata: [
-                            'type' => 'authentication',
-                            'method' => $method,
-                            'is_closure' => $isClosure,
-                        ]
-                    );
-                }
-            }
+        $ast = $this->parser->parseFile($file);
+        if (empty($ast)) {
+            return;
         }
-    }
 
-    /**
-     * Check if a route is a closure route.
-     */
-    private function isClosureRoute(string $line, array $lines, int $lineNumber): bool
-    {
-        $searchRange = min($lineNumber + 10, count($lines));
-        $routeContent = '';
+        // Two-pass: resolve all names first so ClassConstFetch FQCNs are available in enterNode
+        $nameTraverser = new NodeTraverser;
+        $nameTraverser->addVisitor(new NameResolver(null, ['replaceNodes' => false]));
+        $nameTraverser->traverse($ast);
 
-        for ($i = $lineNumber; $i < $searchRange; $i++) {
-            if (! isset($lines[$i]) || ! is_string($lines[$i])) {
+        $visitor = new RouteAuthVisitor;
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor($visitor);
+        $traverser->traverse($ast);
+
+        // Check route groups (only Route::group([...], fn) static-call style)
+        foreach ($visitor->getCollectedGroups() as $group) {
+            if (! $group['is_static_group']) {
                 continue;
             }
 
-            $routeContent .= $lines[$i];
+            $allMiddleware = array_merge($group['inherited_middleware'], $group['middleware']);
+            $hasAuth = $this->isRouteMiddlewareAuthenticated($allMiddleware);
 
-            if (str_contains($lines[$i], ';')) {
-                break;
+            if (! $hasAuth && ! $group['has_guest']) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: 'Route group without authentication middleware',
+                    filePath: $file,
+                    lineNumber: $group['line'],
+                    severity: Severity::High,
+                    recommendation: 'Add auth middleware to this route group: Route::middleware(["auth"])->group(). If these routes are intentionally public, add their URIs to the public_routes config option.',
+                    metadata: ['route_type' => 'group', 'file' => basename($file)]
+                );
             }
         }
 
-        // Check for function() or fn() pattern (closures)
-        return (bool) preg_match('/,\s*function\s*\(|,\s*fn\s*\(/i', $routeContent);
+        // Check individual routes
+        foreach ($visitor->getCollectedRoutes() as $route) {
+            // Skip public URIs
+            if (in_array($route['uri'], $this->publicRoutes, true)) {
+                continue;
+            }
+
+            // Skip guest routes (guest middleware means for unauthenticated users)
+            if (in_array('guest', $route['middleware'], true)) {
+                continue;
+            }
+
+            // Skip if the route explicitly opted out of auth (withoutMiddleware)
+            if ($this->routeDirectRemoveHasAuth($route['direct_remove'])) {
+                continue;
+            }
+
+            $isAuthenticated = $this->isRouteMiddlewareAuthenticated($route['middleware']);
+            $httpMethod = $route['http_methods'][0] ?? 'GET';
+            $isMutation = $this->isMutationRoute($httpMethod);
+
+            if (! $isAuthenticated && $isMutation) {
+                $isClosure = $route['is_closure'];
+
+                $issues[] = $this->createIssueWithSnippet(
+                    message: $isClosure
+                        ? "{$httpMethod} closure route without authentication middleware"
+                        : "{$httpMethod} route without authentication middleware",
+                    filePath: $file,
+                    lineNumber: $route['line'],
+                    severity: Severity::High,
+                    recommendation: $isClosure
+                        ? 'Add auth middleware: ->middleware("auth") or wrap in Route::middleware(["auth"])->group(). If intentionally public, add the route URI to the public_routes config option. Consider moving closure logic to a controller.'
+                        : 'Protect this route with auth middleware or wrap in Route::middleware(["auth"])->group(). If intentionally public, add the route URI to the public_routes config option.',
+                    metadata: [
+                        'type' => 'authentication',
+                        'method' => $httpMethod,
+                        'is_closure' => $isClosure,
+                    ]
+                );
+            }
+        }
     }
 
     /**
      * Check controller for missing authentication.
+     *
+     * @param  array<mixed>  $issues
      */
     private function checkController(string $file, array &$issues): void
     {
@@ -534,6 +479,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check FormRequest for missing or weak authorization.
+     *
+     * @param  array<mixed>  $issues
      */
     private function checkFormRequest(string $file, array &$issues): void
     {
@@ -1042,19 +989,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if a line removes auth middleware.
-     * Supports: auth, auth:api, auth:sanctum, auth:web, etc.
-     */
-    private function removesAuthMiddleware(string $line): bool
-    {
-        return (bool) preg_match(
-            '/->withoutMiddleware\s*\(\s*(?:\[[^\]]*["\']auth(?::[a-zA-Z0-9_-]+)?["\']|["\']auth(?::[a-zA-Z0-9_-]+)?["\'])/i',
-            $line
-        );
-    }
-
-    /**
      * Check for unsafe Auth::user() usage without null checks.
+     *
+     * @param  array<mixed>  $issues
      */
     private function checkUnsafeAuthUsage(string $file, array &$issues): void
     {
@@ -1119,6 +1056,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      *
      * @param  array<int, string>  $lines
      * @param  array<\PhpParser\Node>  $ast
+     * @param  array<mixed>  $issues
      */
     private function checkAuthUsageWithNullSafety(
         string $file,
@@ -1286,468 +1224,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if a route is authenticated.
-     *
-     * @param  array<int, string>  $lines
-     * @param  array<int, array{startLine: int, endLine: int, hasAuth: bool, hasGuest: bool}>  $routeGroups
-     */
-    private function isRouteAuthenticated(int $lineNumber, array $lines, array $routeGroups): bool
-    {
-        // 🔥 Hard stop: route explicitly removes auth
-        if ($this->routeHasExplicitAuthRemoval($lineNumber, $lines)) {
-            return false;
-        }
-
-        $isAuthenticated = false;
-
-        // Inherited from group
-        if ($this->isRouteInProtectedGroup($lineNumber, $routeGroups)) {
-            $isAuthenticated = true;
-        }
-
-        // Direct middleware on route
-        $searchRange = min($lineNumber + 10, count($lines));
-        for ($i = $lineNumber; $i < $searchRange; $i++) {
-            if (! isset($lines[$i]) || ! is_string($lines[$i])) {
-                continue;
-            }
-
-            if ($this->addsAuthMiddleware($lines[$i])) {
-                $isAuthenticated = true;
-            }
-
-            if ($this->removesAuthMiddleware($lines[$i])) {
-                return false;
-            }
-
-            if (str_contains($lines[$i], ';')) {
-                break;
-            }
-        }
-
-        return $isAuthenticated;
-    }
-
-    /**
-     * Check if a route has explicit auth removal.
-     */
-    private function routeHasExplicitAuthRemoval(int $lineNumber, array $lines): bool
-    {
-        $searchRange = min($lineNumber + 10, count($lines));
-
-        for ($i = $lineNumber; $i < $searchRange; $i++) {
-            if (! isset($lines[$i]) || ! is_string($lines[$i])) {
-                continue;
-            }
-
-            if ($this->removesAuthMiddleware($lines[$i])) {
-                return true;
-            }
-
-            if (str_contains($lines[$i], ';')) {
-                break;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Check if a line adds auth or authorization middleware.
-     * Supports: auth, auth:api, can:ability, role:admin, permission:delete-users, etc.
-     */
-    private function addsAuthMiddleware(string $line): bool
-    {
-        // Check for auth middleware
-        if (preg_match('/->middleware\s*\(\s*(?:\[[^\]]*["\']auth(?::[a-zA-Z0-9_-]+)?["\']|["\']auth(?::[a-zA-Z0-9_-]+)?["\'])/i', $line)) {
-            return true;
-        }
-
-        // Check for authorization middleware (can:, role:, permission:)
-        if (preg_match('/->middleware\s*\(\s*(?:\[[^\]]*["\'](?:can|role|permission|ability):[^"\']+["\']|["\'](?:can|role|permission|ability):[^"\']+["\'])/i', $line)) {
-            return true;
-        }
-
-        // Check for ::class middleware references (custom middleware classes)
-        if (preg_match('/->middleware\s*\(\s*(?:\[([^\]]*)\]|([^)]+))\)/s', $line, $m)) {
-            $middlewareContent = $m[1] !== '' ? $m[1] : ($m[2] ?? '');
-            if (preg_match_all('/([A-Z]\w+)::class/', $middlewareContent, $classMatches)) {
-                foreach ($classMatches[1] as $className) {
-                    if ($this->isCustomAuthMiddlewareClass($className)) {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Identify all route groups in the file and determine their auth status.
-     *
-     * @param  array<int, string>  $lines
-     * @return array<int, array{startLine: int, endLine: int, hasAuth: bool, hasGuest: bool}>
-     */
-    private function identifyRouteGroups(array $lines): array
-    {
-        $groups = [];
-        $totalLines = count($lines);
-
-        foreach ($lines as $lineNumber => $line) {
-            if (! is_string($line)) {
-                continue;
-            }
-
-            // Match both Route::group() and Route::*()->group() patterns
-            if (preg_match('/->group\s*\(|Route::group\s*\(/i', $line)) {
-                $hasAuth = $this->checkRouteGroupForAuth($lines, $lineNumber);
-                $endLine = $this->findRouteGroupEndLine($lines, $lineNumber, $totalLines);
-
-                $groups[] = [
-                    'startLine' => $lineNumber,
-                    'endLine' => $endLine,
-                    'hasAuth' => $hasAuth,
-                    'hasGuest' => $this->checkRouteGroupForGuest($lines, $lineNumber),
-                ];
-            }
-        }
-
-        return $groups;
-    }
-
-    /**
-     * Find the end line of a route group by matching opening/closing braces.
-     *
-     * @param  array<int, string>  $lines
-     * @return int The line number where the route group ends (inclusive)
-     */
-    private function findRouteGroupEndLine(array $lines, int $startLine, int $totalLines): int
-    {
-        // Look for the closing brace of the route group's closure
-        $braceCount = 0;
-        $inGroup = false;
-        // Use a larger search range to handle large route groups (up to 500 lines)
-        // This is necessary for real-world applications with many routes
-        $searchRange = min($startLine + 500, $totalLines);
-
-        for ($i = $startLine; $i < $searchRange; $i++) {
-            if (! isset($lines[$i]) || ! is_string($lines[$i])) {
-                continue;
-            }
-
-            $line = $lines[$i];
-
-            // Count opening braces
-            $braceCount += substr_count($line, '{') - substr_count($line, '}');
-
-            // Once we enter the closure (after the array definition)
-            if (str_contains($line, 'function') || str_contains($line, 'fn(')) {
-                $inGroup = true;
-            }
-
-            // If we're in the group and braces are balanced, we found the end
-            if ($inGroup && $braceCount === 0 && str_contains($line, '}')) {
-                return $i;
-            }
-        }
-
-        // Fallback: if we couldn't find the exact end, search backwards from the end
-        // to find the last closing brace that might be our group's end
-        // This handles edge cases where the group is very large
-        for ($i = min($startLine + 500, $totalLines - 1); $i > $startLine; $i--) {
-            if (! isset($lines[$i]) || ! is_string($lines[$i])) {
-                continue;
-            }
-
-            if (str_contains($lines[$i], '}')) {
-                return $i;
-            }
-        }
-
-        // Final fallback: return end of file
-        return $totalLines - 1;
-    }
-
-    /**
-     * Check if a route at the given line number is inside a protected route group.
-     *
-     * Handles nested groups: if a route is inside multiple nested groups,
-     * it's considered protected if ANY of those groups has auth middleware.
-     *
-     * @param  array<int, array{startLine: int, endLine: int, hasAuth: bool, hasGuest: bool}>  $routeGroups
-     */
-    private function isRouteInProtectedGroup(int $routeLineNumber, array $routeGroups): bool
-    {
-        foreach ($routeGroups as $group) {
-            if (
-                $routeLineNumber >= $group['startLine'] &&
-                $routeLineNumber <= $group['endLine'] &&
-                $group['hasAuth']
-            ) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Check if a route group at the given line number is inside a protected parent route group.
-     *
-     * A route group should not be flagged if it's nested inside a protected parent group,
-     * as routes inside it will be protected by the parent's middleware.
-     *
-     * @param  int  $groupLineNumber  The line number where the route group starts
-     * @param  array<int, array{startLine: int, endLine: int, hasAuth: bool, hasGuest: bool}>  $routeGroups
-     */
-    private function isRouteGroupInProtectedParentGroup(int $groupLineNumber, array $routeGroups): bool
-    {
-        // Find all groups that contain this route group (parent groups)
-        foreach ($routeGroups as $group) {
-            // Skip the group itself (we're looking for parent groups)
-            if ($group['startLine'] === $groupLineNumber) {
-                continue;
-            }
-
-            // Check if this route group is within a parent group's boundaries
-            if ($groupLineNumber > $group['startLine'] && $groupLineNumber < $group['endLine']) {
-                // If the parent group has auth, this nested group is protected
-                if ($group['hasAuth']) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Check if a route at the given line number is inside a guest middleware group.
-     *
-     * @param  array<int, array{startLine: int, endLine: int, hasAuth: bool, hasGuest: bool}>  $routeGroups
-     */
-    private function isRouteInGuestGroup(int $routeLineNumber, array $routeGroups): bool
-    {
-        foreach ($routeGroups as $group) {
-            if (
-                $routeLineNumber >= $group['startLine'] &&
-                $routeLineNumber <= $group['endLine'] &&
-                $group['hasGuest']
-            ) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Check if route group has guest middleware.
-     * Supports both string and array syntax for middleware.
-     *
-     * Examples:
-     * - Route::middleware('guest')->group()
-     * - Route::middleware(['guest'])->group()
-     * - 'middleware' => 'guest'
-     * - 'middleware' => ['guest']
-     *
-     * @param  array<int, string>  $lines
-     */
-    private function checkRouteGroupForGuest(array $lines, int $startLine): bool
-    {
-        $searchRange = min($startLine + 20, count($lines));
-        $groupDefinition = '';
-
-        for ($i = $startLine; $i < $searchRange; $i++) {
-            if (! isset($lines[$i]) || ! is_string($lines[$i])) {
-                continue;
-            }
-
-            $groupDefinition .= $lines[$i]."\n";
-
-            if (str_contains($lines[$i], '],') || str_contains($lines[$i], '], function')) {
-                break;
-            }
-        }
-
-        // Check for chained middleware: Route::middleware('guest')->group() or Route::middleware(['guest', ...])->group()
-        if (preg_match('/(->|::)middleware\s*\(\s*["\']guest["\']\s*\)|(->|::)middleware\s*\(\s*\[[^\]]*["\']guest["\'][^\]]*\]\s*\)/i', $groupDefinition)) {
-            return true;
-        }
-
-        // Check for string middleware: 'middleware' => 'guest'
-        if (preg_match('/["\']middleware["\']\s*=>\s*["\']guest["\']/i', $groupDefinition)) {
-            return true;
-        }
-
-        // Check for array middleware: 'middleware' => ['guest', ...]
-        if (preg_match('/["\']middleware["\']\s*=>\s*\[[^\]]*["\']guest["\'][^\]]*\]/i', $groupDefinition)) {
-            return true;
-        }
-
-        return false;
-    }
-
-    /**
-     * Check if route group has authentication middleware.
-     * Supports both string and array syntax for middleware.
-     *
-     * Examples:
-     * - 'middleware' => 'auth'
-     * - 'middleware' => ['auth']
-     * - 'middleware' => ['login.user', 'auth', 'auth.admin']
-     */
-    private function checkRouteGroupForAuth(array $lines, int $startLine): bool
-    {
-        // Search for the route group definition (usually within 15-20 lines)
-        $searchRange = min($startLine + 20, count($lines));
-        $groupDefinition = '';
-
-        // Collect the route group definition across multiple lines
-        for ($i = $startLine; $i < $searchRange; $i++) {
-            if (! isset($lines[$i]) || ! is_string($lines[$i])) {
-                continue;
-            }
-
-            $groupDefinition .= $lines[$i]."\n";
-
-            // Stop when we find the closing of the array and function call
-            // This handles both single-line and multi-line array definitions
-            if (str_contains($lines[$i], '],') || str_contains($lines[$i], '], function')) {
-                break;
-            }
-        }
-
-        // Check for chained middleware: Route::middleware('auth')->group() or Route->middleware(['auth'])->group()
-        // Must match both :: (static) and -> (instance) calls
-        // Supports auth, auth:api, auth:sanctum, auth:web, can:ability, role:admin, etc.
-        if (preg_match('/(->|::)middleware\s*\(\s*["\']auth(?::[a-zA-Z0-9_-]+)?["\']\s*\)|(->|::)middleware\s*\(\s*\[[^\]]*["\']auth(?::[a-zA-Z0-9_-]+)?["\'][^\]]*\]\s*\)/i', $groupDefinition)) {
-            return true;
-        }
-
-        // Check for authorization middleware: can:, role:, permission:
-        if (preg_match('/(->|::)middleware\s*\(\s*["\'](?:can|role|permission|ability):[^"\']+["\']\s*\)|(->|::)middleware\s*\(\s*\[[^\]]*["\'](?:can|role|permission|ability):[^"\']+["\'][^\]]*\]\s*\)/i', $groupDefinition)) {
-            return true;
-        }
-
-        // Check for string middleware: 'middleware' => 'auth' or "middleware" => "auth:api"
-        if (preg_match('/["\']middleware["\']\s*=>\s*["\']auth(?::[a-zA-Z0-9_-]+)?["\']/i', $groupDefinition)) {
-            return true;
-        }
-
-        // Check for string authorization middleware: 'middleware' => 'can:update,post'
-        if (preg_match('/["\']middleware["\']\s*=>\s*["\'](?:can|role|permission|ability):[^"\']+["\']/i', $groupDefinition)) {
-            return true;
-        }
-
-        // Check for array middleware: 'middleware' => ['auth', ...] or ['login.user', 'auth:api', 'auth.admin']
-        // First, try simple single-line array pattern
-        if (preg_match('/["\']middleware["\']\s*=>\s*\[[^\]]*["\']auth(?::[a-zA-Z0-9_-]+)?["\'][^\]]*\]/i', $groupDefinition)) {
-            return true;
-        }
-
-        // Check for array with authorization middleware
-        if (preg_match('/["\']middleware["\']\s*=>\s*\[[^\]]*["\'](?:can|role|permission|ability):[^"\']+["\'][^\]]*\]/i', $groupDefinition)) {
-            return true;
-        }
-
-        // Handle multi-line arrays - find the middleware array and extract its content
-        if (preg_match('/["\']middleware["\']\s*=>\s*\[/i', $groupDefinition, $matches, PREG_OFFSET_CAPTURE)) {
-            $matchPos = $matches[0][1];
-            $afterMatch = substr($groupDefinition, $matchPos);
-
-            // Find the opening bracket position after 'middleware' => [
-            $bracketStart = strpos($afterMatch, '[');
-            if ($bracketStart === false) {
-                return false;
-            }
-
-            // Find the matching closing bracket (handle nested arrays)
-            $bracketCount = 1;
-            $arrayContent = '';
-            $pos = $bracketStart + 1;
-            $maxPos = strlen($afterMatch);
-
-            while ($pos < $maxPos) {
-                $char = $afterMatch[$pos];
-
-                if ($char === '[') {
-                    $bracketCount++;
-                } elseif ($char === ']') {
-                    $bracketCount--;
-                    if ($bracketCount === 0) {
-                        break;
-                    }
-                }
-
-                $arrayContent .= $char;
-                $pos++;
-            }
-
-            // Check if 'auth' (with optional guard) appears in the array content
-            // Matches: 'auth', 'auth:api', 'auth:sanctum', 'auth:web', etc.
-            if (preg_match('/["\']auth(?::[a-zA-Z0-9_-]+)?["\']/i', $arrayContent)) {
-                return true;
-            }
-
-            // Check for authorization middleware: can:, role:, permission:, ability:
-            if (preg_match('/["\'](?:can|role|permission|ability):[^"\']+["\']/i', $arrayContent)) {
-                return true;
-            }
-        }
-
-        // Check for ::class middleware references in group definition
-        if (preg_match_all('/([A-Z]\w+)::class/', $groupDefinition, $classMatches)) {
-            foreach ($classMatches[1] as $className) {
-                if ($this->isCustomAuthMiddlewareClass($className)) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Check if a line is a public route line.
-     */
-    private function isPublicRouteLine(string $line): bool
-    {
-        return $this->hasPublicUri($line) || $this->hasGuestMiddleware($line);
-    }
-
-    /**
-     * Check if a line has a public URI using exact path matching.
-     */
-    private function hasPublicUri(string $line): bool
-    {
-        foreach ($this->publicRoutes as $route) {
-            // Exact path match: '/login' matches Route::post('/login', ...)
-            if (preg_match(
-                '/Route::\w+\s*\(\s*[\'"]'.preg_quote($route, '/').'[\'"]/i',
-                $line
-            )) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Check if a line has a guest middleware.
-     */
-    private function hasGuestMiddleware(string $line): bool
-    {
-        return (bool) preg_match(
-            '/->middleware\s*\(\s*(?:\[[^\]]*["\']guest["\']|["\']guest["\'])/i',
-            $line
-        );
-    }
-
-    /**
      * Get route files.
+     *
+     * @return array<string>
      */
     private function getRouteFiles(): array
     {
@@ -1773,6 +1252,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Get controller files.
+     *
+     * @return array<string>
      */
     private function getControllerFiles(): array
     {
@@ -1823,11 +1304,12 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      *
      * Looks for auth signals: bearerToken(), getPassword(), AuthenticationException,
      * AuthenticatesRequests, Illuminate\Contracts\Auth\Factory.
+     *
+     * Expects a FQCN (resolved by NameResolver in the route visitor).
      */
     private function isCustomAuthMiddlewareClass(string $className): bool
     {
-        // Look up FQCN from use imports, fall back to className if already FQCN
-        $fqcn = $this->useImports[$className] ?? $className;
+        $fqcn = $className;
 
         // Check cache
         if (isset($this->resolvedAuthMiddleware[$fqcn])) {
@@ -1858,5 +1340,507 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         $this->resolvedAuthMiddleware[$fqcn] = $isAuth;
 
         return $isAuth;
+    }
+}
+
+/**
+ * Visitor that traverses a route file AST and collects structured route and group records.
+ *
+ * Uses enterNode/leaveNode on group nodes to maintain a middleware stack, so that
+ * inherited middleware from parent groups is automatically available when route calls
+ * are processed in leaveNode(Stmt\Expression).
+ *
+ * NameResolver must run before this visitor so that ClassConstFetch nodes carry
+ * fully-qualified class names in their 'resolvedName' attribute.
+ */
+class RouteAuthVisitor extends NodeVisitorAbstract
+{
+    /**
+     * Middleware stack — one entry per open group.
+     * Each entry: ['add' => list<string>, 'remove' => list<string>]
+     *
+     * @var list<array{add: list<string>, remove: list<string>}>
+     */
+    private array $middlewareStack = [];
+
+    /**
+     * @var list<array{uri: string, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, line: int}>
+     */
+    private array $collectedRoutes = [];
+
+    /**
+     * @var list<array{middleware: list<string>, inherited_middleware: list<string>, line: int, has_guest: bool, is_static_group: bool}>
+     */
+    private array $collectedGroups = [];
+
+    /** @var list<string> Supported route HTTP verb method names (lowercase) */
+    private const ROUTE_VERBS = ['get', 'post', 'put', 'patch', 'delete', 'resource', 'apiresource'];
+
+    public function __construct() {}
+
+    /**
+     * @return list<array{uri: string, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, line: int}>
+     */
+    public function getCollectedRoutes(): array
+    {
+        return $this->collectedRoutes;
+    }
+
+    /**
+     * @return list<array{middleware: list<string>, inherited_middleware: list<string>, line: int, has_guest: bool, is_static_group: bool}>
+     */
+    public function getCollectedGroups(): array
+    {
+        return $this->collectedGroups;
+    }
+
+    public function enterNode(Node $node): ?int
+    {
+        if ($this->isGroupNode($node)) {
+            // Snapshot inherited middleware BEFORE pushing this group's own layer
+            $inherited = $this->computeStackMiddleware();
+            $own = $this->extractGroupMiddleware($node);
+            $this->middlewareStack[] = $own;
+
+            $this->collectedGroups[] = [
+                'middleware' => $own['add'],
+                'inherited_middleware' => $inherited,
+                'line' => $node->getStartLine(),
+                'has_guest' => in_array('guest', $own['add'], true),
+                'is_static_group' => $node instanceof Node\Expr\StaticCall,
+            ];
+        }
+
+        return null;
+    }
+
+    public function leaveNode(Node $node): ?int
+    {
+        if ($this->isGroupNode($node)) {
+            array_pop($this->middlewareStack);
+        }
+
+        // Process route calls at the Stmt\Expression boundary so we see the
+        // complete method-call chain (including chained ->middleware() / ->withoutMiddleware())
+        // in one pass.
+        if ($node instanceof Node\Stmt\Expression) {
+            $this->processExpression($node->expr);
+        }
+
+        return null;
+    }
+
+    // -------------------------------------------------------------------------
+    // Group detection
+    // -------------------------------------------------------------------------
+
+    /**
+     * Detect Route::group([...], fn) StaticCalls and ->group(fn) MethodCalls.
+     */
+    private function isGroupNode(Node $node): bool
+    {
+        // Route::group([...], fn)
+        if ($node instanceof Node\Expr\StaticCall
+            && $node->name instanceof Node\Identifier
+            && $node->name->toString() === 'group'
+            && $node->class instanceof Node\Name
+            && $this->isRouteFacade($node->class)) {
+            return true;
+        }
+
+        // Route::middleware(...)->group(fn)  or  Route::withoutMiddleware(...)->group(fn)
+        if ($node instanceof Node\Expr\MethodCall
+            && $node->name instanceof Node\Identifier
+            && $node->name->toString() === 'group'
+            && $this->chainRootsToRoute($node->var)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Walk a MethodCall chain downward until we reach a StaticCall.
+     * Returns true if that StaticCall is on the Route facade.
+     */
+    private function chainRootsToRoute(Node\Expr $node): bool
+    {
+        while ($node instanceof Node\Expr\MethodCall) {
+            $node = $node->var;
+        }
+
+        return $node instanceof Node\Expr\StaticCall
+            && $node->class instanceof Node\Name
+            && $this->isRouteFacade($node->class);
+    }
+
+    /**
+     * Extract the middleware this group node adds/removes from its own definition.
+     *
+     * For StaticCall Route::group(['middleware' => 'auth'], fn):
+     *   → parses the config array's 'middleware' key.
+     *
+     * For MethodCall ->group() chains (e.g. Route::middleware('auth')->group(fn)):
+     *   → walks the chain collecting ->middleware() and ->withoutMiddleware() calls,
+     *     and also handles Route::middleware() / Route::withoutMiddleware() as the root.
+     *
+     * @return array{add: list<string>, remove: list<string>}
+     */
+    private function extractGroupMiddleware(Node $node): array
+    {
+        $add = [];
+        $remove = [];
+
+        if ($node instanceof Node\Expr\StaticCall) {
+            // Route::group(['middleware' => ...], fn) — look at first arg
+            if (! empty($node->args)) {
+                $firstArg = $node->args[0]->value ?? null;
+                if ($firstArg instanceof Node\Expr\Array_) {
+                    foreach ($firstArg->items as $item) {
+                        if (! ($item instanceof Node\Expr\ArrayItem)) {
+                            continue;
+                        }
+                        if (! ($item->key instanceof Node\Scalar\String_)
+                            || $item->key->value !== 'middleware') {
+                            continue;
+                        }
+
+                        $add = array_merge($add, $this->extractMiddlewareValue($item->value));
+                    }
+                }
+            }
+
+            return ['add' => $add, 'remove' => $remove];
+        }
+
+        if ($node instanceof Node\Expr\MethodCall) {
+            // Walk the chain: [MethodCall ->group], [MethodCall ->middleware], ..., StaticCall Route::X
+            $current = $node->var;
+
+            while ($current instanceof Node\Expr\MethodCall) {
+                if ($current->name instanceof Node\Identifier) {
+                    $name = $current->name->toString();
+                    if ($name === 'middleware') {
+                        $add = array_merge($add, $this->extractMiddlewareArgs($current->args));
+                    } elseif ($name === 'withoutMiddleware') {
+                        $remove = array_merge($remove, $this->extractMiddlewareArgs($current->args));
+                    }
+                }
+                $current = $current->var;
+            }
+
+            // Handle the StaticCall root: Route::middleware(...) or Route::withoutMiddleware(...)
+            if ($current instanceof Node\Expr\StaticCall
+                && $current->name instanceof Node\Identifier) {
+                $name = $current->name->toString();
+                if ($name === 'middleware') {
+                    $add = array_merge($add, $this->extractMiddlewareArgs($current->args));
+                } elseif ($name === 'withoutMiddleware') {
+                    $remove = array_merge($remove, $this->extractMiddlewareArgs($current->args));
+                }
+            }
+        }
+
+        return ['add' => $add, 'remove' => $remove];
+    }
+
+    // -------------------------------------------------------------------------
+    // Route expression processing
+    // -------------------------------------------------------------------------
+
+    /**
+     * If the expression (top of a Stmt\Expression) is a route verb call, collect it.
+     *
+     * Walks the MethodCall chain from the outermost node down to the innermost
+     * StaticCall, collecting ->middleware() / ->withoutMiddleware() along the way.
+     */
+    private function processExpression(Node\Expr $expr): void
+    {
+        // Collect the MethodCall chain (outermost first)
+        $chain = [];
+        $current = $expr;
+        while ($current instanceof Node\Expr\MethodCall) {
+            $chain[] = $current;
+            $current = $current->var;
+        }
+
+        // The innermost node must be a StaticCall on the Route facade
+        if (! ($current instanceof Node\Expr\StaticCall)) {
+            return;
+        }
+        if (! ($current->class instanceof Node\Name) || ! $this->isRouteFacade($current->class)) {
+            return;
+        }
+        if (! ($current->name instanceof Node\Identifier)) {
+            return;
+        }
+
+        $verbLower = strtolower($current->name->toString());
+
+        // Skip group calls (handled via enterNode/leaveNode)
+        if ($verbLower === 'group') {
+            return;
+        }
+
+        if (! in_array($verbLower, self::ROUTE_VERBS, true)) {
+            return;
+        }
+
+        $httpMethod = strtoupper($current->name->toString());
+
+        // Extract URI and handler from the StaticCall args
+        $uri = $this->extractUri($current);
+        [$controller, $action, $isClosure] = $this->extractHandler($current);
+
+        // Collect direct middleware from the outer chain
+        $directAdd = [];
+        $directRemove = [];
+        foreach ($chain as $methodCall) {
+            if (! ($methodCall->name instanceof Node\Identifier)) {
+                continue;
+            }
+            $name = $methodCall->name->toString();
+            if ($name === 'middleware') {
+                $directAdd = array_merge($directAdd, $this->extractMiddlewareArgs($methodCall->args));
+            } elseif ($name === 'withoutMiddleware') {
+                $directRemove = array_merge($directRemove, $this->extractMiddlewareArgs($methodCall->args));
+            }
+        }
+
+        // Compute effective middleware: inherited from stack → apply direct
+        $effective = $this->computeStackMiddleware();
+        foreach ($directAdd as $mw) {
+            $effective[] = $mw;
+        }
+        foreach ($directRemove as $mw) {
+            $effective = array_values(array_filter($effective, fn ($x) => $x !== $mw));
+        }
+        $effective = array_unique($effective);
+
+        $this->collectedRoutes[] = [
+            'uri' => $uri,
+            'http_methods' => [$httpMethod],
+            'controller' => $controller,
+            'action' => $action,
+            'is_closure' => $isClosure,
+            'middleware' => array_values($effective),
+            'direct_remove' => $directRemove,
+            'line' => $current->getStartLine(),
+        ];
+    }
+
+    // -------------------------------------------------------------------------
+    // Handler / URI extraction
+    // -------------------------------------------------------------------------
+
+    /**
+     * Extract the URI string from a route StaticCall's first argument.
+     */
+    private function extractUri(Node\Expr\StaticCall $call): string
+    {
+        if (empty($call->args)) {
+            return '';
+        }
+
+        $firstArg = $call->args[0]->value ?? null;
+        if ($firstArg instanceof Node\Scalar\String_) {
+            return $firstArg->value;
+        }
+
+        return '';
+    }
+
+    /**
+     * Extract controller FQCN, action, and closure flag from the route handler argument.
+     *
+     * Supports:
+     *   [Controller::class, 'method']  — array tuple
+     *   Controller::class              — invokable (action = '__invoke')
+     *   'Controller@method'            — legacy string
+     *   Closure / ArrowFunction        — closure route
+     *
+     * @return array{0: string|null, 1: string|null, 2: bool} [controller, action, isClosure]
+     */
+    private function extractHandler(Node\Expr\StaticCall $call): array
+    {
+        if (count($call->args) < 2) {
+            return [null, null, false];
+        }
+
+        $handlerArg = $call->args[1]->value ?? null;
+
+        // Closure or ArrowFunction
+        if ($handlerArg instanceof Node\Expr\Closure
+            || $handlerArg instanceof Node\Expr\ArrowFunction) {
+            return [null, null, true];
+        }
+
+        // [Controller::class, 'method']
+        if ($handlerArg instanceof Node\Expr\Array_
+            && count($handlerArg->items) >= 2) {
+            $classItem = $handlerArg->items[0];
+            $methodItem = $handlerArg->items[1];
+            if ($classItem instanceof Node\Expr\ArrayItem
+                && $methodItem instanceof Node\Expr\ArrayItem
+                && $classItem->value instanceof Node\Expr\ClassConstFetch
+                && $methodItem->value instanceof Node\Scalar\String_) {
+                $controller = $this->resolveClassFqcn($classItem->value->class);
+
+                return [$controller, $methodItem->value->value, false];
+            }
+        }
+
+        // Controller::class (invokable)
+        if ($handlerArg instanceof Node\Expr\ClassConstFetch) {
+            $controller = $this->resolveClassFqcn($handlerArg->class);
+
+            return [$controller, '__invoke', false];
+        }
+
+        // 'Controller@method' or 'Controller' (legacy string)
+        if ($handlerArg instanceof Node\Scalar\String_) {
+            $value = $handlerArg->value;
+            if (str_contains($value, '@')) {
+                [$class, $method] = explode('@', $value, 2);
+
+                return [$class, $method, false];
+            }
+
+            return [$value, '__invoke', false];
+        }
+
+        return [null, null, false];
+    }
+
+    /**
+     * Resolve a class Name node to a FQCN string using NameResolver's 'resolvedName' attribute.
+     */
+    private function resolveClassFqcn(Node\Name|Node\Expr $nameNode): ?string
+    {
+        if (! ($nameNode instanceof Node\Name)) {
+            return null;
+        }
+
+        $resolvedName = $nameNode->getAttribute('resolvedName');
+        if ($resolvedName instanceof Node\Name\FullyQualified) {
+            return $resolvedName->toString();
+        }
+
+        return $nameNode->toString();
+    }
+
+    // -------------------------------------------------------------------------
+    // Middleware extraction helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Extract middleware strings from a ->middleware() or ->withoutMiddleware() arg list.
+     *
+     * Handles:
+     *   ->middleware('auth')
+     *   ->middleware(['auth', 'verified'])
+     *   ->middleware(SomeClass::class)
+     *
+     * @param  array<Node\Arg|\PhpParser\Node\VariadicPlaceholder>  $args
+     * @return list<string>
+     */
+    private function extractMiddlewareArgs(array $args): array
+    {
+        $middleware = [];
+
+        foreach ($args as $arg) {
+            if (! ($arg instanceof Node\Arg)) {
+                continue;
+            }
+
+            $middleware = array_merge($middleware, $this->extractMiddlewareValue($arg->value));
+        }
+
+        return $middleware;
+    }
+
+    /**
+     * Extract middleware strings from a value node (String_, Array_, or ClassConstFetch).
+     *
+     * @return list<string>
+     */
+    private function extractMiddlewareValue(Node\Expr $value): array
+    {
+        // Single string: 'auth'
+        if ($value instanceof Node\Scalar\String_) {
+            return [$value->value];
+        }
+
+        // Array: ['auth', 'verified']  or  [SomeClass::class, 'throttle:60']
+        if ($value instanceof Node\Expr\Array_) {
+            $result = [];
+            foreach ($value->items as $item) {
+                if (! ($item instanceof Node\Expr\ArrayItem)) {
+                    continue;
+                }
+                $result = array_merge($result, $this->extractMiddlewareValue($item->value));
+            }
+
+            return $result;
+        }
+
+        // ClassConstFetch: SomeClass::class
+        if ($value instanceof Node\Expr\ClassConstFetch) {
+            $fqcn = $this->resolveClassFqcn($value->class);
+            if ($fqcn !== null) {
+                return [$fqcn];
+            }
+        }
+
+        return [];
+    }
+
+    // -------------------------------------------------------------------------
+    // Stack helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Compute the effective middleware set from the current stack (without any direct overrides).
+     *
+     * Applies each layer in order: adds first, then removes.
+     *
+     * @return list<string>
+     */
+    private function computeStackMiddleware(): array
+    {
+        $middleware = [];
+
+        foreach ($this->middlewareStack as $layer) {
+            foreach ($layer['add'] as $mw) {
+                $middleware[] = $mw;
+            }
+            foreach ($layer['remove'] as $mw) {
+                $middleware = array_values(array_filter($middleware, fn ($x) => $x !== $mw));
+            }
+        }
+
+        return array_values(array_unique($middleware));
+    }
+
+    // -------------------------------------------------------------------------
+    // Route facade detection
+    // -------------------------------------------------------------------------
+
+    /**
+     * Check whether a Name node refers to the Route facade.
+     *
+     * Handles both the short alias (Route) and the full class name
+     * (Illuminate\Support\Facades\Route) after NameResolver processing.
+     */
+    private function isRouteFacade(Node\Name $name): bool
+    {
+        $resolvedName = $name->getAttribute('resolvedName');
+        $className = $resolvedName instanceof Node\Name\FullyQualified
+            ? $resolvedName->toString()
+            : $name->toString();
+        $className = ltrim($className, '\\');
+
+        return $className === 'Illuminate\\Support\\Facades\\Route'
+            || $className === 'Route';
     }
 }

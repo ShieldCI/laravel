@@ -3895,6 +3895,72 @@ PHP;
         $this->assertHasIssueContaining('POST route without authentication middleware', $result);
     }
 
+    public function test_passes_routes_in_group_with_intermediate_method_calls(): void
+    {
+        // Route::prefix()->middleware()->group() — the ->prefix() sits between the StaticCall
+        // root and ->group(), so extractGroupMiddleware must walk the intermediate MethodCall chain.
+        $routes = <<<'PHP'
+<?php
+
+Route::prefix('api')->middleware('auth')->group(function () {
+    Route::post('/reports', [ReportController::class, 'store']);
+    Route::delete('/reports/{id}', [ReportController::class, 'destroy']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_legacy_string_routes_in_protected_group(): void
+    {
+        // Legacy 'Controller@method' string — exercising the string-handler path in extractHandler.
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('auth')->group(function () {
+    Route::post('/reports', 'ReportController@store');
+    Route::delete('/reports/{id}', 'ReportController@destroy');
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_unprotected_legacy_string_route(): void
+    {
+        // Legacy 'Controller@method' string on an unprotected mutation route should be flagged.
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/reports', 'ReportController@store');
+Route::post('/orders', 'OrderController');
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertCount(2, $result->getIssues());
+    }
+
     // ==========================================
     // API.php Skip Removal Tests
     // ==========================================

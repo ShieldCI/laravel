@@ -3003,10 +3003,27 @@ class UpdatePostRequest extends FormRequest
 }
 PHP;
 
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Http\Requests\UpdatePostRequest;
+
+class PostController extends Controller
+{
+    public function update(UpdatePostRequest $request, $id)
+    {
+        // sensitive action — no auth middleware
+    }
+}
+PHP;
+
         $routes = '<?php';
 
         $tempDir = $this->createTempDirectory([
             'app/Http/Requests/UpdatePostRequest.php' => $formRequest,
+            'app/Http/Controllers/PostController.php' => $controller,
             'routes/web.php' => $routes,
         ]);
 
@@ -3016,7 +3033,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFalse($result->isSuccess());
+        $this->assertFailed($result);
         $this->assertHasIssueContaining('UpdatePostRequest::authorize() returns true without authorization checks', $result);
     }
 
@@ -3098,6 +3115,128 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should pass - has proper authorization logic
+        $this->assertPassed($result);
+    }
+
+    public function test_two_factor_challenge_request_not_flagged(): void
+    {
+        $formRequest = <<<'PHP'
+<?php
+namespace App\Http\Requests\Auth;
+use Illuminate\Foundation\Http\FormRequest;
+class TwoFactorChallengeRequest extends FormRequest
+{
+    public function authorize(): bool { return true; }
+    public function rules(): array
+    {
+        return ['code' => 'nullable|string', 'recovery_code' => 'nullable|string'];
+    }
+}
+PHP;
+
+        // No controller — FormRequest is orphaned, cannot determine risk
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => '<?php',
+            'app/Http/Requests/Auth/TwoFactorChallengeRequest.php' => $formRequest,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $result = $analyzer->analyze();
+        $this->assertPassed($result);
+    }
+
+    public function test_form_request_authorize_true_in_unprotected_store_flagged(): void
+    {
+        $routes = <<<'PHP'
+<?php
+use App\Http\Controllers\AccountController;
+use Illuminate\Support\Facades\Route;
+Route::post('/account/delete', [AccountController::class, 'store']);
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+use App\Http\Requests\DeleteAccountRequest;
+class AccountController extends Controller
+{
+    public function store(DeleteAccountRequest $request)
+    {
+        // sensitive action
+    }
+}
+PHP;
+
+        $formRequest = <<<'PHP'
+<?php
+namespace App\Http\Requests;
+use Illuminate\Foundation\Http\FormRequest;
+class DeleteAccountRequest extends FormRequest
+{
+    public function authorize(): bool { return true; }
+    public function rules(): array { return []; }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+            'app/Http/Controllers/AccountController.php' => $controller,
+            'app/Http/Requests/DeleteAccountRequest.php' => $formRequest,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertFailed($result);
+    }
+
+    public function test_form_request_authorize_true_in_auth_protected_route_not_flagged(): void
+    {
+        $routes = <<<'PHP'
+<?php
+use App\Http\Controllers\AccountController;
+use Illuminate\Support\Facades\Route;
+Route::middleware('auth')->group(function () {
+    Route::post('/account/delete', [AccountController::class, 'store']);
+});
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+use App\Http\Requests\DeleteAccountRequest;
+class AccountController extends Controller
+{
+    public function store(DeleteAccountRequest $request)
+    {
+        // sensitive action — but route is auth-protected
+    }
+}
+PHP;
+
+        $formRequest = <<<'PHP'
+<?php
+namespace App\Http\Requests;
+use Illuminate\Foundation\Http\FormRequest;
+class DeleteAccountRequest extends FormRequest
+{
+    public function authorize(): bool { return true; }
+    public function rules(): array { return []; }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+            'app/Http/Controllers/AccountController.php' => $controller,
+            'app/Http/Requests/DeleteAccountRequest.php' => $formRequest,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
         $this->assertPassed($result);
     }
 

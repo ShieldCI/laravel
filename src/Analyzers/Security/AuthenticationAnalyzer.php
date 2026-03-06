@@ -552,6 +552,17 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
+            // Extract namespace for FQCN construction
+            $namespaceNodes = $this->parser->findNodes($ast, Node\Stmt\Namespace_::class);
+            $namespace = '';
+            if (! empty($namespaceNodes) && $namespaceNodes[0] instanceof Node\Stmt\Namespace_
+                    && $namespaceNodes[0]->name !== null) {
+                $namespace = $namespaceNodes[0]->name->toString();
+            }
+
+            // Build FQCN from namespace + short name
+            $fqcn = $namespace !== '' ? "{$namespace}\\{$className}" : $className;
+
             // Find authorize() method
             $authorizeMethod = null;
             foreach ($class->stmts as $stmt) {
@@ -568,17 +579,21 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
             // Check if authorize() returns true without any checks
             if ($this->authorizesWithoutChecks($authorizeMethod)) {
-                $issues[] = $this->createIssueWithSnippet(
-                    message: "{$className}::authorize() returns true without authorization checks",
-                    filePath: $file,
-                    lineNumber: $authorizeMethod->getLine(),
-                    severity: Severity::High,
-                    recommendation: 'Add proper authorization logic to the authorize() method or remove it to deny by default',
-                    metadata: [
-                        'type' => 'form_request_authorization',
-                        'class' => $className,
-                    ]
-                );
+                // Only flag if actually used in a sensitive, unprotected action.
+                // Without usage context, authorize() => true is ambiguous.
+                if ($this->isFormRequestUsedInUnprotectedSensitiveAction($className, $fqcn)) {
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: "{$className}::authorize() returns true without authorization checks",
+                        filePath: $file,
+                        lineNumber: $authorizeMethod->getLine(),
+                        severity: Severity::High,
+                        recommendation: 'Add authorization logic in authorize() (e.g., return $this->user()->can(\'delete\', $model)), add auth middleware to the route, or add $this->middleware(\'auth\') in the controller constructor.',
+                        metadata: [
+                            'type' => 'form_request_authorization',
+                            'class' => $className,
+                        ]
+                    );
+                }
             }
         }
     }
@@ -640,6 +655,139 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         }
 
         return $files;
+    }
+
+    /**
+     * Find all controller methods that type-hint the given FormRequest.
+     *
+     * Resolves parameter type names through each file's use imports so that
+     * imported short names (e.g. "DeleteAccountRequest") correctly match the FQCN.
+     *
+     * @return array<array{controllerClass: string, namespace: string, methodName: string, classNode: Node\Stmt\Class_}>
+     */
+    private function findFormRequestUsagesInControllers(string $shortClassName, string $fqcn): array
+    {
+        $usages = [];
+
+        foreach ($this->getControllerFiles() as $file) {
+            $ast = $this->parser->parseFile($file);
+            if (empty($ast)) {
+                continue;
+            }
+
+            // Resolve use imports so short names expand to their FQCN
+            $fileLines = FileParser::getLines($file);
+            $useImports = $this->extractUseImports($fileLines);
+
+            // Extract namespace
+            $namespaceNodes = $this->parser->findNodes($ast, Node\Stmt\Namespace_::class);
+            $ns = '';
+            if (! empty($namespaceNodes) && $namespaceNodes[0] instanceof Node\Stmt\Namespace_
+                    && $namespaceNodes[0]->name !== null) {
+                $ns = $namespaceNodes[0]->name->toString();
+            }
+
+            foreach ($this->parser->findClasses($ast) as $class) {
+                $controllerClass = $class->name ? $class->name->toString() : 'Unknown';
+
+                foreach ($class->stmts as $stmt) {
+                    if (! ($stmt instanceof Node\Stmt\ClassMethod) || ! $stmt->isPublic()) {
+                        continue;
+                    }
+
+                    foreach ($stmt->getParams() as $param) {
+                        if ($param->type === null) {
+                            continue;
+                        }
+
+                        $typeName = $param->type instanceof Node\Name
+                            ? $param->type->toString()
+                            : '';
+
+                        if ($typeName === '') {
+                            continue;
+                        }
+
+                        // Resolve through use imports (covers the common "imported short name" case)
+                        $resolvedType = $useImports[$typeName] ?? $typeName;
+
+                        $matches = $resolvedType === $fqcn
+                            || $typeName === $shortClassName
+                            || str_ends_with($resolvedType, '\\'.$shortClassName);
+
+                        if ($matches) {
+                            $usages[] = [
+                                'controllerClass' => $controllerClass,
+                                'namespace' => $ns,
+                                'methodName' => $stmt->name->toString(),
+                                'classNode' => $class,
+                            ];
+                            break; // Found usage in this method; skip remaining params
+                        }
+                    }
+                }
+            }
+        }
+
+        return $usages;
+    }
+
+    /**
+     * Return true only when the FormRequest with authorize() => true is injected into
+     * a sensitive controller action that is not protected by any auth signal.
+     */
+    private function isFormRequestUsedInUnprotectedSensitiveAction(
+        string $shortClassName,
+        string $fqcn
+    ): bool {
+        $usages = $this->findFormRequestUsagesInControllers($shortClassName, $fqcn);
+
+        if (empty($usages)) {
+            return false; // No usage found — cannot determine risk
+        }
+
+        foreach ($usages as $usage) {
+            $method = $usage['methodName'];
+            $controllerClass = $usage['controllerClass'];
+            $ns = $usage['namespace'];
+            $classNode = $usage['classNode'];
+
+            // Only flag if method is sensitive
+            if (! in_array($method, $this->sensitiveControllerMethods, true)
+                    && $method !== '__invoke') {
+                continue;
+            }
+
+            // Build lookup keys (same pattern as checkController())
+            $shortKey = "{$controllerClass}::{$method}";
+            $fqcnKey = $ns !== '' ? "{$ns}\\{$controllerClass}::{$method}" : $shortKey;
+
+            // 1. Intentionally public via route analysis
+            //    (covers guest groups, GET routes, explicit ->withoutMiddleware(['auth']))
+            if (isset($this->publicControllerMethods[$fqcnKey])
+                    || isset($this->publicControllerMethods[$shortKey])) {
+                continue;
+            }
+
+            // 2. Route-level auth/authorization middleware
+            $stats = $this->routeAuthStats[$fqcnKey] ?? $this->routeAuthStats[$shortKey] ?? null;
+            if ($stats !== null && $stats['total'] > 0
+                    && $stats['authenticated'] === $stats['total']) {
+                continue;
+            }
+
+            // 3. Controller constructor or middleware() method protection
+            $constructorInfo = $this->getConstructorMiddlewareInfo($classNode);
+            $middlewareMethodInfo = $this->getMiddlewareMethodInfo($classNode);
+            if ($this->isControllerMethodAuthenticated($method, $constructorInfo, $middlewareMethodInfo)) {
+                continue;
+            }
+
+            // Sensitive + unprotected across all signals → real risk
+            return true;
+        }
+
+        return false; // All usages are either non-sensitive or already protected
     }
 
     /**

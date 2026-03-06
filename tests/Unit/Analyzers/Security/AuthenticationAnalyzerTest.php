@@ -1786,6 +1786,133 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_invokable_controller_in_guest_group_not_flagged(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Auth\GoogleOneTapController;
+use Illuminate\Support\Facades\Route;
+
+Route::middleware('guest')->group(function () {
+    Route::post('/auth/google/one-tap', GoogleOneTapController::class)
+        ->name('auth.google.one-tap')
+        ->middleware('throttle:10,1');
+});
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers\Auth;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+
+class GoogleOneTapController extends Controller
+{
+    public function __invoke(Request $request): RedirectResponse
+    {
+        return redirect()->route('dashboard');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/auth.php' => $routes,
+            'app/Http/Controllers/Auth/GoogleOneTapController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']); // Required: ensures checkController() actually scans
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_public_get_invokable_controller_not_flagged(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Marketing\PrivacyController;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/privacy', PrivacyController::class)->name('privacy');
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers\Marketing;
+
+use App\Http\Controllers\Controller;
+use Inertia\Response;
+
+class PrivacyController extends Controller
+{
+    public function __invoke(): Response
+    {
+        return inertia('marketing/privacy');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+            'app/Http/Controllers/Marketing/PrivacyController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_post_invokable_controller_without_auth_flagged(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\SubmitController;
+use Illuminate\Support\Facades\Route;
+
+Route::post('/submit', SubmitController::class);
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+
+class SubmitController extends Controller
+{
+    public function __invoke()
+    {
+        return response()->json(['ok' => true]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+            'app/Http/Controllers/SubmitController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        // Route-level + controller-level checks both fire for an unprotected POST
+        $this->assertIssueCount(2, $result);
+    }
+
     // ==========================================
     // Auth::user() Safety Tests
     // ==========================================
@@ -2563,6 +2690,8 @@ PHP;
         $routes = <<<'PHP'
 <?php
 
+use App\Http\Controllers\WebhookController;
+
 Route::middleware('auth')->group(function () {
     Route::post('/webhook/callback', WebhookController::class);
 });
@@ -2590,6 +2719,7 @@ PHP;
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']); // Ensures checkController() actually scans
 
         $result = $analyzer->analyze();
 

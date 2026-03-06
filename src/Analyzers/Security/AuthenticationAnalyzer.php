@@ -1060,6 +1060,15 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     {
         $lines = FileParser::getLines($file);
 
+        $ast = $this->parser->parseFile($file);
+
+        $namespaceNodes = $this->parser->findNodes($ast, Node\Stmt\Namespace_::class);
+        $namespace = '';
+        if (! empty($namespaceNodes) && $namespaceNodes[0] instanceof Node\Stmt\Namespace_
+                && $namespaceNodes[0]->name !== null) {
+            $namespace = $namespaceNodes[0]->name->toString();
+        }
+
         foreach ($lines as $lineNumber => $line) {
             // Check for Auth::user()-> (but NOT Auth::user()?-> which is safe)
             if (preg_match('/Auth::user\(\)\s*->/i', $line) && ! preg_match('/Auth::user\(\)\s*\?->/i', $line)) {
@@ -1069,7 +1078,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     lineNumber: $lineNumber,
                     method: 'Auth::user()',
                     checkMethod: 'Auth::check()',
-                    issues: $issues
+                    issues: $issues,
+                    ast: $ast,
+                    namespace: $namespace
                 );
             }
 
@@ -1081,7 +1092,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     lineNumber: $lineNumber,
                     method: 'auth()->user()',
                     checkMethod: 'auth()->check()',
-                    issues: $issues
+                    issues: $issues,
+                    ast: $ast,
+                    namespace: $namespace
                 );
             }
 
@@ -1093,7 +1106,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     lineNumber: $lineNumber,
                     method: '$request->user()',
                     checkMethod: '$request->user()',
-                    issues: $issues
+                    issues: $issues,
+                    ast: $ast,
+                    namespace: $namespace
                 );
             }
         }
@@ -1101,6 +1116,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if auth method is used with proper null safety.
+     *
+     * @param  array<int, string>  $lines
+     * @param  array<\PhpParser\Node>  $ast
      */
     private function checkAuthUsageWithNullSafety(
         string $file,
@@ -1108,7 +1126,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         int $lineNumber,
         string $method,
         string $checkMethod,
-        array &$issues
+        array &$issues,
+        array $ast = [],
+        string $namespace = '',
     ): void {
         // Look for null checks in surrounding lines
         $searchRange = max(0, $lineNumber - 3);
@@ -1122,6 +1142,11 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         }
 
         if (! $hasNullCheck) {
+            // Suppress when the enclosing method is guaranteed non-null by auth middleware
+            if (! empty($ast) && $this->isLineInAuthProtectedMethod($ast, $namespace, $lineNumber)) {
+                return;
+            }
+
             $issues[] = $this->createIssueWithSnippet(
                 message: "Unsafe {$method} usage without null check",
                 filePath: $file,
@@ -1135,6 +1160,78 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 ]
             );
         }
+    }
+
+    /**
+     * Return true when the method enclosing $lineNumber is guaranteed to receive
+     * only authenticated requests, making Auth::user() / $request->user() non-null.
+     *
+     * @param  array<\PhpParser\Node>  $ast
+     */
+    private function isLineInAuthProtectedMethod(array $ast, string $namespace, int $lineNumber): bool
+    {
+        $enclosing = $this->findEnclosingClassMethod($ast, $lineNumber);
+        if ($enclosing === null) {
+            return false;
+        }
+
+        $className = $enclosing['className'];
+        $methodName = $enclosing['methodName'];
+        $classNode = $enclosing['classNode'];
+
+        $shortKey = "{$className}::{$methodName}";
+        $fqcnKey = $namespace !== '' ? "{$namespace}\\{$className}::{$methodName}" : $shortKey;
+
+        // Intentionally public (guest route, unauthenticated GET) → do not suppress
+        if (isset($this->publicControllerMethods[$fqcnKey])
+                || isset($this->publicControllerMethods[$shortKey])) {
+            return false;
+        }
+
+        // Route-level: every known route to this method is authenticated
+        $stats = $this->routeAuthStats[$fqcnKey] ?? $this->routeAuthStats[$shortKey] ?? null;
+        if ($stats !== null && $stats['total'] > 0
+                && $stats['authenticated'] === $stats['total']) {
+            return true;
+        }
+
+        // Controller-level: constructor $this->middleware('auth') or middleware() method
+        $constructorInfo = $this->getConstructorMiddlewareInfo($classNode);
+        $middlewareMethodInfo = $this->getMiddlewareMethodInfo($classNode);
+
+        return $this->isControllerMethodAuthenticated($methodName, $constructorInfo, $middlewareMethodInfo);
+    }
+
+    /**
+     * Find the class and method that encloses the given (0-indexed) line number.
+     *
+     * @param  array<\PhpParser\Node>  $ast
+     * @return array{className: string, methodName: string, classNode: Node\Stmt\Class_}|null
+     */
+    private function findEnclosingClassMethod(array $ast, int $lineNumber): ?array
+    {
+        // FileParser lines are 0-indexed; AST line numbers are 1-indexed
+        $oneBased = $lineNumber + 1;
+
+        foreach ($this->parser->findClasses($ast) as $class) {
+            $className = $class->name ? $class->name->toString() : 'Unknown';
+
+            foreach ($class->stmts as $stmt) {
+                if (! ($stmt instanceof Node\Stmt\ClassMethod)) {
+                    continue;
+                }
+
+                if ($oneBased >= $stmt->getStartLine() && $oneBased <= $stmt->getEndLine()) {
+                    return [
+                        'className' => $className,
+                        'methodName' => $stmt->name->toString(),
+                        'classNode' => $class,
+                    ];
+                }
+            }
+        }
+
+        return null;
     }
 
     /**

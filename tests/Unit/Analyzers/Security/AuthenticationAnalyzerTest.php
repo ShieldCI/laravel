@@ -3928,4 +3928,107 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('POST route without authentication middleware', $result);
     }
+
+    // ==========================================
+    // Auth Usage — Middleware-Protected Suppression
+    // ==========================================
+
+    public function test_request_user_not_flagged_in_auth_middleware_route(): void
+    {
+        $routes = <<<'PHP'
+<?php
+use App\Http\Controllers\Auth\EmailVerificationPromptController;
+use Illuminate\Support\Facades\Route;
+Route::middleware('auth')->group(function () {
+    Route::get('verify-email', EmailVerificationPromptController::class)
+        ->name('verification.notice');
+});
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers\Auth;
+use Illuminate\Http\Request;
+class EmailVerificationPromptController
+{
+    public function __invoke(Request $request)
+    {
+        return $request->user()->hasVerifiedEmail()
+            ? redirect('/dashboard')
+            : view('auth.verify-email');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/auth.php' => $routes,
+            'app/Http/Controllers/Auth/EmailVerificationPromptController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertPassed($result);
+    }
+
+    public function test_auth_user_not_flagged_in_constructor_auth_controller(): void
+    {
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+use Illuminate\Support\Facades\Auth;
+class ProfileController extends Controller
+{
+    public function __construct()
+    {
+        $this->middleware('auth');
+    }
+    public function show()
+    {
+        $name = Auth::user()->name;
+        return view('profile', compact('name'));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => '<?php',
+            'app/Http/Controllers/ProfileController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertPassed($result);
+    }
+
+    public function test_request_user_still_flagged_when_unprotected(): void
+    {
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+use Illuminate\Http\Request;
+class GuestController extends Controller
+{
+    public function show(Request $request)
+    {
+        return $request->user()->name;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => '<?php',
+            'app/Http/Controllers/GuestController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+        $this->assertFalse($result->isSuccess());
+        $this->assertHasIssueContaining('$request->user()', $result);
+    }
 }

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.5.1 - 2026-03-05
+
+### Fixed
+- `AuthenticationAnalyzer` no longer false-positives on `Auth::user()->`, `auth()->user()->`, or `$request->user()->` calls inside controller methods that are verifiably protected by auth middleware — suppression uses the already-computed `routeAuthStats` and `publicControllerMethods` maps (route-level) or constructor / `middleware()` method inspection (controller-level)
+
 ## v1.5.0 - 2026-03-05
 
 ### Added

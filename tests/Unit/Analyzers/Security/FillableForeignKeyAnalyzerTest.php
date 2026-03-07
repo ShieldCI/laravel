@@ -821,6 +821,83 @@ PHP;
         $this->assertStringContainsString('impersonate', $issue->message);
     }
 
+    // ==================== Line Number Tests ====================
+    // Note: @shieldci-ignore suppression is applied by AnalyzeCommand, not the analyzer.
+    // These tests verify that issues are reported at the array item line (not the property
+    // declaration line), which is what allows per-item inline suppression to work correctly.
+
+    public function test_issue_is_reported_at_array_item_line_not_property_line(): void
+    {
+        // 'post_id' is on line 11, 'protected $fillable' is on line 9
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Post extends Model
+{
+    protected $fillable = [
+        'title',
+        'post_id',
+    ];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Post.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        // Issue must report at line 11 ('post_id'), not line 9 ('protected $fillable = [')
+        $this->assertNotNull($issues[0]->location);
+        $this->assertEquals(11, $issues[0]->location->line);
+    }
+
+    public function test_dangerous_pattern_issue_is_reported_at_array_item_line(): void
+    {
+        // 'user_id' is on line 11, 'protected $fillable' is on line 9
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Post extends Model
+{
+    protected $fillable = [
+        'title',
+        'user_id',
+    ];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Post.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        // Issue must report at line 11 ('user_id'), not line 9 ('protected $fillable = [')
+        $this->assertNotNull($issues[0]->location);
+        $this->assertEquals(11, $issues[0]->location->line);
+    }
+
     // ==================== Analyzer Metadata Test ====================
 
     public function test_analyzer_runs_successfully(): void

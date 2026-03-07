@@ -225,7 +225,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                 foreach ($prop->default->items as $item) {
                     if ($item->value instanceof Node\Scalar\String_) {
                         $fieldName = $item->value->value;
-                        $this->checkField($file, $stmt, $modelName, $fieldName, $issues);
+                        $this->checkField($file, $item->getLine(), $modelName, $fieldName, $issues);
                     }
                 }
             }
@@ -281,7 +281,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
     /**
      * Check a single field for foreign key patterns.
      */
-    private function checkField(string $file, Node\Stmt\Property $stmt, string $modelName, string $fieldName, array &$issues): void
+    private function checkField(string $file, int $itemLine, string $modelName, string $fieldName, array &$issues): void
     {
         // Check dangerous patterns FIRST (prevents duplicates)
         if (array_key_exists($fieldName, $this->dangerousPatterns)) {
@@ -295,7 +295,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                     $modelName
                 ),
                 filePath: $file,
-                lineNumber: $stmt->getLine(),
+                lineNumber: $itemLine,
                 severity: Severity::Critical,
                 recommendation: sprintf(
                     'IMMEDIATELY remove "%s" from $fillable. Set this value server-side based on the authenticated context.',
@@ -307,7 +307,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                     'model_file' => $this->getRelativePath($file),
                     'is_dangerous_pattern' => true,
                     'pattern_type' => $relationship,
-                    'line' => $stmt->getLine(),
+                    'line' => $itemLine,
                 ]
             );
 
@@ -323,7 +323,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                     $modelName
                 ),
                 filePath: $file,
-                lineNumber: $stmt->getLine(),
+                lineNumber: $itemLine,
                 severity: Severity::High,
                 recommendation: sprintf(
                     'Remove "%s" from $fillable or validate that users should be able to set this relationship. '.
@@ -336,7 +336,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                     'model_file' => $this->getRelativePath($file),
                     'is_dangerous_pattern' => false,
                     'pattern_type' => 'foreign_key',
-                    'line' => $stmt->getLine(),
+                    'line' => $itemLine,
                 ]
             );
         }

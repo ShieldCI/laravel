@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.5.5 - 2026-03-07
+
+### Fixed
+- `CsrfAnalyzer` no longer false-positives on API route files (e.g. `routes/api-v1.php`) registered under the `api` middleware group via `withRouting(then: ...)` in `bootstrap/app.php` — these files use Sanctum token-based authentication and must not have `web` middleware; they are now correctly skipped
+- `BootstrapRouteParser::chainContainsMiddleware` now recognises array-form middleware declarations (e.g. `->middleware(['api', 'throttle:api.rest'])`) in addition to the string form `->middleware('api')`
+
+### Added
+- `BootstrapRouteParser::getApiRegisteredRouteFiles()` — detects route files registered under the `api` middleware group through two sources: `require`/`include` statements in `routes/api.php`, and `Route::middleware('api'|['api', ...])->...->group(base_path(...))` chains in `bootstrap/app.php`
+
 ## v1.5.4 - 2026-03-07
 
 ### Fixed

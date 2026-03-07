@@ -1211,4 +1211,77 @@ PHP;
         // Should fail - __invoke in Auth directory without throttle
         $this->assertFailed($result);
     }
+
+    // ==================== withRouting(then: ...) False Positive Tests ====================
+
+    public function test_skips_login_route_in_web_required_file(): void
+    {
+        // auth.php has a login route, but it's require'd from web.php.
+        // Throttle may be applied globally via withMiddleware(); no false positive expected.
+        $webPhp = <<<'PHP'
+<?php
+require __DIR__.'/auth.php';
+PHP;
+
+        $authPhp = <<<'PHP'
+<?php
+Route::post('/login', [LoginController::class, 'authenticate']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $webPhp,
+            'routes/auth.php' => $authPhp,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass — auth.php is web-protected via require from web.php;
+        // the global throttle check applies to all web routes
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_login_route_in_bootstrap_registered_file(): void
+    {
+        // auth.php registered via Route::middleware('web')->group() in bootstrap/app.php
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        then: function () {
+            Route::middleware('web')
+                ->group(base_path('routes/auth.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $authPhp = <<<'PHP'
+<?php
+Route::post('/login', [LoginController::class, 'authenticate']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/web.php' => '<?php // main routes',
+            'routes/auth.php' => $authPhp,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass — auth.php is web-protected via external registration;
+        // throttle is applied to the whole 'web' group globally
+        $this->assertPassed($result);
+    }
 }

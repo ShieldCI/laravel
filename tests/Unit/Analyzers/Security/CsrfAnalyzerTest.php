@@ -2012,4 +2012,114 @@ PHP;
         $this->assertArrayHasKey('file', $metadata);
         $this->assertArrayHasKey('line', $metadata);
     }
+
+    // ==================== withRouting(then: ...) False Positive Tests ====================
+
+    public function test_skips_route_file_required_from_web_php(): void
+    {
+        // auth.php has a POST route with no 'web' middleware — but it's require'd from
+        // web.php, so it inherits web middleware (including CSRF) automatically.
+        $webPhp = <<<'PHP'
+<?php
+require __DIR__.'/auth.php';
+PHP;
+
+        $authPhp = <<<'PHP'
+<?php
+Route::post('/login', [LoginController::class, 'store']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $webPhp,
+            'routes/auth.php' => $authPhp,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass — auth.php inherits web middleware from the require in web.php
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_route_file_registered_with_web_middleware_in_bootstrap(): void
+    {
+        // auth.php registered via Route::middleware('web')->group(...) in bootstrap/app.php
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        then: function () {
+            Route::middleware('web')
+                ->group(base_path('routes/auth.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $authPhp = <<<'PHP'
+<?php
+Route::post('/login', [LoginController::class, 'store']);
+Route::post('/register', [RegisterController::class, 'store']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/web.php' => '<?php // main web routes',
+            'routes/auth.php' => $authPhp,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass — auth.php is registered with 'web' middleware externally
+        $this->assertPassed($result);
+    }
+
+    public function test_still_flags_route_file_with_non_web_middleware_in_bootstrap(): void
+    {
+        // auth.php registered via Route::middleware('api')->group(...) — not 'web'
+        $bootstrapApp = <<<'PHP'
+<?php
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            Route::middleware('api')
+                ->group(base_path('routes/auth.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $authPhp = <<<'PHP'
+<?php
+Route::post('/login', [LoginController::class, 'store']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/web.php' => '<?php // main web routes',
+            'routes/auth.php' => $authPhp,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail — 'api' middleware does not include CSRF protection
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('CSRF', $result);
+    }
 }

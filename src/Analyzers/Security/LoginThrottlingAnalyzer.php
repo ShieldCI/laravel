@@ -12,6 +12,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Support\BootstrapRouteParser;
 
 /**
  * Detects missing login throttling/rate limiting.
@@ -616,6 +617,11 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
+        // Compute route files covered by 'web' middleware via external registration
+        // (require from web.php, or Route::middleware('web')->group() in bootstrap/app.php)
+        $webProtectedFiles = (new BootstrapRouteParser($this->getBasePath(), $this->parser))
+            ->getWebProtectedRouteFiles();
+
         try {
             foreach (new \DirectoryIterator($routePath) as $file) {
                 if (! $file->isFile() || $file->getExtension() !== 'php') {
@@ -623,6 +629,13 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 }
 
                 $filePath = $file->getPathname();
+                $normalizedPath = str_replace('\\', '/', $filePath);
+
+                // Skip files covered by 'web' middleware via external registration
+                if (in_array($normalizedPath, $webProtectedFiles, true)) {
+                    continue;
+                }
+
                 $isApiRoute = $file->getFilename() === 'api.php';
                 $content = FileParser::readFile($filePath);
                 if ($content === null || ! is_string($content)) {

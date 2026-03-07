@@ -8,8 +8,10 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Support\BootstrapRouteParser;
 
 /**
  * Detects missing CSRF protection vulnerabilities.
@@ -88,10 +90,15 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         // Check VerifyCsrfToken middleware registration
         $this->checkCsrfMiddlewareRegistration($issues);
 
+        // Compute route files covered by 'web' middleware via external registration
+        // (require from web.php, or Route::middleware('web')->group() in bootstrap/app.php)
+        $webProtectedFiles = (new BootstrapRouteParser($this->getBasePath(), new AstParser))
+            ->getWebProtectedRouteFiles();
+
         // Check route files for routes that should have CSRF protection
         $routeFiles = $this->getRouteFiles();
         foreach ($routeFiles as $file) {
-            $this->checkRoutesForCsrfMiddleware($file, $issues);
+            $this->checkRoutesForCsrfMiddleware($file, $issues, $webProtectedFiles);
         }
 
         $summary = empty($issues)
@@ -790,8 +797,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * - 'auth' middleware (doesn't include CSRF)
      * - Just ->middleware( without 'web'
      * - Assumed middleware from elsewhere
+     *
+     * @param  array<string>  $webProtectedFiles  Files covered by 'web' middleware via external registration
      */
-    private function checkRoutesForCsrfMiddleware(string $file, array &$issues): void
+    private function checkRoutesForCsrfMiddleware(string $file, array &$issues, array $webProtectedFiles = []): void
     {
         $content = FileParser::readFile($file);
         if ($content === null) {
@@ -808,6 +817,11 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         // Skip web.php - routes in web.php automatically get 'web' middleware applied globally
         // via RouteServiceProvider (Laravel 10) or bootstrap/app.php (Laravel 11+)
         if (str_ends_with($normalizedPath, '/routes/web.php')) {
+            return;
+        }
+
+        // Skip files registered with 'web' middleware externally (e.g. withRouting(then: ...))
+        if (in_array($normalizedPath, $webProtectedFiles, true)) {
             return;
         }
 

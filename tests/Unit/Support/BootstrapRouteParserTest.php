@@ -475,4 +475,129 @@ PHP;
             $this->removeDir($tempDir);
         }
     }
+
+    // ==================== getApiRegisteredRouteFiles Tests ====================
+
+    public function test_detects_api_string_middleware_group_in_bootstrap(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            Route::middleware('api')
+                ->group(base_path('routes/api-v1.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/api-v1.php' => '<?php // v1 api routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getApiRegisteredRouteFiles();
+
+            $this->assertCount(1, $result);
+            $this->assertStringEndsWith('/routes/api-v1.php', $result[0]);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_detects_api_array_middleware_group_in_bootstrap(): void
+    {
+        // Platform's exact pattern: ->middleware(['api', 'throttle:api.rest'])
+        $bootstrapApp = <<<'PHP'
+<?php
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            Route::prefix('api/v1')
+                ->middleware(['api', 'throttle:api.rest'])
+                ->group(base_path('routes/api-v1.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/api-v1.php' => '<?php // v1 api routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getApiRegisteredRouteFiles();
+
+            $this->assertCount(1, $result);
+            $this->assertStringEndsWith('/routes/api-v1.php', $result[0]);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_detects_require_from_api_php(): void
+    {
+        $apiPhp = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::get('/user', function () {});
+
+require __DIR__.'/api-v1.php';
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'routes/api.php' => $apiPhp,
+            'routes/api-v1.php' => '<?php // v1 api routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getApiRegisteredRouteFiles();
+
+            $this->assertCount(1, $result);
+            $this->assertStringEndsWith('/routes/api-v1.php', $result[0]);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_api_list_does_not_include_web_registered_files(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            Route::middleware('web')
+                ->group(base_path('routes/auth.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/auth.php' => '<?php // web auth routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getApiRegisteredRouteFiles();
+
+            // 'web' middleware group — should NOT appear in the API list
+            $this->assertSame([], $result);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
 }

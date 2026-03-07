@@ -1318,21 +1318,31 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('may not be properly configured', $result);
+        $this->assertPassed($result);
     }
 
-    public function test_passes_bootstrap_app_with_csrf_mentioned(): void
+    public function test_passes_when_with_middleware_only_decorates_web_group(): void
     {
         $bootstrap = <<<'PHP'
 <?php
 
 use Illuminate\Foundation\Application;
-use App\Http\Middleware\VerifyCsrfToken;
+use Illuminate\Foundation\Configuration\Middleware;
 
 return Application::configure(basePath: dirname(__DIR__))
-    ->withMiddleware(function ($middleware) {
-        // CSRF protection is enabled by default
+    ->withMiddleware(function (Middleware $middleware): void {
+        if (env('CACHE_STORE', 'database') === 'redis') {
+            $middleware->throttleWithRedis();
+        }
+
+        $middleware->web(append: [
+            \App\Http\Middleware\HandleInertiaRequests::class,
+            \Illuminate\Http\Middleware\AddLinkHeadersForPreloadedAssets::class,
+        ]);
+
+        $middleware->alias([
+            'api.token' => \App\Http\Middleware\ValidateApiToken::class,
+        ]);
     })
     ->create();
 PHP;
@@ -2085,9 +2095,53 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_still_flags_route_file_with_non_web_middleware_in_bootstrap(): void
+    public function test_passes_api_route_file_registered_with_api_middleware_array(): void
     {
-        // auth.php registered via Route::middleware('api')->group(...) — not 'web'
+        // Platform's exact pattern: ->middleware(['api', 'throttle:api.rest'])->group(base_path('routes/api-v1.php'))
+        // API route files must NOT be flagged — they use Sanctum token auth, not CSRF.
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        then: function () {
+            Route::prefix('api/v1')
+                ->middleware(['api', 'throttle:api.rest'])
+                ->group(base_path('routes/api-v1.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $apiV1Php = <<<'PHP'
+<?php
+Route::post('/users', [UserController::class, 'store']);
+Route::put('/users/{id}', [UserController::class, 'update']);
+Route::delete('/users/{id}', [UserController::class, 'destroy']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/web.php' => '<?php // main web routes',
+            'routes/api-v1.php' => $apiV1Php,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass — api-v1.php is registered under 'api' middleware (token auth, not CSRF)
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_route_file_registered_with_api_middleware_in_bootstrap(): void
+    {
+        // auth.php registered via Route::middleware('api')->group(...) — uses token auth, not CSRF
         $bootstrapApp = <<<'PHP'
 <?php
 
@@ -2118,8 +2172,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should fail — 'api' middleware does not include CSRF protection
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('CSRF', $result);
+        // Should pass — 'api' middleware means token-based auth (Sanctum), CSRF does not apply
+        $this->assertPassed($result);
     }
 }

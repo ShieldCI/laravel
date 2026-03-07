@@ -90,15 +90,16 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         // Check VerifyCsrfToken middleware registration
         $this->checkCsrfMiddlewareRegistration($issues);
 
-        // Compute route files covered by 'web' middleware via external registration
-        // (require from web.php, or Route::middleware('web')->group() in bootstrap/app.php)
-        $webProtectedFiles = (new BootstrapRouteParser($this->getBasePath(), new AstParser))
-            ->getWebProtectedRouteFiles();
+        // Compute route files covered by web/API middleware via external registration
+        // (require from web.php/api.php, or Route::middleware()->group() in bootstrap/app.php)
+        $bootstrapParser = new BootstrapRouteParser($this->getBasePath(), new AstParser);
+        $webProtectedFiles = $bootstrapParser->getWebProtectedRouteFiles();
+        $apiRegisteredFiles = $bootstrapParser->getApiRegisteredRouteFiles();
 
         // Check route files for routes that should have CSRF protection
         $routeFiles = $this->getRouteFiles();
         foreach ($routeFiles as $file) {
-            $this->checkRoutesForCsrfMiddleware($file, $issues, $webProtectedFiles);
+            $this->checkRoutesForCsrfMiddleware($file, $issues, $webProtectedFiles, $apiRegisteredFiles);
         }
 
         $summary = empty($issues)
@@ -558,31 +559,6 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $hasWithMiddleware = str_contains($content, 'withMiddleware');
 
         if ($hasWithMiddleware) {
-            // Check if CSRF protection is explicitly disabled or not mentioned
-            $hasCsrfReference = str_contains($content, 'ValidateCsrfToken') ||
-                               str_contains($content, 'VerifyCsrfToken') ||
-                               str_contains($content, 'validateCsrfTokens') ||
-                               str_contains($content, 'csrf');
-
-            if (! $hasCsrfReference) {
-                $issues[] = $this->createIssueWithSnippet(
-                    message: 'CSRF middleware may not be properly configured',
-                    filePath: $file,
-                    lineNumber: null,
-                    severity: Severity::High,
-                    recommendation: 'Ensure CSRF protection is enabled. Laravel 11+ includes ValidateCsrfToken in the web middleware group by default, but verify it hasn\'t been removed.',
-                    metadata: [
-                        'file' => 'bootstrap/app.php',
-                        'laravel_version' => '11+',
-                        'middleware' => 'ValidateCsrfToken',
-                    ]
-                );
-            }
-
-            /**
-             * ALWAYS inspect $middleware->use([...])
-             * If CSRF is missing, this must emit the Critical issue
-             */
             $this->checkCsrfDisabledInBootstrap($lines, $file, $issues);
         }
 
@@ -799,9 +775,14 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * - Assumed middleware from elsewhere
      *
      * @param  array<string>  $webProtectedFiles  Files covered by 'web' middleware via external registration
+     * @param  array<string>  $apiRegisteredFiles  Files registered under 'api' middleware via external registration
      */
-    private function checkRoutesForCsrfMiddleware(string $file, array &$issues, array $webProtectedFiles = []): void
-    {
+    private function checkRoutesForCsrfMiddleware(
+        string $file,
+        array &$issues,
+        array $webProtectedFiles = [],
+        array $apiRegisteredFiles = [],
+    ): void {
         $content = FileParser::readFile($file);
         if ($content === null) {
             return;
@@ -817,6 +798,11 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         // Skip web.php - routes in web.php automatically get 'web' middleware applied globally
         // via RouteServiceProvider (Laravel 10) or bootstrap/app.php (Laravel 11+)
         if (str_ends_with($normalizedPath, '/routes/web.php')) {
+            return;
+        }
+
+        // Skip files registered under 'api' middleware externally — they use token auth, not CSRF
+        if (in_array($normalizedPath, $apiRegisteredFiles, true)) {
             return;
         }
 

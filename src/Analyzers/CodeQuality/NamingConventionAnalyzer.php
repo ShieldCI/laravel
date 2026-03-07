@@ -178,7 +178,7 @@ class NamingConventionVisitor extends NodeVisitorAbstract
                     $suggestion = $this->toCamelCase($propertyName);
                     $this->issues[] = [
                         'message' => "Property '{$propertyName}' does not follow camelCase convention",
-                        'line' => $node->getStartLine(),
+                        'line' => $prop->getStartLine(),
                         'type' => 'property',
                         'name' => $propertyName,
                         'suggestion' => $suggestion,
@@ -199,7 +199,7 @@ class NamingConventionVisitor extends NodeVisitorAbstract
                         $suggestion = $this->toScreamingSnakeCase($constName);
                         $this->issues[] = [
                             'message' => "Public constant '{$constName}' does not follow SCREAMING_SNAKE_CASE convention",
-                            'line' => $node->getStartLine(),
+                            'line' => $const->getStartLine(),
                             'type' => 'constant',
                             'name' => $constName,
                             'suggestion' => $suggestion,

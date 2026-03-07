@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.4 - 2026-03-07
+
+### Fixed
+- `FillableForeignKeyAnalyzer` now reports each issue at the specific `$fillable` array item line (e.g. `'user_id',`) instead of the `protected $fillable = [` declaration line — fixes `@shieldci-ignore` comments placed on the offending entry being silently ignored
+- `NamingConventionAnalyzer` now reports property violations at the individual property line (`$prop->getStartLine()`) and constant violations at the individual constant line (`$const->getStartLine()`) instead of the parent statement line — same inline-suppression fix applies
+- `PasswordSecurityAnalyzer` now reports weak `password_hash()` option issues (`bcrypt cost`, `argon2 memory_cost`, `time_cost`, `threads`) at the offending array item line instead of the `password_hash(` call line
+
 ## v1.5.3 - 2026-03-07
 
 ### Fixed

@@ -486,7 +486,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                         $config['bcrypt_min_rounds']
                     ),
                     filePath: $file,
-                    lineNumber: $call->getStartLine(),
+                    lineNumber: $item->getStartLine(),
                     severity: Severity::Critical,
                     recommendation: sprintf(
                         'Set bcrypt cost to at least %d for better protection against brute-force attacks',
@@ -504,7 +504,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                         $config['argon2_min_memory']
                     ),
                     filePath: $file,
-                    lineNumber: $call->getStartLine(),
+                    lineNumber: $item->getStartLine(),
                     severity: Severity::Critical,
                     recommendation: sprintf(
                         'Set argon2 memory_cost to at least %d KB',
@@ -522,7 +522,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                         $config['argon2_min_time']
                     ),
                     filePath: $file,
-                    lineNumber: $call->getStartLine(),
+                    lineNumber: $item->getStartLine(),
                     severity: Severity::Medium,
                     recommendation: sprintf(
                         'Set argon2 time_cost to at least %d',
@@ -540,7 +540,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                         $config['argon2_min_threads']
                     ),
                     filePath: $file,
-                    lineNumber: $call->getStartLine(),
+                    lineNumber: $item->getStartLine(),
                     severity: Severity::Low,
                     recommendation: sprintf(
                         'Set argon2 threads to at least %d',

@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.5.3 - 2026-03-07
+
+### Fixed
+- `CsrfAnalyzer` no longer false-positives on route files registered with `web` middleware externally via `withRouting(then: ...)` in `bootstrap/app.php` (e.g. `Route::middleware('web')->group(base_path('routes/auth.php'))`) — these files inherit CSRF protection from the middleware group and are now correctly skipped
+- `LoginThrottlingAnalyzer` no longer false-positives on login routes in the same externally-registered route files — throttle applied globally to the `web` group is now respected
+
+### Added
+- `BootstrapRouteParser` support class (`ShieldCI\Support`) — AST-based utility that detects route files covered by the `web` middleware group through external registration; checks both `require`/`include` statements in `routes/web.php` and `Route::middleware('web')->...->group(base_path(...))` chains in `bootstrap/app.php`; used by `CsrfAnalyzer` and `LoginThrottlingAnalyzer`
+
 ## v1.5.2 - 2026-03-06
 
 ### Fixed

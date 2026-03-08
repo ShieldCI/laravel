@@ -570,6 +570,178 @@ PHP;
         }
     }
 
+    // ==================== getThrottleProtectedRouteFiles Tests ====================
+
+    public function test_detects_throttle_string_middleware_group_in_bootstrap(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            Route::prefix('api/v1')
+                ->middleware('throttle:5,1')
+                ->group(base_path('routes/api-v1.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/api-v1.php' => '<?php // v1 api routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getThrottleProtectedRouteFiles();
+
+            $this->assertCount(1, $result);
+            $this->assertStringEndsWith('/routes/api-v1.php', $result[0]);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_detects_throttle_in_array_middleware_group_in_bootstrap(): void
+    {
+        // Platform's exact pattern: ->middleware(['api', 'throttle:api.rest'])
+        $bootstrapApp = <<<'PHP'
+<?php
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            Route::prefix('api/v1')
+                ->middleware(['api', 'throttle:api.rest'])
+                ->group(base_path('routes/api-v1.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/api-v1.php' => '<?php // v1 api routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getThrottleProtectedRouteFiles();
+
+            $this->assertCount(1, $result);
+            $this->assertStringEndsWith('/routes/api-v1.php', $result[0]);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_ignores_files_without_throttle_middleware(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            Route::prefix('api/v1')
+                ->middleware(['api'])
+                ->group(base_path('routes/api-v1.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/api-v1.php' => '<?php // v1 api routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getThrottleProtectedRouteFiles();
+
+            $this->assertSame([], $result);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_throttle_returns_empty_when_no_bootstrap_exists(): void
+    {
+        $tempDir = $this->createTempDir(['routes/api-v1.php' => '<?php // empty']);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getThrottleProtectedRouteFiles();
+
+            $this->assertSame([], $result);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_throttle_returns_empty_when_bootstrap_is_unparseable(): void
+    {
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => '<?php = = invalid syntax',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getThrottleProtectedRouteFiles();
+
+            $this->assertSame([], $result);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_throttle_ignores_group_call_with_no_arguments(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+Route::middleware('throttle:5,1')->group();
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $bootstrapApp,
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getThrottleProtectedRouteFiles();
+
+            $this->assertSame([], $result);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_throttle_ignores_group_call_with_non_base_path_function(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+Route::middleware('throttle:5,1')->group(app_path('routes/api-v1.php'));
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/api-v1.php' => '<?php // v1 api routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getThrottleProtectedRouteFiles();
+
+            // app_path() is not base_path() — should not be detected
+            $this->assertSame([], $result);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
     public function test_api_list_does_not_include_web_registered_files(): void
     {
         $bootstrapApp = <<<'PHP'

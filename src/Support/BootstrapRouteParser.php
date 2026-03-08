@@ -115,6 +115,21 @@ class BootstrapRouteParser
     }
 
     /**
+     * Returns absolute paths of route files registered with a throttle middleware
+     * directly on their group in bootstrap/app.php.
+     *
+     * Matches any throttle variant: 'throttle:5,1', 'throttle:api.rest', etc.
+     *
+     * @return array<string>
+     */
+    public function getThrottleProtectedRouteFiles(): array
+    {
+        return array_values(array_unique(
+            $this->getFilesRegisteredWithThrottleMiddlewareInBootstrap()
+        ));
+    }
+
+    /**
      * Finds route files registered via Route::middleware('web')->group(base_path('...'))
      * inside bootstrap/app.php's withRouting(then: ...) callback.
      *
@@ -186,6 +201,50 @@ class BootstrapRouteParser
     }
 
     /**
+     * Finds route files registered with a throttle middleware on their group
+     * inside bootstrap/app.php.
+     *
+     * @return array<string>
+     */
+    private function getFilesRegisteredWithThrottleMiddlewareInBootstrap(): array
+    {
+        $bootstrapPath = $this->basePath.'/bootstrap/app.php';
+        if (! file_exists($bootstrapPath)) {
+            return [];
+        }
+
+        $ast = $this->parser->parseFile($bootstrapPath);
+        if (empty($ast)) {
+            return [];
+        }
+
+        $found = [];
+        $groupCalls = $this->parser->findMethodCalls($ast, 'group');
+
+        foreach ($groupCalls as $call) {
+            if (! ($call instanceof MethodCall)) {
+                continue;
+            }
+
+            $firstArg = $call->args[0] ?? null;
+            if (! ($firstArg instanceof Node\Arg)) {
+                continue;
+            }
+
+            $filePath = $this->extractBasePathArgument($firstArg->value);
+            if ($filePath === null) {
+                continue;
+            }
+
+            if ($this->chainContainsThrottleMiddleware($call->var)) {
+                $found[] = $filePath;
+            }
+        }
+
+        return $found;
+    }
+
+    /**
      * Walks a method-call chain (right to left) looking for ->middleware(name)
      * or Route::middleware(name) anywhere in the chain.
      *
@@ -218,6 +277,45 @@ class BootstrapRouteParser
             }
             if ($node instanceof MethodCall) {
                 return $this->chainContainsMiddleware($node->var, $middlewareName);
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Walks a method-call chain (right to left) looking for ->middleware(...)
+     * where any value starts with 'throttle' (matches 'throttle:5,1', 'throttle:api.rest', etc.).
+     *
+     * Supports both string and array forms:
+     *   ->middleware('throttle:5,1')
+     *   ->middleware(['api', 'throttle:api.rest'])
+     */
+    private function chainContainsThrottleMiddleware(Node $node): bool
+    {
+        if ($node instanceof StaticCall || $node instanceof MethodCall) {
+            if ($node->name instanceof Identifier && $node->name->name === 'middleware') {
+                $firstArg = $node->args[0] ?? null;
+                if ($firstArg instanceof Node\Arg) {
+                    $arg = $firstArg->value;
+                    // ->middleware('throttle:5,1')
+                    if ($arg instanceof String_ && str_starts_with($arg->value, 'throttle')) {
+                        return true;
+                    }
+                    // ->middleware(['api', 'throttle:api.rest'])
+                    if ($arg instanceof Node\Expr\Array_) {
+                        foreach ($arg->items as $item) {
+                            if ($item instanceof Node\Expr\ArrayItem
+                                && $item->value instanceof String_
+                                && str_starts_with($item->value->value, 'throttle')) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            if ($node instanceof MethodCall) {
+                return $this->chainContainsThrottleMiddleware($node->var);
             }
         }
 

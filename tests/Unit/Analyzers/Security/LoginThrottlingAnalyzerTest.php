@@ -1284,4 +1284,89 @@ PHP;
         // throttle is applied to the whole 'web' group globally
         $this->assertPassed($result);
     }
+
+    public function test_skips_route_file_registered_with_throttle_in_bootstrap(): void
+    {
+        // api-v1.php registered with throttle middleware directly on its group
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            Route::prefix('api/v1')
+                ->middleware(['api', 'throttle:api.rest'])
+                ->group(base_path('routes/api-v1.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $apiV1Php = <<<'PHP'
+<?php
+Route::post('/auth/login', [AuthController::class, 'login']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/web.php' => '<?php // main routes',
+            'routes/api-v1.php' => $apiV1Php,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass — api-v1.php has throttle applied at group level in bootstrap/app.php
+        $this->assertPassed($result);
+    }
+
+    public function test_get_token_verify_does_not_trigger_false_positive(): void
+    {
+        // GET /token/verify is a management endpoint, not a credential submission endpoint
+        $apiPhp = <<<'PHP'
+<?php
+Route::get('/token/verify', [TokenVerificationController::class, 'verify']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $apiPhp,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass — GET /token/verify is not a credential submission endpoint
+        $this->assertPassed($result);
+    }
+
+    public function test_post_token_in_api_route_still_flagged_without_throttle(): void
+    {
+        // POST /token is a credential/token issuance endpoint — should still be checked
+        $apiPhp = <<<'PHP'
+<?php
+Route::post('/token', [TokenController::class, 'issue']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $apiPhp,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should fail — POST /token is a credential submission endpoint without throttling
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('API authentication route "/token" lacks rate limiting', $result);
+    }
 }

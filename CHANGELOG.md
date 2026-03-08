@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.5.6 - 2026-03-08
+
+### Fixed
+- `LoginThrottlingAnalyzer` no longer false-positives on route files registered with a throttle middleware directly on their group in `bootstrap/app.php` (e.g. `Route::prefix('api/v1')->middleware(['api', 'throttle:api.rest'])->group(base_path('routes/api-v1.php'))`) — these files now correctly inherit their rate-limiting protection and are skipped
+- `LoginThrottlingAnalyzer` no longer false-positives on `GET /token/verify` and similar token management endpoints in `routes/api.php` — `token`/`oauth` URL keywords now only trigger a check on `POST`, `any`, and `match` routes (credential submission methods); `GET`, `resource`, and `controller` routes only match the `login`/`signin`/`auth`/`authenticate` keywords
+
+### Added
+- `BootstrapRouteParser::getThrottleProtectedRouteFiles()` — detects route files registered with any `throttle:*` middleware (string or array form) on their group in `bootstrap/app.php`; used by `LoginThrottlingAnalyzer` to suppress false positives on externally throttled route groups
+
 ## v1.5.5 - 2026-03-07
 
 ### Fixed

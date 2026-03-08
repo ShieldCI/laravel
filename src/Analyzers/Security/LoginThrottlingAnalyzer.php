@@ -617,10 +617,12 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        // Compute route files covered by 'web' middleware via external registration
-        // (require from web.php, or Route::middleware('web')->group() in bootstrap/app.php)
-        $webProtectedFiles = (new BootstrapRouteParser($this->getBasePath(), $this->parser))
-            ->getWebProtectedRouteFiles();
+        // Compute route files covered by 'web' or throttle middleware via external registration
+        $bootstrapParser = new BootstrapRouteParser($this->getBasePath(), $this->parser);
+        $skipFiles = array_merge(
+            $bootstrapParser->getWebProtectedRouteFiles(),
+            $bootstrapParser->getThrottleProtectedRouteFiles(),
+        );
 
         try {
             foreach (new \DirectoryIterator($routePath) as $file) {
@@ -631,8 +633,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 $filePath = $file->getPathname();
                 $normalizedPath = str_replace('\\', '/', $filePath);
 
-                // Skip files covered by 'web' middleware via external registration
-                if (in_array($normalizedPath, $webProtectedFiles, true)) {
+                // Skip files covered by 'web' or throttle middleware via external registration
+                if (in_array($normalizedPath, $skipFiles, true)) {
                     continue;
                 }
 
@@ -698,13 +700,20 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     // Check for login-related routes
                     // Web routes: /login, /signin, /auth, /authenticate
                     // API routes: /api/login, /api/auth, /api/token, /oauth/token, /sanctum/token
-                    $loginPattern = $isApiRoute
-                        ? '/Route::(post|get|any|match|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate|token|oauth)[^"\']*)["\']/'
-                        : '/Route::(post|get|any|match|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/';
+                    // For API files: token/oauth only match on POST/any/match (not GET — those
+                    // are management endpoints like /token/verify, not credential submission).
+                    $routeUri = null;
+                    if ($isApiRoute) {
+                        if (preg_match('/Route::(post|any|match)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate|token|oauth)[^"\']*)["\']/', $line, $m)) {
+                            $routeUri = $m[2];
+                        } elseif (preg_match('/Route::(get|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $m)) {
+                            $routeUri = $m[2];
+                        }
+                    } elseif (preg_match('/Route::(post|get|any|match|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $m)) {
+                        $routeUri = $m[2];
+                    }
 
-                    if (preg_match($loginPattern, $line, $matches)) {
-                        $routeUri = $matches[2];
-
+                    if ($routeUri !== null) {
                         // Check if this route or surrounding lines have throttle middleware
                         $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber) || $inWebGroup;
 

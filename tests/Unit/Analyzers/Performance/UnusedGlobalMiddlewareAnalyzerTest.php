@@ -916,6 +916,10 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
     public function test_reports_bootstrap_app_path_on_laravel_11(): void
     {
+        if (! class_exists(\Illuminate\Foundation\Configuration\Middleware::class)) {
+            $this->markTestSkipped('bootstrap/app.php path and withMiddleware() recommendations only apply to Laravel 11+.');
+        }
+
         // Create a temp dir that mimics a Laravel 11+ project (no Kernel.php, has bootstrap/app.php)
         $tempDir = sys_get_temp_dir().DIRECTORY_SEPARATOR.'shieldci_test_'.uniqid();
         mkdir($tempDir.DIRECTORY_SEPARATOR.'bootstrap', 0777, true);

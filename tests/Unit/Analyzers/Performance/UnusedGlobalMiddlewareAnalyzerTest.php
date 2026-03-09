@@ -131,6 +131,19 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         // we'll just ensure the kernel is set up properly by extending the real kernel
     }
 
+    /**
+     * Skip the test if running on Laravel 11+, where TrustProxies/TrustHosts checks
+     * are intentionally suppressed (they are framework defaults, not user-registered middleware).
+     */
+    private function skipOnLaravel11(string $reason = ''): void
+    {
+        if (class_exists(\Illuminate\Foundation\Configuration\Middleware::class)) {
+            $this->markTestSkipped(
+                'TrustProxies/TrustHosts checks are suppressed on Laravel 11+'.($reason ? ": $reason" : '.')
+            );
+        }
+    }
+
     public function test_passes_when_no_unused_middleware(): void
     {
         $app = Mockery::mock(Application::class);
@@ -163,6 +176,7 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
     public function test_warns_when_trust_proxies_without_configuration(): void
     {
+        $this->skipOnLaravel11();
         $app = Mockery::mock(Application::class);
         $config = Mockery::mock(ConfigRepository::class);
         $router = Mockery::mock(Router::class);
@@ -256,6 +270,7 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
     public function test_warns_when_trust_hosts_without_trust_proxies(): void
     {
+        $this->skipOnLaravel11();
         $app = Mockery::mock(Application::class);
         $config = Mockery::mock(ConfigRepository::class);
         $router = Mockery::mock(Router::class);
@@ -316,6 +331,7 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
     public function test_warns_about_trust_hosts_only_when_trust_proxies_unused(): void
     {
+        $this->skipOnLaravel11();
         $app = Mockery::mock(Application::class);
         $config = Mockery::mock(ConfigRepository::class);
         $router = Mockery::mock(Router::class);
@@ -559,6 +575,7 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
     public function test_handles_invalid_config_types_gracefully(): void
     {
+        $this->skipOnLaravel11();
         $app = Mockery::mock(Application::class);
         $config = Mockery::mock(ConfigRepository::class);
         $router = Mockery::mock(Router::class);
@@ -605,6 +622,7 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
     public function test_warns_when_multiple_middleware_unused(): void
     {
+        $this->skipOnLaravel11();
         $app = Mockery::mock(Application::class);
         $config = Mockery::mock(ConfigRepository::class);
         $router = Mockery::mock(Router::class);
@@ -651,6 +669,7 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
     public function test_warns_when_all_three_middleware_types_unused(): void
     {
+        $this->skipOnLaravel11();
         $app = Mockery::mock(Application::class);
         $config = Mockery::mock(ConfigRepository::class);
         $router = Mockery::mock(Router::class);
@@ -702,6 +721,7 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
     public function test_trust_hosts_appears_only_once_when_trust_proxies_unused(): void
     {
+        $this->skipOnLaravel11();
         $app = Mockery::mock(Application::class);
         $config = Mockery::mock(ConfigRepository::class);
         $router = Mockery::mock(Router::class);
@@ -752,6 +772,7 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
     public function test_issue_metadata_includes_all_required_fields(): void
     {
+        $this->skipOnLaravel11();
         $app = Mockery::mock(Application::class);
         $config = Mockery::mock(ConfigRepository::class);
         $router = Mockery::mock(Router::class);
@@ -805,6 +826,7 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
     public function test_result_message_format_includes_count(): void
     {
+        $this->skipOnLaravel11();
         $app = Mockery::mock(Application::class);
         $config = Mockery::mock(ConfigRepository::class);
         $router = Mockery::mock(Router::class);
@@ -890,6 +912,88 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         foreach ($issues as $issue) {
             $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issue->severity);
         }
+    }
+
+    public function test_reports_bootstrap_app_path_on_laravel_11(): void
+    {
+        if (! class_exists(\Illuminate\Foundation\Configuration\Middleware::class)) {
+            $this->markTestSkipped('bootstrap/app.php path and withMiddleware() recommendations only apply to Laravel 11+.');
+        }
+
+        // Create a temp dir that mimics a Laravel 11+ project (no Kernel.php, has bootstrap/app.php)
+        $tempDir = sys_get_temp_dir().DIRECTORY_SEPARATOR.'shieldci_test_'.uniqid();
+        mkdir($tempDir.DIRECTORY_SEPARATOR.'bootstrap', 0777, true);
+
+        $bootstrapAppContent = <<<'PHP'
+<?php
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(web: __DIR__.'/../routes/web.php')
+    ->withMiddleware(function (Middleware $middleware) {
+        //
+    })
+    ->create();
+PHP;
+        file_put_contents($tempDir.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'app.php', $bootstrapAppContent);
+
+        $app = Mockery::mock(Application::class);
+        $config = Mockery::mock(ConfigRepository::class);
+        $router = Mockery::mock(Router::class);
+
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
+
+            /** @var array<int, string> */
+            protected $middleware = [
+                HandleCors::class,
+            ];
+        };
+
+        /** @phpstan-ignore-next-line */
+        $config->shouldReceive('get')
+            ->with('cors.paths', [])
+            ->andReturn([]);
+
+        // Use an anonymous subclass to override getBasePath() since AbstractAnalyzer
+        // doesn't expose setBasePath() — only AbstractFileAnalyzer does.
+        /** @phpstan-ignore-next-line Anonymous class with dynamic base path */
+        $analyzer = new class($app, $config, $router, $kernel, $tempDir) extends UnusedGlobalMiddlewareAnalyzer
+        {
+            public function __construct(
+                Application $app,
+                ConfigRepository $config,
+                Router $router,
+                Kernel $kernel,
+                private string $testBasePath
+            ) {
+                parent::__construct($app, $config, $router, $kernel);
+            }
+
+            protected function getBasePath(): string
+            {
+                return $this->testBasePath;
+            }
+        };
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        $issue = $issues[0];
+        // File path should point to bootstrap/app.php, not a non-existent Kernel.php
+        $this->assertNotNull($issue->location);
+        $this->assertStringEndsWith('bootstrap'.DIRECTORY_SEPARATOR.'app.php', $issue->location->file);
+        // Recommendation should mention withMiddleware, not Kernel.php
+        $this->assertStringContainsString('withMiddleware', $issue->recommendation);
+        $this->assertStringNotContainsString('Kernel.php', $issue->recommendation);
+
+        // Cleanup
+        unlink($tempDir.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'app.php');
+        rmdir($tempDir.DIRECTORY_SEPARATOR.'bootstrap');
+        rmdir($tempDir);
     }
 
     public function test_passes_when_mixed_used_and_unused_middleware(): void

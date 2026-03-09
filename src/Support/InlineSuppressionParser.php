@@ -7,9 +7,10 @@ namespace ShieldCI\Support;
 /**
  * Parses @shieldci-ignore inline comments from source files.
  *
- * Supports two placement styles (matching PHPStan conventions):
+ * Supports three placement styles (matching PHPStan conventions):
  *   - Previous line: `// @shieldci-ignore [analyzer-id,...]`
  *   - Same line:     `$code; // @shieldci-ignore [analyzer-id,...]`
+ *   - Docblock:      Multi-line block comment with @shieldci-ignore anywhere inside it
  *
  * When no analyzer IDs are specified, the suppression applies to all analyzers.
  * Multiple IDs can be comma-separated: `@shieldci-ignore sql-injection,xss-detection`
@@ -29,6 +30,9 @@ class InlineSuppressionParser
      * Checks the issue line itself and the line immediately above it for
      * a @shieldci-ignore comment that either targets all analyzers (bare)
      * or specifically names the given analyzer ID.
+     *
+     * Also handles multi-line docblocks: when the line immediately above ends
+     * with the block-comment closing marker, scans backward for @shieldci-ignore.
      */
     public function isLineSuppressed(string $filePath, int $line, string $analyzerId): bool
     {
@@ -50,6 +54,19 @@ class InlineSuppressionParser
 
             if ($this->lineHasSuppression($lines[$index], $analyzerId)) {
                 return true;
+            }
+        }
+
+        // If the line immediately above ends with */, scan backward through the block comment
+        $prevIdx = $line - 2; // 0-based index of the line immediately above the issue
+        if ($prevIdx >= 0 && isset($lines[$prevIdx]) && str_ends_with(rtrim($lines[$prevIdx]), '*/')) {
+            for ($i = $prevIdx - 1; $i >= 0 && $i >= $prevIdx - 50; $i--) {
+                if ($this->lineHasSuppression($lines[$i], $analyzerId)) {
+                    return true;
+                }
+                if (str_contains($lines[$i], '/*')) {
+                    break;
+                }
             }
         }
 

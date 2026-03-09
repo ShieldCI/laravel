@@ -257,6 +257,68 @@ PHP);
         $this->assertTrue($this->parser->isLineSuppressed($file, 3, 'sql-injection'));
     }
 
+    #[Test]
+    public function multiline_docblock_bare_suppress_works(): void
+    {
+        $file = $this->createTempFile(<<<'PHP'
+<?php
+/**
+ * @shieldci-ignore
+ */
+public function boot(): void {}
+PHP);
+
+        $this->assertTrue($this->parser->isLineSuppressed($file, 5, 'sql-injection'));
+        $this->assertTrue($this->parser->isLineSuppressed($file, 5, 'xss-detection'));
+    }
+
+    #[Test]
+    public function multiline_docblock_specific_id_suppresses_only_that_analyzer(): void
+    {
+        $file = $this->createTempFile(<<<'PHP'
+<?php
+/**
+ * @param string $name
+ * @return User
+ * @shieldci-ignore sql-injection
+ */
+public function getUser(string $name): User {}
+PHP);
+
+        $this->assertTrue($this->parser->isLineSuppressed($file, 7, 'sql-injection'));
+        $this->assertFalse($this->parser->isLineSuppressed($file, 7, 'xss-detection'));
+    }
+
+    #[Test]
+    public function multiline_docblock_non_matching_id_does_not_suppress(): void
+    {
+        $file = $this->createTempFile(<<<'PHP'
+<?php
+/**
+ * @shieldci-ignore sql-injection
+ */
+$result = DB::select("SELECT 1");
+PHP);
+
+        $this->assertFalse($this->parser->isLineSuppressed($file, 5, 'xss-detection'));
+    }
+
+    #[Test]
+    public function multiline_docblock_with_extra_lines_works(): void
+    {
+        $file = $this->createTempFile(<<<'PHP'
+<?php
+/**
+ * Some description here.
+ * @shieldci-ignore xss-detection
+ */
+echo $userInput;
+PHP);
+
+        $this->assertTrue($this->parser->isLineSuppressed($file, 6, 'xss-detection'));
+        $this->assertFalse($this->parser->isLineSuppressed($file, 6, 'sql-injection'));
+    }
+
     // ==========================================
     // Additional edge cases
     // ==========================================

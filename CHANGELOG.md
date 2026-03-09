@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.7 - 2026-03-09
+
+### Fixed
+- `UnusedGlobalMiddlewareAnalyzer` no longer false-positives on `TrustProxies` and `TrustHosts` in Laravel 11+ applications — in Laravel 11+, these are framework-level defaults injected by `Illuminate\Foundation\Configuration\Middleware`, not user-registered middleware, so flagging them as "unused" was incorrect for every Laravel 11+ app
+- `UnusedGlobalMiddlewareAnalyzer` now reports issues against `bootstrap/app.php` on Laravel 11+ (instead of the non-existent `app/Http/Kernel.php`), and the `HandleCors` recommendation text now references `withMiddleware()` in `bootstrap/app.php` on Laravel 11+
+- Laravel version detection uses `class_exists(Illuminate\Foundation\Configuration\Middleware::class)` — reliable across all environments (no filesystem dependency)
+
 ## v1.5.6 - 2026-03-08
 
 ### Fixed

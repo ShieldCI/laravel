@@ -356,6 +356,61 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
     }
 
     // =========================================================================
+    // Config Override & Dynamic Recommendation Tests
+    // =========================================================================
+
+    public function test_respects_custom_required_templates_config(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'resources/views/errors/403.blade.php' => '<html>403</html>',
+            'resources/views/errors/404.blade.php' => '<html>404</html>',
+            'resources/views/errors/500.blade.php' => '<html>500</html>',
+            'resources/views/errors/503.blade.php' => '<html>503</html>',
+        ]);
+
+        config([
+            'view.paths' => [$tempDir.'/resources/views'],
+            'shieldci.analyzers.reliability.custom-error-pages.required_templates' => [
+                '403.blade.php',
+                '404.blade.php',
+                '500.blade.php',
+                '503.blade.php',
+            ],
+        ]);
+
+        /** @var CustomErrorPageAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false);
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_recommendation_lists_only_missing_templates(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'resources/views/errors/404.blade.php' => '<html>404</html>',
+        ]);
+
+        config(['view.paths' => [$tempDir.'/resources/views']]);
+
+        /** @var CustomErrorPageAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false);
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issue = $result->getIssues()[0];
+        $recommendation = $issue->recommendation;
+
+        $this->assertStringContainsString('401.blade.php', $recommendation);
+        $this->assertStringContainsString('403.blade.php', $recommendation);
+        $this->assertStringContainsString('419.blade.php', $recommendation);
+        $this->assertStringContainsString('429.blade.php', $recommendation);
+        $this->assertStringContainsString('500.blade.php', $recommendation);
+        $this->assertStringContainsString('503.blade.php', $recommendation);
+        $this->assertStringNotContainsString('404.blade.php', $recommendation);
+    }
+
+    // =========================================================================
     // Location Validation Tests
     // =========================================================================
 

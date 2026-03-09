@@ -64,7 +64,7 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
         return new AnalyzerMetadata(
             id: 'custom-error-pages',
             name: 'Custom Error Pages Analyzer',
-            description: 'Checks for conventional file-based error page templates (401, 403, 404, 419, 429, 500, 503) in resources/views/errors/.',
+            description: 'Checks for conventional file-based error page templates in resources/views/errors/.',
             category: Category::Reliability,
             severity: Severity::Low,
             tags: ['errors', 'ux', 'reliability', 'security', 'fingerprinting'],
@@ -108,7 +108,7 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
                 message: 'Custom error pages not configured for: '.implode(', ', $missing),
                 location: new Location($this->getRelativePath($resourcesViewsPath)),
                 severity: $this->metadata()->severity,
-                recommendation: $this->getCustomErrorPagesRecommendation(),
+                recommendation: $this->getCustomErrorPagesRecommendation($missing),
                 metadata: [
                     'missing_templates' => $missing,
                     'view_paths_checked' => $this->getViewPaths(),
@@ -144,17 +144,32 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
 
     /**
      * Get recommendation message for custom error pages.
+     *
+     * @param  array<string>  $missing
      */
-    private function getCustomErrorPagesRecommendation(): string
+    private function getCustomErrorPagesRecommendation(array $missing): string
     {
-        return 'Create custom error pages for better user experience and security. '.
-               'Default Laravel error pages may reveal framework-specific branding or structure, '.
-               'allowing potential attackers to identify Laravel as your framework. '.
-               'Run "php artisan vendor:publish --tag=laravel-errors" to publish the default error views, '.
-               'then customize them. Create the following templates in resources/views/errors/: '.
-               '401.blade.php (Unauthorized), 403.blade.php (Forbidden), 404.blade.php (Not Found), '.
-               '419.blade.php (Page Expired/CSRF), 429.blade.php (Too Many Requests), '.
-               '500.blade.php (Server Error), 503.blade.php (Service Unavailable)';
+        $descriptions = [
+            '401.blade.php' => '401.blade.php (Unauthorized)',
+            '403.blade.php' => '403.blade.php (Forbidden)',
+            '404.blade.php' => '404.blade.php (Not Found)',
+            '419.blade.php' => '419.blade.php (Page Expired/CSRF)',
+            '429.blade.php' => '429.blade.php (Too Many Requests)',
+            '500.blade.php' => '500.blade.php (Server Error)',
+            '503.blade.php' => '503.blade.php (Service Unavailable)',
+        ];
+
+        $missingDescriptions = array_map(
+            fn ($t) => $descriptions[$t] ?? $t,
+            $missing
+        );
+
+        return 'Create custom error pages for better user experience and security. '
+            .'Default Laravel error pages may reveal framework-specific branding or structure, '
+            .'allowing potential attackers to identify Laravel as your framework. '
+            .'Run "php artisan vendor:publish --tag=laravel-errors" to publish the default error views, '
+            .'then customize them. Create the following missing templates in resources/views/errors/: '
+            .implode(', ', $missingDescriptions);
     }
 
     public function setStatelessOverride(?bool $stateless): void
@@ -167,16 +182,19 @@ class CustomErrorPageAnalyzer extends AbstractAnalyzer
      */
     private function missingErrorTemplates(): array
     {
-        // Common Laravel HTTP error codes that should have custom templates
-        $required = [
-            '401.blade.php', // Unauthorized (authentication required)
-            '403.blade.php', // Forbidden (authorization failed)
-            '404.blade.php', // Not Found
-            '419.blade.php', // Page Expired (CSRF token mismatch)
-            '429.blade.php', // Too Many Requests (rate limiting)
-            '500.blade.php', // Internal Server Error
-            '503.blade.php', // Service Unavailable (maintenance mode)
-        ];
+        $configured = config('shieldci.analyzers.reliability.custom-error-pages.required_templates', [
+            '401.blade.php',
+            '403.blade.php',
+            '404.blade.php',
+            '419.blade.php',
+            '429.blade.php',
+            '500.blade.php',
+            '503.blade.php',
+        ]);
+
+        $required = is_array($configured)
+            ? array_filter($configured, fn ($t) => is_string($t))
+            : [];
 
         $paths = $this->collectErrorDirectories();
 

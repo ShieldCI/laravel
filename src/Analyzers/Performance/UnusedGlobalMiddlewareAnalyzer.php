@@ -77,7 +77,7 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
             return $this->passed('No unused global middleware detected');
         }
 
-        $kernelPath = $this->getKernelPath();
+        $kernelPath = $this->getMiddlewareFilePath();
         $middlewareLine = $this->findMiddlewareArrayLine($kernelPath);
 
         $issues = [];
@@ -104,7 +104,13 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
 
     private function checkTrustProxiesMiddleware(): void
     {
-        // Check if TrustProxies middleware is registered (Laravel 9+ or Fideloper package)
+        // In Laravel 11+, TrustProxies is a framework-level default (not user-registered).
+        // Flagging it would be a false positive for every Laravel 11+ application.
+        if ($this->isLaravel11OrNewer()) {
+            return;
+        }
+
+        // Check if TrustProxies middleware is registered (Laravel 9/10 or Fideloper package)
         $isFideloper = class_exists(FideloperTrustProxies::class)
             && $this->appUsesGlobalMiddleware(FideloperTrustProxies::class);
         $isLaravel = class_exists(TrustProxies::class)
@@ -162,6 +168,12 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
 
     private function checkTrustHostsMiddleware(): void
     {
+        // In Laravel 11+, TrustHosts is managed via the framework's withMiddleware()->trustHosts()
+        // method, not as a user-registered global middleware. Skip to avoid false positives.
+        if ($this->isLaravel11OrNewer()) {
+            return;
+        }
+
         // Only check if TrustHosts is registered
         if (! $this->appUsesGlobalMiddleware(TrustHosts::class)) {
             return;
@@ -210,11 +222,15 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
             /** @phpstan-ignore-next-line Class may not exist (optional dependency) */
             $middlewareClass = class_exists(HandleCors::class) ? HandleCors::class : FruitcakeHandleCors::class;
 
+            $recommendation = $this->isLaravel11OrNewer()
+                ? 'Remove HandleCors from the withMiddleware() callback in bootstrap/app.php, as no CORS paths are configured. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths in config/cors.php.'
+                : 'Remove HandleCors middleware from app/Http/Kernel.php $middleware array, as no CORS paths are configured. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths that require CORS handling in config/cors.php.';
+
             $this->addUnusedMiddleware(
                 class_basename($middlewareClass),
                 $middlewareClass,
                 'No CORS paths are configured',
-                'Remove HandleCors middleware from app/Http/Kernel.php $middleware array, as no CORS paths are configured. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths that require CORS handling in config/cors.php.'
+                $recommendation
             );
         }
     }
@@ -280,31 +296,61 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
     }
 
     /**
-     * Get the path to the HTTP Kernel file.
+     * Get the path to the middleware configuration file.
+     * Returns bootstrap/app.php for Laravel 11+, otherwise app/Http/Kernel.php.
      */
-    private function getKernelPath(): string
+    private function getMiddlewareFilePath(): string
     {
         $basePath = $this->getBasePath();
+
+        if ($this->isLaravel11OrNewer()) {
+            return $basePath.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'app.php';
+        }
 
         return $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Kernel.php';
     }
 
     /**
-     * Find the line number of the $middleware array in Kernel.php.
+     * Determine if the application uses Laravel 11+.
+     *
+     * Detected via the presence of Illuminate\Foundation\Configuration\Middleware,
+     * which was introduced in Laravel 11 as part of the new bootstrap/app.php API.
+     * This is more reliable than filesystem checks since the laravel/framework
+     * package is always present and its version reflects the actual Laravel version.
+     */
+    private function isLaravel11OrNewer(): bool
+    {
+        return class_exists(\Illuminate\Foundation\Configuration\Middleware::class);
+    }
+
+    /**
+     * Find the relevant line number in the middleware configuration file.
+     * For bootstrap/app.php, finds withMiddleware(). For Kernel.php, finds $middleware property.
      * Falls back to line 1 if not found.
      */
-    private function findMiddlewareArrayLine(string $kernelPath): int
+    private function findMiddlewareArrayLine(string $filePath): int
     {
-        if (! file_exists($kernelPath)) {
+        if (! file_exists($filePath)) {
             return 1;
         }
 
-        // Try to find the $middleware property declaration
-        $lineNumber = ConfigFileHelper::findKeyLine($kernelPath, 'middleware');
+        // Laravel 11+: look for withMiddleware callback in bootstrap/app.php
+        if (str_ends_with($filePath, 'app.php')) {
+            $lines = FileParser::getLines($filePath);
+            foreach ($lines as $lineNum => $line) {
+                if (preg_match('/withMiddleware\s*\(/', $line) === 1) {
+                    return $lineNum + 1;
+                }
+            }
+
+            return 1;
+        }
+
+        // Laravel 9/10: look for protected $middleware property in Kernel.php
+        $lineNumber = ConfigFileHelper::findKeyLine($filePath, 'middleware');
 
         if ($lineNumber < 1) {
-            // Fallback: try to find any line containing 'protected $middleware'
-            $lines = FileParser::getLines($kernelPath);
+            $lines = FileParser::getLines($filePath);
             foreach ($lines as $lineNum => $line) {
                 if (preg_match('/protected\s+\$middleware\s*=/', $line) === 1) {
                     return $lineNum + 1;

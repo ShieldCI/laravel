@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.8 - 2026-03-09
+
+### Fixed
+- `CustomErrorPageAnalyzer` recommendation now lists only the templates that are actually missing instead of always enumerating all 7 — if a project already has `404.blade.php`, it will no longer appear in the recommendation text
+
+### Changed
+- `CustomErrorPageAnalyzer` reads the required template list from `shieldci.analyzers.reliability.custom-error-pages.required_templates` config (falling back to the default 7 templates) — advanced users can override this list without modifying the published config file
+
 ## v1.5.7 - 2026-03-09
 
 ### Fixed

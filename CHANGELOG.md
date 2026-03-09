@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.5.9 - 2026-03-09
+
+### Added
+- `InlineSuppressionParser` now recognises `@shieldci-ignore` inside multi-line docblocks — when the line immediately above a flagged issue ends with the block-comment closing marker, the parser scans backward through the block for a matching suppression tag; this covers both standalone suppress docblocks and `@shieldci-ignore` placed inside an existing `@param`/`@return` docblock
+
 ## v1.5.8 - 2026-03-09
 
 ### Fixed

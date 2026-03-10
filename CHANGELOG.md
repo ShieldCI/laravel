@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.5.11 - 2026-03-10
+
+### Added
+- `EloquentNPlusOneAnalyzer` upgraded to registry-based detection with semantic type inference — a two-pass architecture scans all model files first (`EloquentModelRelationshipScanner`) to build relationship, attribute, and accessor registries, then uses precise registry lookups during N+1 traversal; unknown variable types no longer produce false positives
+- Column-constrained eager loads (`with('project:id,uuid,name')`) are now correctly matched — the colon suffix is stripped before relationship name comparison
+
+### Fixed
+- `FatModelAnalyzer` no longer reports a line number for class-level issues (method count, LOC) — these are whole-class concerns with no single causal line; complexity issues retain their method start line as before
+- `HelperFunctionAbuseAnalyzer` now counts unique helper functions per class instead of total calls — a class calling `config()` seven times has one implicit dependency (the config system), not seven; thresholds recalibrated for unique-count scale (High at ≥ 10 distinct helpers, Medium at ≥ 5)
+- `LogicInBladeAnalyzer` no longer false-positives on `@props` and `@aware` Blade component directives — these compile to framework-internal PHP containing `array_filter` (for `ComponentSlot` detection), which was incorrectly flagged as "business logic found in Blade directive"
+
 ## v1.5.10 - 2026-03-09
 
 ### Fixed

@@ -141,12 +141,23 @@ class TransactionVisitor extends NodeVisitorAbstract
 
     private int $manualTransactionDepth = 0;
 
+    private int $isolatedWrites = 0;
+
+    private int $earlyExitIfDepth = 0;
+
     /**
      * Track file positions of closures passed directly to DB::transaction().
      *
      * @var array<int, true>
      */
     private array $transactionClosurePositions = [];
+
+    /**
+     * Track file start positions of guard-clause if-blocks.
+     *
+     * @var array<int, true>
+     */
+    private array $earlyExitIfPositions = [];
 
     public function __construct(
         private int $threshold
@@ -168,7 +179,10 @@ class TransactionVisitor extends NodeVisitorAbstract
             $this->unprotectedWriteLines = [];
             $this->transactionDepth = 0;
             $this->manualTransactionDepth = 0;
+            $this->isolatedWrites = 0;
+            $this->earlyExitIfDepth = 0;
             $this->transactionClosurePositions = [];
+            $this->earlyExitIfPositions = [];
         }
 
         // Check for DB::transaction or DB::beginTransaction
@@ -206,6 +220,12 @@ class TransactionVisitor extends NodeVisitorAbstract
             }
         }
 
+        // Track guard clause if-blocks (early-exit ifs with no else)
+        if ($node instanceof Node\Stmt\If_ && $this->isGuardClauseIf($node)) {
+            $this->earlyExitIfPositions[$node->getStartFilePos()] = true;
+            $this->earlyExitIfDepth++;
+        }
+
         // Detect write operations
         if ($this->isWriteOperation($node)) {
             $this->writeOperations++;
@@ -216,6 +236,8 @@ class TransactionVisitor extends NodeVisitorAbstract
             // 2. After DB::beginTransaction() was called (with or without try-catch)
             if ($this->transactionDepth > 0 || $this->manualTransactionDepth > 0) {
                 $this->writeOperationsInTransaction++;
+            } elseif ($this->earlyExitIfDepth > 0) {
+                $this->isolatedWrites++;
             } else {
                 $this->unprotectedWriteLines[] = $node->getLine();
             }
@@ -234,24 +256,35 @@ class TransactionVisitor extends NodeVisitorAbstract
             }
         }
 
+        // Decrement guard clause depth when leaving an early-exit if-block
+        if ($node instanceof Node\Stmt\If_) {
+            $pos = $node->getStartFilePos();
+            if (isset($this->earlyExitIfPositions[$pos])) {
+                $this->earlyExitIfDepth--;
+                unset($this->earlyExitIfPositions[$pos]);
+            }
+        }
+
         // When leaving a method, check if we need transactions
         if ($node instanceof Node\Stmt\ClassMethod) {
-            // Calculate unprotected writes (writes outside transaction scope)
-            $unprotectedWrites = $this->writeOperations - $this->writeOperationsInTransaction;
+            // Isolated writes are in guard clauses (early-exit branches) that can never
+            // co-execute with writes in the main flow, so exclude them from the threshold.
+            $mainFlowWrites = $this->writeOperations - $this->isolatedWrites;
+            $mainFlowUnprotected = $mainFlowWrites - $this->writeOperationsInTransaction;
 
-            // If all writes are protected, no issue
-            if ($unprotectedWrites === 0) {
+            // If all main-flow writes are protected, no issue
+            if ($mainFlowUnprotected <= 0) {
                 return null;
             }
 
-            // If total writes >= threshold, ALL should be protected
-            if ($this->writeOperations >= $this->threshold) {
+            // If main-flow writes >= threshold, they should be protected
+            if ($mainFlowWrites >= $this->threshold) {
                 $this->issues[] = [
                     'message' => sprintf(
                         'Method "%s::%s()" has %d database write operation(s) outside transaction protection',
                         $this->currentClassName ?? 'Unknown',
                         $this->currentMethodName ?? 'unknown',
-                        $unprotectedWrites
+                        $mainFlowUnprotected
                     ),
                     'line' => $this->methodStartLine,
                     'severity' => Severity::High,
@@ -429,5 +462,28 @@ class TransactionVisitor extends NodeVisitorAbstract
         }
 
         return false;
+    }
+
+    /**
+     * A "guard clause" if is one whose body always terminates (return/throw),
+     * with no else or elseif branches. Writes inside are isolated and can never
+     * co-execute with writes in the main flow.
+     */
+    private function isGuardClauseIf(Node\Stmt\If_ $node): bool
+    {
+        if (! empty($node->elseifs) || $node->else !== null) {
+            return false;
+        }
+        if (empty($node->stmts)) {
+            return false;
+        }
+        $last = end($node->stmts);
+
+        // PHP-Parser 5.x: throw is an expression (Node\Expr\Throw_) wrapped in Node\Stmt\Expression
+        if ($last instanceof Node\Stmt\Expression && $last->expr instanceof Node\Expr\Throw_) {
+            return true;
+        }
+
+        return $last instanceof Node\Stmt\Return_ || $last instanceof Node\Stmt\Throw_;
     }
 }

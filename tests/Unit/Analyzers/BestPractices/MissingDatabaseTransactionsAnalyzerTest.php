@@ -1547,4 +1547,127 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('1 database write operation', $result);
     }
+
+    public function test_passes_with_guard_clause_delete_before_transaction(): void
+    {
+        $code = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+use App\Models\Team;
+use App\Models\Invitation;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+class InvitationController
+{
+    public function accept(Request $request, string $token): mixed
+    {
+        $invitation = Invitation::where('token', $token)->first();
+        $team = $invitation->team;
+
+        // Guard clause: isolated write, always returns immediately after
+        if ($team->hasUser($request->user())) {
+            $invitation->delete();
+            return redirect()->route('dashboard');
+        }
+
+        // Main flow: properly wrapped in transaction
+        DB::transaction(function () use ($request, $team, $invitation): void {
+            $team->addMember($request->user(), $invitation->role);
+            $invitation->delete();
+        });
+
+        return redirect()->route('teams.show', $team);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Http/Controllers/InvitationController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_guard_clause_has_else_branch(): void
+    {
+        $code = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+use App\Models\Team;
+use App\Models\Invitation;
+use Illuminate\Http\Request;
+class InvitationController
+{
+    public function accept(Request $request, string $token): mixed
+    {
+        $invitation = Invitation::where('token', $token)->first();
+        $team = $invitation->team;
+
+        // NOT a guard clause: has an else branch, so both paths continue
+        if ($team->hasUser($request->user())) {
+            $invitation->delete();
+            return redirect()->route('dashboard');
+        } else {
+            $invitation->delete();
+        }
+
+        $team->save();
+
+        return redirect()->route('teams.show', $team);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Http/Controllers/InvitationController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    public function test_passes_with_guard_clause_throw_before_transaction(): void
+    {
+        $code = <<<'PHP'
+<?php
+namespace App\Services;
+use App\Models\Order;
+use Illuminate\Support\Facades\DB;
+class OrderService
+{
+    public function process(int $id): void
+    {
+        $order = Order::find($id);
+
+        // Guard clause using throw — isolated write
+        if ($order->isPaid()) {
+            $order->delete();
+            throw new \RuntimeException('Order already paid');
+        }
+
+        DB::transaction(function () use ($order): void {
+            $order->markPaid();
+            $order->save();
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

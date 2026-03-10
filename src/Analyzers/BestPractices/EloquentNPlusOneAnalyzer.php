@@ -47,7 +47,12 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
     {
         $issues = [];
 
-        foreach ($this->getPhpFiles() as $file) {
+        $allFiles = $this->getPhpFiles();
+
+        $scanner = new EloquentModelRelationshipScanner($this->parser);
+        $scanResult = $scanner->scan($allFiles);
+
+        foreach ($allFiles as $file) {
             try {
                 $ast = $this->parser->parseFile($file);
 
@@ -55,7 +60,7 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $visitor = new NPlusOneVisitor;
+                $visitor = new NPlusOneVisitor($scanResult);
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
@@ -123,6 +128,280 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
     private function getQueryRecommendation(string $query, string $loopType): string
     {
         return "Executing '{$query}' inside a {$loopType} triggers a separate database query for each iteration. Consider fetching all required data before the loop using whereIn() or eager loading, then filter in-memory.";
+    }
+}
+
+/**
+ * Maps model class names to their defined Eloquent relationship method names.
+ */
+class RelationshipRegistry
+{
+    /** @var array<string, array<string>> */
+    private array $map = [];
+
+    public function add(string $model, string $relation): void
+    {
+        $this->map[$model][] = $relation;
+    }
+
+    public function has(string $model, string $relation): bool
+    {
+        return in_array($relation, $this->map[$model] ?? [], true);
+    }
+
+    /** @return array<string, array<string>> */
+    public function all(): array
+    {
+        return $this->map;
+    }
+}
+
+/**
+ * Tracks inferred variable types (e.g. $posts → Collection<Post>, $post → Post).
+ */
+class VariableTypeRegistry
+{
+    /** @var array<string, string> */
+    private array $types = [];
+
+    public function set(string $var, string $type): void
+    {
+        $this->types[$var] = $type;
+    }
+
+    public function get(string $var): ?string
+    {
+        return $this->types[$var] ?? null;
+    }
+
+    public function has(string $var): bool
+    {
+        return isset($this->types[$var]);
+    }
+}
+
+/**
+ * Tracks model attributes (from $fillable, $casts, $appends) per model class.
+ *
+ * Used to distinguish regular column access from relationship access.
+ */
+class ModelAttributesRegistry
+{
+    /** @var array<string, array<string>> */
+    private array $map = [];
+
+    public function add(string $model, string $attribute): void
+    {
+        $this->map[$model][] = $attribute;
+    }
+
+    public function has(string $model, string $attribute): bool
+    {
+        return in_array($attribute, $this->map[$model] ?? [], true);
+    }
+}
+
+/**
+ * Tracks Eloquent accessor names per model class.
+ *
+ * Derived from getXxxAttribute() method definitions. Accessors expose computed
+ * properties and should never be mistaken for relationships.
+ */
+class AccessorRegistry
+{
+    /** @var array<string, array<string>> */
+    private array $map = [];
+
+    public function add(string $model, string $accessor): void
+    {
+        $this->map[$model][] = $accessor;
+    }
+
+    public function has(string $model, string $accessor): bool
+    {
+        return in_array($accessor, $this->map[$model] ?? [], true);
+    }
+}
+
+/**
+ * Result of scanning all PHP files — bundles all three model-aware registries.
+ */
+class ModelScanResult
+{
+    public function __construct(
+        public readonly RelationshipRegistry $relationships,
+        public readonly ModelAttributesRegistry $attributes,
+        public readonly AccessorRegistry $accessors,
+    ) {}
+}
+
+/**
+ * Scans PHP files to build a registry of Eloquent model relationships.
+ *
+ * Detects methods that return one of the Eloquent relation builder calls
+ * (hasOne, hasMany, belongsTo, etc.) on $this.
+ */
+class EloquentModelRelationshipScanner
+{
+    /** @var array<string> */
+    private const RELATION_METHODS = [
+        'hasOne', 'hasMany', 'hasOneThrough', 'hasManyThrough',
+        'belongsTo', 'belongsToMany', 'morphTo', 'morphOne',
+        'morphMany', 'morphToMany', 'morphedByMany',
+    ];
+
+    public function __construct(private ParserInterface $parser) {}
+
+    /**
+     * @param  array<string>  $files
+     */
+    public function scan(array $files): ModelScanResult
+    {
+        $relationships = new RelationshipRegistry;
+        $attributes = new ModelAttributesRegistry;
+        $accessors = new AccessorRegistry;
+
+        foreach ($files as $file) {
+            $ast = $this->parser->parseFile($file);
+            if (empty($ast)) {
+                continue;
+            }
+            $this->scanStatements($ast, $relationships, $attributes, $accessors);
+        }
+
+        return new ModelScanResult($relationships, $attributes, $accessors);
+    }
+
+    /**
+     * @param  array<Node>  $stmts
+     */
+    private function scanStatements(array $stmts, RelationshipRegistry $relationships, ModelAttributesRegistry $attributes, AccessorRegistry $accessors): void
+    {
+        foreach ($stmts as $stmt) {
+            if ($stmt instanceof Stmt\Namespace_) {
+                $this->scanStatements($stmt->stmts, $relationships, $attributes, $accessors);
+            } elseif ($stmt instanceof Stmt\Class_) {
+                $this->scanClass($stmt, $relationships, $attributes, $accessors);
+            }
+        }
+    }
+
+    private function scanClass(Stmt\Class_ $class, RelationshipRegistry $relationships, ModelAttributesRegistry $attributes, AccessorRegistry $accessors): void
+    {
+        if ($class->name === null) {
+            return; // Anonymous class
+        }
+        $className = $class->name->toString();
+
+        foreach ($class->stmts as $stmt) {
+            // Scan class properties: $fillable, $casts, $appends
+            if ($stmt instanceof Stmt\Property) {
+                $this->scanPropertyForAttributes($stmt, $className, $attributes);
+
+                continue;
+            }
+
+            if (! ($stmt instanceof Stmt\ClassMethod)) {
+                continue;
+            }
+
+            $methodName = $stmt->name->toString();
+
+            // Detect accessor methods: getXxxAttribute()
+            if ($this->isAccessorMethod($methodName)) {
+                $accessors->add($className, $this->accessorMethodToPropertyName($methodName));
+
+                continue;
+            }
+
+            // Detect relationship methods: return $this->hasMany(...), etc.
+            foreach ($stmt->stmts ?? [] as $bodyStmt) {
+                if (! ($bodyStmt instanceof Stmt\Return_) || $bodyStmt->expr === null) {
+                    continue;
+                }
+
+                $rootCall = $this->findDeepestMethodCall($bodyStmt->expr);
+                if ($rootCall === null) {
+                    continue;
+                }
+
+                if ($rootCall->var instanceof Expr\Variable &&
+                    is_string($rootCall->var->name) &&
+                    $rootCall->var->name === 'this' &&
+                    $rootCall->name instanceof Node\Identifier &&
+                    in_array($rootCall->name->toString(), self::RELATION_METHODS, true)) {
+                    $relationships->add($className, $methodName);
+                }
+            }
+        }
+    }
+
+    /**
+     * Extract attribute names from $fillable, $casts, and $appends properties.
+     */
+    private function scanPropertyForAttributes(Stmt\Property $property, string $className, ModelAttributesRegistry $attributes): void
+    {
+        foreach ($property->props as $prop) {
+            $propName = $prop->name->toString();
+            if (! in_array($propName, ['fillable', 'casts', 'appends'], true)) {
+                continue;
+            }
+            if (! ($prop->default instanceof Expr\Array_)) {
+                continue;
+            }
+
+            foreach ($prop->default->items as $item) {
+                if ($item === null) {
+                    continue;
+                }
+                // $fillable / $appends: values are strings (['name', 'email'])
+                if ($propName !== 'casts' && $item->value instanceof Node\Scalar\String_) {
+                    $attributes->add($className, $item->value->value);
+                }
+                // $casts: keys are attribute names (['name' => 'string'])
+                if ($propName === 'casts' && $item->key instanceof Node\Scalar\String_) {
+                    $attributes->add($className, $item->key->value);
+                }
+            }
+        }
+    }
+
+    /**
+     * True when a method name matches the getXxxAttribute() accessor convention.
+     */
+    private function isAccessorMethod(string $methodName): bool
+    {
+        return str_starts_with($methodName, 'get') &&
+               str_ends_with($methodName, 'Attribute') &&
+               strlen($methodName) > 12; // longer than "getAttribute"
+    }
+
+    /**
+     * Convert getFirstNameAttribute → first_name.
+     */
+    private function accessorMethodToPropertyName(string $methodName): string
+    {
+        $inner = substr($methodName, 3, -9); // strip 'get' and 'Attribute'
+        // CamelCase → snake_case
+        $snake = strtolower((string) preg_replace('/[A-Z]/', '_$0', lcfirst($inner)));
+
+        return ltrim($snake, '_');
+    }
+
+    /**
+     * Walk a MethodCall chain and return the deepest MethodCall node
+     * (the one whose var is NOT a MethodCall — typically Variable('this')).
+     */
+    private function findDeepestMethodCall(Node $expr): ?Expr\MethodCall
+    {
+        $deepest = null;
+        $current = $expr;
+        while ($current instanceof Expr\MethodCall) {
+            $deepest = $current;
+            $current = $current->var;
+        }
+
+        return $deepest;
     }
 }
 
@@ -247,15 +526,31 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      */
     private array $relationLoadedChecks = [];
 
-    public function __construct() {}
+    private VariableTypeRegistry $variableTypes;
+
+    private RelationshipRegistry $relationshipRegistry;
+
+    private ModelAttributesRegistry $modelAttributesRegistry;
+
+    private AccessorRegistry $accessorRegistry;
+
+    public function __construct(ModelScanResult $scanResult)
+    {
+        $this->relationshipRegistry = $scanResult->relationships;
+        $this->modelAttributesRegistry = $scanResult->attributes;
+        $this->accessorRegistry = $scanResult->accessors;
+        $this->variableTypes = new VariableTypeRegistry;
+    }
 
     public function enterNode(Node $node)
     {
-        // Track variable assignments to detect eager loading
+        // Track variable assignments to detect eager loading and model queries
         if ($node instanceof Expr\Assign) {
             if ($node->var instanceof Expr\Variable && is_string($node->var->name)) {
                 // Check if the assignment uses with() or load() for eager loading
                 $this->trackEagerLoading($node->expr, $node->var->name);
+                // Infer variable type from model query (e.g. $posts = Post::get())
+                $this->detectModelQuery($node);
             }
 
             return null;
@@ -287,21 +582,12 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
         // Track loop entry
         if ($node instanceof Stmt\Foreach_) {
-            $loopVariable = null;
+            // Infer loop variable type and copy eager loaded relationships
+            $this->inferLoopVariableType($node);
 
-            // Get loop variable name and source variable
+            $loopVariable = null;
             if ($node->valueVar instanceof Expr\Variable && is_string($node->valueVar->name)) {
                 $loopVariable = $node->valueVar->name;
-
-                // Check if iterating over a variable with eager loaded relationships
-                if ($node->expr instanceof Expr\Variable && is_string($node->expr->name)) {
-                    $sourceVar = $node->expr->name;
-                    // Copy eager loaded relationships to loop variable context
-                    if (isset($this->eagerLoadedRelationships[$sourceVar])) {
-                        $this->eagerLoadedRelationships[$loopVariable] =
-                            $this->eagerLoadedRelationships[$sourceVar];
-                    }
-                }
             }
 
             $this->loopStack[] = [
@@ -374,7 +660,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     $lastProperty = end($chain);
 
                     // Check if the last property looks like a relationship
-                    if ($this->looksLikeRelationship($lastProperty)) {
+                    if ($this->isActualOrProbableRelationship($loopVariable, $lastProperty)) {
                         // Get the first relationship in the chain (e.g., 'user' from 'user.team')
                         $firstRelationship = $chain[0];
 
@@ -402,7 +688,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     $methodName = $node->name->toString();
 
                     // Check if this looks like a relationship method
-                    if ($this->looksLikeRelationshipMethod($methodName)) {
+                    if ($this->isActualOrProbableRelationship($loopVariable, $methodName, true)) {
                         // Only flag if NOT eager loaded AND NOT checked with relationLoaded()
                         if (! $this->isEagerLoaded($loopVariable, $methodName) &&
                             ! $this->isRelationLoadedChecked($loopVariable, $methodName)) {
@@ -413,6 +699,30 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                                 'variable' => $loopVariable,
                             ];
                         }
+                    }
+                }
+            }
+
+            // Detect $loopVar->relationship()->queryMethod() pattern (e.g. $post->comments()->count())
+            if ($node instanceof Expr\MethodCall &&
+                $node->name instanceof Node\Identifier &&
+                $this->isQueryExecutionMethod($node->name->toString())) {
+
+                $inner = $node->var;
+                if ($inner instanceof Expr\MethodCall &&
+                    $inner->var instanceof Expr\Variable &&
+                    is_string($inner->var->name) &&
+                    $inner->var->name === $loopVariable &&
+                    $inner->name instanceof Node\Identifier) {
+
+                    $relationName = $inner->name->toString();
+                    if ($this->isActualOrProbableRelationship($loopVariable, $relationName, true) &&
+                        ! $this->isEagerLoaded($loopVariable, $relationName)) {
+                        $this->queryIssues[] = [
+                            'query' => "\${$loopVariable}->{$relationName}()->{$node->name->toString()}()",
+                            'line' => $node->getStartLine(),
+                            'loop_type' => $loopType,
+                        ];
                     }
                 }
             }
@@ -505,6 +815,132 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                 unset($this->relationLoadedChecks[$key]);
             }
         }
+    }
+
+    /**
+     * Detect model query assignments and record variable types.
+     *
+     * Handles: $posts = Post::get(), $posts = Post::with('user')->get(), $post = Post::find(1)
+     */
+    private function detectModelQuery(Expr\Assign $node): void
+    {
+        if (! ($node->var instanceof Expr\Variable) || ! is_string($node->var->name)) {
+            return;
+        }
+        $varName = $node->var->name;
+        $expr = $node->expr;
+
+        // Direct static call: Post::all(), Post::get(), Post::find(1)
+        if ($expr instanceof Expr\StaticCall &&
+            $expr->class instanceof Node\Name &&
+            $expr->name instanceof Node\Identifier) {
+            $className = $expr->class->getLast();
+            $lowerMethod = strtolower($expr->name->toString());
+            if (in_array($lowerMethod, ['get', 'all', 'paginate', 'simplepaginate'], true)) {
+                $this->variableTypes->set($varName, "Collection<{$className}>");
+            } elseif (in_array($lowerMethod, ['find', 'first', 'findorfail', 'firstorfail'], true)) {
+                $this->variableTypes->set($varName, $className);
+            }
+
+            return;
+        }
+
+        // Chained method calls: Post::where()->get(), Post::with('user')->get()
+        if ($expr instanceof Expr\MethodCall && $expr->name instanceof Node\Identifier) {
+            $lowerMethod = strtolower($expr->name->toString());
+            $className = $this->resolveModelFromChain($expr);
+            if ($className !== null) {
+                if (in_array($lowerMethod, ['get', 'all', 'paginate', 'simplepaginate'], true)) {
+                    $this->variableTypes->set($varName, "Collection<{$className}>");
+                } elseif (in_array($lowerMethod, ['find', 'first', 'findorfail', 'firstorfail'], true)) {
+                    $this->variableTypes->set($varName, $className);
+                }
+            }
+        }
+    }
+
+    /**
+     * Walk a MethodCall chain to find the root StaticCall class name.
+     */
+    private function resolveModelFromChain(Expr\MethodCall $node): ?string
+    {
+        $current = $node->var;
+        while ($current instanceof Expr\MethodCall) {
+            $current = $current->var;
+        }
+
+        if ($current instanceof Expr\StaticCall && $current->class instanceof Node\Name) {
+            return $current->class->getLast();
+        }
+
+        return null;
+    }
+
+    /**
+     * Infer loop variable type from source collection type, and copy eager loading context.
+     */
+    private function inferLoopVariableType(Stmt\Foreach_ $node): void
+    {
+        if (! ($node->valueVar instanceof Expr\Variable) || ! is_string($node->valueVar->name)) {
+            return;
+        }
+        $loopVar = $node->valueVar->name;
+
+        if (! ($node->expr instanceof Expr\Variable) || ! is_string($node->expr->name)) {
+            return;
+        }
+        $sourceVar = $node->expr->name;
+
+        // Infer model type from Collection<Model> → Model
+        $collectionType = $this->variableTypes->get($sourceVar);
+        if ($collectionType !== null && str_starts_with($collectionType, 'Collection<')) {
+            $model = trim(str_replace(['Collection<', '>'], '', $collectionType));
+            $this->variableTypes->set($loopVar, $model);
+        }
+
+        // Copy eager loaded relationships from source variable to loop variable context
+        if (isset($this->eagerLoadedRelationships[$sourceVar])) {
+            $this->eagerLoadedRelationships[$loopVar] = $this->eagerLoadedRelationships[$sourceVar];
+        }
+    }
+
+    /**
+     * Determine if a property/method name is a real or probable relationship.
+     *
+     * When the loop variable's model type is known (via registry), uses precise registry
+     * lookup. Otherwise falls back to heuristics. Method-call context uses
+     * looksLikeRelationshipMethod (stricter exclusions) to avoid false positives
+     * on helpers like relationLoaded(), count(), etc.
+     */
+    private function isActualOrProbableRelationship(string $loopVariable, string $name, bool $isMethodCall = false): bool
+    {
+        $model = $this->variableTypes->get($loopVariable);
+
+        if ($model !== null && ! str_starts_with($model, 'Collection<')) {
+            // Model type known from a static call (Post::get(), Post::all(), etc.)
+            if (array_key_exists($model, $this->relationshipRegistry->all())) {
+                // Model IS in the registry — precise lookup only, no heuristics.
+                // Also exclude properties declared as attributes or accessors.
+                if ($this->modelAttributesRegistry->has($model, $name)) {
+                    return false;
+                }
+                if ($this->accessorRegistry->has($model, $name)) {
+                    return false;
+                }
+
+                return $this->relationshipRegistry->has($model, $name);
+            }
+
+            // Model type known but NOT in registry (model file not scanned, e.g. vendor).
+            // Fall back to heuristic so existing code without model files still works.
+            return $isMethodCall
+                ? $this->looksLikeRelationshipMethod($name)
+                : $this->looksLikeRelationship($name);
+        }
+
+        // Variable type completely unknown (flatMap, complex chains, etc.) — don't flag.
+        // Conservative default: false negatives are preferable to false positives.
+        return false;
     }
 
     /**
@@ -738,6 +1174,8 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
     /**
      * Check if a relationship is eager loaded for a variable.
+     *
+     * Also matches prefix: if 'user.team' is loaded, then 'user' is considered covered.
      */
     private function isEagerLoaded(string $varName, string $relationship): bool
     {
@@ -745,7 +1183,13 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        return in_array($relationship, $this->eagerLoadedRelationships[$varName], true);
+        foreach ($this->eagerLoadedRelationships[$varName] as $loaded) {
+            if ($relationship === $loaded || str_starts_with($loaded, $relationship.'.')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -829,6 +1273,16 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
         // Foreign key pattern: *_id (user_id, post_id, etc.)
         if (str_ends_with($lowerName, '_id')) {
+            return false;
+        }
+
+        // Hash column pattern: *_hash (api_token_hash, password_hash, etc.)
+        if (str_ends_with($lowerName, '_hash')) {
+            return false;
+        }
+
+        // Aggregate/total prefix: total_* (total_issues, total_execution_time, etc.)
+        if (str_starts_with($lowerName, 'total_')) {
             return false;
         }
 

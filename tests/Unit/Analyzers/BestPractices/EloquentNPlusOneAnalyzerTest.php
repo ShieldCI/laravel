@@ -2081,4 +2081,608 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('Record::find', $result);
     }
+
+    // -------------------------------------------------------------------------
+    // Registry-based detection tests (EloquentModelRelationshipScanner)
+    // -------------------------------------------------------------------------
+
+    public function test_does_not_flag_hash_column_when_model_has_no_such_relationship(): void
+    {
+        $modelCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Project extends Model
+{
+    public function owner()
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+PHP;
+
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Project;
+
+class ValidateSatisAuth
+{
+    public function handle()
+    {
+        $projects = Project::get();
+
+        foreach ($projects as $project) {
+            echo $project->api_token_hash;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Project.php' => $modelCode,
+            'app/Http/Controllers/ValidateSatisAuth.php' => $controllerCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_result_count_columns_when_model_has_no_such_relationship(): void
+    {
+        $modelCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Report extends Model
+{
+    public function project()
+    {
+        return $this->belongsTo(Project::class);
+    }
+}
+PHP;
+
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Report;
+
+class ProjectController
+{
+    public function show()
+    {
+        $reports = Report::get();
+
+        foreach ($reports as $report) {
+            echo $report->passed;
+            echo $report->failed;
+            echo $report->warnings;
+            echo $report->errors;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Report.php' => $modelCode,
+            'app/Http/Controllers/ProjectController.php' => $controllerCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_relationship_from_scanned_model_file(): void
+    {
+        $modelCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Post extends Model
+{
+    public function comments()
+    {
+        return $this->hasMany(Comment::class);
+    }
+}
+PHP;
+
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Post;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::get();
+
+        foreach ($posts as $post) {
+            echo $post->comments;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Post.php' => $modelCode,
+            'app/Http/Controllers/PostController.php' => $controllerCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('comments', $result);
+    }
+
+    public function test_passes_when_scanned_relationship_is_eager_loaded(): void
+    {
+        $modelCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Post extends Model
+{
+    public function comments()
+    {
+        return $this->hasMany(Comment::class);
+    }
+}
+PHP;
+
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Post;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::with('comments')->get();
+
+        foreach ($posts as $post) {
+            echo $post->comments;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Post.php' => $modelCode,
+            'app/Http/Controllers/PostController.php' => $controllerCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_eager_load_prefix_covers_intermediate_access(): void
+    {
+        $modelCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Post extends Model
+{
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+PHP;
+
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Post;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::with('user.team')->get();
+
+        foreach ($posts as $post) {
+            echo $post->user;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Post.php' => $modelCode,
+            'app/Http/Controllers/PostController.php' => $controllerCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_infers_model_type_through_collection_variable(): void
+    {
+        $modelCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Post extends Model
+{
+    public function tags()
+    {
+        return $this->belongsToMany(Tag::class);
+    }
+}
+PHP;
+
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Post;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::get();
+
+        foreach ($posts as $post) {
+            echo $post->tags;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Post.php' => $modelCode,
+            'app/Http/Controllers/PostController.php' => $controllerCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('tags', $result);
+    }
+
+    public function test_does_not_flag_find_result_scalar_columns(): void
+    {
+        $modelCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Post extends Model
+{
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+PHP;
+
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Post;
+
+class PostController
+{
+    public function show($id)
+    {
+        $post = Post::find($id);
+
+        foreach ([$post] as $p) {
+            echo $p->title;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Post.php' => $modelCode,
+            'app/Http/Controllers/PostController.php' => $controllerCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_relation_method_query_call_in_loop(): void
+    {
+        $modelCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Post extends Model
+{
+    public function comments()
+    {
+        return $this->hasMany(Comment::class);
+    }
+}
+PHP;
+
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Post;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::get();
+
+        foreach ($posts as $post) {
+            $count = $post->comments()->count();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Post.php' => $modelCode,
+            'app/Http/Controllers/PostController.php' => $controllerCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('comments', $result);
+    }
+
+    public function test_does_not_flag_property_access_when_variable_type_is_unknown(): void
+    {
+        // Simulates $projects = $user->teams()->flatMap(...) — no static-call type inference.
+        // When the loop variable's model type cannot be determined, the analyzer should
+        // stay silent rather than guess (conservative: false negatives over false positives).
+        $modelCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Project extends Model
+{
+    public function owner()
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+PHP;
+
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Project;
+
+class ValidateSatisAuth
+{
+    public function handle($user)
+    {
+        // flatMap produces an unknown-type collection — no static-call signature
+        $projects = $user->teams()->with('projects')->get()->flatMap(
+            fn ($team) => $team->projects
+        );
+
+        foreach ($projects as $project) {
+            echo $project->api_token_hash;
+            echo $project->passed;
+            echo $project->total_issues;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Project.php' => $modelCode,
+            'app/Http/Controllers/ValidateSatisAuth.php' => $controllerCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_when_model_is_in_registry_but_property_is_not_a_relationship(): void
+    {
+        // When we have precise type info AND the model is in the registry,
+        // any property NOT listed as a relationship must not be flagged.
+        $modelCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Report extends Model
+{
+    protected $fillable = ['passed', 'failed', 'warnings', 'errors', 'skipped'];
+
+    public function project()
+    {
+        return $this->belongsTo(Project::class);
+    }
+}
+PHP;
+
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Report;
+
+class DashboardController
+{
+    public function index()
+    {
+        $reports = Report::get();
+
+        foreach ($reports as $report) {
+            echo $report->passed;
+            echo $report->failed;
+            echo $report->warnings;
+            echo $report->errors;
+            echo $report->skipped;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Report.php' => $modelCode,
+            'app/Http/Controllers/DashboardController.php' => $controllerCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_accessor_property_when_model_is_in_registry(): void
+    {
+        // Accessor methods (getXxxAttribute) should not be flagged as relationships.
+        $modelCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Post extends Model
+{
+    public function getFullTitleAttribute()
+    {
+        return $this->title . ' — ' . $this->subtitle;
+    }
+
+    public function comments()
+    {
+        return $this->hasMany(Comment::class);
+    }
+}
+PHP;
+
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Post;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::get();
+
+        foreach ($posts as $post) {
+            echo $post->full_title;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Post.php' => $modelCode,
+            'app/Http/Controllers/PostController.php' => $controllerCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

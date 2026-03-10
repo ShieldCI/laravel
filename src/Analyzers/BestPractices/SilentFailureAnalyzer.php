@@ -297,7 +297,7 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                     // Severity depends on how well the developer handles the exception:
                     //   High   — no logging at all (genuinely silent failure)
                     //   Medium — logging present but exception variable unused (details lost)
-                    //   Low    — logging + uses exception variable (architectural note)
+                    //   (hasLogging && usesVar) → acceptable handling, no issue added
                     $addedBroadIssue = false;
                     $broadInfo = $this->getBroadExceptionInfo($catch->types);
                     if ($broadInfo['isBroad'] && ! $hasRethrow) {
@@ -305,24 +305,25 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                         $usesVar = $this->usesExceptionVariable($catch->stmts, $exceptionVarName);
 
                         if (! $hasLogging) {
-                            $broadSeverity = Severity::High;
-                            $broadRecommendation = "Catch specific exception types instead of {$broadTypeStr}. Broad catches hide programming errors like TypeError, ArgumentCountError";
+                            $this->issues[] = [
+                                'message' => "Catching {$broadTypeStr} is overly broad and can mask fatal errors",
+                                'line' => $catch->getLine(),
+                                'severity' => Severity::High,
+                                'recommendation' => "Catch specific exception types instead of {$broadTypeStr}. Broad catches hide programming errors like TypeError, ArgumentCountError",
+                                'code' => null,
+                            ];
+                            $addedBroadIssue = true;
                         } elseif (! $usesVar) {
-                            $broadSeverity = Severity::Medium;
-                            $broadRecommendation = "Catch specific exception types instead of {$broadTypeStr}. Also include the exception variable in your log call to preserve debugging context";
-                        } else {
-                            $broadSeverity = Severity::Low;
-                            $broadRecommendation = "Consider catching specific exception types instead of {$broadTypeStr}. Broad catches can hide programming errors even when logged";
+                            $this->issues[] = [
+                                'message' => "Catching {$broadTypeStr} is overly broad and can mask fatal errors",
+                                'line' => $catch->getLine(),
+                                'severity' => Severity::Medium,
+                                'recommendation' => "Catch specific exception types instead of {$broadTypeStr}. Also include the exception variable in your log call to preserve debugging context",
+                                'code' => null,
+                            ];
+                            $addedBroadIssue = true;
                         }
-
-                        $this->issues[] = [
-                            'message' => "Catching {$broadTypeStr} is overly broad and can mask fatal errors",
-                            'line' => $catch->getLine(),
-                            'severity' => $broadSeverity,
-                            'recommendation' => $broadRecommendation,
-                            'code' => null,
-                        ];
-                        $addedBroadIssue = true;
+                        // else: hasLogging && usesVar → well-handled broad catch, no issue added
                     }
 
                     // Exception variable usage only counts as "handling" when combined with logging/rethrow/fallback

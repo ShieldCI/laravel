@@ -1,11 +1,18 @@
 # Changelog
 
-## v1.5.12 - 2026-03-10
+## v1.5.13
+
+### Fixed
+- `MixedQueryBuilderEloquentAnalyzer` now reports the Query Builder call line for mixed Eloquent/QB issues instead of the Eloquent call line — the QB call is the actual offending statement and is the correct anchor for inline suppression and code navigation
+- `ServiceContainerResolutionAnalyzer` no longer false-positives on Eloquent models (instantiated via `newInstance()`/`new static()`; constructor DI is impractical), `ShouldQueue` classes (the serialization lifecycle bypasses `__construct`; `app()` in `via()` is canonical), and service providers (all resolution inside service providers is suppressed — `boot()` and its private helpers are bootstrap infrastructure); issue locations now use relative paths via `getRelativePath()` consistent with all other analyzers
+- `SilentFailureAnalyzer` no longer emits Low severity issues for broad catches (`Throwable`/`Exception`/`Error`) that both log the exception and reference the exception variable — these are well-handled patterns (e.g. `Log::error() + markAsFailed($e->getMessage())` in jobs and controllers); High severity (no logging) and Medium severity (logging but `$e` unused) are retained
+
+## v1.5.12
 
 ### Fixed
 - `MissingDatabaseTransactionsAnalyzer` no longer false-positives on guard clause patterns — an `if`-block with no `else`/`elseif` whose last statement is `return` or `throw` is now recognised as a guard clause; writes inside it are isolated (they exist on execution paths that always terminate before reaching the main flow) and are excluded from the atomicity threshold check; fixes false positives like a guard clause deleting a record before a properly-wrapped `DB::transaction()`
 
-## v1.5.11 - 2026-03-10
+## v1.5.11
 
 ### Added
 - `EloquentNPlusOneAnalyzer` upgraded to registry-based detection with semantic type inference — a two-pass architecture scans all model files first (`EloquentModelRelationshipScanner`) to build relationship, attribute, and accessor registries, then uses precise registry lookups during N+1 traversal; unknown variable types no longer produce false positives
@@ -16,18 +23,18 @@
 - `HelperFunctionAbuseAnalyzer` now counts unique helper functions per class instead of total calls — a class calling `config()` seven times has one implicit dependency (the config system), not seven; thresholds recalibrated for unique-count scale (High at ≥ 10 distinct helpers, Medium at ≥ 5)
 - `LogicInBladeAnalyzer` no longer false-positives on `@props` and `@aware` Blade component directives — these compile to framework-internal PHP containing `array_filter` (for `ComponentSlot` detection), which was incorrectly flagged as "business logic found in Blade directive"
 
-## v1.5.10 - 2026-03-09
+## v1.5.10
 
 ### Fixed
 - `ChunkMissingAnalyzer` no longer false-positives when a variable name used in a `foreach` in one method matches a query-assigned variable from a different method in the same class — `$variableAssignments` is now reset on entry to each `ClassMethod`, `Function_`, `Closure`, and `ArrowFunction` scope
 - `ChunkMissingAnalyzer` no longer false-positives on `->pluck(...)->all()` chains — `pluck()` executes the query and returns an in-memory `Collection`; the subsequent `->all()` is `Collection::all()` (array conversion), not `Builder::all()`, and is now correctly treated as safe
 
-## v1.5.9 - 2026-03-09
+## v1.5.9
 
 ### Added
 - `InlineSuppressionParser` now recognises `@shieldci-ignore` inside multi-line docblocks — when the line immediately above a flagged issue ends with the block-comment closing marker, the parser scans backward through the block for a matching suppression tag; this covers both standalone suppress docblocks and `@shieldci-ignore` placed inside an existing `@param`/`@return` docblock
 
-## v1.5.8 - 2026-03-09
+## v1.5.8
 
 ### Fixed
 - `CustomErrorPageAnalyzer` recommendation now lists only the templates that are actually missing instead of always enumerating all 7 — if a project already has `404.blade.php`, it will no longer appear in the recommendation text
@@ -35,14 +42,14 @@
 ### Changed
 - `CustomErrorPageAnalyzer` reads the required template list from `shieldci.analyzers.reliability.custom-error-pages.required_templates` config (falling back to the default 7 templates) — advanced users can override this list without modifying the published config file
 
-## v1.5.7 - 2026-03-09
+## v1.5.7
 
 ### Fixed
 - `UnusedGlobalMiddlewareAnalyzer` no longer false-positives on `TrustProxies` and `TrustHosts` in Laravel 11+ applications — in Laravel 11+, these are framework-level defaults injected by `Illuminate\Foundation\Configuration\Middleware`, not user-registered middleware, so flagging them as "unused" was incorrect for every Laravel 11+ app
 - `UnusedGlobalMiddlewareAnalyzer` now reports issues against `bootstrap/app.php` on Laravel 11+ (instead of the non-existent `app/Http/Kernel.php`), and the `HandleCors` recommendation text now references `withMiddleware()` in `bootstrap/app.php` on Laravel 11+
 - Laravel version detection uses `class_exists(Illuminate\Foundation\Configuration\Middleware::class)` — reliable across all environments (no filesystem dependency)
 
-## v1.5.6 - 2026-03-08
+## v1.5.6
 
 ### Fixed
 - `LoginThrottlingAnalyzer` no longer false-positives on route files registered with a throttle middleware directly on their group in `bootstrap/app.php` (e.g. `Route::prefix('api/v1')->middleware(['api', 'throttle:api.rest'])->group(base_path('routes/api-v1.php'))`) — these files now correctly inherit their rate-limiting protection and are skipped
@@ -51,7 +58,7 @@
 ### Added
 - `BootstrapRouteParser::getThrottleProtectedRouteFiles()` — detects route files registered with any `throttle:*` middleware (string or array form) on their group in `bootstrap/app.php`; used by `LoginThrottlingAnalyzer` to suppress false positives on externally throttled route groups
 
-## v1.5.5 - 2026-03-07
+## v1.5.5
 
 ### Fixed
 - `CsrfAnalyzer` no longer false-positives on API route files (e.g. `routes/api-v1.php`) registered under the `api` middleware group via `withRouting(then: ...)` in `bootstrap/app.php` — these files use Sanctum token-based authentication and must not have `web` middleware; they are now correctly skipped
@@ -60,14 +67,14 @@
 ### Added
 - `BootstrapRouteParser::getApiRegisteredRouteFiles()` — detects route files registered under the `api` middleware group through two sources: `require`/`include` statements in `routes/api.php`, and `Route::middleware('api'|['api', ...])->...->group(base_path(...))` chains in `bootstrap/app.php`
 
-## v1.5.4 - 2026-03-07
+## v1.5.4
 
 ### Fixed
 - `FillableForeignKeyAnalyzer` now reports each issue at the specific `$fillable` array item line (e.g. `'user_id',`) instead of the `protected $fillable = [` declaration line — fixes `@shieldci-ignore` comments placed on the offending entry being silently ignored
 - `NamingConventionAnalyzer` now reports property violations at the individual property line (`$prop->getStartLine()`) and constant violations at the individual constant line (`$const->getStartLine()`) instead of the parent statement line — same inline-suppression fix applies
 - `PasswordSecurityAnalyzer` now reports weak `password_hash()` option issues (`bcrypt cost`, `argon2 memory_cost`, `time_cost`, `threads`) at the offending array item line instead of the `password_hash(` call line
 
-## v1.5.3 - 2026-03-07
+## v1.5.3
 
 ### Fixed
 - `CsrfAnalyzer` no longer false-positives on route files registered with `web` middleware externally via `withRouting(then: ...)` in `bootstrap/app.php` (e.g. `Route::middleware('web')->group(base_path('routes/auth.php'))`) — these files inherit CSRF protection from the middleware group and are now correctly skipped
@@ -76,7 +83,7 @@
 ### Added
 - `BootstrapRouteParser` support class (`ShieldCI\Support`) — AST-based utility that detects route files covered by the `web` middleware group through external registration; checks both `require`/`include` statements in `routes/web.php` and `Route::middleware('web')->...->group(base_path(...))` chains in `bootstrap/app.php`; used by `CsrfAnalyzer` and `LoginThrottlingAnalyzer`
 
-## v1.5.2 - 2026-03-06
+## v1.5.2
 
 ### Fixed
 - `AuthenticationAnalyzer` now correctly recognises custom auth middleware classes applied at the group level via `Route::middleware(ClassName::class)->group()` — the class name was previously unresolved due to a NameResolver timing issue in single-pass traversal
@@ -86,14 +93,14 @@
 ### Changed
 - `AuthenticationAnalyzer` route file analysis fully migrated from regex/line-based parsing to PHP-Parser AST via a new `RouteAuthVisitor` — 17 regex methods removed; all valid PHP formatting variants (multiline chains, different indentation, etc.) are now handled without fragility
 
-## v1.5.1 - 2026-03-06
+## v1.5.1
 
 ### Fixed
 - `AuthenticationAnalyzer` no longer false-positives on invokable controllers registered on plain `Route::get()` routes (e.g. `PrivacyController`, `LandingController`) — unauthenticated GET routes now mark the target method as intentionally public, consistent with named resource actions `index`/`show`; POST/PUT/PATCH/DELETE routes without auth middleware continue to be flagged
 - `AuthenticationAnalyzer` no longer false-positives on `FormRequest::authorize() => true` when the `FormRequest` is injected into an auth-gated controller action (route middleware, constructor middleware, or `middleware()` method) — only unprotected sensitive actions are flagged; orphaned `FormRequest` classes are also skipped
 - `AuthenticationAnalyzer` no longer false-positives on `Auth::user()->`, `auth()->user()->`, or `$request->user()->` calls inside controller methods that are verifiably protected by auth middleware — suppression uses the already-computed `routeAuthStats` and `publicControllerMethods` maps (route-level) or constructor / `middleware()` method inspection (controller-level)
 
-## v1.5.0 - 2026-03-05
+## v1.5.0
 
 ### Added
 - `--category` now accepts comma-separated values to run multiple categories in one pass (e.g. `--category=security,performance`)
@@ -103,7 +110,7 @@
 ### Changed
 - `--category` help text updated to document comma-separated usage
 
-## v1.4.0 - 2026-03-03
+## v1.4.0
 
 ### Added
 - `--ci` flag on `shield:analyze` — activates CI mode directly from the command line without any environment variable or config file change
@@ -114,7 +121,7 @@
 ### Removed
 - `ci_mode` key from `config/shieldci.php` — the `SHIELDCI_CI_MODE` environment variable is no longer read; use `--ci` instead (`ci_mode_analyzers` and `ci_mode_exclude_analyzers` remain unchanged)
 
-## v1.3.0 - 2026-03-02
+## v1.3.0
 
 ### Added
 - `CiEnvironmentDetector::resolvePrNumber()` — auto-detects the pull-request / merge-request number from CI env vars across all 7 supported providers; GitHub falls back from `GITHUB_REF_NUMBER` to parsing `refs/pull/N/` from `GITHUB_REF`
@@ -123,7 +130,7 @@
 - `--git-pr-number`, `--git-repository`, `--git-base-branch` CLI flags on `shield:analyze` (CLI takes priority over auto-detected env vars, matching the `--git-branch` / `--git-commit` pattern)
 - `pr_number`, `repository`, `base_branch` fields in report metadata (`POST /api/reports`) and failure notification payloads (`POST /api/reports/failure`) — only present when on a PR build or when the corresponding CLI flag is set
 
-## v1.2.0 - 2026-03-02
+## v1.2.0
 
 ### Added
 - `CiEnvironmentDetector` class that auto-detects the active CI provider and resolves git branch/commit without manual configuration
@@ -131,7 +138,7 @@
 - Priority chain for branch and commit resolution: CLI flags (`--git-branch`, `--git-commit`) → CI platform env vars → `git` shell fallback
 - `ci_provider` field in report metadata (`POST /api/reports`) and failure notification payloads (`POST /api/reports/failure`) — only present when a known CI system is detected
 
-## v1.1.0 - 2026-03-02
+## v1.1.0
 
 ### Added
 - Platform failure notifications: `shield:analyze` now POSTs to `/api/reports/failure` whenever analysis exits early, so the ShieldCI dashboard can record and surface failures that never produced a report
@@ -140,7 +147,7 @@
 - `ClientInterface::sendFailureNotification()` / `ShieldCIClient` implementation posting to `POST /api/reports/failure`
 - Failure notifications are sent silently — any API error is swallowed so notifications never interrupt command flow
 
-## v1.0.12 - 2026-02-27
+## v1.0.12
 
 ### Fixed
 - `AuthenticationAnalyzer` now detects custom auth middleware classes used via `->middleware(ValidateApiToken::class)` by introspecting the middleware source file for auth signals (`bearerToken()`, `AuthenticationException`, `getPassword()`, `AuthenticatesRequests`, `Auth\Factory`)
@@ -151,7 +158,7 @@
 - Default public routes updated: removed `'webhook'` and `'verify'`, added `/password/reset`, `/password/email`, `/email/verify` as exact paths
 - Removed route name matching (`->name('auth.login')`) — only route URI paths are matched
 
-## v1.0.11 - 2026-02-26
+## v1.0.11
 
 ### Fixed
 - `CookieSecurityAnalyzer` no longer false-positives on `env()` calls with secure defaults (e.g. `'same_site' => env('SESSION_SAME_SITE', 'lax')` was incorrectly flagged as weak SameSite protection)
@@ -159,31 +166,31 @@
 - `HSTSHeaderAnalyzer` now resolves `env()` defaults when detecting HTTPS-only apps and checking session cookie security (e.g. `'secure' => env('SESSION_SECURE_COOKIE', true)` is now recognised as HTTPS-only)
 - Added `resolveConfigValue()` helper and `envHasDefault` flag to `InspectsCode` trait for correct `env()` default resolution in config array parsing
 
-## v1.0.10 - 2026-02-26
+## v1.0.10
 
 ### Fixed
 - `AuthenticationAnalyzer` no longer false-positives on nested public route URIs (e.g. `/auth/login`, `/api/v1/register`) — the public-route regex now allows path segments before the keyword
 - `AuthenticationAnalyzer` no longer false-positives on dotted public route names (e.g. `auth.login`, `admin.auth.register`) — the route-name regex now allows dotted prefixes
 - Recommendation text now mentions the `public_routes` config option as an alternative to `->middleware("guest")`
 
-## v1.0.9 - 2026-02-25
+## v1.0.9
 
 ### Fixed
 - `SqlInjectionAnalyzer` no longer false-positives on table/column name concatenation in `*Raw()` fragment methods (e.g. `->orderByRaw('(col/' . $table . '.goal) ASC')`) — only direct user input sources (`$_GET`, `$_POST`, `request()`, `Request::input()`) are flagged (#97)
 - `SqlInjectionAnalyzer` no longer false-positives on structural concatenation in `DB::select/insert/update/delete` when bindings are present (e.g. `DB::select('...IN (' . $placeholders . ')', $bindings)`) — the presence of bindings indicates parameterized query awareness (#97)
 
-## v1.0.8 - 2026-02-25
+## v1.0.8
 
 ### Fixed
 - `MassAssignmentAnalyzer` recommendations no longer suggest `request()->validated()` as a universal alternative — clarified that `validated()` requires a `FormRequest` subclass, with `request()->only([...])` as the universal safe option (#96)
 
-## v1.0.7 - 2026-02-24
+## v1.0.7
 
 ### Fixed
 - `HSTSHeaderAnalyzer` no longer false-positives on multi-line header definitions (e.g. `$response->headers->set(\n  'Strict-Transport-Security',\n  'max-age=31536000; includeSubDomains'\n)`) — now gathers a context window across subsequent lines (#95)
 - `includeSubDomains` and `preload` directive checks are now case-insensitive per RFC 6797
 
-## v1.0.6 - 2026-02-24
+## v1.0.6
 
 ### Added
 - `--triggered-by` option to `shield:analyze` for tracking how analysis was triggered (manual, ci_cd, scheduled)
@@ -197,17 +204,17 @@
 - Report timestamps are always UTC
 - Aligned platform API endpoints for forward compatibility
 
-## v1.0.5 - 2026-02-24
+## v1.0.5
 
 ### Fixed
 - `XssAnalyzer` no longer flags literal-output ternaries inside `<script>` tags as JavaScript XSS (e.g. `{{ $coll->contains(request()->route()->getName()) ? 'true' : 'false' }}`) — both branches are string/boolean/numeric/null literals so the output can never contain user-controlled data
 
-## v1.0.4 - 2026-02-23
+## v1.0.4
 
 ### Fixed
 - Remove `preload` from HSTS missing-header recommendation to match default config (`require_preload => false`) and avoid encouraging an irreversible browser preload list submission
 
-## v1.0.3 - 2026-02-20
+## v1.0.3
 
 ### Fixed
 - `AuthenticationAnalyzer` now recognises `Route::middleware('guest')->group()` wrappers so routes inside guest groups are no longer false-positived as "missing auth middleware"
@@ -215,17 +222,17 @@
 - Controller methods pointed to by routes in guest groups are correctly marked as intentionally public
 - Improved recommendation strings to mention `->middleware("guest")` as a valid alternative for intentionally public routes
 
-## v1.0.2 - 2026-02-20
+## v1.0.2
 
 ### Fixed
 - Fix "Documentation URL:" never appearing in console output by using `getDocsUrl()` accessor instead of raw `docsUrl` property in `AnalyzeCommand`
 
-## v1.0.1 - 2026-02-20
+## v1.0.1
 
 ### Fixed
 - Widen `larastan/larastan` from `^2.0` to `^2.0|^3.0` and `phpstan/phpstan` from `^1.10` to `^1.10|^2.0` to fix installation on Laravel 12 projects (#89)
 
-## v1.0.0 - 2026-02-19
+## v1.0.0
 
 First stable release. Graduated from 14 pre-release versions (v0.1.0–v0.1.13).
 

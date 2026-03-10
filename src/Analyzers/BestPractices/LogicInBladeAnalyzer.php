@@ -199,6 +199,13 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
                 $phpBlockLines++;
             }
 
+            // Suppress Blade component directives (@props, @aware) — they compile to
+            // framework-internal PHP (e.g. array_filter for ComponentSlot detection)
+            // that would otherwise trigger false-positive "business logic" warnings.
+            if (preg_match('/^\s*@(?:props|aware)\b/', $line)) {
+                $this->reportedLines[$lineNumber] = true;
+            }
+
             // Detect inline <?php tags
             if (preg_match('/<\?php/', $line)) {
                 $this->reportedLines[$lineNumber] = true;

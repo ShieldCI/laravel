@@ -2869,4 +2869,46 @@ BLADE;
 
         $this->assertPassed($result);
     }
+
+    public function test_passes_with_blade_props_directive(): void
+    {
+        $blade = <<<'BLADE'
+@props(['url'])
+<tr>
+<td class="header">
+<a href="{{ $url }}" style="display: inline-block;">
+<img src="{{ asset('images/logo.png') }}" alt="{{ config('app.name') }}">
+</a>
+</td>
+</tr>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/mail/header.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_blade_aware_directive(): void
+    {
+        $blade = <<<'BLADE'
+@aware(['color' => 'gray'])
+<div>{{ $color }}</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/component.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

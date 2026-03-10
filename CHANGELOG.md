@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.10 - 2026-03-09
+
+### Fixed
+- `ChunkMissingAnalyzer` no longer false-positives when a variable name used in a `foreach` in one method matches a query-assigned variable from a different method in the same class — `$variableAssignments` is now reset on entry to each `ClassMethod`, `Function_`, `Closure`, and `ArrowFunction` scope
+- `ChunkMissingAnalyzer` no longer false-positives on `->pluck(...)->all()` chains — `pluck()` executes the query and returns an in-memory `Collection`; the subsequent `->all()` is `Collection::all()` (array conversion), not `Builder::all()`, and is now correctly treated as safe
+
 ## v1.5.9 - 2026-03-09
 
 ### Added

@@ -2204,4 +2204,77 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
     }
+
+    public function test_mixed_usage_reports_line_of_query_builder_call(): void
+    {
+        $dir = $this->createTempDirectory([
+            'app/Models/Post.php' => '<?php namespace App\Models; use Illuminate\Database\Eloquent\Model; class Post extends Model {}',
+            'app/Repositories/PostRepository.php' => '<?php
+namespace App\Repositories;
+use App\Models\Post;
+use Illuminate\Support\Facades\DB;
+
+class PostRepository
+{
+    public function summary(): array
+    {
+        $count = Post::count();
+        $raw = DB::table(\'posts\')->value(\'legacy_col\');
+        return [$count, $raw];
+    }
+}',
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['app/Models'],
+        ]);
+        $analyzer->setBasePath($dir);
+        $analyzer->setPaths(['app/Repositories']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        // The issue should point to the DB::table() call (line 11), not Post::count() (line 10)
+        $this->assertNotNull($issues[0]->location);
+        $this->assertSame(11, $issues[0]->location->line);
+    }
+
+    public function test_tobase_mixed_usage_reports_line_of_tobase_call(): void
+    {
+        $dir = $this->createTempDirectory([
+            'app/Models/Order.php' => '<?php namespace App\Models; use Illuminate\Database\Eloquent\Model; class Order extends Model {}',
+            'app/Services/OrderService.php' => '<?php
+namespace App\Services;
+use App\Models\Order;
+
+class OrderService
+{
+    public function process(): void
+    {
+        $count = Order::count();
+        $qb = Order::query()->toBase();
+    }
+}',
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'model_paths' => ['app/Models'],
+            'treat_tobase_as_query_builder' => true,
+        ]);
+        $analyzer->setBasePath($dir);
+        $analyzer->setPaths(['app/Services']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        // The issue should point to the toBase() call (line 10), not Order::count() (line 9)
+        $this->assertNotNull($issues[0]->location);
+        $this->assertSame(10, $issues[0]->location->line);
+    }
 }

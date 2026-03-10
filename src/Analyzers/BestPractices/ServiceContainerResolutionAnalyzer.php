@@ -433,42 +433,25 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
         // Binding-specific recommendation
         if (str_contains($pattern, 'bind') || str_contains($pattern, 'singleton') ||
             str_contains($pattern, 'instance') || str_contains($pattern, 'scoped')) {
-            return $base."Container bindings should be registered in a ServiceProvider's register() method. "
-                ."Example:\n\n"
-                ."// In AppServiceProvider::register()\n"
-                .'$this->app->bind(Interface::class, Implementation::class);';
+            return $base."Container bindings should be registered in a ServiceProvider's register() method, not scattered across application code.";
         }
 
         // Manual instantiation recommendation
         if (str_contains($pattern, 'new ')) {
             if ($inClosure) {
-                return $base.'Manual instantiation inside closures is sometimes necessary when dependency injection is unavailable, '
-                    .'but consider extracting to an injectable class if this closure grows in complexity.';
+                return $base.'Consider extracting to an injectable class if this closure grows in complexity.';
             }
 
-            return $base."Consider using constructor injection to let Laravel's container manage dependencies:\n\n"
-                ."public function __construct(\n"
-                ."    private readonly YourService \$service\n"
-                .') {}';
+            return $base.'Use constructor injection instead: public function __construct(private readonly YourService $service) {}';
         }
 
         // Closure-context resolution recommendation
         if ($inClosure) {
-            return $base.'Resolution inside closures is sometimes necessary when dependency injection is unavailable, '
-                .'but consider extracting to an injectable class if this closure grows in complexity.';
+            return $base.'Consider extracting to an injectable class if this closure grows in complexity.';
         }
 
-        // Resolution recommendation with examples
-        return $base.'Manual resolution is a service locator anti-pattern that hides dependencies and makes testing difficult. '
-            ."Consider using constructor injection instead:\n\n"
-            ."public function __construct(\n"
-            ."    private readonly YourService \$service\n"
-            .") {}\n\n"
-            ."Or use method injection for controller methods:\n\n"
-            ."public function index(YourService \$service): Response\n"
-            ."{\n"
-            ."    // \$service is automatically injected\n"
-            .'}';
+        // Resolution recommendation
+        return $base.'Manual resolution is a service locator anti-pattern that hides dependencies and makes testing difficult. Use constructor injection or method injection instead.';
     }
 }
 

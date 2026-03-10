@@ -92,6 +92,14 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
 
     public function enterNode(Node $node): ?Node
     {
+        // Reset variable tracking when entering a new function scope
+        if ($node instanceof Node\Stmt\ClassMethod ||
+            $node instanceof Node\Stmt\Function_ ||
+            $node instanceof Node\Expr\Closure ||
+            $node instanceof Node\Expr\ArrowFunction) {
+            $this->variableAssignments = [];
+        }
+
         // Track variable assignments with ->all() or ->get()
         if ($node instanceof Node\Expr\Assign) {
             if ($node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
@@ -180,6 +188,12 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
             'find', 'findOrFail', 'findOr', 'sole', 'soleOrFail', 'value',
         ];
         $hasSmallDatasetModifier = ! empty(array_intersect($methods, $smallDatasetMethods));
+
+        // pluck() returns an in-memory Collection; ->all() after it is Collection::all(), not a DB fetch
+        $hasPluck = in_array('pluck', $methods, true);
+        if ($hasPluck && in_array('all', $methods, true) && ! in_array('get', $methods, true)) {
+            return false;
+        }
 
         return ! $hasChunking && ! $hasSmallDatasetModifier;
     }

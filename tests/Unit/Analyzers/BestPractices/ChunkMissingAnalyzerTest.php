@@ -768,6 +768,86 @@ PHP;
         $this->assertFailed($result);
     }
 
+    public function test_no_scope_leak_between_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Project;
+
+class DashboardStatsService
+{
+    public function methodA(): void
+    {
+        // This assigns $projects from a DB query in method A
+        $projects = Project::all();
+        foreach ($projects as $project) {
+            // process
+        }
+    }
+
+    public function methodB(array $projects): void
+    {
+        // $projects here is a parameter (Collection/array), not a DB query result.
+        // The analyzer must NOT flag this foreach because methodA's assignment
+        // should not bleed into methodB's scope.
+        foreach ($projects as $project) {
+            // process
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DashboardStatsService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Only methodA's foreach should be flagged (the direct User::all() in the loop).
+        // methodB's foreach must NOT be flagged.
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+    }
+
+    public function test_passes_with_pluck_then_all(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Report;
+
+class ReportController
+{
+    public function index(): void
+    {
+        // pluck() executes the query and returns a Collection in memory.
+        // ->all() here is Collection::all() — converts to array, no extra DB call.
+        foreach (Report::orderBy('analyzed_at')->pluck('score', 'id')->all() as $id => $score) {
+            // process
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ReportController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_grammar_singular_vs_plural(): void
     {
         // Test singular

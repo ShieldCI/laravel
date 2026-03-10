@@ -3043,7 +3043,7 @@ PHP;
     // BUG 3: BROAD EXCEPTION TYPE DETECTION TESTS
     // ========================================================================
 
-    public function test_broad_catch_throwable_with_logging_and_exception_var_is_low_severity(): void
+    public function test_broad_catch_with_logging_and_exception_var_is_not_flagged(): void
     {
         $code = <<<'PHP'
 <?php
@@ -3074,16 +3074,12 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Broad catch with logging + uses $e → Low severity (architectural note), Warning status
-        $this->assertWarning($result);
-        $issues = $result->getIssues();
-        $broadIssue = collect($issues)->first(fn ($i) => str_contains($i->message, 'Throwable'));
-        $this->assertNotNull($broadIssue);
-        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $broadIssue->severity);
-        $this->assertStringContainsString('Consider catching', $broadIssue->recommendation);
+        // Broad catch with logging + uses $e → well-handled, no issue added
+        $this->assertPassed($result);
+        $this->assertEmpty($result->getIssues());
     }
 
-    public function test_broad_catch_exception_with_logging_and_exception_var_is_low_severity(): void
+    public function test_broad_catch_exception_with_logging_and_exception_var_is_not_flagged(): void
     {
         $code = <<<'PHP'
 <?php
@@ -3114,12 +3110,45 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Broad catch with logging + uses $e → Low severity (architectural note), Warning status
-        $this->assertWarning($result);
-        $issues = $result->getIssues();
-        $this->assertCount(1, $issues);
-        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
-        $this->assertStringContainsString('Consider catching', $issues[0]->recommendation);
+        // Broad catch with logging + uses $e → well-handled, no issue added
+        $this->assertPassed($result);
+        $this->assertEmpty($result->getIssues());
+    }
+
+    public function test_broad_catch_with_logging_and_mark_as_failed_is_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Jobs;
+
+use Illuminate\Support\Facades\Log;
+
+class PostGitHubCheckJob
+{
+    public function handle()
+    {
+        try {
+            $this->doWork();
+        } catch (\Throwable $e) {
+            Log::error('Job failed', ['error' => $e->getMessage()]);
+            $check->markAsFailed($e->getMessage());
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Jobs/PostGitHubCheckJob.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Log::error + markAsFailed + $e → hasLogging && usesVar → no issue added
+        $this->assertPassed($result);
+        $this->assertEmpty($result->getIssues());
     }
 
     public function test_passes_catch_throwable_with_rethrow(): void

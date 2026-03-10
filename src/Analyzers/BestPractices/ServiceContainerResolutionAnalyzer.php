@@ -31,13 +31,20 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - app()->bind() / singleton() outside service providers
  * - Recommends constructor injection
  *
- * Whitelisted contexts (where manual resolution is legitimate):
+ * Suppressed contexts (where app() is the only viable pattern):
+ * - Service Providers: Bootstrap infrastructure where app() is always intentional.
+ *   ALL resolution across all methods (boot, register, private helpers) is suppressed.
+ *   Binding detection (bind/singleton/instance/scoped) outside service providers is
+ *   still flagged at High severity.
+ * - ShouldQueue classes: PHP's serialize/unserialize flow bypasses __construct, so
+ *   constructor-injected services would be null after deserialization. app() in methods
+ *   like via() is the canonical Laravel pattern.
+ * - Eloquent models: Created via newInstance() / new static(), bypassing any constructor
+ *   signature. Constructor DI is impractical.
  * - Migrations: Don't support constructor DI, must use app() helper
  * - Seeders: Often need dynamic service resolution
  * - Factories: May need service resolution for test data
  * - Commands: Sometimes need conditional service resolution
- * - Service Providers: Bindings (bind/singleton/instance/scoped) are skipped as legitimate;
- *   resolution (make/resolve/app()) is still flagged as a code smell
  * - Jobs: Queued jobs may need conditional resolution
  * - Listeners: Event listeners with conditional dependencies
  * - Middleware: Conditional resolution based on request context
@@ -70,6 +77,17 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
         'Illuminate\\Foundation\\Support\\Providers\\RouteServiceProvider',
         'Illuminate\\Foundation\\Support\\Providers\\EventServiceProvider',
         'Illuminate\\Foundation\\Support\\Providers\\AuthServiceProvider',
+    ];
+
+    /**
+     * Known Eloquent base model FQNs.
+     *
+     * @var array<string>
+     */
+    private const ELOQUENT_MODEL_CLASSES = [
+        'Illuminate\\Database\\Eloquent\\Model',
+        'Illuminate\\Foundation\\Auth\\User',
+        'Illuminate\\Database\\Eloquent\\Relations\\Pivot',
     ];
 
     /** @var array<string> */
@@ -280,8 +298,9 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            // Service providers: skip binding detection (legitimate) but still flag resolution
             $isServiceProvider = $this->isServiceProviderFromAst($ast, $file);
+            $isEloquentModel = $this->isEloquentModelFromAst($ast);
+            $isShouldQueue = $this->isShouldQueueFromAst($ast);
 
             $visitor = new ServiceContainerVisitor(
                 $this->whitelistClasses,
@@ -291,23 +310,27 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
                 $this->detectManualInstantiation,
                 $this->manualInstantiationPatterns,
                 $this->manualInstantiationExcludePatterns,
-                $isServiceProvider
+                $isServiceProvider,
+                $isEloquentModel,
+                $isShouldQueue
             );
             $traverser = new NodeTraverser;
             $traverser->addVisitor($visitor);
             $traverser->traverse($ast);
 
+            $relativePath = $this->getRelativePath($file);
+
             foreach ($visitor->getIssues() as $issue) {
                 $issues[] = $this->createIssue(
                     message: "Manual service resolution in '{$issue['location']}': {$issue['pattern']}",
-                    location: new Location($file, $issue['line']),
+                    location: new Location($relativePath, $issue['line']),
                     severity: $issue['severity'],
                     recommendation: $this->getRecommendation($issue['pattern'], $issue['location'], $issue['argument_type'] ?? 'unknown', $issue['in_closure']),
                     metadata: [
                         'pattern' => $issue['pattern'],
                         'location' => $issue['location'],
                         'class' => $issue['class'],
-                        'file' => $file,
+                        'file' => $relativePath,
                         'argument_type' => $issue['argument_type'] ?? 'unknown',
                     ]
                 );
@@ -424,6 +447,123 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Check if AST represents an Eloquent model by checking class extends.
+     *
+     * Uses the same CloningVisitor + NameResolver pattern as isServiceProviderFromAst
+     * to resolve class names to FQN before checking.
+     *
+     * @param  array<Node>  $ast
+     */
+    private function isEloquentModelFromAst(array $ast): bool
+    {
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor(new CloningVisitor);
+        $traverser->addVisitor(new NameResolver);
+        $resolvedAst = $traverser->traverse($ast);
+
+        foreach ($resolvedAst as $node) {
+            if ($node instanceof Stmt\Namespace_) {
+                foreach ($node->stmts as $stmt) {
+                    if ($stmt instanceof Stmt\Class_ && $this->extendsEloquentModel($stmt)) {
+                        return true;
+                    }
+                }
+            } elseif ($node instanceof Stmt\Class_ && $this->extendsEloquentModel($node)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if class extends an Eloquent Model.
+     *
+     * After NameResolver has been applied, parent class names should be FQN.
+     * We check against known Eloquent model FQNs and common base model patterns.
+     */
+    private function extendsEloquentModel(Stmt\Class_ $class): bool
+    {
+        if ($class->extends === null) {
+            return false;
+        }
+
+        $parent = ltrim($class->extends->toString(), '\\');
+
+        // Direct FQN match against known Eloquent model classes
+        if (in_array($parent, self::ELOQUENT_MODEL_CLASSES, true)) {
+            return true;
+        }
+
+        // FQN ends with \Model (namespace separator required)
+        // This catches custom base models like App\Models\BaseModel
+        if (str_ends_with($parent, '\\Model')) {
+            return true;
+        }
+
+        // Illuminate namespace models (any Illuminate-based model)
+        if (str_starts_with($parent, 'Illuminate\\') && str_ends_with($parent, 'Model')) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if AST represents a ShouldQueue class by checking class implements.
+     *
+     * Uses the same CloningVisitor + NameResolver pattern as isServiceProviderFromAst
+     * to resolve interface names to FQN before checking.
+     *
+     * @param  array<Node>  $ast
+     */
+    private function isShouldQueueFromAst(array $ast): bool
+    {
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor(new CloningVisitor);
+        $traverser->addVisitor(new NameResolver);
+        $resolvedAst = $traverser->traverse($ast);
+
+        foreach ($resolvedAst as $node) {
+            if ($node instanceof Stmt\Namespace_) {
+                foreach ($node->stmts as $stmt) {
+                    if ($stmt instanceof Stmt\Class_ && $this->implementsShouldQueue($stmt)) {
+                        return true;
+                    }
+                }
+            } elseif ($node instanceof Stmt\Class_ && $this->implementsShouldQueue($node)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if class implements ShouldQueue.
+     *
+     * After NameResolver has been applied, interface names should be FQN.
+     * We match against the canonical FQN and any interface ending with \ShouldQueue.
+     */
+    private function implementsShouldQueue(Stmt\Class_ $class): bool
+    {
+        foreach ($class->implements as $interface) {
+            $name = ltrim($interface->toString(), '\\');
+
+            if ($name === 'Illuminate\\Contracts\\Queue\\ShouldQueue') {
+                return true;
+            }
+
+            // Catches custom ShouldQueue contracts (e.g. App\Contracts\ShouldQueue)
+            if (str_ends_with($name, '\\ShouldQueue')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Get recommendation for container resolution.
      */
     private function getRecommendation(string $pattern, string $location, string $argumentType, bool $inClosure = false): string
@@ -519,7 +659,9 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         private bool $detectManualInstantiation = false,
         private array $manualInstantiationPatterns = [],
         private array $manualInstantiationExcludePatterns = [],
-        private bool $isServiceProvider = false
+        private bool $isServiceProvider = false,
+        private bool $isEloquentModel = false,
+        private bool $isShouldQueue = false
     ) {}
 
     public function enterNode(Node $node)
@@ -554,6 +696,24 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
 
         // Skip if class is whitelisted
         if ($this->isWhitelistedClass()) {
+            return null;
+        }
+
+        // Eloquent models: instantiated via newInstance() / new static(), constructor DI is impractical
+        if ($this->isEloquentModel) {
+            return null;
+        }
+
+        // ShouldQueue classes: serialize/unserialize bypasses __construct, DI isn't viable
+        if ($this->isShouldQueue) {
+            return null;
+        }
+
+        // Service providers: bootstrap infrastructure where app() is always intentional.
+        // Suppresses ALL resolution across all methods (boot, register, private helpers).
+        // Binding detection (bind/singleton/instance/scoped) outside service providers is
+        // still flagged via the ! $this->isServiceProvider guards further below.
+        if ($this->isServiceProvider) {
             return null;
         }
 

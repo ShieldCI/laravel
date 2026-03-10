@@ -376,7 +376,7 @@ PHP;
         $this->assertSame(Severity::High, $issues[0]->severity);
     }
 
-    public function test_service_provider_skips_binding_but_flags_resolution(): void
+    public function test_service_provider_skips_binding_and_resolution(): void
     {
         $code = <<<'PHP'
 <?php
@@ -406,11 +406,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Bindings (bind, singleton) should be skipped, but resolution (app()->make()) should be flagged
-        $this->assertWarning($result);
-        $issues = $result->getIssues();
-        $this->assertCount(1, $issues);
-        $this->assertHasIssueContaining('app()->make()', $result);
+        // All app() usage in service providers is suppressed — bindings and resolution alike
+        $this->assertPassed($result);
     }
 
     public function test_skips_whitelisted_directory_tests(): void
@@ -1515,7 +1512,7 @@ PHP;
         $this->assertHasIssueContaining('app()', $result);
     }
 
-    public function test_route_service_provider_closure_resolution_reported_as_low(): void
+    public function test_route_service_provider_closure_resolution_suppressed(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1546,14 +1543,11 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Resolution in closure with string argument gets Medium severity
-        $this->assertWarning($result);
-        $issues = $result->getIssues();
-        $this->assertCount(1, $issues);
-        $this->assertSame(Severity::Medium, $issues[0]->severity);
+        // All resolution in service providers (including closures) is suppressed
+        $this->assertPassed($result);
     }
 
-    public function test_event_service_provider_closure_resolution_reported_as_low(): void
+    public function test_event_service_provider_closure_resolution_suppressed(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1586,11 +1580,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Bindings are skipped (service provider), resolution in closure with string arg is Medium
-        $this->assertWarning($result);
-        $issues = $result->getIssues();
-        $this->assertCount(1, $issues);
-        $this->assertSame(Severity::Medium, $issues[0]->severity);
+        // All resolution in service providers (including closures) is suppressed
+        $this->assertPassed($result);
     }
 
     public function test_closure_string_resolution_gets_medium_severity(): void
@@ -1816,7 +1807,7 @@ PHP;
 
     public function test_correctly_skips_real_service_provider_with_use(): void
     {
-        // Real service provider with use statement
+        // Real service provider with use statement — all app() usage is suppressed
         $code = <<<'PHP'
 <?php
 
@@ -1848,11 +1839,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Binding in register() should be skipped, but app() resolution in boot() should be flagged
-        $this->assertWarning($result);
-        $issues = $result->getIssues();
-        $this->assertCount(1, $issues);
-        $this->assertHasIssueContaining('app()', $result);
+        // All app() in service providers (bindings and resolution) is suppressed
+        $this->assertPassed($result);
     }
 
     public function test_service_provider_with_only_bindings_passes(): void
@@ -1890,7 +1878,7 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_service_provider_resolution_in_closure_reported_as_low(): void
+    public function test_service_provider_resolution_in_closure_suppressed(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1904,7 +1892,7 @@ class AppServiceProvider extends ServiceProvider
     public function boot()
     {
         $this->app->resolving(SomeService::class, function ($service) {
-            // Resolution inside closure is reported at Low severity
+            // Resolution inside closure is suppressed for service providers
             $config = app(ConfigManager::class);
             $service->setConfig($config);
         });
@@ -1922,11 +1910,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Resolution inside closure is now reported at Low severity
-        $this->assertWarning($result);
-        $issues = $result->getIssues();
-        $this->assertCount(1, $issues);
-        $this->assertSame(Severity::Low, $issues[0]->severity);
+        // All resolution in service providers is suppressed
+        $this->assertPassed($result);
     }
 
     // ============================================================
@@ -2522,5 +2507,228 @@ PHP;
         // Should fail - PaymentService matches *Service and no exclusion
         $this->assertWarning($result);
         $this->assertHasIssueContaining('new PaymentService()', $result);
+    }
+
+    // ============================================================
+    // TESTS FOR ELOQUENT MODEL SUPPRESSION
+    // ============================================================
+
+    public function test_eloquent_model_resolution_is_suppressed(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Post extends Model
+{
+    public function getSomeAttribute()
+    {
+        $service = app(SomeService::class);
+        return $service->compute($this->value);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Post.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Eloquent models bypass __construct via newInstance(), so app() is suppressed
+        $this->assertPassed($result);
+    }
+
+    public function test_eloquent_model_custom_base_class_suppressed(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use App\Domain\Model;
+
+class User extends Model
+{
+    public function getProfileUrl()
+    {
+        $helper = app(UrlHelper::class);
+        return $helper->generate($this->id);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Custom base class whose FQN ends with \Model is also suppressed
+        $this->assertPassed($result);
+    }
+
+    // ============================================================
+    // TESTS FOR SHOULD_QUEUE SUPPRESSION
+    // ============================================================
+
+    public function test_should_queue_resolution_suppressed(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Jobs;
+
+use Illuminate\Contracts\Queue\ShouldQueue;
+
+class ProcessPayment implements ShouldQueue
+{
+    public function via()
+    {
+        $config = app(\Illuminate\Config\Repository::class);
+        return $config->get('queue.default');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Jobs/ProcessPayment.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // ShouldQueue classes: serialize/unserialize bypasses __construct, app() is suppressed
+        $this->assertPassed($result);
+    }
+
+    public function test_should_queue_with_use_statement_suppressed(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Jobs;
+
+use Illuminate\Contracts\Queue\ShouldQueue;
+
+class SendWelcomeEmail implements ShouldQueue
+{
+    public function handle()
+    {
+        $mailer = app('mailer');
+        $mailer->send('welcome', [], fn ($m) => $m->to('test@example.com'));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Jobs/SendWelcomeEmail.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // ShouldQueue via use statement is still detected and suppressed
+        $this->assertPassed($result);
+    }
+
+    // ============================================================
+    // TESTS FOR SERVICE PROVIDER FULL SUPPRESSION
+    // ============================================================
+
+    public function test_service_provider_resolution_fully_suppressed(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\ServiceProvider;
+
+class AppServiceProvider extends ServiceProvider
+{
+    public function boot()
+    {
+        $multiplier = $this->getRestApiMultiplier();
+        $this->app->singleton('api.limiter', fn () => new RateLimiter($multiplier));
+    }
+
+    public function register()
+    {
+        $repo = app(ConfigRepository::class);
+        $this->app->bind(ConfigInterface::class, fn () => $repo);
+    }
+
+    private function getRestApiMultiplier(): int
+    {
+        $config = app('config');
+        return (int) $config->get('api.rate_multiplier', 1);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // All app() in service providers (boot, register, private helpers) is suppressed
+        $this->assertPassed($result);
+    }
+
+    public function test_service_provider_binding_outside_sp_still_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class SetupService
+{
+    public function configure()
+    {
+        app()->bind(SomeInterface::class, SomeImplementation::class);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/SetupService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Bindings outside service providers are still flagged at High severity
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::High, $issues[0]->severity);
+        $this->assertHasIssueContaining('app()->bind()', $result);
     }
 }

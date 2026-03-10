@@ -177,7 +177,7 @@ class OrderService
 {
     public function store()
     {
-        // All dependency-hiding helpers (counted by default)
+        // 10 unique dependency-hiding helpers = 5 over threshold (Medium severity)
         auth()->user();
         request()->all();
         cache()->put('a', 'b');
@@ -188,12 +188,6 @@ class OrderService
         view('home');
         redirect()->back();
         response()->json([]);
-        app()->make('service');
-        abort(404);
-        dispatch(new Job());
-        resolve(Service::class);
-        validator([], []);
-        // 15 dependency-hiding helpers = 10 over threshold (Medium severity)
     }
 }
 PHP;
@@ -605,7 +599,7 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_helper_used_multiple_times(): void
+    public function test_helper_used_multiple_times_does_not_flag(): void
     {
         $code = <<<'PHP'
 <?php
@@ -622,7 +616,43 @@ class OrderService
         auth()->guest();
         auth()->guard('api');
         auth()->viaRemember();
-        // auth() called 6 times
+        // auth() called 6 times, but only 1 unique helper — should NOT be flagged
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/OrderService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // 1 unique helper (auth) is well below threshold of 5 — no false positive
+        $this->assertPassed($result);
+    }
+
+    public function test_six_different_helpers_are_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class OrderService
+{
+    public function store()
+    {
+        auth()->user();
+        request()->all();
+        cache()->put('key', 'value', 3600);
+        logger()->info('Order created');
+        event(new OrderCreated());
+        session()->flash('success', 'Order created');
+        // 6 unique helpers — should be flagged
     }
 }
 PHP;
@@ -640,6 +670,9 @@ PHP;
         $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertEquals(6, $issues[0]->metadata['count']);
+        // Per-helper call counts are preserved in metadata
+        $this->assertEquals(1, $issues[0]->metadata['helpers']['auth']);
+        $this->assertEquals(1, $issues[0]->metadata['helpers']['session']);
     }
 
     public function test_empty_php_file(): void
@@ -768,7 +801,8 @@ class OrderService
         logger()->info('test');
         logger()->error('error');
         event(new OrderCreated());
-        // auth: 2, request: 1, cache: 1, logger: 2, event: 1 = 7 total
+        session()->put('a', 'b');
+        // auth: 2, request: 1, cache: 1, logger: 2, event: 1, session: 1 = 6 unique helpers
     }
 }
 PHP;
@@ -785,7 +819,9 @@ PHP;
 
         $this->assertWarning($result);
         $issues = $result->getIssues();
-        $this->assertEquals(7, $issues[0]->metadata['count']);
+        // Count reflects 6 unique helpers, not total calls
+        $this->assertEquals(6, $issues[0]->metadata['count']);
+        // Per-helper call counts are still tracked in the helpers array
         $this->assertEquals(2, $issues[0]->metadata['helpers']['auth']);
         $this->assertEquals(2, $issues[0]->metadata['helpers']['logger']);
     }

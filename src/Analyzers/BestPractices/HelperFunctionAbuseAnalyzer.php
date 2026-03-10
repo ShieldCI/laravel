@@ -203,7 +203,7 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
 
             foreach ($visitor->getIssues() as $issue) {
                 $issues[] = $this->createIssueWithSnippet(
-                    message: "Class '{$issue['class']}' uses {$issue['count']} helper function calls (threshold: {$threshold})",
+                    message: "Class '{$issue['class']}' uses {$issue['count']} unique helper functions (threshold: {$threshold})",
                     filePath: $file,
                     lineNumber: $issue['line'],
                     severity: $this->getSeverityForCount($issue['count'], $threshold),
@@ -238,13 +238,13 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
     {
         $excess = $count - $threshold;
 
-        // 20+ helpers over threshold is a serious issue
-        if ($excess >= 20) {
+        // 10+ unique helpers over threshold is a serious issue
+        if ($excess >= 10) {
             return Severity::High;
         }
 
-        // 10-19 helpers over threshold is moderate
-        if ($excess >= 10) {
+        // 5-9 unique helpers over threshold is moderate
+        if ($excess >= 5) {
             return Severity::Medium;
         }
 
@@ -266,7 +266,7 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
         }
         $helperString = implode(', ', $helperList);
 
-        return "Class '{$class}' uses {$count} helper function calls: {$helperString}. "
+        return "Class '{$class}' uses {$count} unique helper functions: {$helperString}. "
             .'While Laravel helpers are convenient, excessive use hides dependencies and makes unit testing difficult. '
             .'Consider injecting dependencies via constructor (e.g., Config, Request, Session contracts) instead of using global helpers.';
     }
@@ -392,7 +392,7 @@ class HelperFunctionVisitor extends NodeVisitorAbstract
                 return null;
             }
 
-            $helperCount = array_sum($context['helpers']);
+            $helperCount = count($context['helpers']);
 
             if ($helperCount > $this->threshold) {
                 $this->issues[] = [

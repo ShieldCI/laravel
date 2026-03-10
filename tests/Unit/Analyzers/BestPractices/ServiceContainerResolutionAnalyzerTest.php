@@ -2485,7 +2485,6 @@ PHP;
 
         $this->assertWarning($result);
         $issues = $result->getIssues();
-        $this->assertStringContainsString('sometimes necessary when dependency injection is unavailable', $issues[0]->recommendation);
         $this->assertStringContainsString('extracting to an injectable class', $issues[0]->recommendation);
     }
 

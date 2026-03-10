@@ -127,12 +127,10 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
  */
 class FatModelVisitor extends NodeVisitorAbstract
 {
-    /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
+    /** @var array<int, array{message: string, line: int|null, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
 
     private ?string $currentClassName = null;
-
-    private int $classStartLine = 0;
 
     public function __construct(
         private readonly int $methodThreshold,
@@ -146,7 +144,6 @@ class FatModelVisitor extends NodeVisitorAbstract
         if ($node instanceof Node\Stmt\Class_) {
             if ($this->extendsModel($node)) {
                 $this->currentClassName = $node->name?->toString();
-                $this->classStartLine = $node->getStartLine();
                 $this->analyzeModel($node);
             }
         }
@@ -155,7 +152,7 @@ class FatModelVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * @return array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}>
+     * @return array<int, array{message: string, line: int|null, severity: Severity, recommendation: string, code: string|null}>
      */
     public function getIssues(): array
     {
@@ -241,7 +238,7 @@ class FatModelVisitor extends NodeVisitorAbstract
                     $businessMethods,
                     $this->methodThreshold
                 ),
-                'line' => $this->classStartLine,
+                'line' => null,
                 'severity' => $severity,
                 'recommendation' => 'Move business logic to service classes. Models should focus on data representation, relationships, and simple accessors/mutators. Extract complex operations to dedicated service classes',
                 'code' => null,
@@ -265,7 +262,7 @@ class FatModelVisitor extends NodeVisitorAbstract
                     $statementLines,
                     $this->locThreshold
                 ),
-                'line' => $this->classStartLine,
+                'line' => null,
                 'severity' => $severity,
                 'recommendation' => 'Large models are hard to maintain. Consider: 1) Extracting business logic to services, 2) Using traits for reusable functionality, 3) Moving query logic to repositories',
                 'code' => null,

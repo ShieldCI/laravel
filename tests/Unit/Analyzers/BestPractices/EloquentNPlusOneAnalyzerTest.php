@@ -84,6 +84,62 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_passes_with_column_constrained_eager_loading(): void
+    {
+        // with('project:id,uuid,name') — Laravel column-selection syntax.
+        // The ':id,uuid,name' suffix is stripped at runtime; the relationship name is 'project'.
+        $modelCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Report extends Model
+{
+    public function project()
+    {
+        return $this->belongsTo(Project::class);
+    }
+}
+PHP;
+
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Report;
+
+class DashboardStatsService
+{
+    public function recentReports()
+    {
+        $reports = Report::query()
+            ->with('project:id,uuid,name')
+            ->get();
+
+        foreach ($reports as $report) {
+            echo $report->project->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Report.php' => $modelCode,
+            'app/Http/Controllers/DashboardStatsService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_passes_with_single_relationship_string(): void
     {
         $code = <<<'PHP'

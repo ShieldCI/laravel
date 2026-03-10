@@ -1166,6 +1166,9 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         // Expand dot notation relationships
         $expanded = [];
         foreach ($rawRelationships as $relationship) {
+            // Strip Laravel's column-selection constraint: 'project:id,name' → 'project'
+            // 'comments.author:id,name' → 'comments.author'
+            $relationship = explode(':', $relationship, 2)[0];
             $expanded = array_merge($expanded, $this->expandDotNotation($relationship));
         }
 

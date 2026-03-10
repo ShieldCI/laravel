@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.5.12 - 2026-03-10
+
+### Fixed
+- `MissingDatabaseTransactionsAnalyzer` no longer false-positives on guard clause patterns — an `if`-block with no `else`/`elseif` whose last statement is `return` or `throw` is now recognised as a guard clause; writes inside it are isolated (they exist on execution paths that always terminate before reaching the main flow) and are excluded from the atomicity threshold check; fixes false positives like a guard clause deleting a record before a properly-wrapped `DB::transaction()`
+
 ## v1.5.11 - 2026-03-10
 
 ### Added

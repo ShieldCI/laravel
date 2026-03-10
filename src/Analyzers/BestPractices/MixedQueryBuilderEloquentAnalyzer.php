@@ -616,8 +616,10 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
                             // Check if table already tracked as eloquent
                             if (isset($this->tableUsage[$tableName]) && $this->tableUsage[$tableName]['type'] === 'eloquent') {
-                                // Mark as mixed
-                                $this->tableUsage[$tableName]['type'] = 'mixed';
+                                $this->tableUsage[$tableName] = [
+                                    'type' => 'mixed',
+                                    'line' => $node->getLine(),
+                                ];
                             } else {
                                 $this->tableUsage[$tableName] = [
                                     'type' => 'query_builder',
@@ -665,8 +667,10 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             $tableName = explode(' ', $tableName)[0];
             // Check if table already tracked as eloquent
             if (isset($this->tableUsage[$tableName]) && $this->tableUsage[$tableName]['type'] === 'eloquent') {
-                // Mark as mixed by changing type
-                $this->tableUsage[$tableName]['type'] = 'mixed';
+                $this->tableUsage[$tableName] = [
+                    'type' => 'mixed',
+                    'line' => $node->getLine(),
+                ];
             } else {
                 $this->tableUsage[$tableName] = [
                     'type' => 'query_builder',

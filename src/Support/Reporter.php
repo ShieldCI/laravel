@@ -464,17 +464,24 @@ class Reporter implements ReporterInterface
             $totalAll += count($results);
         }
 
+        // Pre-compute totalSkipped so other rows can exclude it from their denominators
+        $totalSkipped = 0;
+        foreach ($categories as $category) {
+            $totalSkipped += $stats[$category]['skipped'];
+        }
+
         // Passed row
         $passedRow = '| Passed         |';
         $totalPassed = 0;
         foreach ($categories as $category) {
             $passed = $stats[$category]['passed'];
-            $total = $stats[$category]['total'];
-            $pct = $total > 0 ? round(($passed / $total) * 100) : 0;
+            $denominator = $stats[$category]['total'] - $stats[$category]['skipped'];
+            $pct = $denominator > 0 ? round(($passed / $denominator) * 100) : 0;
             $passedRow .= str_pad("   {$passed}  ({$pct}%)", 16).'|';
             $totalPassed += $passed;
         }
-        $totalPct = $totalAll > 0 ? round(($totalPassed / $totalAll) * 100) : 0;
+        $totalDenominator = $totalAll - $totalSkipped;
+        $totalPct = $totalDenominator > 0 ? round(($totalPassed / $totalDenominator) * 100) : 0;
         $passedRow .= str_pad(" {$totalPassed}  ({$totalPct}%)", 12).'|';
         $table[] = $passedRow;
 
@@ -483,12 +490,12 @@ class Reporter implements ReporterInterface
         $totalFailed = 0;
         foreach ($categories as $category) {
             $failed = $stats[$category]['failed'];
-            $total = $stats[$category]['total'];
-            $pct = $total > 0 ? round(($failed / $total) * 100) : 0;
+            $denominator = $stats[$category]['total'] - $stats[$category]['skipped'];
+            $pct = $denominator > 0 ? round(($failed / $denominator) * 100) : 0;
             $failedRow .= str_pad("    {$failed}   ({$pct}%)", 16).'|';
             $totalFailed += $failed;
         }
-        $totalPct = $totalAll > 0 ? round(($totalFailed / $totalAll) * 100) : 0;
+        $totalPct = $totalDenominator > 0 ? round(($totalFailed / $totalDenominator) * 100) : 0;
         $failedRow .= str_pad("  {$totalFailed}  ({$totalPct}%)", 12).'|';
         $table[] = $failedRow;
 
@@ -497,42 +504,37 @@ class Reporter implements ReporterInterface
         $totalWarnings = 0;
         foreach ($categories as $category) {
             $warnings = $stats[$category]['warning'];
-            $total = $stats[$category]['total'];
-            $pct = $total > 0 ? round(($warnings / $total) * 100) : 0;
+            $denominator = $stats[$category]['total'] - $stats[$category]['skipped'];
+            $pct = $denominator > 0 ? round(($warnings / $denominator) * 100) : 0;
             $warningRow .= str_pad("    {$warnings}   ({$pct}%)", 16).'|';
             $totalWarnings += $warnings;
         }
-        $totalPct = $totalAll > 0 ? round(($totalWarnings / $totalAll) * 100) : 0;
+        $totalPct = $totalDenominator > 0 ? round(($totalWarnings / $totalDenominator) * 100) : 0;
         $warningRow .= str_pad("  {$totalWarnings}  ({$totalPct}%)", 12).'|';
         $table[] = $warningRow;
-
-        // Not Applicable row
-        $skippedRow = '| Not Applicable |';
-        $totalSkipped = 0;
-        foreach ($categories as $category) {
-            $skipped = $stats[$category]['skipped'];
-            $total = $stats[$category]['total'];
-            $pct = $total > 0 ? round(($skipped / $total) * 100) : 0;
-            $skippedRow .= str_pad("    {$skipped}   ({$pct}%)", 16).'|';
-            $totalSkipped += $skipped;
-        }
-        $totalPct = $totalAll > 0 ? round(($totalSkipped / $totalAll) * 100) : 0;
-        $skippedRow .= str_pad("  {$totalSkipped}   ({$totalPct}%)", 12).'|';
-        $table[] = $skippedRow;
 
         // Error row
         $errorRow = '| Error          |';
         $totalErrors = 0;
         foreach ($categories as $category) {
             $errors = $stats[$category]['error'];
-            $total = $stats[$category]['total'];
-            $pct = $total > 0 ? round(($errors / $total) * 100) : 0;
+            $denominator = $stats[$category]['total'] - $stats[$category]['skipped'];
+            $pct = $denominator > 0 ? round(($errors / $denominator) * 100) : 0;
             $errorRow .= str_pad("    {$errors}   ({$pct}%)", 16).'|';
             $totalErrors += $errors;
         }
-        $totalPct = $totalAll > 0 ? round(($totalErrors / $totalAll) * 100) : 0;
+        $totalPct = $totalDenominator > 0 ? round(($totalErrors / $totalDenominator) * 100) : 0;
         $errorRow .= str_pad("  {$totalErrors}   ({$totalPct}%)", 12).'|';
         $table[] = $errorRow;
+
+        // Not Applicable row last, no percentages
+        $skippedRow = '| Not Applicable |';
+        foreach ($categories as $category) {
+            $skipped = $stats[$category]['skipped'];
+            $skippedRow .= str_pad("    {$skipped}      ", 16).'|';
+        }
+        $skippedRow .= str_pad("  {$totalSkipped}      ", 12).'|';
+        $table[] = $skippedRow;
 
         // Footer
         $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';

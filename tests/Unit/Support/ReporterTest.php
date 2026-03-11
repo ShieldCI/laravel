@@ -1229,4 +1229,126 @@ class ReporterTest extends TestCase
         $this->assertEquals('acme/app', $payload['metadata']['repository']);
         $this->assertEquals('main', $payload['metadata']['base_branch']);
     }
+
+    #[Test]
+    public function hyperlink_returns_plain_text_in_ci_environment(): void
+    {
+        $method = new \ReflectionMethod($this->reporter, 'hyperlink');
+        $method->setAccessible(true);
+
+        $prevCi = getenv('CI');
+        putenv('CI=true');
+
+        try {
+            $result = $method->invoke($this->reporter, 'https://example.com', 'Click here');
+            $this->assertEquals('Click here', $result);
+
+            $resultNoText = $method->invoke($this->reporter, 'https://example.com');
+            $this->assertEquals('https://example.com', $resultNoText);
+        } finally {
+            $prevCi === false ? putenv('CI') : putenv("CI={$prevCi}");
+        }
+    }
+
+    #[Test]
+    public function hyperlink_returns_plain_text_for_unsupported_terminal(): void
+    {
+        $method = new \ReflectionMethod($this->reporter, 'hyperlink');
+        $method->setAccessible(true);
+
+        $envVars = ['CI', 'TERM_PROGRAM', 'VTE_VERSION', 'WT_SESSION'];
+        $prev = [];
+        foreach ($envVars as $var) {
+            $prev[$var] = getenv($var);
+            putenv($var);
+        }
+
+        try {
+            $result = $method->invoke($this->reporter, 'https://example.com', 'Click here');
+            $this->assertEquals('Click here', $result);
+        } finally {
+            foreach ($envVars as $var) {
+                $prev[$var] === false ? putenv($var) : putenv("{$var}={$prev[$var]}");
+            }
+        }
+    }
+
+    #[Test]
+    public function hyperlink_returns_osc8_sequence_for_iterm(): void
+    {
+        $method = new \ReflectionMethod($this->reporter, 'hyperlink');
+        $method->setAccessible(true);
+
+        $prevCi = getenv('CI');
+        $prevTermProgram = getenv('TERM_PROGRAM');
+
+        putenv('CI');
+        putenv('TERM_PROGRAM=iTerm.app');
+
+        try {
+            $result = $method->invoke($this->reporter, 'https://example.com', 'Click here');
+            $this->assertIsString($result);
+            $this->assertStringContainsString("\033]8;;https://example.com\033\\", $result);
+            $this->assertStringContainsString('Click here', $result);
+        } finally {
+            $prevCi === false ? putenv('CI') : putenv("CI={$prevCi}");
+            $prevTermProgram === false ? putenv('TERM_PROGRAM') : putenv("TERM_PROGRAM={$prevTermProgram}");
+        }
+    }
+
+    #[Test]
+    public function hyperlink_returns_osc8_for_vte_terminal(): void
+    {
+        $method = new \ReflectionMethod($this->reporter, 'hyperlink');
+        $method->setAccessible(true);
+
+        $envVars = ['CI', 'TERM_PROGRAM', 'WT_SESSION'];
+        $prev = [];
+        foreach ($envVars as $var) {
+            $prev[$var] = getenv($var);
+            putenv($var);
+        }
+
+        $prevVte = getenv('VTE_VERSION');
+        putenv('VTE_VERSION=6800');
+
+        try {
+            $result = $method->invoke($this->reporter, 'https://example.com', 'Link');
+            $this->assertIsString($result);
+            $this->assertStringContainsString("\033]8;;", $result);
+        } finally {
+            foreach ($envVars as $var) {
+                $prev[$var] === false ? putenv($var) : putenv("{$var}={$prev[$var]}");
+            }
+            $prevVte === false ? putenv('VTE_VERSION') : putenv("VTE_VERSION={$prevVte}");
+        }
+    }
+
+    #[Test]
+    public function hyperlink_returns_osc8_for_windows_terminal(): void
+    {
+        $method = new \ReflectionMethod($this->reporter, 'hyperlink');
+        $method->setAccessible(true);
+
+        $envVars = ['CI', 'TERM_PROGRAM', 'VTE_VERSION'];
+        $prev = [];
+        foreach ($envVars as $var) {
+            $prev[$var] = getenv($var);
+            putenv($var);
+        }
+
+        $prevWt = getenv('WT_SESSION');
+        putenv('WT_SESSION=some-session-id');
+
+        try {
+            $result = $method->invoke($this->reporter, 'https://example.com', 'Link');
+            $this->assertIsString($result);
+            $this->assertStringContainsString("\033]8;;", $result);
+        } finally {
+            foreach ($envVars as $var) {
+                $prev[$var] === false ? putenv($var) : putenv("{$var}={$prev[$var]}");
+            }
+            $prevWt === false ? putenv('WT_SESSION') : putenv("WT_SESSION={$prevWt}");
+        }
+    }
 }

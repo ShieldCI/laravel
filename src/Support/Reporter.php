@@ -350,12 +350,46 @@ class Reporter implements ReporterInterface
     /**
      * Create a clickable hyperlink (OSC 8).
      * Supported in: iTerm2, GNOME Terminal, Konsole, Windows Terminal, VS Code terminal
+     * Falls back to plain text in CI environments and unsupported terminals.
      */
     private function hyperlink(string $url, ?string $text = null): string
     {
         $displayText = $text ?? $url;
 
+        if (! $this->supportsHyperlinks()) {
+            return $displayText;
+        }
+
         return "\033]8;;{$url}\033\\{$displayText}\033]8;;\033\\";
+    }
+
+    /**
+     * Detect whether the current terminal supports OSC 8 hyperlinks.
+     */
+    private function supportsHyperlinks(): bool
+    {
+        // CI environments don't support OSC 8 hyperlinks
+        if (getenv('CI') !== false) {
+            return false;
+        }
+
+        // Known terminals that support OSC 8
+        $termProgram = (string) (getenv('TERM_PROGRAM') ?: '');
+        if (in_array($termProgram, ['iTerm.app', 'WezTerm', 'vscode'], true)) {
+            return true;
+        }
+
+        // VTE-based terminals (GNOME Terminal, Tilix, etc.)
+        if (getenv('VTE_VERSION') !== false) {
+            return true;
+        }
+
+        // Windows Terminal
+        if (getenv('WT_SESSION') !== false) {
+            return true;
+        }
+
+        return false;
     }
 
     /**

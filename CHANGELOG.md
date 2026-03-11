@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.5.14
+
+### Changed
+- `EnvFileAnalyzer`, `FilePermissionsAnalyzer`, `CachePrefixAnalyzer`, and `DirectoryWritePermissionsAnalyzer` now set `runInCI = false` — these analyzers check conditions that depend on CI runner environment setup (`.env` presence/permissions, filesystem permission bits, shared cache server prefix, storage symlinks) rather than developer-controlled code, so they are not meaningful in CI and are skipped when `--ci` is passed
+
 ## v1.5.13
 
 ### Fixed

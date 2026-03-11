@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.15
+
+### Fixed
+- `Reporter::hyperlink()` no longer wraps URLs in OSC 8 terminal escape sequences in CI environments and unsupported terminals — log viewers that don't implement OSC 8 were consuming the display text as part of the control sequence, rendering the documentation URL invisible; `hyperlink()` now falls back to plain text when `CI` is set or when no known capable terminal (`TERM_PROGRAM`, `VTE_VERSION`, `WT_SESSION`) is detected
+
+### Changed
+- `EnvFileSecurityAnalyzer` now sets `runInCI = false` — the analyzer checks for the presence and permissions of `.env` files, which are intentionally absent in CI runners that inject secrets via environment variables rather than files; skipped when `--ci` is passed
+
 ## v1.5.14
 
 ### Changed

@@ -77,6 +77,54 @@ class AnalysisReportTest extends TestCase
     }
 
     #[Test]
+    public function it_excludes_skipped_from_score_denominator_when_all_applicable_pass(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+            AnalysisResult::passed('analyzer-2', 'Passed'),
+            AnalysisResult::passed('analyzer-3', 'Passed'),
+            AnalysisResult::passed('analyzer-4', 'Passed'),
+            AnalysisResult::passed('analyzer-5', 'Passed'),
+            AnalysisResult::passed('analyzer-6', 'Passed'),
+            AnalysisResult::passed('analyzer-7', 'Passed'),
+            AnalysisResult::passed('analyzer-8', 'Passed'),
+            AnalysisResult::passed('analyzer-9', 'Passed'),
+            AnalysisResult::passed('analyzer-10', 'Passed'),
+            AnalysisResult::skipped('analyzer-11', 'Skipped'),
+            AnalysisResult::skipped('analyzer-12', 'Skipped'),
+        ]);
+
+        $report = $this->createReport($results);
+
+        // 10 passed, 2 skipped → denominator = 10, score = 100 (not 83)
+        $this->assertEquals(100, $report->score());
+    }
+
+    #[Test]
+    public function it_excludes_skipped_from_score_denominator_with_failures(): void
+    {
+        $results = collect([
+            AnalysisResult::passed('analyzer-1', 'Passed'),
+            AnalysisResult::passed('analyzer-2', 'Passed'),
+            AnalysisResult::passed('analyzer-3', 'Passed'),
+            AnalysisResult::passed('analyzer-4', 'Passed'),
+            AnalysisResult::passed('analyzer-5', 'Passed'),
+            AnalysisResult::passed('analyzer-6', 'Passed'),
+            AnalysisResult::passed('analyzer-7', 'Passed'),
+            AnalysisResult::passed('analyzer-8', 'Passed'),
+            AnalysisResult::failed('analyzer-9', 'Failed', []),
+            AnalysisResult::failed('analyzer-10', 'Failed', []),
+            AnalysisResult::skipped('analyzer-11', 'Skipped'),
+            AnalysisResult::skipped('analyzer-12', 'Skipped'),
+        ]);
+
+        $report = $this->createReport($results);
+
+        // 8 passed, 2 failed, 2 skipped → denominator = 10, score = 80 (not 67)
+        $this->assertEquals(80, $report->score());
+    }
+
+    #[Test]
     public function it_returns_100_for_empty_results(): void
     {
         $report = $this->createReport(collect());
@@ -218,7 +266,7 @@ class AnalysisReportTest extends TestCase
             'low' => 0,
             'info' => 0,
         ], $summary['issues_by_severity']);
-        $this->assertEquals(33, $summary['score']); // 2 passed out of 6
+        $this->assertEquals(40, $summary['score']); // 2 passed out of 5 applicable (1 skipped excluded)
     }
 
     #[Test]

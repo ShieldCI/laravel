@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.16
+
+### Changed
+- Score now excludes skipped analyzers from the denominator — `score()` in `AnalysisReport`, per-category percentages in `Reporter::generateReportCard()`, and per-category percentages in `AnalyzeCommand::outputReportCard()` all use `total - skipped` as the denominator; a project where all applicable checks pass now scores 100% in CI regardless of how many analyzers were skipped due to `runInCI = false`
+- Report card: "Not Applicable" row moved to the last position and percentage columns removed — the row is purely informational context, not a scored metric
+
 ## v1.5.15
 
 ### Fixed

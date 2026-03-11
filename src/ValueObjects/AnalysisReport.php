@@ -31,16 +31,15 @@ final class AnalysisReport
 
     public function score(): int
     {
-        $total = $this->results->count();
-        $passed = $this->results->filter(
-            fn (ResultInterface $result) => $result->getStatus() === Status::Passed
-        )->count();
+        $skipped = $this->skipped()->count();
+        $denominator = $this->results->count() - $skipped;
+        $passed = $this->passed()->count();
 
-        if ($total === 0) {
+        if ($denominator === 0) {
             return 100;
         }
 
-        return (int) round(($passed / $total) * 100);
+        return (int) round(($passed / $denominator) * 100);
     }
 
     public function passed(): Collection

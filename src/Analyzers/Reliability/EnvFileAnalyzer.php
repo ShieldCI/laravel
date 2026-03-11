@@ -19,6 +19,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  */
 class EnvFileAnalyzer extends AbstractFileAnalyzer
 {
+    public static bool $runInCI = false;
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(

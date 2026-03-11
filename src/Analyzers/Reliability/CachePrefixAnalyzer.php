@@ -24,6 +24,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class CachePrefixAnalyzer extends AbstractFileAnalyzer
 {
+    public static bool $runInCI = false;
+
     /**
      * Shared cache drivers that require prefix configuration.
      *

@@ -24,6 +24,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 {
+    public static bool $runInCI = false;
+
     private const WORLD_READABLE = 0x0004;
 
     private const WORLD_WRITABLE = 0x0002;

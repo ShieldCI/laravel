@@ -24,6 +24,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
 {
+    public static bool $runInCI = false;
+
     public function __construct(
         private Filesystem $files
     ) {}

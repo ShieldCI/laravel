@@ -23,6 +23,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 {
+    public static bool $runInCI = false;
+
     /** Mask to isolate permission bits (strip file type and special bits) */
     private const PERMISSION_MASK = 0x01FF; // 0777
 

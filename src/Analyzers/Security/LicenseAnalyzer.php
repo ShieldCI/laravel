@@ -11,7 +11,6 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
-use ShieldCI\Support\Composer;
 
 /**
  * Validates that dependencies use legally acceptable licenses.
@@ -166,9 +165,6 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
                 ? $package['name']
                 : 'Unknown';
 
-            // Find the line number where this package is defined
-            $lineNumber = Composer::findPackageLineNumber($composerLock, $packageName);
-
             // Normalize license to array and detect if it's conjunctive (AND) or disjunctive (OR)
             $licenseData = $this->parseLicenseField($package);
             $licenses = $licenseData['licenses'];
@@ -180,10 +176,10 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
                 if (! $isDevDependency) {
                     $issues[] = $this->createIssue(
                         message: sprintf('Package "%s" has no license information', $packageName),
-                        location: new Location($composerLock, $lineNumber),
+                        location: new Location($composerLock),
                         severity: Severity::Medium,
                         recommendation: sprintf('Investigate license for "%s" or contact the package maintainer', $packageName),
-                        code: FileParser::getCodeSnippet($composerLock, $lineNumber),
+                        code: null,
                         metadata: [
                             'package' => $packageName,
                             'issue_type' => 'missing_license',
@@ -247,14 +243,14 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
                         implode(', ', $licenses),
                         $licenseType
                     ),
-                    location: new Location($composerLock, $lineNumber),
+                    location: new Location($composerLock),
                     severity: $severity,
                     recommendation: $isDevDependency
                         ? sprintf('Dev dependency "%s" has GPL/AGPL license. This is generally safe for development tools, but verify it\'s not distributed with your application', $packageName)
                         : ($isConjunctive
                             ? sprintf('Package "%s" has conjunctive license (AND) including GPL/AGPL - ALL licenses apply simultaneously. You must comply with GPL/AGPL terms. Consider finding an alternative package', $packageName)
                             : sprintf('GPL/AGPL licenses may require your application to be open-source. Review "%s" license implications or find an alternative package', $packageName)),
-                    code: FileParser::getCodeSnippet($composerLock, $lineNumber),
+                    code: null,
                     metadata: [
                         'package' => $packageName,
                         'licenses' => $licenses,
@@ -275,14 +271,14 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
                             implode(', ', $licenses),
                             $licenseType
                         ),
-                        location: new Location($composerLock, $lineNumber),
+                        location: new Location($composerLock),
                         severity: Severity::Low,
                         recommendation: sprintf(
                             'Review the "%s" license terms to ensure compatibility with your application. %s Common safe licenses: MIT, Apache-2.0, BSD',
                             $packageName,
                             $isConjunctive ? 'Note: This is a conjunctive license (AND) - ALL licenses apply simultaneously.' : ''
                         ),
-                        code: FileParser::getCodeSnippet($composerLock, $lineNumber),
+                        code: null,
                         metadata: [
                             'package' => $packageName,
                             'licenses' => $licenses,

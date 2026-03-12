@@ -74,12 +74,13 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             $preferStableOutput = $this->composer->updateDryRun(['--prefer-stable']);
             if ($this->preferStableRunChangesDependencies($preferStableOutput)) {
                 $filePath = file_exists($composerLock) ? $composerLock : $composerJson;
+                $isLockFile = file_exists($composerLock);
                 $issues[] = $this->createIssue(
                     message: 'Composer update --prefer-stable would modify installed packages',
                     location: new Location($this->getRelativePath($filePath)),
                     severity: Severity::Low,
                     recommendation: 'Run "composer update --prefer-stable" and ensure all dependencies resolve to stable releases.',
-                    code: FileParser::getCodeSnippet($filePath, 1),
+                    code: $isLockFile ? null : FileParser::getCodeSnippet($filePath, 1),
                     metadata: [
                         'composer_version_check' => 'update --dry-run --prefer-stable',
                     ]
@@ -332,7 +333,6 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         $unstablePackages = [];
-        $firstUnstablePackageName = null;
 
         foreach ($packages as $package) {
             if (! is_array($package)) {
@@ -350,10 +350,6 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             // Check for unstable versions using the same logic as checkVersionConstraints
             if ($this->isUnstableVersion($version)) {
                 $unstablePackages[] = sprintf('%s (%s)', $packageName, $version);
-                // Track the first unstable package for accurate line reporting
-                if ($firstUnstablePackageName === null && $packageName !== 'Unknown') {
-                    $firstUnstablePackageName = $packageName;
-                }
             }
         }
 
@@ -361,21 +357,16 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             $count = count($unstablePackages);
             $examples = implode(', ', array_slice($unstablePackages, 0, 3));
 
-            // Use the first unstable package's line number for better location reporting
-            $line = $firstUnstablePackageName !== null
-                ? Composer::findPackageLineNumber($composerLock, $firstUnstablePackageName)
-                : 1;
-
             $issues[] = $this->createIssue(
                 message: sprintf('Found %d unstable package versions installed', $count),
-                location: new Location($this->getRelativePath($composerLock), $line),
+                location: new Location($this->getRelativePath($composerLock)),
                 severity: Severity::Low,
                 recommendation: sprintf(
                     'Update to stable versions: %s%s. Run "composer update --prefer-stable"',
                     $examples,
                     $count > 3 ? sprintf(' and %d more', $count - 3) : ''
                 ),
-                code: FileParser::getCodeSnippet($composerLock, $line),
+                code: null,
                 metadata: [
                     'count' => $count,
                     'examples' => array_slice($unstablePackages, 0, 3),

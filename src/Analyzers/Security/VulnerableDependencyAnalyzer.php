@@ -11,7 +11,6 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
-use ShieldCI\Support\Composer;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryAnalyzerInterface;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryFetcherInterface;
 use ShieldCI\Support\SecurityAdvisories\ComposerDependencyReader;
@@ -85,10 +84,6 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
             return $this->error('Invalid advisory analysis result');
         }
 
-        // Cache for package line numbers to avoid repeated lookups
-        // Key: package name, Value: line number
-        $lineNumberCache = [];
-
         // Aggregate advisories per package to avoid flooding output with multiple issues
         // for the same package (e.g., a package with 5 CVEs creates 5 issues → now 1 issue)
         foreach ($vulnerabilities as $package => $details) {
@@ -116,7 +111,6 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $lineNumber = $this->getPackageLineNumber($composerLock, $package, $lineNumberCache);
             $advisoryCount = count($validAdvisories);
 
             // Build aggregated message
@@ -151,10 +145,10 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
             $issues[] = $this->createIssue(
                 message: $message,
-                location: new Location($this->getRelativePath($composerLock), $lineNumber),
+                location: new Location($this->getRelativePath($composerLock)),
                 severity: Severity::Critical,
                 recommendation: $recommendation,
-                code: FileParser::getCodeSnippet($composerLock, $lineNumber),
+                code: null,
                 metadata: [
                     'package' => $package,
                     'version' => $version,
@@ -166,7 +160,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        $this->checkAbandonedPackages($issues, $composerLock, $lineNumberCache);
+        $this->checkAbandonedPackages($issues, $composerLock);
 
         if (empty($issues)) {
             return $this->passed('No vulnerable dependencies detected');
@@ -180,10 +174,8 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check for abandoned packages in composer.lock.
-     *
-     * @param  array<string, int>  $lineNumberCache  Cache of package line numbers
      */
-    private function checkAbandonedPackages(array &$issues, string $composerLock, array &$lineNumberCache): void
+    private function checkAbandonedPackages(array &$issues, string $composerLock): void
     {
         $lockData = $this->parseComposerLock($composerLock);
 
@@ -210,42 +202,18 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                 ? sprintf('Replace with "%s": composer require %s', $replacement, $replacement)
                 : sprintf('Find an alternative package and remove "%s"', $packageName);
 
-            $lineNumber = $this->getPackageLineNumber($composerLock, $packageName, $lineNumberCache);
-
             $issues[] = $this->createIssue(
                 message: sprintf('Package "%s" is abandoned and no longer maintained', $packageName),
-                location: new Location($this->getRelativePath($composerLock), $lineNumber),
+                location: new Location($this->getRelativePath($composerLock)),
                 severity: Severity::Medium,
                 recommendation: $recommendation,
-                code: FileParser::getCodeSnippet($composerLock, $lineNumber),
+                code: null,
                 metadata: [
                     'package' => $packageName,
                     'replacement' => $replacement,
                 ]
             );
         }
-    }
-
-    /**
-     * Get package line number with caching to avoid repeated lookups.
-     *
-     * Line number lookups involve parsing composer.lock, which is expensive.
-     * Cache results to avoid repeated lookups for the same package.
-     *
-     * @param  array<string, int>  $cache  Cache reference (modified by this method)
-     */
-    private function getPackageLineNumber(string $composerLock, string $packageName, array &$cache): int
-    {
-        // Check cache first
-        if (isset($cache[$packageName])) {
-            return $cache[$packageName];
-        }
-
-        // Cache miss - perform lookup and store result
-        $lineNumber = Composer::findPackageLineNumber($composerLock, $packageName);
-        $cache[$packageName] = $lineNumber;
-
-        return $lineNumber;
     }
 
     /**

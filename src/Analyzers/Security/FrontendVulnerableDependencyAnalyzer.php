@@ -9,7 +9,6 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -351,7 +350,7 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                     location: new Location($this->getRelativePath($packageLock)),
                     severity: $severity,
                     recommendation: 'Run "npm audit" to see details and "npm audit fix" to automatically fix vulnerabilities',
-                    code: FileParser::getCodeSnippet($packageLock, 1),
+                    code: null,
                     metadata: [
                         'total_vulnerabilities' => $total,
                         'issue_type' => 'summary',
@@ -418,7 +417,7 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                         location: new Location($this->getRelativePath($yarnLock)),
                         severity: $severity,
                         recommendation: 'Run "yarn audit" to see details and upgrade vulnerable packages',
-                        code: FileParser::getCodeSnippet($yarnLock, 1),
+                        code: null,
                         metadata: [
                             'total_vulnerabilities' => $total,
                             'issue_type' => 'summary',
@@ -440,7 +439,7 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                         location: new Location($this->getRelativePath($yarnLock)),
                         severity: Severity::High,
                         recommendation: 'Run "yarn audit" to see details and upgrade vulnerable packages',
-                        code: FileParser::getCodeSnippet($yarnLock, 1),
+                        code: null,
                         metadata: [
                             'total_vulnerabilities' => $total,
                             'issue_type' => 'summary',
@@ -576,65 +575,13 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
             $metadata['advisory_id'] = $advisoryId;
         }
 
-        // Find the exact line number of the package in the lock file
-        $lineNumber = $this->findPackageLineNumber($lockFile, $package);
-
         $issues[] = $this->createIssue(
             message: sprintf('Frontend package "%s" has a known vulnerability: %s', $package, $message),
-            location: new Location($this->getRelativePath($lockFile), $lineNumber),
+            location: new Location($this->getRelativePath($lockFile)),
             severity: $severity,
             recommendation: $recommendation,
-            code: FileParser::getCodeSnippet($lockFile, $lineNumber),
+            code: null,
             metadata: $metadata
         );
-    }
-
-    /**
-     * Find the line number where a package is defined in the lock file.
-     */
-    private function findPackageLineNumber(string $lockFile, string $package): int
-    {
-        $lines = FileParser::getLines($lockFile);
-
-        if (empty($lines)) {
-            return 1;
-        }
-
-        // For package-lock.json, look for "node_modules/package-name" or "packages/node_modules/package-name"
-        // For yarn.lock, look for package-name@version
-        $isYarnLock = str_ends_with($lockFile, 'yarn.lock');
-
-        foreach ($lines as $lineNumber => $line) {
-            if (! is_string($line)) {
-                continue;
-            }
-
-            if ($isYarnLock) {
-                // Yarn lock format: "package-name@version":
-                // Also handle scoped packages: "@scope/package-name@version":
-                if (preg_match('/^"?'.preg_quote($package, '/').'@/i', trim($line))) {
-                    return $lineNumber + 1;
-                }
-            } else {
-                // NPM lock format: "node_modules/package-name": {
-                // Also handle scoped packages: "node_modules/@scope/package-name": {
-                if (preg_match('/"node_modules\/'.preg_quote($package, '/').'":\s*\{/i', $line)) {
-                    return $lineNumber + 1;
-                }
-
-                // Alternative npm format (newer versions): "packages": { "node_modules/package-name": {
-                if (preg_match('/"packages\/node_modules\/'.preg_quote($package, '/').'":\s*\{/i', $line)) {
-                    return $lineNumber + 1;
-                }
-
-                // Direct package name in dependencies object (npm v7+)
-                if (preg_match('/"'.preg_quote($package, '/').'":\s*\{/i', $line)) {
-                    return $lineNumber + 1;
-                }
-            }
-        }
-
-        // If not found, return 1
-        return 1;
     }
 }

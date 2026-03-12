@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.5.18
+
+### Fixed
+- Dependency analyzers no longer attach code snippets or line numbers to issues pointing at lock files (`composer.lock`, `package-lock.json`, `yarn.lock`) — lock files are machine-generated and not user-editable; line 1 of `composer.lock` is the `_readme` metadata header, and any line is a fragment of deeply-nested JSON with no actionable context; `code` is now `null` and `Location` carries no line number for lock file issues across `StableDependencyAnalyzer`, `UpToDateDependencyAnalyzer`, `VulnerableDependencyAnalyzer`, `LicenseAnalyzer`, and `FrontendVulnerableDependencyAnalyzer`; `composer.json` snippets are unchanged (flat structure, one key per line, readable)
+
 ## v1.5.17
 
 ### Fixed

@@ -8,7 +8,6 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Support\Composer;
@@ -130,7 +129,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                     location: new Location($this->getRelativePath($composerLockPath)),
                     severity: Severity::Medium,
                     recommendation: $this->getBothDepsRecommendation(),
-                    code: FileParser::getCodeSnippet($composerLockPath, 1),
+                    code: null,
                     metadata: [
                         'scope' => 'unknown',
                         'composer_version_check' => 'install --dry-run',
@@ -153,7 +152,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                         location: new Location($this->getRelativePath($composerLockPath)),
                         severity: Severity::Medium,
                         recommendation: $this->getBothDepsRecommendation(),
-                        code: FileParser::getCodeSnippet($composerLockPath, 1),
+                        code: null,
                         metadata: [
                             'scope' => 'production and dev',
                             'composer_version_check' => 'install --dry-run',
@@ -168,7 +167,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                         location: new Location($this->getRelativePath($composerLockPath)),
                         severity: Severity::Medium,
                         recommendation: $this->getProductionDepsRecommendation(),
-                        code: FileParser::getCodeSnippet($composerLockPath, 1),
+                        code: null,
                         metadata: [
                             'scope' => 'production',
                             'composer_version_check' => 'install --dry-run',
@@ -182,7 +181,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                         location: new Location($this->getRelativePath($composerLockPath)),
                         severity: Severity::Low,
                         recommendation: $this->getDevDepsRecommendation(),
-                        code: FileParser::getCodeSnippet($composerLockPath, 1),
+                        code: null,
                         metadata: [
                             'scope' => 'dev',
                             'composer_version_check' => 'install --dry-run',

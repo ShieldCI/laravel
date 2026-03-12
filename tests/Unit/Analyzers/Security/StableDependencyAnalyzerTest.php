@@ -944,7 +944,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         $this->assertTrue($found, 'Should find issue for vendor/unstable-package');
     }
 
-    public function test_reports_accurate_line_numbers_for_composer_lock(): void
+    public function test_reports_no_line_number_for_composer_lock_issues(): void
     {
         $composerJson = json_encode([
             'name' => 'test/app',
@@ -985,19 +985,18 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         $this->assertWarning($result);
         $issues = $result->getIssues();
 
-        // Should find the issue and report it on the line where the first unstable package is defined
+        // Should find the issue — no line number for lock files (not user-editable)
         $found = false;
         foreach ($issues as $issue) {
             if (str_contains($issue->message, 'unstable package versions')) {
-                // The first unstable package "vendor/unstable-package" is on line 8
                 $this->assertNotNull($issue->location);
-                $this->assertEquals(8, $issue->location->line);
+                $this->assertNull($issue->location->line);
                 $found = true;
                 break;
             }
         }
 
-        $this->assertTrue($found, 'Should find unstable package issue with accurate line number');
+        $this->assertTrue($found, 'Should find unstable package issue');
     }
 
     /**

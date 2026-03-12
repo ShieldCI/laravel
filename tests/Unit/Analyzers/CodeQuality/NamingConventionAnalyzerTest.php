@@ -638,8 +638,11 @@ PHP;
     }
 
     #[Test]
-    public function test_validates_laravel_table_names_are_plural_snake_case(): void
+    public function test_does_not_flag_explicitly_set_table_string_values(): void
     {
+        // A developer who sets protected $table = 'dh_deals_tracking' is intentionally
+        // overriding Laravel's default. The property name 'table' is valid camelCase —
+        // the string value is their deliberate choice and must not be second-guessed.
         $code = <<<'PHP'
 <?php
 
@@ -647,21 +650,14 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 
-class User extends Model
+class DhDealsTracking extends Model
 {
-    // Correct: plural snake_case
-    protected $table = 'users';
-}
-
-class OrderItem extends Model
-{
-    // Correct: plural snake_case with underscores
-    protected $table = 'order_items';
+    protected $table = 'dh_deals_tracking';
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Models/User.php' => $code,
+            'app/Models/DhDealsTracking.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -671,208 +667,5 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
-    }
-
-    #[Test]
-    public function test_flags_singular_table_names(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Model;
-
-class User extends Model
-{
-    protected $table = 'user';  // Should be plural
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Models/User.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $issues = $result->getIssues();
-        $this->assertCount(1, $issues);
-        $this->assertStringContainsString("Laravel table name 'user' should be plural", $issues[0]->message);
-        $this->assertSame('users', $issues[0]->metadata['suggestion']);
-    }
-
-    #[Test]
-    public function test_flags_non_snake_case_table_names(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Model;
-
-class User extends Model
-{
-    protected $table = 'UserAccounts';  // Should be snake_case
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Models/User.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $issues = $result->getIssues();
-        $this->assertCount(1, $issues);
-        $this->assertStringContainsString("Laravel table name 'UserAccounts' should use snake_case convention", $issues[0]->message);
-        $this->assertSame('user_accounts', $issues[0]->metadata['suggestion']);
-    }
-
-    #[Test]
-    public function test_handles_irregular_plural_table_names(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Model;
-
-class Person extends Model
-{
-    protected $table = 'people';  // Correct irregular plural
-}
-
-class Child extends Model
-{
-    protected $table = 'children';  // Correct irregular plural
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Models/Person.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertPassed($result);
-    }
-
-    #[Test]
-    public function test_suggests_irregular_plural_for_table_names(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Model;
-
-class Person extends Model
-{
-    protected $table = 'person';  // Should be 'people'
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Models/Person.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $issues = $result->getIssues();
-        $this->assertCount(1, $issues);
-        $this->assertStringContainsString("Laravel table name 'person' should be plural", $issues[0]->message);
-        $this->assertSame('people', $issues[0]->metadata['suggestion']);
-    }
-
-    #[Test]
-    public function test_handles_table_names_ending_in_y(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Model;
-
-class Category extends Model
-{
-    protected $table = 'category';  // Should be 'categories'
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Models/Category.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $issues = $result->getIssues();
-        $this->assertCount(1, $issues);
-        $this->assertSame('categories', $issues[0]->metadata['suggestion']);
-    }
-
-    #[Test]
-    public function test_only_checks_protected_table_property(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Model;
-
-class User extends Model
-{
-    // Public or private $table should not be checked for Laravel conventions
-    public $table = 'user';
-    private $custom_data = 'data';
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Models/User.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        // Should only flag 'custom_data' for camelCase, not check table naming
-        $this->assertWarning($result);
-        $issues = $result->getIssues();
-
-        // Should have issues for camelCase properties, not table naming
-        foreach ($issues as $issue) {
-            $this->assertNotSame('table', $issue->metadata['type']);
-        }
     }
 }

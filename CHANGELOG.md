@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.5.17
+
+### Fixed
+- `NamingConventionAnalyzer` no longer checks the string value of `protected $table` for plural snake_case — a developer who explicitly sets `$table` is intentionally overriding Laravel's default (DB prefix, legacy schema, multi-tenancy, etc.) and the analyzer must not second-guess that choice; PSR naming conventions govern PHP identifiers, not string literals; the property name `table` is valid camelCase and is the only check that applies
+
 ## v1.5.16
 
 ### Changed

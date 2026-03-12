@@ -217,6 +217,19 @@ class AnalyzeCommand extends Command
             foreach ($analyzerIds as $analyzerId) {
                 $analyzer = $manager->getAnalyzers()->first(fn ($a) => $a->getId() === $analyzerId);
                 if ($analyzer === null) {
+                    // Check if it's a skipped analyzer and stream its pre-built result
+                    $skippedResult = $manager->getSkippedAnalyzers()->first(fn ($r) => $r->getAnalyzerId() === $analyzerId);
+                    if ($skippedResult !== null) {
+                        $current++;
+                        $skippedMeta = $skippedResult->getMetadata();
+                        $skippedCategory = $skippedMeta['category'] ?? 'Unknown';
+                        $skippedCategoryLabel = is_object($skippedCategory) && isset($skippedCategory->value)
+                            ? Category::from($skippedCategory->value)->label()
+                            : 'Unknown';
+                        $results->push($skippedResult);
+                        $this->line($reporter->streamResult($skippedResult, $current, $total, $skippedCategoryLabel));
+                    }
+
                     continue;
                 }
 
@@ -436,6 +449,12 @@ class AnalyzeCommand extends Command
                 $result = $manager->run($analyzerId);
                 if ($result !== null) {
                     $results[] = $result;
+                } else {
+                    // Check if it's a skipped analyzer and include its pre-built result
+                    $skippedResult = $manager->getSkippedAnalyzers()->first(fn ($r) => $r->getAnalyzerId() === $analyzerId);
+                    if ($skippedResult !== null) {
+                        $results[] = $skippedResult;
+                    }
                 }
             }
 
@@ -1737,8 +1756,14 @@ class AnalyzeCommand extends Command
     {
         $names = array_map(function (string $id) use ($manager) {
             $analyzer = $manager->getAnalyzers()->first(fn ($a) => $a->getId() === $id);
+            if ($analyzer !== null) {
+                return $analyzer->getMetadata()->name;
+            }
 
-            return $analyzer ? $analyzer->getMetadata()->name : $id;
+            $skipped = $manager->getSkippedAnalyzers()->first(fn ($r) => $r->getAnalyzerId() === $id);
+            $skippedName = $skipped !== null ? ($skipped->getMetadata()['name'] ?? null) : null;
+
+            return is_string($skippedName) ? $skippedName : $id;
         }, $analyzerIds);
 
         if (count($names) === 1) {
@@ -1780,13 +1805,21 @@ class AnalyzeCommand extends Command
                 return false;
             }
 
-            // Check if all analyzers exist
+            // Check if all analyzers exist (active or skipped)
             $allAnalyzers = $manager->getAnalyzers();
             $allAnalyzerIds = $allAnalyzers->map(fn ($analyzer) => $analyzer->getId())->toArray();
+            $skippedAnalyzerIds = $manager->getSkippedAnalyzers()
+                ->map(fn ($result) => $result->getAnalyzerId())
+                ->toArray();
 
             $invalidIds = [];
+            $warnSkippedIds = [];
             foreach ($analyzerIds as $analyzerId) {
-                if (! in_array($analyzerId, $allAnalyzerIds, true)) {
+                if (in_array($analyzerId, $allAnalyzerIds, true)) {
+                    // Active — fine
+                } elseif (in_array($analyzerId, $skippedAnalyzerIds, true)) {
+                    $warnSkippedIds[] = $analyzerId;
+                } else {
                     $invalidIds[] = $analyzerId;
                 }
             }
@@ -1802,6 +1835,11 @@ class AnalyzeCommand extends Command
                 });
 
                 return false;
+            }
+
+            if (! empty($warnSkippedIds)) {
+                $skippedList = implode(', ', $warnSkippedIds);
+                $this->line("<fg=yellow>⚠ Analyzer(s) are skipped: {$skippedList}</>");
             }
         }
 

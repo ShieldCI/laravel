@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.5.19
+
+### Fixed
+- `shield:analyze --analyzer=<id>` no longer errors with "Analyzer(s) not found" when the requested analyzer exists but is skipped (e.g. `runInCI = false` with `--ci`, or environment-conditional analyzers like `HSTSHeaderAnalyzer`) — `validateOptions()` now distinguishes between truly unknown IDs (error) and skipped IDs (yellow warning); skipped results are included in the output and streamed correctly in both streaming and non-streaming paths; the "Running analyzer: X" header now resolves the analyzer's display name from skipped metadata instead of falling back to the raw ID
+
 ## v1.5.18
 
 ### Fixed

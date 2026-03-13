@@ -35,6 +35,7 @@ class Reporter implements ReporterInterface
             analyzedAt: new DateTimeImmutable('now', new \DateTimeZone('UTC')),
             triggeredBy: $triggeredBy,
             metadata: $this->buildMetadata($gitContext),
+            configuration: $this->buildConfiguration(),
         );
     }
 
@@ -568,6 +569,84 @@ class Reporter implements ReporterInterface
         }
 
         return 'dev';
+    }
+
+    /**
+     * Build the effective configuration snapshot for the report payload.
+     *
+     * Captured inside generate() so runtime mutations (e.g. --ci sets shieldci.ci_mode)
+     * are reflected accurately.
+     *
+     * @return array<string, mixed>
+     */
+    private function buildConfiguration(): array
+    {
+        $rawPaths = config('shieldci.paths.analyze', []);
+        $paths = is_array($rawPaths) ? array_values(array_filter($rawPaths, 'is_string')) : [];
+
+        $rawExcluded = config('shieldci.excluded_paths', []);
+        $excludedPaths = is_array($rawExcluded) ? array_values(array_filter($rawExcluded, 'is_string')) : [];
+
+        $rawAnalyzers = config('shieldci.analyzers', []);
+        $categories = [];
+        if (is_array($rawAnalyzers)) {
+            foreach ($rawAnalyzers as $category => $settings) {
+                if (is_string($category) && is_array($settings)) {
+                    $enabled = $settings['enabled'] ?? true;
+                    $categories[$category] = (bool) $enabled;
+                }
+            }
+        }
+
+        $rawDisabled = config('shieldci.disabled_analyzers', []);
+        $disabledAnalyzers = is_array($rawDisabled) ? array_values(array_filter($rawDisabled, 'is_string')) : [];
+
+        $rawDontReport = config('shieldci.dont_report', []);
+        $dontReport = is_array($rawDontReport) ? array_values(array_filter($rawDontReport, 'is_string')) : [];
+
+        $rawIgnoreErrors = config('shieldci.ignore_errors', []);
+        $ignoreErrors = is_array($rawIgnoreErrors) ? $rawIgnoreErrors : [];
+
+        $rawEnvMapping = config('shieldci.environment_mapping', []);
+        $environmentMapping = is_array($rawEnvMapping) ? $rawEnvMapping : [];
+
+        $rawCiMode = config('shieldci.ci_mode', false);
+        $ciMode = (bool) $rawCiMode;
+
+        $rawCiAnalyzers = config('shieldci.ci_mode_analyzers', []);
+        $ciModeAnalyzers = is_array($rawCiAnalyzers) ? array_values(array_filter($rawCiAnalyzers, 'is_string')) : [];
+
+        $rawCiExclude = config('shieldci.ci_mode_exclude_analyzers', []);
+        $ciModeExcludeAnalyzers = is_array($rawCiExclude) ? array_values(array_filter($rawCiExclude, 'is_string')) : [];
+
+        $rawTimeout = config('shieldci.timeout', 300);
+        $timeout = is_int($rawTimeout) ? $rawTimeout : (is_numeric($rawTimeout) ? (int) $rawTimeout : 300);
+
+        $rawMemoryLimit = config('shieldci.memory_limit', '512M');
+        $memoryLimit = is_string($rawMemoryLimit) ? $rawMemoryLimit : '512M';
+
+        $rawFailOn = config('shieldci.fail_on', 'high');
+        $failOn = is_string($rawFailOn) ? $rawFailOn : 'high';
+
+        $rawThreshold = config('shieldci.fail_threshold', null);
+        $failThreshold = is_int($rawThreshold) ? $rawThreshold : (is_numeric($rawThreshold) ? (int) $rawThreshold : null);
+
+        return [
+            'paths' => $paths,
+            'excluded_paths' => $excludedPaths,
+            'categories' => $categories,
+            'disabled_analyzers' => $disabledAnalyzers,
+            'dont_report' => $dontReport,
+            'ignore_errors' => $ignoreErrors,
+            'environment_mapping' => $environmentMapping,
+            'ci_mode' => $ciMode,
+            'ci_mode_analyzers' => $ciModeAnalyzers,
+            'ci_mode_exclude_analyzers' => $ciModeExcludeAnalyzers,
+            'timeout' => $timeout,
+            'memory_limit' => $memoryLimit,
+            'fail_on' => $failOn,
+            'fail_threshold' => $failThreshold,
+        ];
     }
 
     /**

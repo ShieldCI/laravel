@@ -1351,4 +1351,88 @@ class ReporterTest extends TestCase
             $prevWt === false ? putenv('WT_SESSION') : putenv("WT_SESSION={$prevWt}");
         }
     }
+
+    // ─── Configuration snapshot tests ────────────────────────────────────────
+
+    #[Test]
+    public function it_includes_configuration_in_generated_report(): void
+    {
+        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+
+        $report = $this->reporter->generate($results);
+
+        $this->assertIsArray($report->configuration);
+        foreach ([
+            'paths', 'excluded_paths', 'categories', 'disabled_analyzers',
+            'dont_report', 'ignore_errors', 'environment_mapping',
+            'ci_mode', 'ci_mode_analyzers', 'ci_mode_exclude_analyzers',
+            'timeout', 'memory_limit', 'fail_on', 'fail_threshold',
+        ] as $key) {
+            $this->assertArrayHasKey($key, $report->configuration);
+        }
+    }
+
+    #[Test]
+    public function api_payload_includes_configuration(): void
+    {
+        config([
+            'shieldci.paths.analyze' => ['app', 'routes'],
+            'shieldci.excluded_paths' => ['vendor/*'],
+            'shieldci.analyzers' => [
+                'security' => ['enabled' => true],
+                'performance' => ['enabled' => false],
+            ],
+            'shieldci.disabled_analyzers' => ['sql-injection'],
+            'shieldci.dont_report' => ['missing-error-tracking'],
+            'shieldci.ignore_errors' => [],
+            'shieldci.environment_mapping' => ['prod' => 'production'],
+            'shieldci.ci_mode' => false,
+            'shieldci.ci_mode_analyzers' => [],
+            'shieldci.ci_mode_exclude_analyzers' => ['collection-call-analyzer'],
+            'shieldci.timeout' => 300,
+            'shieldci.memory_limit' => '512M',
+            'shieldci.fail_on' => 'high',
+            'shieldci.fail_threshold' => null,
+        ]);
+
+        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+        $report = $this->reporter->generate($results);
+        $payload = $this->reporter->toApi($report);
+
+        $this->assertArrayHasKey('configuration', $payload);
+        $c = $payload['configuration'];
+        $this->assertEquals(['app', 'routes'], $c['paths']);
+        $this->assertEquals(['vendor/*'], $c['excluded_paths']);
+        $this->assertEquals(['security' => true, 'performance' => false], $c['categories']);
+        $this->assertEquals(['sql-injection'], $c['disabled_analyzers']);
+        $this->assertEquals(['missing-error-tracking'], $c['dont_report']);
+        $this->assertEquals([], $c['ignore_errors']);
+        $this->assertEquals(['prod' => 'production'], $c['environment_mapping']);
+        $this->assertFalse($c['ci_mode']);
+        $this->assertEquals([], $c['ci_mode_analyzers']);
+        $this->assertEquals(['collection-call-analyzer'], $c['ci_mode_exclude_analyzers']);
+        $this->assertEquals(300, $c['timeout']);
+        $this->assertEquals('512M', $c['memory_limit']);
+        $this->assertEquals('high', $c['fail_on']);
+        $this->assertNull($c['fail_threshold']);
+    }
+
+    #[Test]
+    public function json_output_includes_configuration(): void
+    {
+        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+        $report = $this->reporter->generate($results);
+
+        $decoded = json_decode($this->reporter->toJson($report), true);
+
+        $this->assertArrayHasKey('configuration', $decoded);
+        foreach ([
+            'paths', 'excluded_paths', 'categories', 'disabled_analyzers',
+            'dont_report', 'ignore_errors', 'environment_mapping',
+            'ci_mode', 'ci_mode_analyzers', 'ci_mode_exclude_analyzers',
+            'timeout', 'memory_limit', 'fail_on', 'fail_threshold',
+        ] as $key) {
+            $this->assertArrayHasKey($key, $decoded['configuration']);
+        }
+    }
 }

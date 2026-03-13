@@ -18,7 +18,9 @@ final class AnalysisReport
 {
     /**
      * @param  Collection<int, ResultInterface>  $results
+     * @param  array<string, string>  $metadata
      * @param  array<string, list<SuppressionRecord>>  $suppressedIssues
+     * @param  array<string, mixed>  $configuration
      */
     public function __construct(
         public readonly string $projectId,
@@ -30,6 +32,7 @@ final class AnalysisReport
         public readonly TriggerSource $triggeredBy = TriggerSource::Manual,
         public readonly array $metadata = [],
         public readonly array $suppressedIssues = [],
+        public readonly array $configuration = [],
     ) {}
 
     public function score(): int
@@ -176,6 +179,7 @@ final class AnalysisReport
                 return $arr;
             })->all(),
             'metadata' => $this->metadata,
+            'configuration' => $this->configuration,
         ];
     }
 }

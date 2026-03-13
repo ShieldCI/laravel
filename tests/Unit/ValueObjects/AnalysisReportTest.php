@@ -618,6 +618,45 @@ class AnalysisReportTest extends TestCase
         $this->assertSame([], $resultArr['suppressed_issues']);
     }
 
+    #[Test]
+    public function it_includes_configuration_in_to_array(): void
+    {
+        $configuration = [
+            'paths' => ['app', 'routes'],
+            'excluded_paths' => ['vendor/*'],
+            'categories' => ['security' => true, 'performance' => false],
+            'disabled_analyzers' => ['sql-injection'],
+            'ci_mode' => true,
+            'fail_on' => 'high',
+            'fail_threshold' => 80,
+        ];
+
+        $report = new AnalysisReport(
+            projectId: 'test-project-id',
+            laravelVersion: '10.0.0',
+            packageVersion: '1.0.0',
+            results: collect(),
+            totalExecutionTime: 1.0,
+            analyzedAt: new DateTimeImmutable,
+            configuration: $configuration,
+        );
+
+        $array = $report->toArray();
+
+        $this->assertArrayHasKey('configuration', $array);
+        $this->assertEquals($configuration, $array['configuration']);
+    }
+
+    #[Test]
+    public function it_defaults_configuration_to_empty_array(): void
+    {
+        $report = $this->createReport(collect());
+
+        $this->assertEquals([], $report->configuration);
+        $this->assertArrayHasKey('configuration', $report->toArray());
+        $this->assertEquals([], $report->toArray()['configuration']);
+    }
+
     private function createReport(Collection $results): AnalysisReport
     {
         return new AnalysisReport(

@@ -108,6 +108,12 @@ class Reporter implements ReporterInterface
                     $statusLine .= ' '.$this->color("({$timeLabel} to fix)", 'gray');
                 }
 
+                $suppressedForThis = $report->suppressedIssues[$result->getAnalyzerId()] ?? [];
+                if ($suppressedForThis !== []) {
+                    $count = count($suppressedForThis);
+                    $statusLine .= $this->color(' ('.$count.' '.($count === 1 ? 'issue' : 'issues').' suppressed)', 'gray');
+                }
+
                 $output[] = $this->color("Analyzer {$current}/{$total}: ", 'yellow').$statusLine;
 
                 // Show skip reason for skipped analyzers

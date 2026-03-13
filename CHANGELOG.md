@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.0
+
+### Added
+- JSON output and API payload now include a top-level `configuration` key capturing the effective analysis configuration at the time of the run; values reflect runtime mutations (e.g. `--ci` toggling `ci_mode`) so the snapshot always represents what was actually used, not the static config file
+- Suppressed issues are now tracked and included in JSON output and API payloads — when an issue is suppressed via `@shieldci-ignore` inline comment, `ignore_errors` config rule, or `--baseline`, it appears in a `suppressed_issues` array inside the corresponding analyzer result with full detail (message, location, severity, recommendation) plus a `suppression` block identifying the type (`inline`, `config`, or `baseline`) and the specific rule that matched; the top-level `summary` now includes a `suppressed_issues` breakdown by type; console output shows a brief count hint per analyzer when issues were suppressed (e.g. "Passed (2 issues suppressed)")
+
 ## v1.5.19
 
 ### Fixed

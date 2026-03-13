@@ -1609,6 +1609,65 @@ PHP);
     }
 
     #[Test]
+    public function suppressed_issues_note_appears_directly_below_analyzer_status_with_no_blank_line(): void
+    {
+        $file = $this->createTempPhpFile(<<<'PHP'
+<?php
+// @shieldci-ignore
+$result = DB::select("SELECT * FROM users WHERE id = $id");
+PHP);
+
+        $result = new AnalysisResult(
+            analyzerId: 'sql-injection',
+            status: Status::Failed,
+            message: 'Found 1 issues',
+            issues: [
+                new Issue(
+                    message: 'SQL Injection detected',
+                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 3),
+                    severity: Severity::Critical,
+                    recommendation: 'Use prepared statements',
+                ),
+            ],
+            executionTime: 0.1,
+            metadata: [
+                'id' => 'sql-injection',
+                'name' => 'SQL Injection',
+                'description' => 'Detects SQL injection',
+                'category' => Category::Security,
+                'severity' => Severity::Critical,
+            ],
+        );
+
+        $this->registerManagerWithResults([$result]);
+        config(['shieldci.fail_on' => 'never']);
+
+        \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'console']);
+        $output = \Illuminate\Support\Facades\Artisan::output();
+
+        // Note must be present
+        $this->assertStringContainsString('(1 issue suppressed — use --format=json to see details)', $output);
+
+        // Note must appear on the line immediately following the analyzer status (no blank line between)
+        $lines = explode("\n", $output);
+        $statusIdx = null;
+        foreach ($lines as $i => $line) {
+            if (str_contains($line, 'Analyzer 1/1:')) {
+                $statusIdx = $i;
+                break;
+            }
+        }
+        $this->assertNotNull($statusIdx, 'Analyzer status line not found in output');
+        $this->assertStringContainsString(
+            'issue suppressed',
+            $lines[$statusIdx + 1] ?? '',
+            'Suppressed note must appear on the line immediately after the analyzer status (no blank line between)'
+        );
+
+        $this->cleanupTempPaths();
+    }
+
+    #[Test]
     public function inline_suppression_partial_filtering_keeps_unsuppressed_issues(): void
     {
         $file = $this->createTempPhpFile(<<<'PHP'

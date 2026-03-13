@@ -37,12 +37,16 @@ class AnalyzeCommand extends Command
 
     private InlineSuppressionParser $suppressionParser;
 
+    /** @var array<string, list<\ShieldCI\ValueObjects\SuppressionRecord>> */
+    private array $suppressedIssues = [];
+
     public function handle(
         AnalyzerManager $manager,
         ReporterInterface $reporter,
         \ShieldCI\Contracts\ClientInterface $client,
     ): int {
         $this->suppressionParser = new InlineSuppressionParser;
+        $this->suppressedIssues = [];
 
         // Activate CI mode for this run if --ci flag is passed
         if ($this->option('ci')) {
@@ -156,6 +160,19 @@ class AnalyzeCommand extends Command
             $report = $this->filterAgainstBaseline($report);
         }
 
+        // Inject all accumulated suppression records into the final report
+        $report = new AnalysisReport(
+            projectId: $report->projectId,
+            laravelVersion: $report->laravelVersion,
+            packageVersion: $report->packageVersion,
+            results: $report->results,
+            totalExecutionTime: $report->totalExecutionTime,
+            analyzedAt: $report->analyzedAt,
+            triggeredBy: $report->triggeredBy,
+            metadata: $report->metadata,
+            suppressedIssues: $this->suppressedIssues,
+        );
+
         // Output report (skip if already streamed)
         if (! $useStreaming) {
             $this->outputReport($report, $reporter);
@@ -258,14 +275,22 @@ class AnalyzeCommand extends Command
                 );
 
                 // Apply ignore_errors and inline suppression filtering before streaming
-                $filteredResult = $this->filterSingleResultAgainstIgnoreErrors($enrichedResult);
-                $filteredResult = $this->filterSingleResultAgainstInlineSuppressions($filteredResult);
+                $fr1 = $this->filterSingleResultAgainstIgnoreErrors($enrichedResult);
+                $fr2 = $this->filterSingleResultAgainstInlineSuppressions($fr1->result);
+                $analyzerId = $enrichedResult->getAnalyzerId();
+                $this->accumulateSuppressed($fr1->suppressedRecords, $analyzerId);
+                $this->accumulateSuppressed($fr2->suppressedRecords, $analyzerId);
 
-                $results->push($filteredResult);
+                $results->push($fr2->result);
 
                 // Stream output immediately
                 $categoryLabel = $metadata->category->label();
-                $this->line($reporter->streamResult($filteredResult, $current, $total, $categoryLabel));
+                $this->line($reporter->streamResult($fr2->result, $current, $total, $categoryLabel));
+                $allSuppressed = array_merge($fr1->suppressedRecords, $fr2->suppressedRecords);
+                if ($allSuppressed !== []) {
+                    $count = count($allSuppressed);
+                    $this->line('  ('.$count.' '.($count === 1 ? 'issue' : 'issues').' suppressed — use --format=json to see details)');
+                }
             }
 
             return $results;
@@ -384,13 +409,21 @@ class AnalyzeCommand extends Command
                 );
 
                 // Apply ignore_errors and inline suppression filtering before streaming
-                $filteredResult = $this->filterSingleResultAgainstIgnoreErrors($enrichedResult);
-                $filteredResult = $this->filterSingleResultAgainstInlineSuppressions($filteredResult);
+                $fr1 = $this->filterSingleResultAgainstIgnoreErrors($enrichedResult);
+                $fr2 = $this->filterSingleResultAgainstInlineSuppressions($fr1->result);
+                $analyzerId = $enrichedResult->getAnalyzerId();
+                $this->accumulateSuppressed($fr1->suppressedRecords, $analyzerId);
+                $this->accumulateSuppressed($fr2->suppressedRecords, $analyzerId);
 
-                $results->push($filteredResult);
+                $results->push($fr2->result);
 
                 // Stream output immediately
-                $this->line($reporter->streamResult($filteredResult, $current, $total, $categoryLabel));
+                $this->line($reporter->streamResult($fr2->result, $current, $total, $categoryLabel));
+                $allSuppressed = array_merge($fr1->suppressedRecords, $fr2->suppressedRecords);
+                if ($allSuppressed !== []) {
+                    $count = count($allSuppressed);
+                    $this->line('  ('.$count.' '.($count === 1 ? 'issue' : 'issues').' suppressed — use --format=json to see details)');
+                }
             }
         }
 
@@ -1157,27 +1190,35 @@ class AnalyzeCommand extends Command
      * Filter a single result against ignore_errors config.
      * Used in streaming mode to filter results before displaying them.
      */
-    protected function filterSingleResultAgainstIgnoreErrors(\ShieldCI\AnalyzersCore\Results\AnalysisResult $result): \ShieldCI\AnalyzersCore\Results\AnalysisResult
+    protected function filterSingleResultAgainstIgnoreErrors(\ShieldCI\AnalyzersCore\Results\AnalysisResult $result): \ShieldCI\ValueObjects\FilterResult
     {
         $configIgnoreErrors = config('shieldci.ignore_errors', []);
         $configIgnoreErrors = is_array($configIgnoreErrors) ? $configIgnoreErrors : [];
 
         if (empty($configIgnoreErrors)) {
-            return $result;
+            return new \ShieldCI\ValueObjects\FilterResult($result, []);
         }
 
         $analyzerId = $result->getAnalyzerId();
 
         // If no ignore_errors for this analyzer, return as-is
         if (! isset($configIgnoreErrors[$analyzerId])) {
-            return $result;
+            return new \ShieldCI\ValueObjects\FilterResult($result, []);
         }
 
         $currentIssues = $result->getIssues();
+        $suppressedRecords = [];
 
         // Filter out issues that match ignore_errors config
-        $newIssues = collect($currentIssues)->filter(function ($issue) use ($configIgnoreErrors, $analyzerId) {
-            if ($this->matchesIgnoreError($issue, $configIgnoreErrors[$analyzerId])) {
+        $newIssues = collect($currentIssues)->filter(function ($issue) use ($configIgnoreErrors, $analyzerId, &$suppressedRecords) {
+            $matchingRule = $this->findMatchingIgnoreRule($issue, $configIgnoreErrors[$analyzerId]);
+            if ($matchingRule !== null) {
+                $suppressedRecords[] = new \ShieldCI\ValueObjects\SuppressionRecord(
+                    $issue,
+                    \ShieldCI\Enums\SuppressionType::Config,
+                    $this->describeIgnoreRule($matchingRule)
+                );
+
                 return false; // Issue matches ignore_errors, filter it out
             }
 
@@ -1218,13 +1259,16 @@ class AnalyzeCommand extends Command
             }
         }
 
-        return new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
-            analyzerId: $result->getAnalyzerId(),
-            status: $status,
-            message: $message,
-            issues: $newIssues->all(),
-            executionTime: $result->getExecutionTime(),
-            metadata: $result->getMetadata(),
+        return new \ShieldCI\ValueObjects\FilterResult(
+            new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
+                analyzerId: $result->getAnalyzerId(),
+                status: $status,
+                message: $message,
+                issues: $newIssues->all(),
+                executionTime: $result->getExecutionTime(),
+                metadata: $result->getMetadata(),
+            ),
+            $suppressedRecords
         );
     }
 
@@ -1240,68 +1284,16 @@ class AnalyzeCommand extends Command
             return $report;
         }
 
-        // Filter results
-        $filteredResults = $report->results->map(function ($result) use ($configIgnoreErrors) {
-            $analyzerId = $result->getAnalyzerId();
-
-            // If no ignore_errors for this analyzer, return as-is
-            if (! isset($configIgnoreErrors[$analyzerId])) {
+        // Filter results, accumulating suppression records via the single-result method
+        $filteredResults = $report->results->map(function ($result) {
+            if (! $result instanceof \ShieldCI\AnalyzersCore\Results\AnalysisResult) {
                 return $result;
             }
 
-            $currentIssues = $result->getIssues();
+            $fr = $this->filterSingleResultAgainstIgnoreErrors($result);
+            $this->accumulateSuppressed($fr->suppressedRecords, $result->getAnalyzerId());
 
-            // Filter out issues that match ignore_errors config
-            $newIssues = collect($currentIssues)->filter(function ($issue) use ($configIgnoreErrors, $analyzerId) {
-                if ($this->matchesIgnoreError($issue, $configIgnoreErrors[$analyzerId])) {
-                    return false; // Issue matches ignore_errors, filter it out
-                }
-
-                return true; // Keep issue
-            });
-
-            // Create new result with filtered issues
-            $status = $newIssues->isEmpty()
-                ? \ShieldCI\AnalyzersCore\Enums\Status::Passed
-                : $result->getStatus();
-
-            // Update message to reflect filtered count
-            $message = $result->getMessage();
-            if ($newIssues->isEmpty()) {
-                $message = 'All issues are ignored via config';
-            } elseif ($newIssues->count() !== count($currentIssues)) {
-                // Some (but not all) issues were filtered - update the count in the message
-                $originalCount = count($currentIssues);
-                $filteredCount = $newIssues->count();
-
-                // Update numeric counts in the message
-                $updatedMessage = preg_replace('/\b'.$originalCount.'\b/', (string) $filteredCount, $message, 1);
-                $message = is_string($updatedMessage) ? $updatedMessage : $message;
-
-                // Fix singular/plural grammar (e.g., "1 dependency stability issues" -> "1 dependency stability issue")
-                if ($filteredCount === 1) {
-                    $message = preg_replace_callback('/\b(issues|errors|warnings|problems|vulnerabilities)\b/', function ($matches) {
-                        $singular = [
-                            'issues' => 'issue',
-                            'errors' => 'error',
-                            'warnings' => 'warning',
-                            'problems' => 'problem',
-                            'vulnerabilities' => 'vulnerability',
-                        ];
-
-                        return $singular[strtolower($matches[1])] ?? $matches[1];
-                    }, $message, 1) ?? $message;
-                }
-            }
-
-            return new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
-                analyzerId: $result->getAnalyzerId(),
-                status: $status,
-                message: $message,
-                issues: $newIssues->all(),
-                executionTime: $result->getExecutionTime(),
-                metadata: $result->getMetadata(),
-            );
+            return $fr->result;
         });
 
         // Return new report with filtered results
@@ -1321,28 +1313,39 @@ class AnalyzeCommand extends Command
      * Filter a single result against inline @shieldci-ignore comments.
      * Used in streaming mode to filter results before displaying them.
      */
-    protected function filterSingleResultAgainstInlineSuppressions(\ShieldCI\AnalyzersCore\Results\AnalysisResult $result): \ShieldCI\AnalyzersCore\Results\AnalysisResult
+    protected function filterSingleResultAgainstInlineSuppressions(\ShieldCI\AnalyzersCore\Results\AnalysisResult $result): \ShieldCI\ValueObjects\FilterResult
     {
         $currentIssues = $result->getIssues();
 
         if ($currentIssues === []) {
-            return $result;
+            return new \ShieldCI\ValueObjects\FilterResult($result, []);
         }
 
         $analyzerId = $result->getAnalyzerId();
+        $suppressedRecords = [];
 
-        $newIssues = array_filter($currentIssues, function ($issue) use ($analyzerId) {
+        $newIssues = array_filter($currentIssues, function ($issue) use ($analyzerId, &$suppressedRecords) {
             $location = $issue->location;
 
             if ($location === null || $location->line === null || $location->line < 1) {
                 return true; // Keep issues without a location — can't suppress inline
             }
 
-            return ! $this->suppressionParser->isLineSuppressed($location->file, $location->line, $analyzerId);
+            if ($this->suppressionParser->isLineSuppressed($location->file, $location->line, $analyzerId)) {
+                $suppressedRecords[] = new \ShieldCI\ValueObjects\SuppressionRecord(
+                    $issue,
+                    \ShieldCI\Enums\SuppressionType::Inline,
+                    '@shieldci-ignore at '.$location->file.':'.$location->line
+                );
+
+                return false;
+            }
+
+            return true;
         });
 
         if (count($newIssues) === count($currentIssues)) {
-            return $result; // Nothing was suppressed
+            return new \ShieldCI\ValueObjects\FilterResult($result, []); // Nothing was suppressed
         }
 
         $status = $newIssues === []
@@ -1351,13 +1354,16 @@ class AnalyzeCommand extends Command
 
         $message = $this->adjustFilteredMessage($result->getMessage(), count($currentIssues), count($newIssues));
 
-        return new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
-            analyzerId: $result->getAnalyzerId(),
-            status: $status,
-            message: $message,
-            issues: array_values($newIssues),
-            executionTime: $result->getExecutionTime(),
-            metadata: $result->getMetadata(),
+        return new \ShieldCI\ValueObjects\FilterResult(
+            new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
+                analyzerId: $result->getAnalyzerId(),
+                status: $status,
+                message: $message,
+                issues: array_values($newIssues),
+                executionTime: $result->getExecutionTime(),
+                metadata: $result->getMetadata(),
+            ),
+            $suppressedRecords
         );
     }
 
@@ -1371,7 +1377,10 @@ class AnalyzeCommand extends Command
                 return $result;
             }
 
-            return $this->filterSingleResultAgainstInlineSuppressions($result);
+            $fr = $this->filterSingleResultAgainstInlineSuppressions($result);
+            $this->accumulateSuppressed($fr->suppressedRecords, $result->getAnalyzerId());
+
+            return $fr->result;
         });
 
         return new AnalysisReport(
@@ -1441,18 +1450,27 @@ class AnalyzeCommand extends Command
 
             $baselineIssues = $baselineErrors[$analyzerId];
             $currentIssues = $result->getIssues();
+            $suppressedRecords = [];
 
             // Filter out issues that exist in baseline
-            $newIssues = collect($currentIssues)->filter(function ($issue) use ($baselineIssues) {
+            $newIssues = collect($currentIssues)->filter(function ($issue) use ($baselineIssues, &$suppressedRecords) {
                 /** @var array<int, array<string, mixed>> $baselineIssues */
                 foreach ($baselineIssues as $baselineIssue) {
                     if (is_array($baselineIssue) && $this->matchesBaselineIssue($issue, $baselineIssue)) {
+                        $suppressedRecords[] = new \ShieldCI\ValueObjects\SuppressionRecord(
+                            $issue,
+                            \ShieldCI\Enums\SuppressionType::Baseline,
+                            $this->describeBaselineMatch($baselineIssue)
+                        );
+
                         return false; // Issue matches baseline, filter it out
                     }
                 }
 
                 return true; // New issue
             });
+
+            $this->accumulateSuppressed($suppressedRecords, $analyzerId);
 
             // Create new result with filtered issues
             $status = $newIssues->isEmpty()
@@ -1512,24 +1530,83 @@ class AnalyzeCommand extends Command
     }
 
     /**
-     * Check if an issue matches an ignore_errors config entry.
+     * Push suppression records into the instance accumulator for a given analyzer.
      *
-     * Matching logic:
-     * - If rule specifies 'path': exact path match required
-     * - If rule specifies 'path_pattern': glob pattern match required
-     * - If rule specifies 'message': exact message match required
-     * - If rule specifies 'message_pattern': wildcard pattern match required
-     *   (also matches against recommendation field for analyzers like PHPStan)
-     * - If rule specifies only path criteria: matches ANY message
-     * - If rule specifies only message criteria: matches ANY path
-     * - If rule specifies both: BOTH must match
+     * @param  list<\ShieldCI\ValueObjects\SuppressionRecord>  $records
+     */
+    private function accumulateSuppressed(array $records, string $analyzerId): void
+    {
+        if ($records === []) {
+            return;
+        }
+
+        if (! isset($this->suppressedIssues[$analyzerId])) {
+            $this->suppressedIssues[$analyzerId] = [];
+        }
+
+        foreach ($records as $record) {
+            $this->suppressedIssues[$analyzerId][] = $record;
+        }
+    }
+
+    /**
+     * Build a human-readable description of an ignore_errors rule.
+     *
+     * @param  array<string, mixed>  $rule
+     */
+    private function describeIgnoreRule(array $rule): string
+    {
+        if (isset($rule['path_pattern']) && is_string($rule['path_pattern'])) {
+            return 'path_pattern: '.$rule['path_pattern'];
+        }
+
+        if (isset($rule['path']) && is_string($rule['path'])) {
+            return 'path: '.$rule['path'];
+        }
+
+        if (isset($rule['message_pattern']) && is_string($rule['message_pattern'])) {
+            return 'message_pattern: '.$rule['message_pattern'];
+        }
+
+        if (isset($rule['message']) && is_string($rule['message'])) {
+            return 'message: '.$rule['message'];
+        }
+
+        return 'config rule';
+    }
+
+    /**
+     * Build a human-readable description of a baseline match.
+     *
+     * @param  array<string, mixed>  $baselineIssue
+     */
+    private function describeBaselineMatch(array $baselineIssue): string
+    {
+        if (isset($baselineIssue['hash']) && is_string($baselineIssue['hash'])) {
+            return 'baseline hash: '.substr($baselineIssue['hash'], 0, 8).'...';
+        }
+
+        if (isset($baselineIssue['path']) && is_string($baselineIssue['path'])) {
+            return 'baseline match: '.$baselineIssue['path'];
+        }
+
+        if (isset($baselineIssue['path_pattern']) && is_string($baselineIssue['path_pattern'])) {
+            return 'baseline pattern: '.$baselineIssue['path_pattern'];
+        }
+
+        return 'baseline match';
+    }
+
+    /**
+     * Find the first ignore_errors rule that matches an issue and return it, or null if none match.
      *
      * @param  array<int, array<string, mixed>>  $ignoreErrors
+     * @return array<string, mixed>|null
      */
-    private function matchesIgnoreError(\ShieldCI\AnalyzersCore\ValueObjects\Issue $issue, array $ignoreErrors): bool
+    private function findMatchingIgnoreRule(\ShieldCI\AnalyzersCore\ValueObjects\Issue $issue, array $ignoreErrors): ?array
     {
         if (! is_array($ignoreErrors)) {
-            return false;
+            return null;
         }
 
         $issuePath = $issue->location->file ?? 'unknown';
@@ -1540,69 +1617,50 @@ class AnalyzeCommand extends Command
                 continue;
             }
 
-            // Skip empty rules - they should not match anything
             $hasAtLeastOneCriterion = isset($ignoreError['path']) ||
                                      isset($ignoreError['path_pattern']) ||
                                      isset($ignoreError['message']) ||
                                      isset($ignoreError['message_pattern']);
 
             if (! $hasAtLeastOneCriterion) {
-                continue; // Empty rule, skip it
+                continue;
             }
 
-            // Default to true - if a criterion is not specified, it matches everything
-            // This allows rules like { "path": "foo.php" } to match any message in that file
             $pathMatches = true;
             $messageMatches = true;
 
-            // Check path (exact match only)
             if (isset($ignoreError['path']) && is_string($ignoreError['path'])) {
                 $ignorePath = $ignoreError['path'];
                 $normalizedIssuePath = str_replace('\\', '/', $issuePath);
                 $normalizedIgnorePath = str_replace('\\', '/', $ignorePath);
-
-                // Exact match only (normalized for cross-platform compatibility)
                 $pathMatches = $ignorePath === $issuePath || $normalizedIgnorePath === $normalizedIssuePath;
             }
 
-            // Check path_pattern (glob pattern match)
             if (isset($ignoreError['path_pattern']) && is_string($ignoreError['path_pattern'])) {
                 $pattern = $ignoreError['path_pattern'];
                 $normalizedIssuePath = str_replace('\\', '/', $issuePath);
-
-                // Use fnmatch for glob patterns (cross-platform)
                 $pathMatches = fnmatch($pattern, $issuePath) ||
                               fnmatch($pattern, $normalizedIssuePath) ||
                               \Illuminate\Support\Str::is($pattern, $issuePath);
             }
 
-            // Check message (exact match only)
             if (isset($ignoreError['message']) && is_string($ignoreError['message'])) {
-                $ignoreMessage = $ignoreError['message'];
-
-                // Exact match only
-                $messageMatches = $ignoreMessage === $issueMessage;
+                $messageMatches = $ignoreError['message'] === $issueMessage;
             }
 
-            // Check message_pattern (wildcard pattern match)
             if (isset($ignoreError['message_pattern']) && is_string($ignoreError['message_pattern'])) {
                 $pattern = $ignoreError['message_pattern'];
-
-                // Use Laravel Str::is for wildcard matching
-                // Match against both message AND recommendation (PHPStan errors include details in recommendation)
                 $issueRecommendation = $issue->recommendation ?? '';
                 $messageMatches = \Illuminate\Support\Str::is($pattern, $issueMessage) ||
                                  \Illuminate\Support\Str::is($pattern, $issueRecommendation);
             }
 
-            // Both path and message criteria must match
-            // (if a criterion is not specified, it defaults to true)
             if ($pathMatches && $messageMatches) {
-                return true;
+                return $ignoreError;
             }
         }
 
-        return false;
+        return null;
     }
 
     /**

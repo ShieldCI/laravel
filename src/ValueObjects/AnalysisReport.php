@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Status;
+use ShieldCI\Enums\SuppressionType;
 use ShieldCI\Enums\TriggerSource;
 
 /**
@@ -17,6 +18,7 @@ final class AnalysisReport
 {
     /**
      * @param  Collection<int, ResultInterface>  $results
+     * @param  array<string, list<SuppressionRecord>>  $suppressedIssues
      */
     public function __construct(
         public readonly string $projectId,
@@ -27,6 +29,7 @@ final class AnalysisReport
         public readonly DateTimeImmutable $analyzedAt,
         public readonly TriggerSource $triggeredBy = TriggerSource::Manual,
         public readonly array $metadata = [],
+        public readonly array $suppressedIssues = [],
     ) {}
 
     public function score(): int
@@ -110,6 +113,33 @@ final class AnalysisReport
         return $counts;
     }
 
+    /**
+     * @return array{inline: int, config: int, baseline: int, total: int}
+     */
+    public function suppressedSummary(): array
+    {
+        $counts = [
+            'inline' => 0,
+            'config' => 0,
+            'baseline' => 0,
+            'total' => 0,
+        ];
+
+        foreach ($this->suppressedIssues as $records) {
+            foreach ($records as $record) {
+                $key = match ($record->type) {
+                    SuppressionType::Inline => 'inline',
+                    SuppressionType::Config => 'config',
+                    SuppressionType::Baseline => 'baseline',
+                };
+                $counts[$key]++;
+                $counts['total']++;
+            }
+        }
+
+        return $counts;
+    }
+
     public function summary(): array
     {
         return [
@@ -122,6 +152,7 @@ final class AnalysisReport
             'total_issues' => $this->totalIssues(),
             'issues_by_severity' => $this->issuesBySeverity(),
             'score' => $this->score(),
+            'suppressed_issues' => $this->suppressedSummary(),
         ];
     }
 
@@ -135,7 +166,15 @@ final class AnalysisReport
             'analyzed_at' => $this->analyzedAt->format('c'),
             'total_execution_time' => $this->totalExecutionTime,
             'summary' => $this->summary(),
-            'results' => $this->results->map(fn (ResultInterface $result) => $result->toArray())->all(),
+            'results' => $this->results->map(function (ResultInterface $result) {
+                $arr = $result->toArray();
+                $arr['suppressed_issues'] = array_map(
+                    fn (SuppressionRecord $r) => $r->toArray(),
+                    $this->suppressedIssues[$result->getAnalyzerId()] ?? []
+                );
+
+                return $arr;
+            })->all(),
             'metadata' => $this->metadata,
         ];
     }

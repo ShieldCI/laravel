@@ -3605,4 +3605,229 @@ PHP);
                 && ($metadata['base_branch'] ?? '') === 'main';
         });
     }
+
+    // ─── Suppressed Issues Tracking ───────────────────────────────────────────
+
+    #[Test]
+    public function json_output_includes_suppressed_issues_for_config_suppression(): void
+    {
+        $outputPath = sys_get_temp_dir().'/shieldci-suppression-config-test-'.uniqid().'.json';
+
+        config([
+            'shieldci.fail_on' => 'never',
+            'shieldci.report.output_file' => $outputPath,
+            'shieldci.ignore_errors' => [
+                'test-security-failed' => [
+                    ['path' => '/app/Vulnerable.php'],
+                ],
+            ],
+        ]);
+        $this->registerFailedAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful();
+
+        $this->assertFileExists($outputPath);
+        $json = (string) file_get_contents($outputPath);
+        /** @var array<string, mixed> $data */
+        $data = json_decode($json, true);
+
+        // Verify suppressed_issues present in result
+        $result = collect((array) $data['results'])->firstWhere('analyzer_id', 'test-security-failed');
+        $this->assertNotNull($result, 'Result for test-security-failed not found');
+        $this->assertArrayHasKey('suppressed_issues', $result);
+        $this->assertCount(1, $result['suppressed_issues']);
+        $this->assertSame('config', $result['suppressed_issues'][0]['suppression']['type']);
+        $this->assertSame('SQL Injection vulnerability', $result['suppressed_issues'][0]['message']);
+
+        // Verify summary counts
+        $this->assertSame(1, $data['summary']['suppressed_issues']['config']);
+        $this->assertSame(1, $data['summary']['suppressed_issues']['total']);
+
+        @unlink($outputPath);
+    }
+
+    #[Test]
+    public function json_output_includes_suppressed_issues_for_inline_suppression(): void
+    {
+        $file = $this->createTempPhpFile(<<<'PHP'
+<?php
+// @shieldci-ignore
+$result = DB::select("SELECT * FROM users WHERE id = $id");
+PHP);
+
+        $result = new AnalysisResult(
+            analyzerId: 'sql-injection',
+            status: Status::Failed,
+            message: 'Found 1 issues',
+            issues: [
+                new Issue(
+                    message: 'SQL Injection detected',
+                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 3),
+                    severity: Severity::Critical,
+                    recommendation: 'Use prepared statements',
+                ),
+            ],
+            executionTime: 0.1,
+            metadata: [
+                'id' => 'sql-injection',
+                'name' => 'SQL Injection',
+                'description' => 'Detects SQL injection',
+                'category' => Category::Security,
+                'severity' => Severity::Critical,
+            ],
+        );
+
+        $outputPath = sys_get_temp_dir().'/shieldci-suppression-inline-test-'.uniqid().'.json';
+
+        $this->registerManagerWithResults([$result]);
+        config([
+            'shieldci.fail_on' => 'never',
+            'shieldci.report.output_file' => $outputPath,
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful();
+
+        $this->assertFileExists($outputPath);
+        $json = (string) file_get_contents($outputPath);
+        /** @var array<string, mixed> $data */
+        $data = json_decode($json, true);
+
+        $result = collect((array) $data['results'])->firstWhere('analyzer_id', 'sql-injection');
+        $this->assertNotNull($result, 'Result for sql-injection not found');
+        $this->assertArrayHasKey('suppressed_issues', $result);
+        $this->assertCount(1, $result['suppressed_issues']);
+        $this->assertSame('inline', $result['suppressed_issues'][0]['suppression']['type']);
+        $this->assertSame('SQL Injection detected', $result['suppressed_issues'][0]['message']);
+
+        unlink($outputPath);
+        $this->cleanupTempPaths();
+    }
+
+    #[Test]
+    public function json_output_includes_suppressed_issues_for_baseline_suppression(): void
+    {
+        $this->registerFailedAnalyzers();
+
+        $baselinePath = sys_get_temp_dir().'/test-baseline-suppression-'.uniqid().'.json';
+        $outputPath = sys_get_temp_dir().'/shieldci-suppression-baseline-test-'.uniqid().'.json';
+
+        $issueHash = hash('sha256', json_encode([
+            'file' => '/app/Vulnerable.php',
+            'line' => 42,
+            'message' => 'SQL Injection vulnerability',
+        ]) ?: '');
+
+        $baseline = [
+            'generated_at' => '2024-01-01T00:00:00Z',
+            'version' => '1.0.0',
+            'errors' => [
+                'test-security-failed' => [
+                    ['hash' => $issueHash],
+                ],
+            ],
+        ];
+
+        file_put_contents($baselinePath, json_encode($baseline));
+        config([
+            'shieldci.baseline_file' => $baselinePath,
+            'shieldci.fail_on' => 'never',
+            'shieldci.report.output_file' => $outputPath,
+        ]);
+
+        $this->artisan('shield:analyze', ['--baseline' => true, '--format' => 'json'])
+            ->assertSuccessful();
+
+        $this->assertFileExists($outputPath);
+        $json = (string) file_get_contents($outputPath);
+        /** @var array<string, mixed> $data */
+        $data = json_decode($json, true);
+
+        $result = collect((array) $data['results'])->firstWhere('analyzer_id', 'test-security-failed');
+        $this->assertNotNull($result, 'Result for test-security-failed not found');
+        $this->assertArrayHasKey('suppressed_issues', $result);
+        $this->assertCount(1, $result['suppressed_issues']);
+        $this->assertSame('baseline', $result['suppressed_issues'][0]['suppression']['type']);
+        $this->assertSame('SQL Injection vulnerability', $result['suppressed_issues'][0]['message']);
+
+        @unlink($baselinePath);
+        @unlink($outputPath);
+    }
+
+    #[Test]
+    public function json_summary_includes_suppressed_issues_counts(): void
+    {
+        $outputPath = sys_get_temp_dir().'/shieldci-suppression-summary-test-'.uniqid().'.json';
+
+        config([
+            'shieldci.fail_on' => 'never',
+            'shieldci.report.output_file' => $outputPath,
+            'shieldci.ignore_errors' => [
+                'test-security-failed' => [
+                    ['path' => '/app/Vulnerable.php'],
+                ],
+            ],
+        ]);
+        $this->registerFailedAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful();
+
+        $this->assertFileExists($outputPath);
+        $json = (string) file_get_contents($outputPath);
+        /** @var array<string, mixed> $data */
+        $data = json_decode($json, true);
+
+        $this->assertSame(1, $data['summary']['suppressed_issues']['config']);
+        $this->assertSame(0, $data['summary']['suppressed_issues']['inline']);
+        $this->assertSame(0, $data['summary']['suppressed_issues']['baseline']);
+        $this->assertSame(1, $data['summary']['suppressed_issues']['total']);
+
+        unlink($outputPath);
+    }
+
+    #[Test]
+    public function console_output_shows_suppression_count_hint(): void
+    {
+        config([
+            'shieldci.fail_on' => 'never',
+            'shieldci.ignore_errors' => [
+                'test-security-failed' => [
+                    ['path' => '/app/Vulnerable.php'],
+                ],
+            ],
+        ]);
+        $this->registerFailedAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'console'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('suppressed');
+    }
+
+    #[Test]
+    public function suppressed_issues_is_empty_array_when_no_suppression_occurs(): void
+    {
+        $outputPath = sys_get_temp_dir().'/shieldci-suppression-empty-test-'.uniqid().'.json';
+
+        $this->registerTestAnalyzers();
+        config(['shieldci.report.output_file' => $outputPath]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful();
+
+        $this->assertFileExists($outputPath);
+        $json = (string) file_get_contents($outputPath);
+        /** @var array<string, mixed> $data */
+        $data = json_decode($json, true);
+
+        /** @var array<int, array<string, mixed>> $results */
+        $results = $data['results'];
+        foreach ($results as $result) {
+            $this->assertSame([], $result['suppressed_issues'] ?? null, "Expected empty suppressed_issues for {$result['analyzer_id']}");
+        }
+        $this->assertSame(0, $data['summary']['suppressed_issues']['total']);
+
+        unlink($outputPath);
+    }
 }

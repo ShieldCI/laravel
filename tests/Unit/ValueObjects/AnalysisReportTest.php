@@ -482,6 +482,142 @@ class AnalysisReportTest extends TestCase
         $this->assertSame($datetime, $report->analyzedAt);
     }
 
+    #[Test]
+    public function it_defaults_suppressed_issues_to_empty_array(): void
+    {
+        $report = $this->createReport(collect());
+
+        $this->assertSame([], $report->suppressedIssues);
+    }
+
+    #[Test]
+    public function suppressed_summary_counts_by_type_correctly(): void
+    {
+        $issue = new Issue(
+            message: 'Test',
+            location: new Location('/test.php', 1),
+            severity: Severity::High,
+            recommendation: 'Fix it',
+        );
+
+        $report = new AnalysisReport(
+            projectId: 'test-project-id',
+            laravelVersion: app()->version(),
+            packageVersion: '1.0.0',
+            results: collect([AnalysisResult::passed('analyzer-1', 'Passed')]),
+            totalExecutionTime: 1.0,
+            analyzedAt: new DateTimeImmutable,
+            suppressedIssues: [
+                'analyzer-1' => [
+                    new \ShieldCI\ValueObjects\SuppressionRecord($issue, \ShieldCI\Enums\SuppressionType::Inline, '@shieldci-ignore'),
+                    new \ShieldCI\ValueObjects\SuppressionRecord($issue, \ShieldCI\Enums\SuppressionType::Config, 'path: test.php'),
+                    new \ShieldCI\ValueObjects\SuppressionRecord($issue, \ShieldCI\Enums\SuppressionType::Config, 'path: other.php'),
+                    new \ShieldCI\ValueObjects\SuppressionRecord($issue, \ShieldCI\Enums\SuppressionType::Baseline, 'baseline hash: abc123...'),
+                ],
+            ],
+        );
+
+        $summary = $report->suppressedSummary();
+
+        $this->assertSame(1, $summary['inline']);
+        $this->assertSame(2, $summary['config']);
+        $this->assertSame(1, $summary['baseline']);
+        $this->assertSame(4, $summary['total']);
+    }
+
+    #[Test]
+    public function suppressed_summary_returns_zeros_when_no_suppressions(): void
+    {
+        $report = $this->createReport(collect());
+
+        $summary = $report->suppressedSummary();
+
+        $this->assertSame(0, $summary['inline']);
+        $this->assertSame(0, $summary['config']);
+        $this->assertSame(0, $summary['baseline']);
+        $this->assertSame(0, $summary['total']);
+    }
+
+    #[Test]
+    public function summary_includes_suppressed_issues_counts(): void
+    {
+        $issue = new Issue(
+            message: 'Test',
+            location: new Location('/test.php', 1),
+            severity: Severity::High,
+            recommendation: 'Fix it',
+        );
+
+        $report = new AnalysisReport(
+            projectId: 'test-project-id',
+            laravelVersion: app()->version(),
+            packageVersion: '1.0.0',
+            results: collect([AnalysisResult::passed('analyzer-1', 'Passed')]),
+            totalExecutionTime: 1.0,
+            analyzedAt: new DateTimeImmutable,
+            suppressedIssues: [
+                'analyzer-1' => [
+                    new \ShieldCI\ValueObjects\SuppressionRecord($issue, \ShieldCI\Enums\SuppressionType::Config, 'path: test.php'),
+                ],
+            ],
+        );
+
+        $summary = $report->summary();
+
+        $this->assertArrayHasKey('suppressed_issues', $summary);
+        $this->assertSame(1, $summary['suppressed_issues']['config']);
+        $this->assertSame(1, $summary['suppressed_issues']['total']);
+    }
+
+    #[Test]
+    public function to_array_includes_suppressed_issues_per_result(): void
+    {
+        $issue = new Issue(
+            message: 'SQL Injection',
+            location: new Location('/app/Vulnerable.php', 42),
+            severity: Severity::Critical,
+            recommendation: 'Use prepared statements',
+        );
+
+        $results = collect([AnalysisResult::passed('xss-detection', 'Passed')]);
+        $report = new AnalysisReport(
+            projectId: 'test-project-id',
+            laravelVersion: app()->version(),
+            packageVersion: '1.0.0',
+            results: $results,
+            totalExecutionTime: 1.0,
+            analyzedAt: new DateTimeImmutable,
+            suppressedIssues: [
+                'xss-detection' => [
+                    new \ShieldCI\ValueObjects\SuppressionRecord($issue, \ShieldCI\Enums\SuppressionType::Config, 'path_pattern: app/Legacy/*.php'),
+                ],
+            ],
+        );
+
+        $arr = $report->toArray();
+        $resultArr = $arr['results'][0];
+
+        $this->assertArrayHasKey('suppressed_issues', $resultArr);
+        $this->assertCount(1, $resultArr['suppressed_issues']);
+        $suppressed = $resultArr['suppressed_issues'][0];
+        $this->assertSame('SQL Injection', $suppressed['message']);
+        $this->assertSame('config', $suppressed['suppression']['type']);
+        $this->assertSame('path_pattern: app/Legacy/*.php', $suppressed['suppression']['description']);
+    }
+
+    #[Test]
+    public function to_array_includes_empty_suppressed_issues_when_none_for_result(): void
+    {
+        $results = collect([AnalysisResult::passed('xss-detection', 'Passed')]);
+        $report = $this->createReport($results);
+
+        $arr = $report->toArray();
+        $resultArr = $arr['results'][0];
+
+        $this->assertArrayHasKey('suppressed_issues', $resultArr);
+        $this->assertSame([], $resultArr['suppressed_issues']);
+    }
+
     private function createReport(Collection $results): AnalysisReport
     {
         return new AnalysisReport(

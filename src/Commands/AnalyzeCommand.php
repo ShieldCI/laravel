@@ -285,12 +285,14 @@ class AnalyzeCommand extends Command
 
                 // Stream output immediately
                 $categoryLabel = $metadata->category->label();
-                $this->line($reporter->streamResult($fr2->result, $current, $total, $categoryLabel));
                 $allSuppressed = array_merge($fr1->suppressedRecords, $fr2->suppressedRecords);
+                $streamOutput = $reporter->streamResult($fr2->result, $current, $total, $categoryLabel);
                 if ($allSuppressed !== []) {
                     $count = count($allSuppressed);
-                    $this->line('  ('.$count.' '.($count === 1 ? 'issue' : 'issues').' suppressed — use --format=json to see details)');
+                    $suppressedNote = '('.$count.' '.($count === 1 ? 'issue' : 'issues').' suppressed — use --format=json to see details)';
+                    $streamOutput = rtrim($streamOutput, PHP_EOL).PHP_EOL.$suppressedNote.PHP_EOL;
                 }
+                $this->line($streamOutput);
             }
 
             return $results;
@@ -418,12 +420,14 @@ class AnalyzeCommand extends Command
                 $results->push($fr2->result);
 
                 // Stream output immediately
-                $this->line($reporter->streamResult($fr2->result, $current, $total, $categoryLabel));
                 $allSuppressed = array_merge($fr1->suppressedRecords, $fr2->suppressedRecords);
+                $streamOutput = $reporter->streamResult($fr2->result, $current, $total, $categoryLabel);
                 if ($allSuppressed !== []) {
                     $count = count($allSuppressed);
-                    $this->line('  ('.$count.' '.($count === 1 ? 'issue' : 'issues').' suppressed — use --format=json to see details)');
+                    $suppressedNote = '('.$count.' '.($count === 1 ? 'issue' : 'issues').' suppressed — use --format=json to see details)';
+                    $streamOutput = rtrim($streamOutput, PHP_EOL).PHP_EOL.$suppressedNote.PHP_EOL;
                 }
+                $this->line($streamOutput);
             }
         }
 

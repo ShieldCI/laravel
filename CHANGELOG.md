@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.6.1
+
+### Fixed
+- Suppressed issues note no longer has a blank line between it and the analyzer status line — the note is now embedded directly into the streamed output so it appears immediately below the status with no gap
+
 ## v1.6.0
 
 ### Added

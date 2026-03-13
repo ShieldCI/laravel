@@ -1128,6 +1128,49 @@ class AnalyzeCommandTest extends TestCase
     }
 
     #[Test]
+    public function it_does_not_error_when_analyzer_option_targets_a_skipped_analyzer(): void
+    {
+        config(['shieldci.fail_on' => 'never']);
+        $this->registerAnalyzersWithSkipped();
+
+        $this->artisan('shield:analyze', ['--analyzer' => 'test-skipped-analyzer'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('skipped');
+    }
+
+    #[Test]
+    public function it_shows_warning_for_skipped_analyzer_in_validate_options(): void
+    {
+        config(['shieldci.fail_on' => 'never']);
+        $this->registerAnalyzersWithSkipped();
+
+        $this->artisan('shield:analyze', ['--analyzer' => 'test-skipped-analyzer'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('⚠');
+    }
+
+    #[Test]
+    public function it_includes_skipped_result_when_analyzer_option_targets_skipped_in_json_mode(): void
+    {
+        config(['shieldci.fail_on' => 'never']);
+        $this->registerAnalyzersWithSkipped();
+
+        $this->artisan('shield:analyze', ['--analyzer' => 'test-skipped-analyzer', '--format' => 'json'])
+            ->assertSuccessful();
+    }
+
+    #[Test]
+    public function it_shows_analyzer_display_name_not_id_when_targeted_analyzer_is_skipped(): void
+    {
+        config(['shieldci.fail_on' => 'never']);
+        $this->registerAnalyzersWithSkipped();
+
+        $this->artisan('shield:analyze', ['--analyzer' => 'test-skipped-analyzer'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('Test Skipped Analyzer');
+    }
+
+    #[Test]
     public function it_saves_report_in_console_format(): void
     {
         $this->registerTestAnalyzers();

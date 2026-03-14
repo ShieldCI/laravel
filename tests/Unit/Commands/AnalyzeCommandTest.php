@@ -220,6 +220,31 @@ class AnalyzeCommandTest extends TestCase
     }
 
     #[Test]
+    public function it_suppresses_stdout_when_output_file_is_specified(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $outputPath = base_path('tests/shieldci-suppress-stdout-test.json');
+        if (file_exists($outputPath)) {
+            unlink($outputPath);
+        }
+
+        $result = $this->artisan('shield:analyze', [
+            '--format' => 'json',
+            '--output' => 'tests/shieldci-suppress-stdout-test.json',
+        ])->assertSuccessful();
+
+        // JSON must not appear on STDOUT when saved to a file
+        $result->doesntExpectOutput('"summary"');
+        // Confirmation message should still appear
+        $result->expectsOutputToContain('Report saved to');
+
+        if (file_exists($outputPath)) {
+            unlink($outputPath);
+        }
+    }
+
+    #[Test]
     public function it_respects_enabled_config(): void
     {
         config(['shieldci.enabled' => false]);
@@ -3888,5 +3913,71 @@ PHP);
         $this->assertSame(0, $data['summary']['suppressed_issues']['total']);
 
         unlink($outputPath);
+    }
+
+    #[Test]
+    public function json_output_does_not_contain_status_messages(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $result = $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful();
+
+        // Status messages (e.g. "Running all N analyzers...") must not appear in STDOUT
+        // as they would corrupt JSON piped to jq or other tools
+        $result->expectsOutputToContain('"summary"');
+        $result->doesntExpectOutput('Running all');
+        $result->doesntExpectOutput('Running analyzers');
+        $result->doesntExpectOutput('Running analyzer');
+    }
+
+    #[Test]
+    public function json_output_with_specific_analyzer_does_not_contain_status_messages(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $result = $this->artisan('shield:analyze', [
+            '--analyzer' => 'test-security-analyzer',
+            '--format' => 'json',
+        ])->assertSuccessful();
+
+        $result->doesntExpectOutput('Running analyzer');
+        $result->doesntExpectOutput('Running analyzers');
+    }
+
+    #[Test]
+    public function json_output_with_multiple_analyzers_does_not_contain_status_messages(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $result = $this->artisan('shield:analyze', [
+            '--analyzer' => 'test-security-analyzer,test-performance-analyzer',
+            '--format' => 'json',
+        ])->assertSuccessful();
+
+        $result->doesntExpectOutput('Running analyzers');
+    }
+
+    #[Test]
+    public function json_output_with_category_does_not_contain_status_messages(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $result = $this->artisan('shield:analyze', [
+            '--category' => 'security',
+            '--format' => 'json',
+        ])->assertSuccessful();
+
+        $result->doesntExpectOutput('Running');
+    }
+
+    #[Test]
+    public function console_format_still_shows_output_without_regression(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'console'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('ShieldCI');
     }
 }

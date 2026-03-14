@@ -470,17 +470,24 @@ class AnalyzeCommand extends Command
         return $allResults;
     }
 
+    /**
+     * @param  resource  $stderrStream
+     */
+    protected function isProgressEnabled(mixed $stderrStream): bool
+    {
+        return stream_isatty($stderrStream);
+    }
+
     protected function runAnalysis(AnalyzerManager $manager): Collection
     {
         /** @var resource $stderrStream */
         $stderrStream = fopen('php://stderr', 'w');
-        $stderrIsDecorated = stream_isatty($stderrStream);
+        $showProgress = $this->isProgressEnabled($stderrStream);
         $stderrOutput = new \Symfony\Component\Console\Output\StreamOutput(
             $stderrStream,
             $this->getOutput()->getVerbosity(),
-            $stderrIsDecorated,
+            $showProgress,
         );
-        $showProgress = $stderrIsDecorated;
 
         if ($analyzerOption = $this->option('analyzer')) {
             // Support comma-separated analyzer IDs

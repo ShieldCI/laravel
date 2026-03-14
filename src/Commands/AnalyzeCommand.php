@@ -474,12 +474,13 @@ class AnalyzeCommand extends Command
     {
         /** @var resource $stderrStream */
         $stderrStream = fopen('php://stderr', 'w');
+        $stderrIsDecorated = stream_isatty($stderrStream);
         $stderrOutput = new \Symfony\Component\Console\Output\StreamOutput(
             $stderrStream,
             $this->getOutput()->getVerbosity(),
-            $this->getOutput()->isDecorated(),
+            $stderrIsDecorated,
         );
-        $showProgress = $this->getOutput()->isDecorated();
+        $showProgress = $stderrIsDecorated;
 
         if ($analyzerOption = $this->option('analyzer')) {
             // Support comma-separated analyzer IDs

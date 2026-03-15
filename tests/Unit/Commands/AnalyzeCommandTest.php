@@ -220,6 +220,31 @@ class AnalyzeCommandTest extends TestCase
     }
 
     #[Test]
+    public function it_suppresses_stdout_when_output_file_is_specified(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $outputPath = base_path('tests/shieldci-suppress-stdout-test.json');
+        if (file_exists($outputPath)) {
+            unlink($outputPath);
+        }
+
+        $result = $this->artisan('shield:analyze', [
+            '--format' => 'json',
+            '--output' => 'tests/shieldci-suppress-stdout-test.json',
+        ])->assertSuccessful();
+
+        // JSON must not appear on STDOUT when saved to a file
+        $result->doesntExpectOutput('"summary"');
+        // Confirmation message should still appear
+        $result->expectsOutputToContain('Report saved to');
+
+        if (file_exists($outputPath)) {
+            unlink($outputPath);
+        }
+    }
+
+    #[Test]
     public function it_respects_enabled_config(): void
     {
         config(['shieldci.enabled' => false]);
@@ -3888,5 +3913,174 @@ PHP);
         $this->assertSame(0, $data['summary']['suppressed_issues']['total']);
 
         unlink($outputPath);
+    }
+
+    #[Test]
+    public function json_output_does_not_contain_status_messages(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $result = $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful();
+
+        // Status messages (e.g. "Running all N analyzers...") must not appear in STDOUT
+        // as they would corrupt JSON piped to jq or other tools
+        $result->expectsOutputToContain('"summary"');
+        $result->doesntExpectOutput('Running all');
+        $result->doesntExpectOutput('Running analyzers');
+        $result->doesntExpectOutput('Running analyzer');
+    }
+
+    #[Test]
+    public function json_output_with_specific_analyzer_does_not_contain_status_messages(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $result = $this->artisan('shield:analyze', [
+            '--analyzer' => 'test-security-analyzer',
+            '--format' => 'json',
+        ])->assertSuccessful();
+
+        $result->doesntExpectOutput('Running analyzer');
+        $result->doesntExpectOutput('Running analyzers');
+    }
+
+    #[Test]
+    public function json_output_with_multiple_analyzers_does_not_contain_status_messages(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $result = $this->artisan('shield:analyze', [
+            '--analyzer' => 'test-security-analyzer,test-performance-analyzer',
+            '--format' => 'json',
+        ])->assertSuccessful();
+
+        $result->doesntExpectOutput('Running analyzers');
+    }
+
+    #[Test]
+    public function json_output_with_category_does_not_contain_status_messages(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $result = $this->artisan('shield:analyze', [
+            '--category' => 'security',
+            '--format' => 'json',
+        ])->assertSuccessful();
+
+        $result->doesntExpectOutput('Running');
+    }
+
+    #[Test]
+    public function console_format_still_shows_output_without_regression(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'console'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('ShieldCI');
+    }
+
+    #[Test]
+    public function progress_bar_renders_when_progress_enabled_for_all_analyzers(): void
+    {
+        $manager = $this->buildProgressTestManager();
+        $results = $this->invokeRunAnalysisWithProgress([], $manager);
+
+        $this->assertCount(2, $results);
+    }
+
+    #[Test]
+    public function progress_bar_renders_when_progress_enabled_for_specific_analyzer(): void
+    {
+        $manager = $this->buildProgressTestManager();
+        $results = $this->invokeRunAnalysisWithProgress(['--analyzer' => 'test-security-analyzer'], $manager);
+
+        $this->assertCount(1, $results);
+    }
+
+    #[Test]
+    public function progress_bar_renders_when_progress_enabled_for_multiple_analyzers(): void
+    {
+        $manager = $this->buildProgressTestManager();
+        $results = $this->invokeRunAnalysisWithProgress(['--analyzer' => 'test-security-analyzer,test-performance-analyzer'], $manager);
+
+        $this->assertCount(2, $results);
+    }
+
+    #[Test]
+    public function progress_bar_renders_when_progress_enabled_for_category(): void
+    {
+        $manager = $this->buildProgressTestManager();
+        $results = $this->invokeRunAnalysisWithProgress(['--category' => 'security'], $manager);
+
+        $this->assertCount(1, $results);
+    }
+
+    /**
+     * Directly invoke runAnalysis() on a progress-enabled command via reflection,
+     * bypassing the full Artisan stack so we get clean coverage of the progress bar branches.
+     *
+     * @param  array<string, mixed>  $options
+     * @return \Illuminate\Support\Collection<int, mixed>
+     */
+    private function invokeRunAnalysisWithProgress(array $options, AnalyzerManager $manager): \Illuminate\Support\Collection
+    {
+        $command = new class extends \ShieldCI\Commands\AnalyzeCommand {
+            protected function isProgressEnabled(mixed $stderrStream): bool
+            {
+                return true;
+            }
+        };
+
+        $input = new \Symfony\Component\Console\Input\ArrayInput($options);
+        $input->bind($command->getDefinition());
+        $output = new \Symfony\Component\Console\Output\NullOutput();
+        $command->setInput($input);
+        $command->setOutput(new \Illuminate\Console\OutputStyle($input, $output));
+
+        $reflection = new \ReflectionMethod($command, 'runAnalysis');
+        /** @var \Illuminate\Support\Collection<int, mixed> */
+        return $reflection->invoke($command, $manager);
+    }
+
+    /**
+     * @return MockInterface&AnalyzerManager
+     */
+    private function buildProgressTestManager(): AnalyzerManager
+    {
+        $securityAnalyzer = $this->createMockAnalyzer(
+            'test-security-analyzer',
+            'Test Security Analyzer',
+            Category::Security,
+            Severity::High,
+            Status::Passed,
+            'No issues',
+        );
+        $performanceAnalyzer = $this->createMockAnalyzer(
+            'test-performance-analyzer',
+            'Test Performance Analyzer',
+            Category::Performance,
+            Severity::Medium,
+            Status::Passed,
+            'No issues',
+        );
+
+        /** @var MockInterface&AnalyzerManager $manager */
+        $manager = Mockery::mock(AnalyzerManager::class);
+        /** @phpstan-ignore-next-line */
+        $manager->shouldReceive('getAnalyzers')->andReturn(collect([$securityAnalyzer, $performanceAnalyzer]));
+        /** @phpstan-ignore-next-line */
+        $manager->shouldReceive('getByCategories')->with(['security'])->andReturn(collect([$securityAnalyzer]));
+        /** @phpstan-ignore-next-line */
+        $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
+        /** @phpstan-ignore-next-line */
+        $manager->shouldReceive('run')->with('test-security-analyzer')->andReturn($securityAnalyzer->analyze());
+        /** @phpstan-ignore-next-line */
+        $manager->shouldReceive('run')->with('test-performance-analyzer')->andReturn($performanceAnalyzer->analyze());
+        /** @phpstan-ignore-next-line */
+        $manager->shouldReceive('resolveAnalyzerDisplayName')->andReturn('Test Security Analyzer');
+
+        return $manager;
     }
 }

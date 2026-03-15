@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.6.2
+
+### Added
+- `shield:analyze --format=json` now shows a progress bar on STDERR while analyzers run — the bar displays the current analyzer name and advances per-analyzer; it only renders when STDERR is a TTY so piped or redirected STDERR stays clean
+
+### Changed
+- All status messages (e.g. "Running all 73 analyzers...") are now written to STDERR instead of STDOUT — `--format=json` output piped to `jq` or redirected to a file is no longer corrupted by interleaved text
+- `--output` now suppresses STDOUT — when a file path is provided (via `--output` or `shieldci.report.output_file` config), the report is written to the file only and a `"Report saved to: ..."` confirmation is shown; the full report is no longer also dumped to the console
+
 ## v1.6.1
 
 ### Fixed

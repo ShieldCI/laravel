@@ -173,19 +173,6 @@ class AnalyzeCommand extends Command
             suppressedIssues: $this->suppressedIssues,
         );
 
-        // Output report (skip if already streamed)
-        if (! $useStreaming) {
-            $this->outputReport($report, $reporter);
-        } else {
-            // For streaming mode, just output the report card
-            $this->newLine();
-            $this->line($this->color('Report Card', 'bright_yellow'));
-            $this->line($this->color('===========', 'bright_yellow'));
-            $this->newLine();
-            $this->outputReportCard($report);
-            $this->newLine();
-        }
-
         // Save to file if requested (CLI option or config default)
         $output = $this->option('output');
         if (! $output) {
@@ -195,6 +182,19 @@ class AnalyzeCommand extends Command
 
         if ($output && is_string($output)) {
             $this->saveReport($report, $reporter, $output);
+        }
+
+        // Output report to STDOUT (skip if saved to file or already streamed)
+        if (! $output && ! $useStreaming) {
+            $this->outputReport($report, $reporter);
+        } elseif (! $output && $useStreaming) {
+            // For streaming mode, just output the report card
+            $this->newLine();
+            $this->line($this->color('Report Card', 'bright_yellow'));
+            $this->line($this->color('===========', 'bright_yellow'));
+            $this->newLine();
+            $this->outputReportCard($report);
+            $this->newLine();
         }
 
         // Send to API if configured
@@ -470,8 +470,25 @@ class AnalyzeCommand extends Command
         return $allResults;
     }
 
+    /**
+     * @param  resource  $stderrStream
+     */
+    protected function isProgressEnabled(mixed $stderrStream): bool
+    {
+        return stream_isatty($stderrStream);
+    }
+
     protected function runAnalysis(AnalyzerManager $manager): Collection
     {
+        /** @var resource $stderrStream */
+        $stderrStream = fopen('php://stderr', 'w');
+        $showProgress = $this->isProgressEnabled($stderrStream);
+        $stderrOutput = new \Symfony\Component\Console\Output\StreamOutput(
+            $stderrStream,
+            $this->getOutput()->getVerbosity(),
+            $showProgress,
+        );
+
         if ($analyzerOption = $this->option('analyzer')) {
             // Support comma-separated analyzer IDs
             $analyzerIds = array_map('trim', explode(',', $analyzerOption));
@@ -479,11 +496,25 @@ class AnalyzeCommand extends Command
 
             $displayName = $this->resolveAnalyzerDisplayName($manager, $analyzerIds);
             $label = count($analyzerIds) === 1 ? 'Running analyzer' : 'Running analyzers';
-            $this->line("{$label}: {$displayName}");
+            $stderrOutput->writeln("{$label}: {$displayName}");
+
+            $progressBar = null;
+            if ($showProgress && count($analyzerIds) > 1) {
+                $progressBar = new \Symfony\Component\Console\Helper\ProgressBar($stderrOutput, count($analyzerIds));
+                $progressBar->setFormat(' %current%/%max% [%bar%] %percent:3s%% — %message%');
+                $progressBar->setMessage('Starting...');
+                $progressBar->start();
+            }
 
             $results = [];
             foreach ($analyzerIds as $analyzerId) {
+                if ($progressBar !== null) {
+                    $progressBar->setMessage($analyzerId);
+                }
                 $result = $manager->run($analyzerId);
+                if ($progressBar !== null) {
+                    $progressBar->advance();
+                }
                 if ($result !== null) {
                     $results[] = $result;
                 } else {
@@ -493,6 +524,11 @@ class AnalyzeCommand extends Command
                         $results[] = $skippedResult;
                     }
                 }
+            }
+
+            if ($progressBar !== null) {
+                $progressBar->finish();
+                $stderrOutput->writeln('');
             }
 
             return collect($results);
@@ -528,9 +564,9 @@ class AnalyzeCommand extends Command
             $totalCount = $enabledCount + $skippedCount;
 
             if ($skippedCount > 0) {
-                $this->line("Running {$categoryLabel} analyzers... ({$enabledCount} running, {$skippedCount} skipped, {$totalCount} total)");
+                $stderrOutput->writeln("Running {$categoryLabel} analyzers... ({$enabledCount} running, {$skippedCount} skipped, {$totalCount} total)");
             } else {
-                $this->line("Running {$categoryLabel} analyzers... ({$enabledCount}/{$totalCount})");
+                $stderrOutput->writeln("Running {$categoryLabel} analyzers... ({$enabledCount}/{$totalCount})");
             }
         } else {
             $analyzers = $manager->getAnalyzers();
@@ -570,19 +606,33 @@ class AnalyzeCommand extends Command
             $totalCount = $enabledCount + $skippedCount;
 
             if ($skippedCount > 0) {
-                $this->line("Running {$enabledCount} of {$totalCount} analyzers ({$skippedCount} skipped)...");
+                $stderrOutput->writeln("Running {$enabledCount} of {$totalCount} analyzers ({$skippedCount} skipped)...");
             } else {
-                $this->line("Running all {$enabledCount} analyzers...");
+                $stderrOutput->writeln("Running all {$enabledCount} analyzers...");
             }
         }
 
         // Run analyzers and collect results
-        $results = $analyzers->map(function ($analyzer) {
-            $result = $analyzer->analyze();
-            $metadata = $analyzer->getMetadata();
+        $progressBar = null;
+        if ($showProgress) {
+            $progressBar = new \Symfony\Component\Console\Helper\ProgressBar($stderrOutput, $enabledCount);
+            $progressBar->setFormat(' %current%/%max% [%bar%] %percent:3s%% — %message%');
+            $progressBar->setMessage('Starting...');
+            $progressBar->start();
+        }
 
+        $resultsList = [];
+        foreach ($analyzers as $analyzer) {
+            $metadata = $analyzer->getMetadata();
+            if ($progressBar !== null) {
+                $progressBar->setMessage($metadata->name);
+            }
+            $result = $analyzer->analyze();
+            if ($progressBar !== null) {
+                $progressBar->advance();
+            }
             // Enrich result with analyzer metadata (same as runAll)
-            return new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
+            $resultsList[] = new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
                 analyzerId: $result->getAnalyzerId(),
                 status: $result->getStatus(),
                 message: $result->getMessage(),
@@ -597,7 +647,14 @@ class AnalyzeCommand extends Command
                     'docsUrl' => $metadata->getDocsUrl(),
                 ],
             );
-        });
+        }
+
+        if ($progressBar !== null) {
+            $progressBar->finish();
+            $stderrOutput->writeln('');
+        }
+
+        $results = collect($resultsList);
 
         // Add skipped analyzers
         if ($normalizedCategories) {
@@ -620,11 +677,8 @@ class AnalyzeCommand extends Command
         // Convert both to arrays and merge, then convert back to collection (same approach as runAll)
         /** @var Collection<int, ResultInterface> $allResults */
         $allResults = collect(array_merge($results->all(), $skippedResults->all()));
-        $results = $allResults;
 
-        $this->newLine(2);
-
-        return $results;
+        return $allResults;
     }
 
     protected function outputReport(AnalysisReport $report, ReporterInterface $reporter): void

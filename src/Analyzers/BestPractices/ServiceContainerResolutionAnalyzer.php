@@ -18,7 +18,6 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Detects manual service container resolution in application code.
@@ -321,9 +320,10 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             $relativePath = $this->getRelativePath($file);
 
             foreach ($visitor->getIssues() as $issue) {
-                $issues[] = $this->createIssue(
+                $issues[] = $this->createIssueWithSnippet(
                     message: "Manual service resolution in '{$issue['location']}': {$issue['pattern']}",
-                    location: new Location($relativePath, $issue['line']),
+                    filePath: $file,
+                    lineNumber: $issue['line'],
                     severity: $issue['severity'],
                     recommendation: $this->getRecommendation($issue['pattern'], $issue['location'], $issue['argument_type'] ?? 'unknown', $issue['in_closure']),
                     metadata: [

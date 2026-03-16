@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.6.3
+
+### Changed
+- `MissingDatabaseTransactionsAnalyzer`, `MixedQueryBuilderEloquentAnalyzer`, `PhpSideFilteringAnalyzer`, `SilentFailureAnalyzer`, and `ServiceContainerResolutionAnalyzer` now include code snippets in their issues — each issue shows the offending line with surrounding context via `createIssueWithSnippet()`
+
 ## v1.6.2
 
 ### Added

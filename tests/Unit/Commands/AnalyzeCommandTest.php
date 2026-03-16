@@ -4026,7 +4026,8 @@ PHP);
      */
     private function invokeRunAnalysisWithProgress(array $options, AnalyzerManager $manager): \Illuminate\Support\Collection
     {
-        $command = new class extends \ShieldCI\Commands\AnalyzeCommand {
+        $command = new class extends \ShieldCI\Commands\AnalyzeCommand
+        {
             protected function isProgressEnabled(mixed $stderrStream): bool
             {
                 return true;
@@ -4035,11 +4036,12 @@ PHP);
 
         $input = new \Symfony\Component\Console\Input\ArrayInput($options);
         $input->bind($command->getDefinition());
-        $output = new \Symfony\Component\Console\Output\NullOutput();
+        $output = new \Symfony\Component\Console\Output\NullOutput;
         $command->setInput($input);
         $command->setOutput(new \Illuminate\Console\OutputStyle($input, $output));
 
         $reflection = new \ReflectionMethod($command, 'runAnalysis');
+
         /** @var \Illuminate\Support\Collection<int, mixed> */
         return $reflection->invoke($command, $manager);
     }

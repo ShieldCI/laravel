@@ -2,7 +2,7 @@
 
 [![Latest Version on Packagist](https://img.shields.io/packagist/v/shieldci/laravel.svg)](https://packagist.org/packages/shieldci/laravel)
 [![PHP Version](https://img.shields.io/packagist/php-v/shieldci/laravel.svg)](https://packagist.org/packages/shieldci/laravel)
-[![Laravel Version](https://img.shields.io/badge/laravel-9.x--12.x-red.svg)](https://packagist.org/packages/shieldci/laravel)
+[![Laravel Version](https://img.shields.io/badge/laravel-9.x--13.x-red.svg)](https://packagist.org/packages/shieldci/laravel)
 [![License](https://img.shields.io/packagist/l/shieldci/laravel.svg)](https://packagist.org/packages/shieldci/laravel)
 [![Tests](https://github.com/ShieldCI/laravel/actions/workflows/tests.yml/badge.svg)](https://github.com/ShieldCI/laravel/actions/workflows/tests.yml)
 [![codecov](https://codecov.io/gh/ShieldCI/laravel/branch/master/graph/badge.svg)](https://codecov.io/gh/ShieldCI/laravel)
@@ -17,7 +17,7 @@ Built on top of [`shieldci/analyzers-core`](https://github.com/ShieldCI/analyzer
 ## Requirements
 
 - PHP 8.1 or higher
-- Laravel 9.x, 10.x, 11.x, 12.x
+- Laravel 9.x, 10.x, 11.x, 12.x, 13.x
 
 ## Architecture
 

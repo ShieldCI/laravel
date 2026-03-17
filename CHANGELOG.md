@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.6.4
+
+### Fixed
+- `configuration` field no longer arrives as `[]` in API payloads and JSON output — `AnalysisReport` is a `readonly` value object that is reconstructed at four sites in `AnalyzeCommand` (the `suppressedIssues` inject in `handle()`, `filterAgainstIgnoreErrors()`, `filterAgainstInlineSuppressions()`, and `filterAgainstBaseline()`); each site was omitting `configuration:`, causing it to silently default to `[]`; all four sites now forward `configuration: $report->configuration`
+
 ## v1.6.3
 
 ### Changed

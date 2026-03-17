@@ -318,7 +318,7 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
     public function test_skips_when_vapor_yml_exists(): void
     {
         // Create a temporary vapor.yml file
-        $vaporConfig = $this->getBasePath().DIRECTORY_SEPARATOR.'vapor.yml';
+        $vaporConfig = $this->app->basePath().DIRECTORY_SEPARATOR.'vapor.yml';
         file_put_contents($vaporConfig, "id: 123\nname: my-app\nenvironments:\n  production:\n    build:\n      - 'composer install'\n");
 
         try {
@@ -351,7 +351,7 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
     public function test_skips_when_vapor_core_directory_exists(): void
     {
         // Create a temporary vendor/laravel/vapor-core directory
-        $vaporCoreDir = $this->getBasePath().DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR.'laravel'.DIRECTORY_SEPARATOR.'vapor-core';
+        $vaporCoreDir = $this->app->basePath().DIRECTORY_SEPARATOR.'vendor'.DIRECTORY_SEPARATOR.'laravel'.DIRECTORY_SEPARATOR.'vapor-core';
 
         if (! is_dir(dirname(dirname($vaporCoreDir)))) {
             mkdir(dirname(dirname($vaporCoreDir)), 0755, true);
@@ -390,7 +390,7 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
     public function test_skip_reason_explains_vapor_incompatibility(): void
     {
         // Create vapor.yml to trigger Vapor detection
-        $vaporConfig = $this->getBasePath().DIRECTORY_SEPARATOR.'vapor.yml';
+        $vaporConfig = $this->app->basePath().DIRECTORY_SEPARATOR.'vapor.yml';
         file_put_contents($vaporConfig, "id: 123\nname: my-app\n");
 
         try {
@@ -431,7 +431,7 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
         }
 
         // Ensure no Vapor indicators exist
-        $vaporConfig = $this->getBasePath().DIRECTORY_SEPARATOR.'vapor.yml';
+        $vaporConfig = $this->app->basePath().DIRECTORY_SEPARATOR.'vapor.yml';
         if (file_exists($vaporConfig)) {
             unlink($vaporConfig);
         }

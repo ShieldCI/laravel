@@ -28,6 +28,8 @@ jobs:
             testbench: '^11.0'
         exclude:
           - php: '8.1'
+            laravel: '12.*'
+          - php: '8.1'
             laravel: '13.*'
           - php: '8.2'
             laravel: '13.*'

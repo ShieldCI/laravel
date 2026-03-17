@@ -4085,4 +4085,158 @@ PHP);
 
         return $manager;
     }
+
+    // ==========================================
+    // configuration forwarding tests
+    // ==========================================
+
+    #[Test]
+    public function filter_against_ignore_errors_forwards_configuration(): void
+    {
+        $command = new \ShieldCI\Commands\AnalyzeCommand;
+        $method = new \ReflectionMethod($command, 'filterAgainstIgnoreErrors');
+        $method->setAccessible(true);
+
+        $configuration = ['paths' => ['app'], 'categories' => ['security']];
+        $report = new \ShieldCI\ValueObjects\AnalysisReport(
+            projectId: 'proj',
+            laravelVersion: '11.0',
+            packageVersion: '1.0.0',
+            results: collect(),
+            totalExecutionTime: 0.1,
+            analyzedAt: new \DateTimeImmutable('2026-01-01T00:00:00Z'),
+            configuration: $configuration,
+        );
+
+        config(['shieldci.ignore_errors' => []]);
+
+        /** @var \ShieldCI\ValueObjects\AnalysisReport $result */
+        $result = $method->invoke($command, $report);
+
+        $this->assertSame($configuration, $result->configuration);
+    }
+
+    #[Test]
+    public function filter_against_inline_suppressions_forwards_configuration(): void
+    {
+        $command = new \ShieldCI\Commands\AnalyzeCommand;
+
+        $parserProp = new \ReflectionProperty($command, 'suppressionParser');
+        $parserProp->setAccessible(true);
+        $parserProp->setValue($command, new \ShieldCI\Support\InlineSuppressionParser);
+
+        $method = new \ReflectionMethod($command, 'filterAgainstInlineSuppressions');
+        $method->setAccessible(true);
+
+        $configuration = ['paths' => ['app'], 'categories' => ['security']];
+        $report = new \ShieldCI\ValueObjects\AnalysisReport(
+            projectId: 'proj',
+            laravelVersion: '11.0',
+            packageVersion: '1.0.0',
+            results: collect(),
+            totalExecutionTime: 0.1,
+            analyzedAt: new \DateTimeImmutable('2026-01-01T00:00:00Z'),
+            configuration: $configuration,
+        );
+
+        /** @var \ShieldCI\ValueObjects\AnalysisReport $result */
+        $result = $method->invoke($command, $report);
+
+        $this->assertSame($configuration, $result->configuration);
+    }
+
+    #[Test]
+    public function filter_against_baseline_forwards_configuration(): void
+    {
+        $outputPath = sys_get_temp_dir().'/shieldci-baseline-cfg-'.uniqid().'.json';
+        $baselinePath = base_path('tests/test-config-fwd-baseline.json');
+
+        file_put_contents($baselinePath, json_encode([
+            'version' => '1.0',
+            'generated_at' => '2026-01-01T00:00:00+00:00',
+            'errors' => [],
+        ]));
+
+        config([
+            'shieldci.fail_on' => 'never',
+            'shieldci.baseline_file' => $baselinePath,
+            'shieldci.report.output_file' => $outputPath,
+        ]);
+
+        $result = new AnalysisResult(
+            analyzerId: 'baseline-cfg-test',
+            status: Status::Passed,
+            message: 'No issues',
+            issues: [],
+            executionTime: 0.1,
+            metadata: [
+                'id' => 'baseline-cfg-test',
+                'name' => 'Baseline Cfg Test',
+                'description' => 'Config forwarding through baseline',
+                'category' => Category::Security,
+                'severity' => Severity::Low,
+            ],
+        );
+
+        $this->registerManagerWithResults([$result]);
+
+        $this->artisan('shield:analyze', ['--baseline' => true, '--format' => 'json'])
+            ->assertSuccessful();
+
+        @unlink($baselinePath);
+
+        $this->assertFileExists($outputPath);
+        /** @var array<string, mixed> $decoded */
+        $decoded = json_decode((string) file_get_contents($outputPath), true);
+
+        $this->assertArrayHasKey('configuration', $decoded);
+        $this->assertIsArray($decoded['configuration']);
+        $this->assertNotEmpty($decoded['configuration']);
+
+        @unlink($outputPath);
+    }
+
+    #[Test]
+    public function handle_forwards_configuration_through_suppressed_issues_inject(): void
+    {
+        $outputPath = sys_get_temp_dir().'/shieldci-handle-cfg-'.uniqid().'.json';
+
+        config([
+            'shieldci.fail_on' => 'never',
+            'shieldci.report.output_file' => $outputPath,
+        ]);
+
+        $result = new AnalysisResult(
+            analyzerId: 'cfg-test',
+            status: Status::Passed,
+            message: 'No issues',
+            issues: [],
+            executionTime: 0.1,
+            metadata: [
+                'id' => 'cfg-test',
+                'name' => 'Cfg Test',
+                'description' => 'Config forwarding test',
+                'category' => Category::Security,
+                'severity' => Severity::Low,
+            ],
+        );
+
+        $this->registerManagerWithResults([$result]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful();
+
+        $this->assertFileExists($outputPath);
+        /** @var array<string, mixed> $decoded */
+        $decoded = json_decode((string) file_get_contents($outputPath), true);
+
+        // The configuration key must exist and not be an empty array — the reporter
+        // builds it from the live config, so it will contain at least the keys that
+        // Reporter::buildConfiguration() captures.
+        $this->assertArrayHasKey('configuration', $decoded);
+        $this->assertIsArray($decoded['configuration']);
+        $this->assertNotEmpty($decoded['configuration']);
+
+        @unlink($outputPath);
+    }
 }

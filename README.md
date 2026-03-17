@@ -16,8 +16,8 @@ Built on top of [`shieldci/analyzers-core`](https://github.com/ShieldCI/analyzer
 
 ## Requirements
 
-- PHP 8.1 or higher
-- Laravel 9.x, 10.x, 11.x, 12.x, 13.x
+- PHP 8.1–8.5
+- Laravel 9.x (PHP 8.1–8.2), 10.x (PHP 8.1–8.3), 11.x (PHP 8.2–8.4), 12.x (PHP 8.2–8.5), 13.x (PHP 8.3–8.5)
 
 ## Architecture
 

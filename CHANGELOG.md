@@ -3,7 +3,7 @@
 ## v1.6.5
 
 ### Added
-- Laravel 13 support — `illuminate/*` constraints widened to `^9.0|^10.0|^11.0|^12.0|^13.0`; `orchestra/testbench` widened to `^7.0|^8.0|^9.0|^10.0`; CI matrix now tests PHP 8.2–8.4 against Laravel 12 and 13
+- Laravel 13 support — `illuminate/*` constraints widened to `^9.0|^10.0|^11.0|^12.0|^13.0`; `orchestra/testbench` widened to `^7.0|^8.0|^9.0|^10.0|^11.0`; CI matrix now tests PHP 8.2–8.4 against Laravel 12 and 13
 
 ## v1.6.4
 

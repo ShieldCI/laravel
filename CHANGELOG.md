@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.6
+
+### Fixed
+- `CsrfAnalyzer::getRouteFiles()` now delegates to `getPhpFiles()` instead of a hand-rolled `DirectoryIterator` — configured `excludePatterns` are respected and route files in subdirectories (e.g. `routes/api/`) are now picked up
+- `HorizonSuggestionAnalyzerTest` — added `assertNotNull($this->app)` guards before `basePath()` calls to resolve PHPStan Level 9 `Application|null` errors
+
 ## v1.6.5
 
 ### Added

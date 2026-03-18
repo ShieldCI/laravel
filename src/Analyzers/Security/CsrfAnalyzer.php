@@ -947,24 +947,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      */
     private function getRouteFiles(): array
     {
-        $files = [];
-        $routePath = $this->buildPath('routes');
-
-        if (! is_dir($routePath)) {
-            return $files;
-        }
-
-        try {
-            foreach (new \DirectoryIterator($routePath) as $file) {
-                if ($file->isFile() && $file->getExtension() === 'php') {
-                    $files[] = $file->getPathname();
-                }
-            }
-        } catch (\Throwable $e) {
-            // Silently fail if directory iterator fails
-        }
-
-        return $files;
+        return array_filter(
+            $this->getPhpFiles(),
+            fn (string $f) => str_contains($f, '/routes/')
+        );
     }
 
     /**

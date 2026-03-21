@@ -219,13 +219,11 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
         return sprintf(
             <<<'RECOMMENDATION'
 Create a .env file by copying .env.example.
-
 Unix/Linux:
   %s
 
 Windows:
   %s
-
 After creating the file, configure the environment variables with appropriate values for your environment.
 RECOMMENDATION,
             'cp .env.example .env',
@@ -246,9 +244,7 @@ RECOMMENDATION,
         return sprintf(
             <<<'RECOMMENDATION'
 Add the following environment variables to your .env file: %s
-
 These variables are defined in .env.example and may be required for the application to function correctly.
-
 RECOMMENDATION,
             $variablesList,
         );
@@ -267,10 +263,8 @@ RECOMMENDATION,
         return sprintf(
             <<<'RECOMMENDATION'
 The following environment variables are commented out in .env: %s
-
 These variables are defined in .env.example. If they're intentionally disabled, this is fine.
 If they should be active, uncomment them in your .env file.
-
 RECOMMENDATION,
             $variablesList,
         );

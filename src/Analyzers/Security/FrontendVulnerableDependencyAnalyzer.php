@@ -53,12 +53,29 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
     {
         $packageJson = $this->buildPath('package.json');
 
-        return file_exists($packageJson);
+        if (! file_exists($packageJson)) {
+            return false;
+        }
+
+        $content = file_get_contents($packageJson);
+        if ($content === false) {
+            return false;
+        }
+
+        $data = json_decode($content, true);
+        if (! is_array($data)) {
+            return false;
+        }
+
+        $deps = isset($data['dependencies']) && is_array($data['dependencies']) ? $data['dependencies'] : [];
+        $devDeps = isset($data['devDependencies']) && is_array($data['devDependencies']) ? $data['devDependencies'] : [];
+
+        return $deps !== [] || $devDeps !== [];
     }
 
     public function getSkipReason(): string
     {
-        return 'No package.json found - not a frontend project';
+        return 'No package.json found or no dependencies declared';
     }
 
     /**

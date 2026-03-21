@@ -69,13 +69,52 @@ class FrontendVulnerableDependencyAnalyzerTest extends AnalyzerTestCase
     public function test_should_run_returns_true_when_package_json_exists(): void
     {
         $tempDir = $this->createTempDirectory([
-            'package.json' => '{"name": "test"}',
+            'package.json' => '{"name": "test", "dependencies": {"vue": "^3.0.0"}}',
         ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
 
         $this->assertTrue($analyzer->shouldRun());
+    }
+
+    public function test_should_run_returns_false_when_package_json_has_no_deps(): void
+    {
+        $packageJson = json_encode([
+            'private' => true,
+            'scripts' => [],
+            'devDependencies' => [],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'package.json' => $packageJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertFalse($analyzer->shouldRun());
+    }
+
+    public function test_skips_when_package_json_has_no_deps(): void
+    {
+        $packageJson = json_encode([
+            'private' => true,
+            'scripts' => [],
+            'devDependencies' => [],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'package.json' => $packageJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertSkipped($result);
     }
 
     public function test_get_skip_reason_returns_correct_message(): void
@@ -85,7 +124,7 @@ class FrontendVulnerableDependencyAnalyzerTest extends AnalyzerTestCase
         $reason = $analyzer->getSkipReason();
 
         $this->assertStringContainsString('No package.json found', $reason);
-        $this->assertStringContainsString('not a frontend project', $reason);
+        $this->assertStringContainsString('no dependencies declared', $reason);
     }
 
     public function test_fails_when_package_json_exists_without_lock_file(): void
@@ -209,7 +248,7 @@ YARN;
     {
         $packageJson = json_encode([
             'name' => 'test-app',
-            'dependencies' => [],
+            'dependencies' => ['vue' => '^3.0.0'],
         ]);
 
         $tempDir = $this->createTempDirectory([
@@ -232,6 +271,7 @@ YARN;
     {
         $packageJson = json_encode([
             'name' => 'test-app',
+            'dependencies' => ['vue' => '^3.0.0'],
         ]);
 
         $packageLock = json_encode([
@@ -287,7 +327,7 @@ YARN;
         $property->setAccessible(true);
 
         // Create a temp directory to trigger runAnalysis (which calls loadConfiguration)
-        $packageJson = json_encode(['name' => 'test']);
+        $packageJson = json_encode(['name' => 'test', 'dependencies' => ['vue' => '^3.0.0']]);
         $packageLock = json_encode(['lockfileVersion' => 2]);
 
         $tempDir = $this->createTempDirectory([
@@ -322,7 +362,7 @@ YARN;
         $property->setAccessible(true);
 
         // Trigger runAnalysis to load configuration
-        $packageJson = json_encode(['name' => 'test']);
+        $packageJson = json_encode(['name' => 'test', 'dependencies' => ['vue' => '^3.0.0']]);
         $packageLock = json_encode(['lockfileVersion' => 2]);
 
         $tempDir = $this->createTempDirectory([
@@ -672,7 +712,7 @@ TEXT;
 
     public function test_result_uses_result_by_severity(): void
     {
-        $packageJson = json_encode(['name' => 'test']);
+        $packageJson = json_encode(['name' => 'test', 'dependencies' => ['vue' => '^3.0.0']]);
         $packageLock = json_encode(['lockfileVersion' => 2]);
 
         $tempDir = $this->createTempDirectory([
@@ -695,7 +735,7 @@ TEXT;
 
     public function test_summary_message_format_singular(): void
     {
-        $packageJson = json_encode(['name' => 'test']);
+        $packageJson = json_encode(['name' => 'test', 'dependencies' => ['vue' => '^3.0.0']]);
 
         $tempDir = $this->createTempDirectory([
             'package.json' => $packageJson,

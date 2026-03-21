@@ -2175,4 +2175,100 @@ PHP;
         // Should pass — 'api' middleware means token-based auth (Sanctum), CSRF does not apply
         $this->assertPassed($result);
     }
+
+    public function test_skips_versioned_api_routes_file_via_bootstrap_with_routing(): void
+    {
+        // Pure API app using withRouting(api: [...]) with versioned route files
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        api: [__DIR__.'/../routes/v1/api.php', __DIR__.'/../routes/v2/api.php'],
+    )
+    ->create();
+PHP;
+
+        $v1Routes = <<<'PHP'
+<?php
+Route::post('/v1/users', [UserController::class, 'store']);
+PHP;
+
+        $v2Routes = <<<'PHP'
+<?php
+Route::post('/v2/users', [UserController::class, 'store']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/v1/api.php' => $v1Routes,
+            'routes/v2/api.php' => $v2Routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass — both files are declared as API routes via withRouting(api: [...])
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_versioned_api_routes_registered_in_provider(): void
+    {
+        // Laravel 9/10 pattern: RouteServiceProvider registers versioned API files
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Foundation\Support\Providers\RouteServiceProvider as ServiceProvider;
+use Illuminate\Support\Facades\Route;
+
+class RoutingServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        $this->routes(function () {
+            Route::middleware('api')
+                ->prefix('api/v1')
+                ->group(base_path('routes/v1/api.php'));
+
+            Route::middleware('api')
+                ->prefix('api/v2')
+                ->group(base_path('routes/v2/api.php'));
+        });
+    }
+}
+PHP;
+
+        $v1Routes = <<<'PHP'
+<?php
+Route::post('/users', [UserController::class, 'store']);
+PHP;
+
+        $v2Routes = <<<'PHP'
+<?php
+Route::post('/users', [UserController::class, 'store']);
+Route::delete('/users/{id}', [UserController::class, 'destroy']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/RoutingServiceProvider.php' => $provider,
+            'routes/v1/api.php' => $v1Routes,
+            'routes/v2/api.php' => $v2Routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes', 'app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass — both versioned API files are registered under 'api' middleware in provider
+        $this->assertPassed($result);
+    }
 }

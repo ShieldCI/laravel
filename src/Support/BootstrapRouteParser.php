@@ -22,7 +22,7 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
  *   1. Files require'd/include'd from routes/web.php or routes/api.php
  *      (inherit that file's middleware group automatically)
  *   2. Files registered via Route::middleware('web|api')->...->group(base_path('...'))
- *      in bootstrap/app.php's withRouting(then: ...) callback
+ *      in bootstrap/app.php's withRouting(then: ...) callback or in app/Providers/*.php
  */
 class BootstrapRouteParser
 {
@@ -42,12 +42,14 @@ class BootstrapRouteParser
         return array_values(array_unique(array_merge(
             $this->getFilesRequiredFromWebPhp(),
             $this->getFilesRegisteredWithWebMiddlewareInBootstrap(),
+            $this->getFilesFromWithRoutingWebArg(),
+            $this->getFilesRegisteredWithWebMiddlewareInProvidersDir(),
         )));
     }
 
     /**
      * Returns absolute paths of route files registered under the 'api' middleware group
-     * through external registration (require from api.php, or bootstrap/app.php).
+     * through external registration (require from api.php, or bootstrap/app.php, or app/Providers).
      *
      * @return array<string>
      */
@@ -56,6 +58,8 @@ class BootstrapRouteParser
         return array_values(array_unique(array_merge(
             $this->getFilesRequiredFromApiPhp(),
             $this->getFilesRegisteredWithApiMiddlewareInBootstrap(),
+            $this->getFilesFromWithRoutingApiArg(),
+            $this->getFilesRegisteredWithApiMiddlewareInProvidersDir(),
         )));
     }
 
@@ -107,7 +111,10 @@ class BootstrapRouteParser
             }
             $path = $this->resolveIncludePath($include->expr, dirname($routeFilePath));
             if ($path !== null && file_exists($path)) {
-                $found[] = $path;
+                $normalized = $this->normalizePath($path);
+                if ($normalized !== null) {
+                    $found[] = $normalized;
+                }
             }
         }
 
@@ -116,7 +123,7 @@ class BootstrapRouteParser
 
     /**
      * Returns absolute paths of route files registered with a throttle middleware
-     * directly on their group in bootstrap/app.php.
+     * directly on their group in bootstrap/app.php or app/Providers/*.php.
      *
      * Matches any throttle variant: 'throttle:5,1', 'throttle:api.rest', etc.
      *
@@ -124,9 +131,153 @@ class BootstrapRouteParser
      */
     public function getThrottleProtectedRouteFiles(): array
     {
-        return array_values(array_unique(
-            $this->getFilesRegisteredWithThrottleMiddlewareInBootstrap()
-        ));
+        return array_values(array_unique(array_merge(
+            $this->getFilesRegisteredWithThrottleMiddlewareInBootstrap(),
+            $this->getFilesRegisteredWithThrottleMiddlewareInProvidersDir(),
+        )));
+    }
+
+    /**
+     * Returns route files declared via withRouting(api: ...) in bootstrap/app.php.
+     * Supports both a single path and an array of paths (e.g. versioned API files).
+     *
+     * @return array<string>
+     */
+    private function getFilesFromWithRoutingApiArg(): array
+    {
+        return $this->getFilesFromWithRoutingArg('api');
+    }
+
+    /**
+     * Returns route files declared via withRouting(web: ...) in bootstrap/app.php.
+     *
+     * @return array<string>
+     */
+    private function getFilesFromWithRoutingWebArg(): array
+    {
+        return $this->getFilesFromWithRoutingArg('web');
+    }
+
+    /**
+     * Parses bootstrap/app.php and extracts file paths from the withRouting(argName: ...)
+     * named argument. Supports both a single path expression and an array of path expressions.
+     *
+     * @return array<string>
+     */
+    private function getFilesFromWithRoutingArg(string $argName): array
+    {
+        $bootstrapPath = $this->basePath.'/bootstrap/app.php';
+        if (! file_exists($bootstrapPath)) {
+            return [];
+        }
+
+        $ast = $this->parser->parseFile($bootstrapPath);
+        if (empty($ast)) {
+            return [];
+        }
+
+        $bootstrapDir = dirname($bootstrapPath);
+        $found = [];
+
+        $calls = $this->parser->findMethodCalls($ast, 'withRouting');
+        foreach ($calls as $call) {
+            if (! ($call instanceof MethodCall)) {
+                continue;
+            }
+            foreach ($call->args as $arg) {
+                if (! ($arg instanceof Node\Arg)) {
+                    continue;
+                }
+                if (! ($arg->name instanceof Identifier) || $arg->name->name !== $argName) {
+                    continue;
+                }
+                $paths = $this->extractWithRoutingPaths($arg->value, $bootstrapDir);
+                foreach ($paths as $path) {
+                    $normalized = $this->normalizePath($path);
+                    if ($normalized !== null && file_exists($normalized)) {
+                        $found[] = $normalized;
+                    }
+                }
+            }
+        }
+
+        return $found;
+    }
+
+    /**
+     * Extracts file path strings from a withRouting named argument value.
+     * Handles both a single path expression and an array of path expressions.
+     *
+     * @return array<string>
+     */
+    private function extractWithRoutingPaths(Node $expr, string $dir): array
+    {
+        if ($expr instanceof Node\Expr\Array_) {
+            $paths = [];
+            foreach ($expr->items as $item) {
+                if ($item instanceof Node\Expr\ArrayItem) {
+                    $resolved = $this->resolveWithRoutingPath($item->value, $dir);
+                    if ($resolved !== null) {
+                        $paths[] = $resolved;
+                    }
+                }
+            }
+
+            return $paths;
+        }
+
+        $resolved = $this->resolveWithRoutingPath($expr, $dir);
+
+        return $resolved !== null ? [$resolved] : [];
+    }
+
+    /**
+     * Resolves a single withRouting path expression to a raw (un-normalized) path string.
+     * Handles __DIR__.'/...' concat, base_path('...'), and bare string literals.
+     */
+    private function resolveWithRoutingPath(Node $expr, string $dir): ?string
+    {
+        // __DIR__.'/../routes/api.php'
+        if ($expr instanceof Concat && $expr->left instanceof Dir && $expr->right instanceof String_) {
+            return $dir.$expr->right->value;
+        }
+
+        // base_path('routes/api.php')
+        $basePath = $this->extractBasePathArgument($expr);
+        if ($basePath !== null) {
+            return $basePath;
+        }
+
+        // Bare string literal
+        if ($expr instanceof String_) {
+            return str_starts_with($expr->value, '/') ? $expr->value : $dir.'/'.$expr->value;
+        }
+
+        return null;
+    }
+
+    /**
+     * Normalizes a path by resolving '..' segments.
+     * Uses realpath() when the file exists; falls back to manual segment resolution.
+     */
+    private function normalizePath(string $path): ?string
+    {
+        $real = realpath($path);
+        if ($real !== false) {
+            return str_replace('\\', '/', $real);
+        }
+
+        $parts = explode('/', str_replace('\\', '/', $path));
+        $resolved = [];
+        foreach ($parts as $part) {
+            if ($part === '..') {
+                array_pop($resolved);
+            } elseif ($part !== '.') {
+                $resolved[] = $part;
+            }
+        }
+
+        return implode('/', $resolved) ?: null;
     }
 
     /**
@@ -137,37 +288,80 @@ class BootstrapRouteParser
      */
     private function getFilesRegisteredWithWebMiddlewareInBootstrap(): array
     {
-        return $this->getFilesRegisteredWithMiddlewareInBootstrap('web');
+        return $this->getFilesRegisteredWithMiddlewareInFile(
+            $this->basePath.'/bootstrap/app.php', 'web'
+        );
     }
 
     /**
      * Finds route files registered via Route::middleware('api')->group(base_path('...'))
      * inside bootstrap/app.php's withRouting(then: ...) callback.
-     * Supports both string and array middleware, e.g.:
-     *   ->middleware('api')
-     *   ->middleware(['api', 'throttle:api.rest'])
      *
      * @return array<string>
      */
     private function getFilesRegisteredWithApiMiddlewareInBootstrap(): array
     {
-        return $this->getFilesRegisteredWithMiddlewareInBootstrap('api');
+        return $this->getFilesRegisteredWithMiddlewareInFile(
+            $this->basePath.'/bootstrap/app.php', 'api'
+        );
     }
 
     /**
-     * Finds route files registered via Route::middleware(...)->group(base_path('...'))
-     * inside bootstrap/app.php, matching a specific middleware name.
+     * Finds route files registered via Route::middleware('web')->group(base_path('...'))
+     * in any PHP file under app/Providers/ (e.g. RouteServiceProvider, RoutingServiceProvider).
      *
      * @return array<string>
      */
-    private function getFilesRegisteredWithMiddlewareInBootstrap(string $middlewareName): array
+    private function getFilesRegisteredWithWebMiddlewareInProvidersDir(): array
     {
-        $bootstrapPath = $this->basePath.'/bootstrap/app.php';
-        if (! file_exists($bootstrapPath)) {
+        return $this->getFilesRegisteredWithMiddlewareInProvidersDir('web');
+    }
+
+    /**
+     * Finds route files registered via Route::middleware('api')->group(base_path('...'))
+     * in any PHP file under app/Providers/.
+     *
+     * @return array<string>
+     */
+    private function getFilesRegisteredWithApiMiddlewareInProvidersDir(): array
+    {
+        return $this->getFilesRegisteredWithMiddlewareInProvidersDir('api');
+    }
+
+    /**
+     * Scans all PHP files in app/Providers/ for Route::middleware(...)->group(base_path(...))
+     * chains matching the given middleware name.
+     *
+     * @return array<string>
+     */
+    private function getFilesRegisteredWithMiddlewareInProvidersDir(string $middlewareName): array
+    {
+        $providersDir = $this->basePath.'/app/Providers';
+        if (! is_dir($providersDir)) {
             return [];
         }
 
-        $ast = $this->parser->parseFile($bootstrapPath);
+        $found = [];
+        foreach (glob($providersDir.'/*.php') ?: [] as $file) {
+            $found = array_merge($found, $this->getFilesRegisteredWithMiddlewareInFile($file, $middlewareName));
+        }
+
+        return $found;
+    }
+
+    /**
+     * Finds route files registered via Route::middleware(middlewareName)->group(base_path('...'))
+     * in the given PHP file. Supports both string and array middleware forms.
+     *
+     * @return array<string>
+     */
+    private function getFilesRegisteredWithMiddlewareInFile(string $filePath, string $middlewareName): array
+    {
+        if (! file_exists($filePath)) {
+            return [];
+        }
+
+        $ast = $this->parser->parseFile($filePath);
         if (empty($ast)) {
             return [];
         }
@@ -186,14 +380,17 @@ class BootstrapRouteParser
             }
 
             // Arg must be base_path('routes/X.php')
-            $filePath = $this->extractBasePathArgument($firstArg->value);
-            if ($filePath === null) {
+            $routeFile = $this->extractBasePathArgument($firstArg->value);
+            if ($routeFile === null) {
                 continue;
             }
 
             // Walk the chain to check the specified middleware is present
             if ($this->chainContainsMiddleware($call->var, $middlewareName)) {
-                $found[] = $filePath;
+                $normalized = $this->normalizePath($routeFile);
+                if ($normalized !== null) {
+                    $found[] = $normalized;
+                }
             }
         }
 
@@ -208,12 +405,45 @@ class BootstrapRouteParser
      */
     private function getFilesRegisteredWithThrottleMiddlewareInBootstrap(): array
     {
-        $bootstrapPath = $this->basePath.'/bootstrap/app.php';
-        if (! file_exists($bootstrapPath)) {
+        return $this->getFilesRegisteredWithThrottleMiddlewareInFile(
+            $this->basePath.'/bootstrap/app.php'
+        );
+    }
+
+    /**
+     * Finds route files registered with a throttle middleware on their group
+     * in any PHP file under app/Providers/.
+     *
+     * @return array<string>
+     */
+    private function getFilesRegisteredWithThrottleMiddlewareInProvidersDir(): array
+    {
+        $providersDir = $this->basePath.'/app/Providers';
+        if (! is_dir($providersDir)) {
             return [];
         }
 
-        $ast = $this->parser->parseFile($bootstrapPath);
+        $found = [];
+        foreach (glob($providersDir.'/*.php') ?: [] as $file) {
+            $found = array_merge($found, $this->getFilesRegisteredWithThrottleMiddlewareInFile($file));
+        }
+
+        return $found;
+    }
+
+    /**
+     * Finds route files registered with a throttle middleware on their group
+     * in the given PHP file.
+     *
+     * @return array<string>
+     */
+    private function getFilesRegisteredWithThrottleMiddlewareInFile(string $filePath): array
+    {
+        if (! file_exists($filePath)) {
+            return [];
+        }
+
+        $ast = $this->parser->parseFile($filePath);
         if (empty($ast)) {
             return [];
         }
@@ -231,13 +461,16 @@ class BootstrapRouteParser
                 continue;
             }
 
-            $filePath = $this->extractBasePathArgument($firstArg->value);
-            if ($filePath === null) {
+            $routeFile = $this->extractBasePathArgument($firstArg->value);
+            if ($routeFile === null) {
                 continue;
             }
 
             if ($this->chainContainsThrottleMiddleware($call->var)) {
-                $found[] = $filePath;
+                $normalized = $this->normalizePath($routeFile);
+                if ($normalized !== null) {
+                    $found[] = $normalized;
+                }
             }
         }
 

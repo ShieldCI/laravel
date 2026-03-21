@@ -788,9 +788,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $normalizedPath = str_replace('\\', '/', $file);
+        $real = realpath($file);
+        $normalizedPath = str_replace('\\', '/', $real !== false ? $real : $file);
 
-        // Skip api.php - API routes typically use token authentication
+        // Skip routes/api.php — it uses token authentication, not CSRF cookies
         if (str_ends_with($normalizedPath, '/routes/api.php')) {
             return;
         }

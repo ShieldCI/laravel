@@ -137,7 +137,6 @@ RECOMMENDATION;
         return sprintf(
             <<<'RECOMMENDATION'
 Add the following environment variables to your .env.example file: %s
-
 These variables are currently used in .env but not documented in .env.example.
 This makes it harder for team members to know what variables are required.
 RECOMMENDATION,

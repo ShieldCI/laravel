@@ -536,13 +536,13 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
                 'not_directory' => 'target is not a directory',
                 default => 'is invalid',
             };
-            $linkDetails[] = sprintf('  - %s → %s (%s)', $symlink['link'], $symlink['target'], $reasonText);
+            $linkDetails[] = sprintf(' - %s → %s (%s)', $symlink['link'], $symlink['target'], $reasonText);
         }
 
         $recommendations[] = "Broken symlinks:\n".implode("\n", $linkDetails);
 
-        $rec = implode("\n\n", $recommendations);
-        $rec .= "\n\nStorage symlinks are required for serving publicly accessible files (uploads, images, etc.).";
+        $rec = implode("\n", $recommendations);
+        $rec .= "\nStorage symlinks are required for serving publicly accessible files (uploads, images, etc.).";
 
         return $rec;
     }

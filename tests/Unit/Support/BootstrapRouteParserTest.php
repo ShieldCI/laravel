@@ -742,6 +742,132 @@ PHP;
         }
     }
 
+    // ==================== withRouting(api:/web:) named argument Tests ====================
+
+    public function test_detects_single_api_file_in_with_routing_api_arg(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        api: __DIR__.'/../routes/api.php',
+        commands: __DIR__.'/../routes/console.php',
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/api.php' => '<?php // api routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getApiRegisteredRouteFiles();
+
+            $this->assertCount(1, $result);
+            $this->assertStringEndsWith('/routes/api.php', $result[0]);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_detects_array_of_api_files_in_with_routing_api_arg(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        api: [__DIR__.'/../routes/v1/api.php', __DIR__.'/../routes/v2/api.php'],
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/v1/api.php' => '<?php // v1 api routes',
+            'routes/v2/api.php' => '<?php // v2 api routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getApiRegisteredRouteFiles();
+
+            $this->assertCount(2, $result);
+            $this->assertStringEndsWith('/routes/v1/api.php', $result[0]);
+            $this->assertStringEndsWith('/routes/v2/api.php', $result[1]);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_detects_web_file_in_with_routing_web_arg(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        commands: __DIR__.'/../routes/console.php',
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/web.php' => '<?php // web routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getWebProtectedRouteFiles();
+
+            $this->assertCount(1, $result);
+            $this->assertStringEndsWith('/routes/web.php', $result[0]);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_detects_base_path_form_in_with_routing_api_arg(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        api: base_path('routes/api.php'),
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/api.php' => '<?php // api routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getApiRegisteredRouteFiles();
+
+            $this->assertCount(1, $result);
+            $this->assertStringEndsWith('/routes/api.php', $result[0]);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
     public function test_api_list_does_not_include_web_registered_files(): void
     {
         $bootstrapApp = <<<'PHP'
@@ -768,6 +894,146 @@ PHP;
 
             // 'web' middleware group — should NOT appear in the API list
             $this->assertSame([], $result);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    // ==================== app/Providers/ RouteServiceProvider Tests ====================
+
+    public function test_detects_api_middleware_group_in_providers_dir(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Foundation\Support\Providers\RouteServiceProvider as ServiceProvider;
+use Illuminate\Support\Facades\Route;
+
+class RoutingServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        $this->routes(function () {
+            Route::middleware('api')
+                ->prefix('api')
+                ->group(base_path('routes/api.php'));
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'app/Providers/RoutingServiceProvider.php' => $provider,
+            'routes/api.php' => '<?php // api routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getApiRegisteredRouteFiles();
+
+            $this->assertCount(1, $result);
+            $this->assertStringEndsWith('/routes/api.php', $result[0]);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_detects_web_middleware_group_in_providers_dir(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Foundation\Support\Providers\RouteServiceProvider as ServiceProvider;
+use Illuminate\Support\Facades\Route;
+
+class RoutingServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        $this->routes(function () {
+            Route::middleware('web')
+                ->group(base_path('routes/web.php'));
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'app/Providers/RoutingServiceProvider.php' => $provider,
+            'routes/web.php' => '<?php // web routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getWebProtectedRouteFiles();
+
+            $this->assertCount(1, $result);
+            $this->assertStringEndsWith('/routes/web.php', $result[0]);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_detects_versioned_api_files_in_providers_dir(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Foundation\Support\Providers\RouteServiceProvider as ServiceProvider;
+use Illuminate\Support\Facades\Route;
+
+class RoutingServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        $this->routes(function () {
+            Route::middleware('api')
+                ->prefix('api/v1')
+                ->group(base_path('routes/v1/api.php'));
+
+            Route::middleware('api')
+                ->prefix('api/v2')
+                ->group(base_path('routes/v2/api.php'));
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'app/Providers/RoutingServiceProvider.php' => $provider,
+            'routes/v1/api.php' => '<?php // v1 api routes',
+            'routes/v2/api.php' => '<?php // v2 api routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getApiRegisteredRouteFiles();
+
+            $this->assertCount(2, $result);
+            $this->assertStringEndsWith('/routes/v1/api.php', $result[0]);
+            $this->assertStringEndsWith('/routes/v2/api.php', $result[1]);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_returns_empty_when_providers_dir_missing(): void
+    {
+        $tempDir = $this->createTempDir([
+            'routes/api.php' => '<?php // api routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame([], $parser->getApiRegisteredRouteFiles());
+            $this->assertSame([], $parser->getWebProtectedRouteFiles());
         } finally {
             $this->removeDir($tempDir);
         }

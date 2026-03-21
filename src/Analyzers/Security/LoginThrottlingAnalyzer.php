@@ -631,7 +631,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 }
 
                 $filePath = $file->getPathname();
-                $normalizedPath = str_replace('\\', '/', $filePath);
+                $real = realpath($filePath);
+                $normalizedPath = str_replace('\\', '/', $real !== false ? $real : $filePath);
 
                 // Skip files covered by 'web' or throttle middleware via external registration
                 if (in_array($normalizedPath, $skipFiles, true)) {

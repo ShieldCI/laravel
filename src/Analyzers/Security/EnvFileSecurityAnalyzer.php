@@ -51,7 +51,14 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
         'OAUTH_CLIENT_SECRET',
     ];
 
-    private array $placeholderKeywords = ['null', '""', "''", 'your-', 'change-', 'example'];
+    private array $placeholderKeywords = [
+        'null', '""', "''", 'your-', 'change-', 'example',
+        // Stripe test key prefixes (test mode only, can't process real payments)
+        'sk_test_', 'pk_test_', 'rk_test_', 'whsec_test_',
+        // Generic sandbox/test environment indicators
+        'sandbox',  // e.g. PayPal sandbox tokens, any sandbox_ prefixed value
+        'test_',    // e.g. Bearer test_abc123, generic test_ prefixed tokens
+    ];
 
     protected function metadata(): AnalyzerMetadata
     {

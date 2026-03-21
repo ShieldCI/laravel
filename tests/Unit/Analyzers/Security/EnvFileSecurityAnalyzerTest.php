@@ -253,6 +253,67 @@ ENV;
         }
     }
 
+    public function test_allows_stripe_test_keys_in_env_example(): void
+    {
+        $envExample = 'STRIPE_SECRET=sk_test_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX';
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=test',
+            '.env.example' => $envExample,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Stripe test keys are safe to include in .env.example
+        $issues = $result->getIssues();
+        foreach ($issues as $issue) {
+            $this->assertStringNotContainsString('real credentials', $issue->message);
+        }
+    }
+
+    public function test_allows_sandbox_keys_in_env_example(): void
+    {
+        $envExample = 'API_KEY=sandbox_client_id_AyJU0rMfFQhYi12345678901';
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=test',
+            '.env.example' => $envExample,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        foreach ($issues as $issue) {
+            $this->assertStringNotContainsString('real credentials', $issue->message);
+        }
+    }
+
+    public function test_allows_test_prefixed_bearer_tokens_in_env_example(): void
+    {
+        $envExample = 'SECRET_KEY=test_bearer_token_abc123def456ghi789';
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=test',
+            '.env.example' => $envExample,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        foreach ($issues as $issue) {
+            $this->assertStringNotContainsString('real credentials', $issue->message);
+        }
+    }
+
     public function test_allows_short_values_in_env_example(): void
     {
         $envExample = <<<'ENV'

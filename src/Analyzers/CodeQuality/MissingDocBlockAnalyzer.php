@@ -394,9 +394,16 @@ class DocBlockVisitor extends NodeVisitorAbstract
             return $this->requiresReturnDocumentation($typeNode->type);
         }
 
-        // Union types ALWAYS require documentation (even string|int)
+        // Union types: require @return only if any member itself requires documentation
+        // (e.g. string|array needs @return to document array shape, but Response|JsonResponse does not)
         if ($typeNode instanceof Node\UnionType) {
-            return true;
+            foreach ($typeNode->types as $type) {
+                if ($this->requiresReturnDocumentation($type)) {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         // Intersection types ALWAYS require documentation

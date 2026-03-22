@@ -4,13 +4,16 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Reliability;
 
+use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Filesystem\Filesystem;
+use Illuminate\Routing\Router;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\AnalyzesMiddleware;
 
 /**
  * Checks write permissions for critical Laravel directories and symlinks.
@@ -19,16 +22,33 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - storage/ directory is writable
  * - bootstrap/cache/ directory is writable
  * - Configurable via shieldci.writable_directories
- * - Storage symlinks from config('filesystems.links') are valid
+ * - Storage symlinks from config('filesystems.links') are valid (skipped for API-only apps)
  * - Configurable via shieldci.check_symlinks
  */
 class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
 {
+    use AnalyzesMiddleware;
+
     public static bool $runInCI = false;
 
+    /**
+     * Allows tests to override API-only app detection.
+     */
+    protected ?bool $statelessOverride = null;
+
     public function __construct(
+        Router $router,
+        Kernel $kernel,
         private Filesystem $files
-    ) {}
+    ) {
+        $this->router = $router;
+        $this->kernel = $kernel;
+    }
+
+    public function setStatelessOverride(?bool $stateless): void
+    {
+        $this->statelessOverride = $stateless;
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -53,8 +73,10 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
         // Find directories that are missing or not writable
         ['missing' => $missingDirs, 'non_writable' => $nonWritableDirs] = $this->findDirectoryIssues($directoriesToCheck);
 
-        // Check symlinks if enabled (default: true)
-        $brokenSymlinks = $this->isSymlinkCheckEnabled() ? $this->checkSymlinks() : [];
+        // Check symlinks if enabled and not an API-only app (symlinks are web-specific infrastructure)
+        $brokenSymlinks = ($this->isSymlinkCheckEnabled() && ! $this->isApiOnlyApp())
+            ? $this->checkSymlinks()
+            : [];
 
         $hasDirectoryIssues = ! empty($missingDirs) || ! empty($nonWritableDirs);
         $hasSymlinkIssues = ! empty($brokenSymlinks);
@@ -361,6 +383,21 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
         } catch (\Throwable $e) {
             return $default;
         }
+    }
+
+    /**
+     * Determine whether this is an API-only (stateless) application.
+     *
+     * When true, symlink checks are skipped — storage symlinks are web-specific
+     * infrastructure and produce false positives in API-only apps.
+     */
+    private function isApiOnlyApp(): bool
+    {
+        if ($this->statelessOverride !== null) {
+            return $this->statelessOverride;
+        }
+
+        return $this->safeExecute(fn () => $this->appIsStateless(), false);
     }
 
     /**

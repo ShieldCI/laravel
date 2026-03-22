@@ -791,7 +791,7 @@ class UserService
     /** Doc */ public function needsReturnIterable(): iterable { return []; }
     /** Doc */ public function needsReturnCallable(): callable { return fn() => true; }
     /** Doc */ public function needsReturnObject(): object { return new \stdClass; }
-    /** Doc */ public function needsReturnUnion(): string|int { return 'test'; }
+    /** Doc */ public function needsReturnUnion(): string|array { return 'test'; }
 
     /** @return string */ public function scalarString(): string { return 'test'; }
     /** @return int */ public function scalarInt(): int { return 1; }
@@ -1062,6 +1062,44 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should pass because @throws tag is present
+        $this->assertPassed($result);
+    }
+
+    #[Test]
+    public function test_union_of_concrete_class_types_doesnt_require_return_tag(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Response;
+
+class ExampleController
+{
+    /**
+     * Handle the request.
+     */
+    public function handle(): Response|JsonResponse
+    {
+        return response()->json([]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/ExampleController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - both union members are concrete class names, fully self-documenting
+        // Adding @return would conflict with Pint which strips redundant type declarations
         $this->assertPassed($result);
     }
 }

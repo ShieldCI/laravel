@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Reliability;
 
+use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Filesystem\Filesystem;
+use Illuminate\Routing\Router;
 use ShieldCI\Analyzers\Reliability\DirectoryWritePermissionsAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -13,7 +15,11 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 {
     protected function createAnalyzer(): AnalyzerInterface
     {
-        return new DirectoryWritePermissionsAnalyzer(new Filesystem);
+        return new DirectoryWritePermissionsAnalyzer(
+            app(Router::class),
+            app(Kernel::class),
+            new Filesystem
+        );
     }
 
     // =========================================================================
@@ -610,7 +616,9 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
             'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
         ]);
 
+        /** @var DirectoryWritePermissionsAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false); // Force web app mode
         $analyzer->setBasePath($tempDir);
 
         $result = $analyzer->analyze();
@@ -641,7 +649,9 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
             'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
         ]);
 
+        /** @var DirectoryWritePermissionsAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false); // Force web app mode
         $analyzer->setBasePath($tempDir);
 
         $result = $analyzer->analyze();
@@ -688,7 +698,9 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
             'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
         ]);
 
+        /** @var DirectoryWritePermissionsAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false); // Force web app mode
         $analyzer->setBasePath($tempDir);
 
         $result = $analyzer->analyze();
@@ -732,7 +744,9 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
             'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
         ]);
 
+        /** @var DirectoryWritePermissionsAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false); // Force web app mode
         $analyzer->setBasePath($tempDir);
 
         $result = $analyzer->analyze();
@@ -771,7 +785,9 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
             'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
         ]);
 
+        /** @var DirectoryWritePermissionsAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false); // Force web app mode
         $analyzer->setBasePath($tempDir);
 
         $result = $analyzer->analyze();
@@ -810,7 +826,9 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
             'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
         ]);
 
+        /** @var DirectoryWritePermissionsAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false); // Force web app mode
         $analyzer->setBasePath($tempDir);
 
         $result = $analyzer->analyze();
@@ -867,7 +885,9 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
             'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
         ]);
 
+        /** @var DirectoryWritePermissionsAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false); // Force web app mode
         $analyzer->setBasePath($tempDir);
 
         $result = $analyzer->analyze();
@@ -906,7 +926,9 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
             'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
         ]);
 
+        /** @var DirectoryWritePermissionsAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false); // Force web app mode
         $analyzer->setBasePath($tempDir);
 
         $result = $analyzer->analyze();
@@ -923,5 +945,64 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         }
         $this->assertNotNull($symlinkIssue);
         $this->assertEquals(2, $symlinkIssue->metadata['broken_symlink_count']);
+    }
+
+    // =========================================================================
+    // API-Only App Tests
+    // =========================================================================
+
+    public function test_skips_symlink_check_for_api_only_apps(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/.gitkeep' => '',
+            'bootstrap/cache/.gitkeep' => '',
+        ]);
+
+        config([
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'filesystems.links' => [
+                $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
+            ],
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
+        ]);
+
+        /** @var DirectoryWritePermissionsAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(true); // API-only app
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Should pass even though the symlink is missing — symlink check was skipped
+        $this->assertPassed($result);
+    }
+
+    public function test_still_checks_directories_for_api_only_apps(): void
+    {
+        config([
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
+                '/nonexistent/storage',
+                '/nonexistent/bootstrap/cache',
+            ],
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
+        ]);
+
+        /** @var DirectoryWritePermissionsAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(true); // API-only app
+        $analyzer->setBasePath('/nonexistent/path');
+
+        $result = $analyzer->analyze();
+
+        // Fails because storage/ and bootstrap/cache/ are missing
+        $this->assertFailed($result);
+
+        // No symlink issues — only directory issues
+        foreach ($result->getIssues() as $issue) {
+            $this->assertArrayNotHasKey('broken_symlinks', $issue->metadata ?? []);
+        }
     }
 }

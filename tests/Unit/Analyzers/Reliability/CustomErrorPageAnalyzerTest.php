@@ -97,6 +97,51 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         }
     }
 
+    public function test_skips_when_api_only_app_has_web_group_defined_but_unused(): void
+    {
+        // Register the 'web' group (containing StartSession) in the router,
+        // but only register API routes that don't use it.
+        // shouldRun() must return false — the group is defined but not assigned.
+        $router = app(Router::class);
+        $router->middlewareGroup('web', [\Illuminate\Session\Middleware\StartSession::class]);
+        $router->get('/api/test', fn () => 'ok')->middleware('api');
+
+        $analyzer = $this->createAnalyzer();
+        // Do NOT use statelessOverride — exercise the real two-pass detection
+        $this->assertFalse($analyzer->shouldRun());
+    }
+
+    public function test_runs_when_app_has_own_web_route(): void
+    {
+        // If the app defines its own closure route using a session-containing group,
+        // shouldRun() must return true — the app does serve HTML pages.
+        $router = app(Router::class);
+        $router->middlewareGroup('web', [\Illuminate\Session\Middleware\StartSession::class]);
+        $router->get('/home', fn () => 'welcome')->middleware('web');
+
+        $analyzer = $this->createAnalyzer();
+        $this->assertTrue($analyzer->shouldRun());
+    }
+
+    public function test_skips_when_only_vendor_routes_use_session_group(): void
+    {
+        // Simulate an API-only app that has a vendor package (e.g. Laravel Vapor)
+        // injecting a web-group route. The 'web' group IS used, but only by vendor
+        // infrastructure code — the app itself has no web routes.
+        $router = app(Router::class);
+        $router->middlewareGroup('web', [\Illuminate\Session\Middleware\StartSession::class]);
+
+        // Use a real vendor class so isVendorRoute() correctly identifies it
+        $router->post('/vendor/signed-url', [\Illuminate\Foundation\Auth\User::class, 'all'])
+            ->middleware('web');
+
+        // App's own routes use api only
+        $router->post('/api/resource', fn () => response()->json([]))->middleware('api');
+
+        $analyzer = $this->createAnalyzer();
+        $this->assertFalse($analyzer->shouldRun());
+    }
+
     // =========================================================================
     // Partial Template Coverage Tests
     // =========================================================================

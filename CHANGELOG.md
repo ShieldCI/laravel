@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.6.7
+
+### Fixed
+- `MissingDatabaseTransactionsAnalyzer` no longer counts writes in both branches of a plain if/else toward the transaction threshold — only `max(if_writes, else_writes)` is committed since both branches can never co-execute; guard-clause ifs with an else are also handled correctly; inner frames propagate their effective write count into the enclosing frame before being discarded
+- `MissingDatabaseTransactionsAnalyzer` no longer false-positives on multi-level property chain calls (e.g. `$this->stripe->customers->update()`) — these are external service client calls, not query builder writes; `isNonDbFacadeChain` now returns `true` for chains rooted at two or more levels of property access
+- `MissingDocBlockAnalyzer` no longer requires `@return` for PHP 8 union types composed entirely of concrete classes (e.g. `Response|JsonResponse`) — union types now recurse into member types and `@return` is only required when at least one member is a generic type (`array`, `mixed`, `callable`, `iterable`, `object`) that needs shape documentation; this resolves an unsolvable conflict with Laravel Pint's `no_superfluous_phpdoc_tags` rule
+- `DirectoryWritePermissionsAnalyzer` no longer false-positives on API-only apps for the storage symlink check — `public/storage → storage/app/public` is web-specific infrastructure; directory write permission checks still run unconditionally
+- `CustomErrorPageAnalyzer` no longer false-positives on API-only apps — `AnalyzesMiddleware::appIsStateless()` upgraded to a two-pass approach that handles three edge cases: a defined-but-unused `web` group (expanded routes no longer trigger a stateful classification), vendor-injected web routes (Vapor registers CSRF routes under `web` even in API-only apps; detected via `ReflectionClass` since `class_exists` returns `false` for interfaces), and `getGlobalMiddleware()` now prefers the public `Kernel::getGlobalMiddleware()` method before falling back to reflection
+- `EnvFileSecurityAnalyzer` no longer flags Stripe test keys and sandbox tokens in `.env.example` as accidentally committed secrets — `sk_test_`, `pk_test_`, `rk_test_`, `whsec_test_`, `sandbox`, and `test_` prefixes are added to `$placeholderKeywords`; these tokens are designed to be shareable and cannot access production resources
+- `FrontendVulnerableDependencyAnalyzer` no longer false-positives with a "No lock file found" warning on projects with an empty `package.json` — the analyzer now checks for at least one declared dependency before running
+- `CsrfAnalyzer` broad `routes/*/api.php` filename heuristic replaced with AST-based `RouteServiceProvider` provider-dir scanning — `BootstrapRouteParser` now scans all `app/Providers/*.php` files using the same `Route::middleware()->group(base_path())` chain-walking logic used for `bootstrap/app.php`; all returned paths go through `realpath()` for consistent cross-platform path comparison
+- `LoginThrottlingAnalyzer` path comparison now applies `realpath()` normalization — `BootstrapRouteParser` returns resolved paths consistently, preventing `in_array` mismatches on macOS where `/tmp → /private/tmp`
+
 ## v1.6.6
 
 ### Fixed

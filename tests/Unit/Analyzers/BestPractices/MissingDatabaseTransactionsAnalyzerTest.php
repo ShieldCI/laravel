@@ -1033,6 +1033,53 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_ignores_external_service_client_method_calls(): void
+    {
+        // $this->stripe->customers->update() is a Stripe API call, not a DB write.
+        // Two or more levels of property access before the method indicates an injected
+        // service client (e.g. Stripe, Twilio, SendGrid), not a query builder chain.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\DB;
+
+class SubscriptionController
+{
+    private object $stripe;
+
+    public function subscribe(string $email, string $tokenId): mixed
+    {
+        $account = $this->stripe->customers->search(['query' => "email:'{$email}'"]);
+
+        if (! isset($account->data) || count($account->data) === 0) {
+            $customer = $this->stripe->customers->create(['source' => $tokenId, 'email' => $email]);
+        } else {
+            $card     = $this->stripe->customers->createSource($account->data[0]->id, ['source' => $tokenId]);
+            $customer = $this->stripe->customers->update($account->data[0]->id, ['default_source' => $card->id]);
+        }
+
+        // Only this is a real DB write
+        DB::table('members')->update(['stripe_id' => $customer->id]);
+
+        return response()->json(['status' => 'ok']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Http/Controllers/SubscriptionController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Stripe calls are not DB writes — only 1 real DB write exists → below threshold
+        $this->assertPassed($result);
+    }
+
     public function test_ignores_storage_operations(): void
     {
         $code = <<<'PHP'
@@ -1631,6 +1678,197 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
+    }
+
+    public function test_passes_with_plain_if_else_one_write_per_branch_no_returns(): void
+    {
+        // Neither branch has a return — no guard clause — but they're still mutually exclusive.
+        $code = <<<'PHP'
+<?php
+namespace App\Services;
+use Illuminate\Support\Facades\DB;
+class MemberService
+{
+    public function upsertMember(string $email): void
+    {
+        $exists = DB::table('members')->where('email', $email)->exists();
+
+        if (! $exists) {
+            DB::table('members')->insert(['email' => $email]);
+        } else {
+            DB::table('members')->update(['email' => $email]);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/MemberService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Each branch has exactly 1 write; they can never co-execute → below threshold
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_else_branch_multiple_writes_in_plain_if_else(): void
+    {
+        // if-body has 1 write, else-body has 2 writes that can co-execute
+        $code = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+use Illuminate\Support\Facades\DB;
+class MemberController
+{
+    public function saveMemberAirport(string $email, int $airportId): void
+    {
+        $exists = DB::table('members')->where('email', $email)->exists();
+
+        if (! $exists) {
+            DB::table('members')->insert(['email' => $email, 'airport_id' => $airportId]);
+        } else {
+            DB::table('members')->update(['airport_id' => $airportId]);
+            DB::table('member_custom_airports')->update(['deleted_at' => now()]);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Http/Controllers/MemberController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // else branch has 2 co-executable unprotected writes → should flag
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $recommendation = $issues[0]->recommendation;
+
+        // Recommendation should list the else-branch lines, not the if-branch line
+        $this->assertStringNotContainsString('insert', $recommendation);
+        // Both else-branch update lines should be present
+        $this->assertStringContainsString('database write operation', $issues[0]->message);
+    }
+
+    public function test_passes_with_plain_if_else_after_else_writes_wrapped_in_transaction(): void
+    {
+        // The real false-positive scenario: after wrapping the else-branch writes in a
+        // transaction, the lone if-branch write (in a mutually exclusive branch) should
+        // not keep the method flagged.
+        $code = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+use Illuminate\Support\Facades\DB;
+class MemberController
+{
+    public function saveMemberAirport(string $email, int $airportId): void
+    {
+        $exists = DB::table('members')->where('email', $email)->exists();
+
+        if (! $exists) {
+            DB::table('members')->insert(['email' => $email, 'airport_id' => $airportId]);
+        } else {
+            DB::transaction(function () use ($email, $airportId): void {
+                DB::table('members')->update(['airport_id' => $airportId]);
+                DB::table('member_custom_airports')->update(['deleted_at' => now()]);
+            });
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Http/Controllers/MemberController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // if-branch: 1 unprotected write; else-branch: 2 protected writes.
+        // Heavier branch by count is else (2), all protected → effective unprotected = 0
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_writes_in_mutually_exclusive_if_else_branches(): void
+    {
+        // if-body always returns, else-body always returns — only one branch executes per request
+        $code = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+use Illuminate\Support\Facades\DB;
+class MemberController
+{
+    public function saveMemberEmail(int $id, string $email): mixed
+    {
+        $member = DB::table('members')->where('id', $id)->first();
+
+        if (! $member) {
+            DB::table('members')->insert(['email' => $email]);
+            return response()->json(['status' => 'created']);
+        } else {
+            DB::table('members')->update(['email' => $email]);
+            return response()->json(['status' => 'updated']);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Http/Controllers/MemberController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Branches are mutually exclusive — only one write can execute per request
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_else_branch_with_multiple_writes_in_mutually_exclusive_if_else(): void
+    {
+        // if-body returns early (1 isolated write), but else has 2 writes that can co-execute
+        $code = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+use Illuminate\Support\Facades\DB;
+class MemberController
+{
+    public function saveMemberEmail(int $id, string $email): mixed
+    {
+        $member = DB::table('members')->where('id', $id)->first();
+
+        if (! $member) {
+            DB::table('members')->insert(['email' => $email]);
+            return response()->json(['status' => 'created']);
+        } else {
+            DB::table('members')->update(['email' => $email]);
+            DB::table('member_logs')->insert(['member_id' => $id, 'action' => 'updated']);
+        }
+
+        return response()->json(['status' => 'ok']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Http/Controllers/MemberController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // The else branch has 2 writes that can co-execute without a transaction
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('database write operation(s) outside transaction protection', $result);
     }
 
     public function test_passes_with_guard_clause_throw_before_transaction(): void

@@ -537,6 +537,16 @@ class TransactionVisitor extends NodeVisitorAbstract
             return in_array($shortName, self::NON_DB_FACADES, true);
         }
 
+        // Two or more levels of property access (e.g. $this->stripe->customers->update())
+        // indicates an external service client, not a query builder chain.
+        // One level ($this->model->update()) is intentionally left flaggable.
+        if (
+            $current instanceof Node\Expr\PropertyFetch
+            && $current->var instanceof Node\Expr\PropertyFetch
+        ) {
+            return true;
+        }
+
         return false;
     }
 

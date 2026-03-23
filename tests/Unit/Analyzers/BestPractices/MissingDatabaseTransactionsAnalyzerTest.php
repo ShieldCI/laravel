@@ -1033,6 +1033,53 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_ignores_external_service_client_method_calls(): void
+    {
+        // $this->stripe->customers->update() is a Stripe API call, not a DB write.
+        // Two or more levels of property access before the method indicates an injected
+        // service client (e.g. Stripe, Twilio, SendGrid), not a query builder chain.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\DB;
+
+class SubscriptionController
+{
+    private object $stripe;
+
+    public function subscribe(string $email, string $tokenId): mixed
+    {
+        $account = $this->stripe->customers->search(['query' => "email:'{$email}'"]);
+
+        if (! isset($account->data) || count($account->data) === 0) {
+            $customer = $this->stripe->customers->create(['source' => $tokenId, 'email' => $email]);
+        } else {
+            $card     = $this->stripe->customers->createSource($account->data[0]->id, ['source' => $tokenId]);
+            $customer = $this->stripe->customers->update($account->data[0]->id, ['default_source' => $card->id]);
+        }
+
+        // Only this is a real DB write
+        DB::table('members')->update(['stripe_id' => $customer->id]);
+
+        return response()->json(['status' => 'ok']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Http/Controllers/SubscriptionController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Stripe calls are not DB writes — only 1 real DB write exists → below threshold
+        $this->assertPassed($result);
+    }
+
     public function test_ignores_storage_operations(): void
     {
         $code = <<<'PHP'

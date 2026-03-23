@@ -158,6 +158,32 @@ class TransactionVisitor extends NodeVisitorAbstract
      */
     private array $earlyExitIfPositions = [];
 
+    /**
+     * Track file start positions of else-blocks that belong to a guard-clause if.
+     * Writes inside these elses are in the main flow (the if-body terminated early).
+     *
+     * @var array<int, true>
+     */
+    private array $guardClauseElsePositions = [];
+
+    /**
+     * Stack for tracking plain if/else branches (no elseif, if-body does not terminate).
+     * Because only one branch executes per request, we count only the heavier branch
+     * (max write count) toward the threshold rather than summing both branches.
+     *
+     * Each frame:
+     *   pos        — file start position of the If_ node
+     *   elsePos    — file start position of the Else_ node
+     *   inElse     — whether we are currently traversing the else-body
+     *   ifWrites   — total write count in the if-body (protected + unprotected)
+     *   elseWrites — total write count in the else-body
+     *   ifLines    — unprotected write lines in the if-body
+     *   elseLines  — unprotected write lines in the else-body
+     *
+     * @var list<array{pos: int, elsePos: int, inElse: bool, ifWrites: int, elseWrites: int, ifLines: list<int>, elseLines: list<int>}>
+     */
+    private array $ifElseBranchStack = [];
+
     public function __construct(
         private int $threshold
     ) {}
@@ -182,6 +208,8 @@ class TransactionVisitor extends NodeVisitorAbstract
             $this->earlyExitIfDepth = 0;
             $this->transactionClosurePositions = [];
             $this->earlyExitIfPositions = [];
+            $this->guardClauseElsePositions = [];
+            $this->ifElseBranchStack = [];
         }
 
         // Check for DB::transaction or DB::beginTransaction
@@ -219,25 +247,91 @@ class TransactionVisitor extends NodeVisitorAbstract
             }
         }
 
-        // Track guard clause if-blocks (early-exit ifs with no else)
+        // Track guard clause if-blocks (early-exit ifs — if-body always terminates)
         if ($node instanceof Node\Stmt\If_ && $this->isGuardClauseIf($node)) {
             $this->earlyExitIfPositions[$node->getStartFilePos()] = true;
             $this->earlyExitIfDepth++;
+            // If there is an else, writes inside it are in the main flow (not isolated),
+            // so we record it to temporarily reduce depth when we enter that else.
+            if ($node->else !== null) {
+                $this->guardClauseElsePositions[$node->else->getStartFilePos()] = true;
+            }
+        }
+
+        // When entering an else that belongs to a guard-clause if: temporarily reduce depth
+        // so that writes inside the else are counted as main-flow writes.
+        if ($node instanceof Node\Stmt\Else_) {
+            $pos = $node->getStartFilePos();
+            if (isset($this->guardClauseElsePositions[$pos])) {
+                $this->earlyExitIfDepth--;
+            }
+        }
+
+        // Track plain if/else branches (if-body does not terminate, has no elseif).
+        // Only push when outside a guard clause, transaction, and other tracked branch so
+        // that the simpler existing mechanisms handle those cases without interference.
+        if (
+            $node instanceof Node\Stmt\If_
+            && ! $this->isGuardClauseIf($node)
+            && $node->else !== null
+            && empty($node->elseifs)
+            && $this->earlyExitIfDepth === 0
+            && $this->transactionDepth === 0
+            && $this->manualTransactionDepth === 0
+        ) {
+            $this->ifElseBranchStack[] = [
+                'pos' => $node->getStartFilePos(),
+                'elsePos' => $node->else->getStartFilePos(),
+                'inElse' => false,
+                'ifWrites' => 0,
+                'elseWrites' => 0,
+                'ifLines' => [],
+                'elseLines' => [],
+            ];
+        }
+
+        // When entering the else-body of a tracked if/else: switch the active branch.
+        if ($node instanceof Node\Stmt\Else_ && $this->ifElseBranchStack !== []) {
+            $lastIdx = count($this->ifElseBranchStack) - 1;
+            if ($this->ifElseBranchStack[$lastIdx]['elsePos'] === $node->getStartFilePos()) {
+                $this->ifElseBranchStack[$lastIdx]['inElse'] = true;
+            }
         }
 
         // Detect write operations
         if ($this->isWriteOperation($node)) {
-            $this->writeOperations++;
-
-            // Track if write is inside a transaction
-            // Writes are protected if:
-            // 1. Inside a DB::transaction() closure, OR
-            // 2. After DB::beginTransaction() was called (with or without try-catch)
             if ($this->transactionDepth > 0 || $this->manualTransactionDepth > 0) {
+                // Protected write. Always tally in writeOperationsInTransaction.
+                // If inside a tracked if/else branch, defer the writeOperations increment
+                // to frame-pop so only the heavier branch counts; otherwise count now.
                 $this->writeOperationsInTransaction++;
+                if ($this->ifElseBranchStack !== []) {
+                    $lastIdx = count($this->ifElseBranchStack) - 1;
+                    if ($this->ifElseBranchStack[$lastIdx]['inElse']) {
+                        $this->ifElseBranchStack[$lastIdx]['elseWrites']++;
+                    } else {
+                        $this->ifElseBranchStack[$lastIdx]['ifWrites']++;
+                    }
+                } else {
+                    $this->writeOperations++;
+                }
             } elseif ($this->earlyExitIfDepth > 0) {
+                // Inside a guard-clause if-body: isolated from all subsequent writes.
+                $this->writeOperations++;
                 $this->isolatedWrites++;
+            } elseif ($this->ifElseBranchStack !== []) {
+                // Unprotected write inside a tracked if/else branch: defer accounting.
+                $lastIdx = count($this->ifElseBranchStack) - 1;
+                if ($this->ifElseBranchStack[$lastIdx]['inElse']) {
+                    $this->ifElseBranchStack[$lastIdx]['elseWrites']++;
+                    $this->ifElseBranchStack[$lastIdx]['elseLines'][] = $node->getLine();
+                } else {
+                    $this->ifElseBranchStack[$lastIdx]['ifWrites']++;
+                    $this->ifElseBranchStack[$lastIdx]['ifLines'][] = $node->getLine();
+                }
             } else {
+                // Normal unprotected main-flow write.
+                $this->writeOperations++;
                 $this->unprotectedWriteLines[] = $node->getLine();
             }
         }
@@ -261,6 +355,57 @@ class TransactionVisitor extends NodeVisitorAbstract
             if (isset($this->earlyExitIfPositions[$pos])) {
                 $this->earlyExitIfDepth--;
                 unset($this->earlyExitIfPositions[$pos]);
+            }
+        }
+
+        // Pop a plain if/else frame on leaving its If_ node. Commit only the heavier branch
+        // (by write count) to the parent frame or the main-flow counters, discarding the
+        // writes of the lighter branch that can never co-execute on the same request.
+        if ($node instanceof Node\Stmt\If_ && $this->ifElseBranchStack !== []) {
+            $lastIdx = count($this->ifElseBranchStack) - 1;
+            if ($this->ifElseBranchStack[$lastIdx]['pos'] === $node->getStartFilePos()) {
+                $frame = $this->ifElseBranchStack[$lastIdx];
+                array_pop($this->ifElseBranchStack);
+
+                $effectiveWrites = max($frame['ifWrites'], $frame['elseWrites']);
+                // Use the heavier branch's unprotected lines for the recommendation.
+                $effectiveLines = $frame['ifWrites'] >= $frame['elseWrites']
+                    ? $frame['ifLines']
+                    : $frame['elseLines'];
+
+                if ($this->ifElseBranchStack !== []) {
+                    // Nested inside another tracked branch: propagate into that branch.
+                    $parentIdx = count($this->ifElseBranchStack) - 1;
+                    if ($this->ifElseBranchStack[$parentIdx]['inElse']) {
+                        $this->ifElseBranchStack[$parentIdx]['elseWrites'] += $effectiveWrites;
+                        $this->ifElseBranchStack[$parentIdx]['elseLines'] = array_merge(
+                            $this->ifElseBranchStack[$parentIdx]['elseLines'],
+                            $effectiveLines
+                        );
+                    } else {
+                        $this->ifElseBranchStack[$parentIdx]['ifWrites'] += $effectiveWrites;
+                        $this->ifElseBranchStack[$parentIdx]['ifLines'] = array_merge(
+                            $this->ifElseBranchStack[$parentIdx]['ifLines'],
+                            $effectiveLines
+                        );
+                    }
+                } else {
+                    // Top-level: commit to main-flow counters.
+                    $this->writeOperations += $effectiveWrites;
+                    $this->unprotectedWriteLines = array_merge(
+                        $this->unprotectedWriteLines,
+                        $effectiveLines
+                    );
+                }
+            }
+        }
+
+        // Restore depth when leaving the else of a guard-clause if
+        if ($node instanceof Node\Stmt\Else_) {
+            $pos = $node->getStartFilePos();
+            if (isset($this->guardClauseElsePositions[$pos])) {
+                $this->earlyExitIfDepth++;
+                unset($this->guardClauseElsePositions[$pos]);
             }
         }
 
@@ -464,13 +609,14 @@ class TransactionVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * A "guard clause" if is one whose body always terminates (return/throw),
-     * with no else or elseif branches. Writes inside are isolated and can never
-     * co-execute with writes in the main flow.
+     * A "guard clause" if is one whose body always terminates (return/throw).
+     * Elseif branches are not allowed (complex control flow), but a plain else
+     * is fine — the if-body still terminates early, so writes inside it are
+     * isolated. Writes in the else are in the main flow and handled separately.
      */
     private function isGuardClauseIf(Node\Stmt\If_ $node): bool
     {
-        if (! empty($node->elseifs) || $node->else !== null) {
+        if (! empty($node->elseifs)) {
             return false;
         }
         if (empty($node->stmts)) {

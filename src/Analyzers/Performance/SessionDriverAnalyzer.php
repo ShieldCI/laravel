@@ -34,6 +34,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class SessionDriverAnalyzer extends AbstractAnalyzer
 {
+    public static bool $runInCI = false;
+
     public function __construct(
         private Config $config,
         private Router $router,

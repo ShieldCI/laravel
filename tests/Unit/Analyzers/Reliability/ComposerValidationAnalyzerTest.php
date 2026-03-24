@@ -313,6 +313,33 @@ class ComposerValidationAnalyzerTest extends AnalyzerTestCase
         $this->assertNotEmpty($issues[0]->metadata['json_error']);
     }
 
+    // =========================================================================
+    // Serverless Runtime Tests
+    // =========================================================================
+
+    public function test_skips_composer_validate_on_serverless_runtime(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => json_encode(['name' => 'test/app', 'description' => 'test']),
+        ]);
+
+        putenv('VAPOR_SSM_PATH=/app/production');
+
+        /** @var ComposerValidator&\Mockery\MockInterface $mockValidator */
+        $mockValidator = Mockery::mock(ComposerValidator::class);
+        $mockValidator->shouldNotReceive('validate');
+
+        $analyzer = new ComposerValidationAnalyzer($mockValidator);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        putenv('VAPOR_SSM_PATH');
+
+        $this->assertPassed($result);
+    }
+
     public function test_location_points_to_composer_json(): void
     {
         $tempDir = $this->createTempDirectory([

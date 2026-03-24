@@ -9,6 +9,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
+use ShieldCI\AnalyzersCore\Support\PlatformDetector;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Support\ComposerValidator;
@@ -60,6 +61,12 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
         $jsonValidationResult = $this->validateJsonSyntax($composerJsonPath);
         if ($jsonValidationResult !== null) {
             return $jsonValidationResult;
+        }
+
+        // Skip `composer validate` subprocess on serverless runtimes — composer binary
+        // is not installed on Lambda/Cloud Functions/etc. JSON syntax already validated above.
+        if (PlatformDetector::isServerless()) {
+            return $this->passed('composer.json is valid');
         }
 
         $basePath = $this->getBasePath();

@@ -239,6 +239,16 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
         $this->assertSame('Application does not implement CachesRoutes interface', $analyzer->getSkipReason());
     }
 
+    public function test_skips_on_serverless_runtime(): void
+    {
+        /** @var RouteCachingAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setDeploymentPlatform('vapor');
+
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertStringContainsString('Vapor', $analyzer->getSkipReason());
+    }
+
     // ============================================================
     // Category 1: Result Type and Severity Validation (3 tests)
     // ============================================================

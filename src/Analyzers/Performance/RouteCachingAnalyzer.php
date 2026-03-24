@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\PlatformDetector;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 
 /**
@@ -31,11 +32,21 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
      */
     public static bool $runInCI = false;
 
+    private ?string $deploymentPlatformOverride = null;
+
     public function __construct(
         private Application $app,
         Config $config
     ) {
         $this->configRepository = $config;
+    }
+
+    /**
+     * Override deployment platform detection (testing only).
+     */
+    public function setDeploymentPlatform(string $platform): void
+    {
+        $this->deploymentPlatformOverride = $platform;
     }
 
     protected function metadata(): AnalyzerMetadata
@@ -53,12 +64,19 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
 
     public function shouldRun(): bool
     {
-        // Check if the application implements CachesRoutes interface
+        if ($this->isVaporOrServerless()) {
+            return false;
+        }
+
         return $this->app instanceof CachesRoutes;
     }
 
     public function getSkipReason(): string
     {
+        if ($this->isVaporOrServerless()) {
+            return 'Route caching is not supported on Laravel Vapor (blocked by Vapor CLI build process)';
+        }
+
         return 'Application does not implement CachesRoutes interface';
     }
 
@@ -121,5 +139,18 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
     private function isProductionOrStaging(string $environment): bool
     {
         return in_array($environment, ['production', 'staging'], true);
+    }
+
+    /**
+     * Check if the deployment platform is Laravel Vapor or another serverless environment.
+     */
+    private function isVaporOrServerless(): bool
+    {
+        if ($this->deploymentPlatformOverride !== null) {
+            return in_array($this->deploymentPlatformOverride, ['vapor', 'serverless'], true);
+        }
+
+        return PlatformDetector::isLaravelVapor($this->getBasePath())
+            || PlatformDetector::isServerless();
     }
 }

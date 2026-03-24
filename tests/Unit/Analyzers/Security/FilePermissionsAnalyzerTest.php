@@ -154,10 +154,10 @@ class FilePermissionsAnalyzerTest extends AnalyzerTestCase
     public function test_detects_world_writable_file(): void
     {
         $tempDir = $this->createTempDirectory([
-            'config/app.php' => '<?php return [];',
+            'artisan' => '#!/usr/bin/env php',
         ]);
 
-        chmod($tempDir.'/config/app.php', 0666);
+        chmod($tempDir.'/artisan', 0666);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -174,10 +174,10 @@ class FilePermissionsAnalyzerTest extends AnalyzerTestCase
     public function test_passes_file_with_644_permissions(): void
     {
         $tempDir = $this->createTempDirectory([
-            'config/app.php' => '<?php return [];',
+            'artisan' => '#!/usr/bin/env php',
         ]);
 
-        chmod($tempDir.'/config/app.php', 0644);
+        chmod($tempDir.'/artisan', 0644);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -244,22 +244,9 @@ class FilePermissionsAnalyzerTest extends AnalyzerTestCase
 
     public function test_detects_env_production_with_insecure_permissions(): void
     {
-        $tempDir = $this->createTempDirectory([
-            '.env.production' => 'APP_KEY=prod_key',
-        ]);
-
-        chmod($tempDir.'/.env.production', 0640);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result); // Critical severity on critical file = failed status
-        $this->assertHasIssueContaining('overly permissive', $result); // 0640 exceeds max 0600 (has group read bit)
-
-        $issues = $result->getIssues();
-        $this->assertEquals(Severity::Critical, $issues[0]->severity);
+        // .env.production and .env.prod are not checked by default — Vapor/Lambda injects
+        // environment variables directly and these files never exist in serverless deployments.
+        $this->markTestSkipped('.env.production is not in default paths (not used by Vapor/serverless)');
     }
 
     public function test_detects_group_writable_env_file(): void
@@ -396,12 +383,10 @@ class FilePermissionsAnalyzerTest extends AnalyzerTestCase
     {
         $tempDir = $this->createTempDirectory([
             'app/Models/User.php' => '<?php class User {}',
-            'config/app.php' => '<?php return [];',
             '.env' => 'APP_KEY=test',
         ]);
 
         chmod($tempDir.'/app', 0777);
-        chmod($tempDir.'/config/app.php', 0666);
         chmod($tempDir.'/.env', 0644);
 
         $analyzer = $this->createAnalyzer();
@@ -410,7 +395,7 @@ class FilePermissionsAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertCount(3, $result->getIssues());
+        $this->assertCount(2, $result->getIssues());
     }
 
     public function test_handles_fileperms_failure_gracefully(): void
@@ -473,20 +458,22 @@ class FilePermissionsAnalyzerTest extends AnalyzerTestCase
     public function test_overly_permissive_stops_further_checks(): void
     {
         $tempDir = $this->createTempDirectory([
-            'config/app.php' => '<?php return [];',
+            '.env' => 'APP_KEY=test',
         ]);
 
-        // 0755 octal = 493 decimal > 420 (octdec('644')) AND has execute bit
-        chmod($tempDir.'/config/app.php', 0755);
+        // 0620 exceeds max 0600 (group-write bit set) but is not world-writable/world-readable.
+        // Overly-permissive (check 3) should fire and return early,
+        // preventing the group-writable-on-critical-file check (check 4) from also running.
+        chmod($tempDir.'/.env', 0620);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result); // High severity = failed status
+        $this->assertFailed($result);
 
-        // Should only flag as overly permissive, not also executable
+        // Should only flag as overly permissive, not also group-writable
         $this->assertCount(1, $result->getIssues());
         $this->assertStringContainsString('overly permissive', $result->getIssues()[0]->message);
     }
@@ -561,26 +548,10 @@ class FilePermissionsAnalyzerTest extends AnalyzerTestCase
 
     public function test_metadata_flags_are_correct_for_755(): void
     {
-        $tempDir = $this->createTempDirectory([
-            'config/app.php' => '<?php return [];',
-        ]);
-
-        chmod($tempDir.'/config/app.php', 0755);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        // 755 octal (493 decimal) > 420 (octdec('644')), so it triggers overly permissive
-        $this->assertCount(1, $result->getIssues());
-        $issue = $result->getIssues()[0];
-
-        $this->assertFalse($issue->metadata['world_writable']);
-        $this->assertTrue($issue->metadata['world_readable']);
-        // TODO: Debug why group_writable is true for 0755
-        // $this->assertFalse($issue->metadata['group_writable']);
-        $this->assertTrue($issue->metadata['group_readable']);
+        // config/app.php is no longer in default paths (removed to prevent false positives on
+        // Vapor/Lambda where files are extracted with execute bits). No non-critical, non-executable
+        // file path remains in defaults that can trigger overly-permissive without being world-writable.
+        $this->markTestSkipped('No suitable non-critical file path in defaults for this scenario');
     }
 
     public function test_metadata_includes_max_and_recommended_for_overly_permissive(): void

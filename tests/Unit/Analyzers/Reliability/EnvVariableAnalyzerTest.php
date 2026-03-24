@@ -774,4 +774,9 @@ REQUIRED_VAR=',
         $this->assertSame('missing-variables', $issues[0]->code);
         $this->assertNotSame('parse-error-env', $issues[0]->code);
     }
+
+    public function test_is_not_run_in_ci_mode(): void
+    {
+        $this->assertFalse(EnvVariableAnalyzer::$runInCI);
+    }
 }

@@ -22,6 +22,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class EnvVariableAnalyzer extends AbstractFileAnalyzer
 {
+    public static bool $runInCI = false;
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(

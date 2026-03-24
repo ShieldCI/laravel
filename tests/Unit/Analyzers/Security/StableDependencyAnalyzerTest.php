@@ -675,7 +675,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
-    public function test_detects_branch_alias_dev_version(): void
+    public function test_detects_x_dev_branch_version_constraint(): void
     {
         $composerJson = json_encode([
             'name' => 'test/app',
@@ -699,6 +699,52 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $this->assertWarning($result);
         $this->assertHasIssueContaining('2.0.x-dev', $result);
+    }
+
+    public function test_does_not_flag_stable_package_with_branch_alias_metadata(): void
+    {
+        // Packages may have branch-alias in their extra section as Packagist metadata.
+        // This should NOT affect stability detection — only the version field matters.
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => [
+                'php' => '^8.1',
+                'vendor/package' => '^3.0',
+            ],
+        ]);
+
+        $composerLock = json_encode([
+            '_readme' => [],
+            'packages' => [
+                [
+                    'name' => 'vendor/package',
+                    'version' => 'v3.0.3',
+                    'extra' => [
+                        'branch-alias' => [
+                            'dev-master' => '3.x-dev',
+                            'dev-main' => '3.x-dev',
+                        ],
+                    ],
+                ],
+            ],
+            'packages-dev' => [],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // The branch-alias metadata is irrelevant; stable version tag must not be flagged
+        $this->assertPassed($result);
     }
 
     public function test_detects_version_with_v_prefix_and_beta(): void

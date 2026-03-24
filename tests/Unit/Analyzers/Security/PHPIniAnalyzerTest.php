@@ -813,6 +813,29 @@ class PHPIniAnalyzerTest extends AnalyzerTestCase
         }
     }
 
+    public function test_it_skips_log_errors_and_display_startup_errors_on_vapor(): void
+    {
+        $tempDir = $this->createVaporFixture(iniLines: []);
+
+        $analyzer = new PHPIniAnalyzer;
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPhpIniPath($tempDir.'/php.ini');
+        $analyzer->setDeploymentPlatform('vapor');
+        $analyzer->setIniValues([
+            'allow_url_fopen' => '0',
+            'allow_url_include' => '0',
+            'expose_php' => '0',
+            'display_errors' => '0',
+            'display_startup_errors' => '1',  // On — should be ignored on Vapor
+            'log_errors' => '0',  // Off — should be ignored on Vapor
+            'ignore_repeated_errors' => '0',
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_vapor_passes_when_all_settings_secure(): void
     {
         $tempDir = $this->createVaporFixture(

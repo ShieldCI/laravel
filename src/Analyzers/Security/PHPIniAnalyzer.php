@@ -113,9 +113,16 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
         $issues = [];
         $phpIniPath = $this->getPhpIniPath();
         $configuration = $this->getConfiguration();
+        $secureSettings = $configuration['secure_settings'];
 
-        // Check PHP ini settings
-        $this->checkPhpIniSettings($issues, $phpIniPath, $configuration['secure_settings']);
+        // These checks are not applicable on Vapor/serverless:
+        // - log_errors: platform captures stderr via CloudWatch
+        // - display_startup_errors: no user-facing output; errors go to internal logs
+        if ($this->isVaporOrServerless()) {
+            unset($secureSettings['log_errors'], $secureSettings['display_startup_errors']);
+        }
+
+        $this->checkPhpIniSettings($issues, $phpIniPath, $secureSettings);
 
         if (empty($issues)) {
             return $this->passed('PHP configuration is secure');

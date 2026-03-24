@@ -279,13 +279,13 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('database', $result);
+        $this->assertPassed($result);
+        $this->assertStringContainsString('testing environment', $result->getMessage());
+    }
 
-        $issues = $result->getIssues();
-        $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
-        $this->assertEquals('testing', $issues[0]->metadata['environment'] ?? '');
+    public function test_is_not_run_in_ci_mode(): void
+    {
+        $this->assertFalse(QueueDriverAnalyzer::$runInCI);
     }
 
     public function test_fails_when_connection_not_defined(): void

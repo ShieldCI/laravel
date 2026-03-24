@@ -26,6 +26,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class QueueDriverAnalyzer extends AbstractAnalyzer
 {
+    public static bool $runInCI = false;
+
     public function __construct(
         private Config $config
     ) {
@@ -209,8 +211,8 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
     {
         $environment = $this->getEnvironment();
 
-        // Database queue driver is acceptable for local development
-        if ($this->isLocalEnvironment($environment)) {
+        // Database queue driver is acceptable for local development and testing
+        if ($this->isLocalEnvironment($environment) || $this->isTestingEnvironment($environment)) {
             return;
         }
 

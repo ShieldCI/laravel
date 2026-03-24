@@ -533,6 +533,11 @@ APP_ENV=local';
         $this->assertContains('NEW_SECRET_KEY', $undocumentedVars);
     }
 
+    public function test_is_not_run_in_ci_mode(): void
+    {
+        $this->assertFalse(EnvExampleAnalyzer::$runInCI);
+    }
+
     public function test_case_sensitive_variable_matching(): void
     {
         $envContent = 'APP_NAME=MyApp

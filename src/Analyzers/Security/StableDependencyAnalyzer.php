@@ -61,6 +61,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
 
         // Get composer.json path (we know it exists from shouldRun())
         $composerJson = $this->buildPath('composer.json');
+        $composerJsonData = $this->parseJsonFile($composerJson);
 
         $this->checkComposerConfiguration($composerJson, $issues);
 
@@ -70,26 +71,33 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             $this->checkComposerLock($composerLock, $issues);
         }
 
-        try {
-            $preferStableOutput = $this->composer->updateDryRun(['--prefer-stable']);
-            if ($this->preferStableRunChangesDependencies($preferStableOutput)) {
-                $filePath = file_exists($composerLock) ? $composerLock : $composerJson;
-                $isLockFile = file_exists($composerLock);
-                $issues[] = $this->createIssue(
-                    message: 'Composer update --prefer-stable would modify installed packages',
-                    location: new Location($this->getRelativePath($filePath)),
-                    severity: Severity::Low,
-                    recommendation: 'Run "composer update --prefer-stable" and ensure all dependencies resolve to stable releases.',
-                    code: $isLockFile ? null : FileParser::getCodeSnippet($filePath, 1),
-                    metadata: [
-                        'composer_version_check' => 'update --dry-run --prefer-stable',
-                    ]
+        // When prefer-stable is already configured, composer update --prefer-stable only detects
+        // available stable→stable upgrades, not genuine instability. Skip the dry-run to avoid
+        // false positives; checkComposerLock() already covers any unstable installed versions.
+        $preferStableConfigured = isset($composerJsonData['prefer-stable']) && $composerJsonData['prefer-stable'] === true;
+
+        if (! $preferStableConfigured) {
+            try {
+                $preferStableOutput = $this->composer->updateDryRun(['--prefer-stable']);
+                if ($this->preferStableRunChangesDependencies($preferStableOutput)) {
+                    $filePath = file_exists($composerLock) ? $composerLock : $composerJson;
+                    $isLockFile = file_exists($composerLock);
+                    $issues[] = $this->createIssue(
+                        message: 'Composer update --prefer-stable would modify installed packages',
+                        location: new Location($this->getRelativePath($filePath)),
+                        severity: Severity::Low,
+                        recommendation: 'Run "composer update --prefer-stable" and ensure all dependencies resolve to stable releases.',
+                        code: $isLockFile ? null : FileParser::getCodeSnippet($filePath, 1),
+                        metadata: [
+                            'composer_version_check' => 'update --dry-run --prefer-stable',
+                        ]
+                    );
+                }
+            } catch (Throwable $exception) {
+                return $this->error(
+                    sprintf('Unable to verify dependency stability: %s', $exception->getMessage())
                 );
             }
-        } catch (Throwable $exception) {
-            return $this->error(
-                sprintf('Unable to verify dependency stability: %s', $exception->getMessage())
-            );
         }
 
         if (empty($issues)) {

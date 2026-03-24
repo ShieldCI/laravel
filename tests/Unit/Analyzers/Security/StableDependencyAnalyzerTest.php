@@ -563,7 +563,6 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         $composerJson = json_encode([
             'name' => 'test/app',
             'minimum-stability' => 'stable',
-            'prefer-stable' => true,
             'require' => [
                 'php' => '^8.1',
                 'vendor/package' => '^1.0',
@@ -601,7 +600,6 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         $composerJson = json_encode([
             'name' => 'test/app',
             'minimum-stability' => 'stable',
-            'prefer-stable' => true,
             'require' => [
                 'php' => '^8.1',
             ],
@@ -631,6 +629,39 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
 
         $this->assertError($result);
         $this->assertStringContainsString('Unable to verify dependency stability', $result->getMessage());
+    }
+
+    public function test_does_not_flag_stable_updates_when_prefer_stable_is_configured(): void
+    {
+        // When prefer-stable:true is already set, composer update --prefer-stable
+        // detects available stable-to-stable updates, which must NOT be flagged as stability issues.
+        $composerJson = json_encode([
+            'name' => 'test/app',
+            'minimum-stability' => 'stable',
+            'prefer-stable' => true,
+            'require' => ['php' => '^8.1', 'vendor/package' => '^1.0'],
+        ]);
+        $composerLock = json_encode([
+            'packages' => [['name' => 'vendor/package', 'version' => '1.0.0']],
+            'packages-dev' => [],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $composerJson,
+            'composer.lock' => $composerLock,
+        ]);
+
+        /** @var Composer&\Mockery\MockInterface $composer */
+        $composer = Mockery::mock(Composer::class);
+        $composer->shouldNotReceive('updateDryRun'); // dry-run must be skipped entirely
+
+        $analyzer = $this->createAnalyzer($composer);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
     }
 
     public function test_handles_invalid_json_in_composer_json_gracefully(): void
@@ -835,7 +866,6 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         $composerJson = json_encode([
             'name' => 'test/app',
             'minimum-stability' => 'stable',
-            'prefer-stable' => true,
             'require' => [
                 'php' => '^8.1',
                 'vendor/package' => '^1.0',

@@ -442,7 +442,7 @@ class AnalyzesMiddlewareTest extends TestCase
 
             /** @param array<int, string> $fixedGlobal */
             public function __construct(
-                protected $router,
+                protected \Illuminate\Routing\Router $router,
                 protected $kernel,
                 private array $fixedGlobal,
             ) {}
@@ -477,7 +477,7 @@ class AnalyzesMiddlewareTest extends TestCase
             use AnalyzesMiddleware;
 
             public function __construct(
-                protected $router,
+                protected \Illuminate\Routing\Router $router,
                 protected $kernel,
             ) {}
 

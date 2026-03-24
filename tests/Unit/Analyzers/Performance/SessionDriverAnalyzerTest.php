@@ -90,6 +90,10 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
             /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
             $route->shouldReceive('middleware')
                 ->andReturn($routeMiddleware);
+            // isVendorRoute() calls getAction('uses') — null means closure = app-defined route
+            /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
+            $route->shouldReceive('getAction')
+                ->andReturn(null);
             $mockRoutes[] = $route;
         }
 

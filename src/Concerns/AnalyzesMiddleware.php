@@ -7,6 +7,7 @@ namespace ShieldCI\Concerns;
 use Closure;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Routing\Route;
+use Illuminate\Routing\Router;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Support\Str;
 use ReflectionClass;
@@ -19,10 +20,8 @@ trait AnalyzesMiddleware
 {
     /**
      * The router instance.
-     *
-     * @var \Illuminate\Routing\Router
      */
-    protected $router;
+    protected Router $router;
 
     /**
      * The HTTP kernel instance.

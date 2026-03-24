@@ -22,11 +22,14 @@ class XssAnalyzerTest extends AnalyzerTestCase
         /** @var \Illuminate\Routing\Router $router */
         $router = $this->app?->make('router');
 
-        if ($router === null) {
-            throw new \RuntimeException('Router not available in test application');
+        /** @var \Illuminate\Contracts\Http\Kernel $kernel */
+        $kernel = $this->app?->make(\Illuminate\Contracts\Http\Kernel::class);
+
+        if ($router === null || $kernel === null) {
+            throw new \RuntimeException('Router or Kernel not available in test application');
         }
 
-        return new XssAnalyzer($router);
+        return new XssAnalyzer($router, $kernel);
     }
 
     /**
@@ -45,11 +48,19 @@ class XssAnalyzerTest extends AnalyzerTestCase
         /** @var \Illuminate\Routing\Router $router */
         $router = $this->app?->make('router');
 
-        if ($router === null) {
-            throw new \RuntimeException('Router not available in test application');
+        /** @var \Illuminate\Contracts\Http\Kernel $kernel */
+        $kernel = $this->app?->make(\Illuminate\Contracts\Http\Kernel::class);
+
+        if ($router === null || $kernel === null) {
+            throw new \RuntimeException('Router or Kernel not available in test application');
         }
 
-        $analyzer = new XssAnalyzer($router);
+        $analyzer = new XssAnalyzer($router, $kernel);
+
+        // Explicitly mark as a web app so the HTTP header check is not skipped.
+        // The test environment has no session routes, so without this override
+        // isApiOnlyApp() would return true and bypass all HTTP header assertions.
+        $analyzer->setStatelessOverride(false);
 
         $mock = new MockHandler($responses);
         $handlerStack = HandlerStack::create($mock);
@@ -441,6 +452,26 @@ BLADE;
         $this->assertPassed($result);
         $this->assertStringNotContainsString('headers verified', $result->getMessage());
         $this->assertStringContainsString('in code', $result->getMessage());
+    }
+
+    public function test_skips_csp_check_for_api_only_app(): void
+    {
+        config(['app.url' => 'https://api.example.com']);
+        config(['shieldci.ci_mode' => false]);
+
+        $tempDir = $this->createTempDirectory(['test.blade.php' => '<div>{{ $safe }}</div>']);
+
+        /** @var XssAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(true); // Simulate an API-only app (no web/session routes)
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // CSP check is a browser mechanism — irrelevant to JSON APIs, so no issue reported
+        $this->assertPassed($result);
+        $this->assertEmpty($result->getIssues());
     }
 
     public function test_reports_both_code_and_header_issues_in_production(): void

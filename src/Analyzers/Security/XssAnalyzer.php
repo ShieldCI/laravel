@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\Security;
 
 use GuzzleHttp\Client;
+use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Routing\Router;
 use Illuminate\Support\Str;
 use PhpParser\Node;
@@ -24,6 +25,7 @@ use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\AnalyzesHeaders;
+use ShieldCI\Concerns\AnalyzesMiddleware;
 use ShieldCI\Concerns\FindsLoginRoute;
 use SplFileInfo;
 use Throwable;
@@ -45,12 +47,18 @@ use Throwable;
 class XssAnalyzer extends AbstractFileAnalyzer
 {
     use AnalyzesHeaders;
+    use AnalyzesMiddleware;
     use FindsLoginRoute;
 
     /**
      * Skip HTTP checks in CI (requires live server).
      */
     private bool $skipHttpChecks = false;
+
+    /**
+     * Allows tests to override API-only app detection.
+     */
+    private ?bool $statelessOverride = null;
 
     /**
      * Safe JavaScript no-op patterns that don't execute code.
@@ -92,13 +100,19 @@ class XssAnalyzer extends AbstractFileAnalyzer
      */
     private const SUPERGLOBAL_NAMES = ['_GET', '_POST', '_REQUEST', '_COOKIE', '_FILES'];
 
-    public function __construct(Router $router)
+    public function __construct(Router $router, Kernel $kernel)
     {
         $this->router = $router;
+        $this->kernel = $kernel;
         $this->client = new Client;
 
         // Skip HTTP checks in CI mode
         $this->skipHttpChecks = config('shieldci.ci_mode', false);
+    }
+
+    public function setStatelessOverride(?bool $stateless): void
+    {
+        $this->statelessOverride = $stateless;
     }
 
     protected function metadata(): AnalyzerMetadata
@@ -781,6 +795,12 @@ class XssAnalyzer extends AbstractFileAnalyzer
      */
     private function analyzeHttpHeaders(): array
     {
+        // Skip CSP header check for stateless (API-only) applications — CSP is a
+        // browser security mechanism and irrelevant to pure JSON APIs
+        if ($this->isApiOnlyApp()) {
+            return [];
+        }
+
         $issues = [];
 
         // Try to find a guest URL to check
@@ -846,6 +866,25 @@ class XssAnalyzer extends AbstractFileAnalyzer
         }
 
         return $issues;
+    }
+
+    /**
+     * Determine whether the app is API-only (stateless, no browser/session routes).
+     *
+     * CSP headers are a browser security mechanism and are irrelevant to pure JSON APIs,
+     * so the HTTP header check should be skipped for such applications.
+     */
+    private function isApiOnlyApp(): bool
+    {
+        if ($this->statelessOverride !== null) {
+            return $this->statelessOverride;
+        }
+
+        try {
+            return $this->appIsStateless();
+        } catch (Throwable) {
+            return false; // Can't inspect → assume web app to avoid missing real issues
+        }
     }
 
     /**

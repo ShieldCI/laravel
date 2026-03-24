@@ -74,7 +74,7 @@ class RouteCachingAnalyzer extends AbstractAnalyzer
     public function getSkipReason(): string
     {
         if ($this->isVaporOrServerless()) {
-            return 'Route caching is not applicable on serverless runtimes';
+            return 'Route caching is not supported on Laravel Vapor (blocked by Vapor CLI build process)';
         }
 
         return 'Application does not implement CachesRoutes interface';

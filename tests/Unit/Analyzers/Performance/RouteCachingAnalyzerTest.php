@@ -246,7 +246,7 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
         $analyzer->setDeploymentPlatform('vapor');
 
         $this->assertFalse($analyzer->shouldRun());
-        $this->assertStringContainsString('serverless', $analyzer->getSkipReason());
+        $this->assertStringContainsString('Vapor', $analyzer->getSkipReason());
     }
 
     // ============================================================

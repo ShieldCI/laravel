@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\PlatformDetector;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\AnalyzesMiddleware;
@@ -36,6 +37,8 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
      */
     protected ?bool $statelessOverride = null;
 
+    private ?string $deploymentPlatformOverride = null;
+
     public function __construct(
         Router $router,
         Kernel $kernel,
@@ -48,6 +51,24 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
     public function setStatelessOverride(?bool $stateless): void
     {
         $this->statelessOverride = $stateless;
+    }
+
+    /**
+     * Override deployment platform detection (testing only).
+     */
+    public function setDeploymentPlatform(string $platform): void
+    {
+        $this->deploymentPlatformOverride = $platform;
+    }
+
+    public function shouldRun(): bool
+    {
+        return ! $this->isVaporOrServerless();
+    }
+
+    public function getSkipReason(): string
+    {
+        return 'Directory write permissions are managed by Laravel Vapor and cannot be changed by the user';
     }
 
     protected function metadata(): AnalyzerMetadata
@@ -604,5 +625,18 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
         }
 
         return false;
+    }
+
+    /**
+     * Check if the deployment platform is Laravel Vapor or another serverless environment.
+     */
+    private function isVaporOrServerless(): bool
+    {
+        if ($this->deploymentPlatformOverride !== null) {
+            return in_array($this->deploymentPlatformOverride, ['vapor', 'serverless'], true);
+        }
+
+        return PlatformDetector::isLaravelVapor($this->getBasePath())
+            || PlatformDetector::isServerless();
     }
 }

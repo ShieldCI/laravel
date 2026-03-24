@@ -1005,4 +1005,27 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
             $this->assertArrayNotHasKey('broken_symlinks', $issue->metadata ?? []);
         }
     }
+
+    // =========================================================================
+    // Vapor / Serverless Skip Tests
+    // =========================================================================
+
+    public function test_skips_on_vapor_environment(): void
+    {
+        /** @var DirectoryWritePermissionsAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setDeploymentPlatform('vapor');
+
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertStringContainsString('Vapor', $analyzer->getSkipReason());
+    }
+
+    public function test_skips_on_serverless_environment(): void
+    {
+        /** @var DirectoryWritePermissionsAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setDeploymentPlatform('serverless');
+
+        $this->assertFalse($analyzer->shouldRun());
+    }
 }

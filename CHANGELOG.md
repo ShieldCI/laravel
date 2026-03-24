@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.8
+
+### Fixed
+- `QueueDriverAnalyzer` no longer false-positives on the `database` queue driver in CI — `assessDatabaseDriver()` now calls `isTestingEnvironment()` before emitting the Low-severity warning, matching the guard already present in `assessSyncDriver()`; `$runInCI = false` is also added so the analyzer is skipped entirely when `--ci` is passed
+- `SessionDriverAnalyzer`, `EnvExampleAnalyzer`, and `EnvVariableAnalyzer` now set `$runInCI = false` — these analyzers inspect runtime environment conditions (session driver, `.env` file presence) that are intentionally different in CI runners; they are skipped when `--ci` is passed
+
 ## v1.6.7
 
 ### Fixed

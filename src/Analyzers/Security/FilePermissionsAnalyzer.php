@@ -131,11 +131,6 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 
             // Critical files - stricter permissions
             '.env' => ['type' => 'file', 'max' => octdec('600'), 'recommended' => octdec('600'), 'critical' => true],
-            '.env.production' => ['type' => 'file', 'max' => octdec('600'), 'recommended' => octdec('600'), 'critical' => true],
-            '.env.prod' => ['type' => 'file', 'max' => octdec('600'), 'recommended' => octdec('600'), 'critical' => true],
-            'config/app.php' => ['type' => 'file', 'max' => octdec('644'), 'recommended' => octdec('644')],
-            'config/database.php' => ['type' => 'file', 'max' => octdec('644'), 'recommended' => octdec('644')],
-            'config/services.php' => ['type' => 'file', 'max' => octdec('644'), 'recommended' => octdec('644')],
 
             // Executable files
             'artisan' => ['type' => 'file', 'max' => octdec('775'), 'recommended' => octdec('755'), 'executable' => true],

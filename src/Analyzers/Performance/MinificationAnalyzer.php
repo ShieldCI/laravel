@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\DetectsDeploymentPlatform;
 
 /**
  * Detects unminified assets in production.
@@ -27,6 +28,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class MinificationAnalyzer extends AbstractFileAnalyzer
 {
+    use DetectsDeploymentPlatform;
+
     /**
      * Asset minification checks require compiled assets, not applicable in CI.
      */
@@ -94,6 +97,10 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
+        if ($this->isVaporOrServerless()) {
+            return false;
+        }
+
         // Check environment relevance first
         if (! $this->isRelevantForCurrentEnvironment()) {
             return false;
@@ -107,6 +114,10 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
 
     public function getSkipReason(): string
     {
+        if ($this->isVaporOrServerless()) {
+            return 'Vapor removes webpack.mix.js from the deployment; assets must be pre-compiled and uploaded before deploying to Vapor';
+        }
+
         if (! $this->isRelevantForCurrentEnvironment()) {
             $currentEnv = $this->getEnvironment();
             $relevantEnvs = implode(', ', $this->relevantEnvironments ?? []);

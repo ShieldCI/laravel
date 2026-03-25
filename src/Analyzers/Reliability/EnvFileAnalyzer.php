@@ -9,6 +9,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\DetectsDeploymentPlatform;
 
 /**
  * Checks if .env file exists in the application.
@@ -19,7 +20,19 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  */
 class EnvFileAnalyzer extends AbstractFileAnalyzer
 {
+    use DetectsDeploymentPlatform;
+
     public static bool $runInCI = false;
+
+    public function shouldRun(): bool
+    {
+        return ! $this->isVaporOrServerless();
+    }
+
+    public function getSkipReason(): string
+    {
+        return 'Vapor removes the plain .env file from the deployment; environment variables are provided via Vapor UI (SSM Parameter Store, plaintext vars, or encrypted environment files)';
+    }
 
     protected function metadata(): AnalyzerMetadata
     {

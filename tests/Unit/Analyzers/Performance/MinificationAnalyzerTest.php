@@ -1776,4 +1776,27 @@ JS;
         // Should pass - .min. files are always skipped
         $this->assertPassed($result);
     }
+
+    // =========================================================================
+    // Vapor / Serverless Skip Tests
+    // =========================================================================
+
+    public function test_skips_on_vapor(): void
+    {
+        /** @var \ShieldCI\Analyzers\Performance\MinificationAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setDeploymentPlatform('vapor');
+
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertStringContainsString('Vapor', $analyzer->getSkipReason());
+    }
+
+    public function test_skips_on_serverless(): void
+    {
+        /** @var \ShieldCI\Analyzers\Performance\MinificationAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setDeploymentPlatform('serverless');
+
+        $this->assertFalse($analyzer->shouldRun());
+    }
 }

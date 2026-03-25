@@ -260,4 +260,27 @@ APP_KEY=base64:test123',
         // Should not crash with empty basepath
         $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
     }
+
+    // =========================================================================
+    // Vapor / Serverless Skip Tests
+    // =========================================================================
+
+    public function test_skips_on_vapor(): void
+    {
+        /** @var \ShieldCI\Analyzers\Reliability\EnvFileAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setDeploymentPlatform('vapor');
+
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertStringContainsString('Vapor', $analyzer->getSkipReason());
+    }
+
+    public function test_skips_on_serverless(): void
+    {
+        /** @var \ShieldCI\Analyzers\Reliability\EnvFileAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setDeploymentPlatform('serverless');
+
+        $this->assertFalse($analyzer->shouldRun());
+    }
 }

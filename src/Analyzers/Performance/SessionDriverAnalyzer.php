@@ -36,6 +36,11 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
 
     public static bool $runInCI = false;
 
+    /**
+     * Allows tests to override stateless detection.
+     */
+    protected ?bool $statelessOverride = null;
+
     public function __construct(
         private Config $config,
         Router $router,
@@ -61,13 +66,25 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
 
     public function shouldRun(): bool
     {
-        // Only run if the app actually uses sessions
-        return ! $this->appIsStateless();
+        try {
+            if ($this->statelessOverride !== null) {
+                return ! $this->statelessOverride;
+            }
+
+            return ! $this->appIsStateless();
+        } catch (\ReflectionException $e) {
+            return true;
+        }
     }
 
     public function getSkipReason(): string
     {
-        return 'Application does not use sessions (stateless)';
+        return 'Not applicable for stateless/API-only applications (no session middleware detected)';
+    }
+
+    public function setStatelessOverride(?bool $stateless): void
+    {
+        $this->statelessOverride = $stateless;
     }
 
     protected function runAnalysis(): ResultInterface

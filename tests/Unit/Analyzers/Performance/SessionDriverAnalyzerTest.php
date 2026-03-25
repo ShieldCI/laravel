@@ -293,7 +293,7 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
         );
 
         $this->assertFalse($analyzer->shouldRun());
-        $this->assertSame('Application does not use sessions (stateless)', $analyzer->getSkipReason());
+        $this->assertSame('Not applicable for stateless/API-only applications (no session middleware detected)', $analyzer->getSkipReason());
 
         $result = $analyzer->analyze();
 
@@ -778,7 +778,7 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
         );
 
         $this->assertFalse($analyzer->shouldRun());
-        $this->assertSame('Application does not use sessions (stateless)', $analyzer->getSkipReason());
+        $this->assertSame('Not applicable for stateless/API-only applications (no session middleware detected)', $analyzer->getSkipReason());
     }
 
     public function test_handles_empty_middleware_groups(): void
@@ -813,7 +813,57 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
         );
 
         $this->assertFalse($analyzer->shouldRun());
-        $this->assertSame('Application does not use sessions (stateless)', $analyzer->getSkipReason());
+        $this->assertSame('Not applicable for stateless/API-only applications (no session middleware detected)', $analyzer->getSkipReason());
+    }
+
+    // ============================================================
+    // Category 6: statelessOverride and Defensive Fallback (3 tests)
+    // ============================================================
+
+    public function test_stateless_override_true_skips_analyzer(): void
+    {
+        /** @var SessionDriverAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(true);
+
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertSame(
+            'Not applicable for stateless/API-only applications (no session middleware detected)',
+            $analyzer->getSkipReason()
+        );
+    }
+
+    public function test_stateless_override_false_forces_run_even_when_stateless(): void
+    {
+        // App is wired as stateless (no session middleware), but override forces run
+        /** @var SessionDriverAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer(usesSession: false);
+        $analyzer->setStatelessOverride(false);
+
+        $this->assertTrue($analyzer->shouldRun());
+    }
+
+    public function test_reflection_exception_defaults_to_running(): void
+    {
+        /** @var \Illuminate\Contracts\Config\Repository&\Mockery\MockInterface $config */
+        $config = Mockery::mock(\Illuminate\Contracts\Config\Repository::class);
+        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
+        $config->shouldReceive('get')->andReturn('redis');
+
+        /** @var \Illuminate\Routing\Router&\Mockery\MockInterface $router */
+        $router = Mockery::mock(\Illuminate\Routing\Router::class);
+        /** @var \Illuminate\Contracts\Http\Kernel&\Mockery\MockInterface $kernel */
+        $kernel = Mockery::mock(\Illuminate\Contracts\Http\Kernel::class);
+
+        $analyzer = new class($config, $router, $kernel) extends SessionDriverAnalyzer
+        {
+            protected function appIsStateless(): bool
+            {
+                throw new \ReflectionException('simulated reflection failure');
+            }
+        };
+
+        $this->assertTrue($analyzer->shouldRun());
     }
 
     public function test_analyzer_metadata_values(): void

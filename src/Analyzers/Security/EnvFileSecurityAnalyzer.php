@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\DetectsDeploymentPlatform;
 
 /**
  * Validates .env file security and location.
@@ -24,6 +25,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 {
+    use DetectsDeploymentPlatform;
+
     public static bool $runInCI = false;
 
     private const WORLD_READABLE = 0x0004;
@@ -75,6 +78,10 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
+        if ($this->isVaporOrServerless()) {
+            return false;
+        }
+
         $envFile = $this->buildPath('.env');
         $envExample = $this->buildPath('.env.example');
         $gitignore = $this->buildPath('.gitignore');
@@ -105,6 +112,10 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 
     public function getSkipReason(): string
     {
+        if ($this->isVaporOrServerless()) {
+            return 'Vapor removes the plain .env file from the deployment; environment variables are provided via Vapor UI (SSM Parameter Store, plaintext vars, or encrypted environment files)';
+        }
+
         return 'No environment files, git repository, or public directories found to analyze';
     }
 

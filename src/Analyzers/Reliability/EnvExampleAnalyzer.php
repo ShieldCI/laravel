@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\DetectsDeploymentPlatform;
 
 /**
  * Checks that all environment variables from .env are documented in .env.example.
@@ -22,7 +23,19 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class EnvExampleAnalyzer extends AbstractFileAnalyzer
 {
+    use DetectsDeploymentPlatform;
+
     public static bool $runInCI = false;
+
+    public function shouldRun(): bool
+    {
+        return ! $this->isVaporOrServerless();
+    }
+
+    public function getSkipReason(): string
+    {
+        return 'Vapor removes .env and .env.example from the deployment; environment variables are provided via Vapor UI (SSM Parameter Store, plaintext vars, or encrypted environment files)';
+    }
 
     protected function metadata(): AnalyzerMetadata
     {

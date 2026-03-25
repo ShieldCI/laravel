@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\DetectsDeploymentPlatform;
 
 /**
  * Detects vulnerable frontend dependencies (npm/yarn) with known security issues.
@@ -22,6 +23,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 {
+    use DetectsDeploymentPlatform;
+
     /**
      * @var array<string>
      */
@@ -51,6 +54,10 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
+        if ($this->isVaporOrServerless()) {
+            return false;
+        }
+
         $packageJson = $this->buildPath('package.json');
 
         if (! file_exists($packageJson)) {
@@ -75,6 +82,10 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
     public function getSkipReason(): string
     {
+        if ($this->isVaporOrServerless()) {
+            return 'Vapor removes frontend lock files (yarn.lock, package-lock.json) from the deployment package; frontend dependencies are managed outside the Lambda runtime';
+        }
+
         return 'No package.json found or no dependencies declared';
     }
 

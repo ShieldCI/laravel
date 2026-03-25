@@ -11,10 +11,10 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\PlatformDetector;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\AnalyzesMiddleware;
+use ShieldCI\Concerns\DetectsDeploymentPlatform;
 
 /**
  * Checks write permissions for critical Laravel directories and symlinks.
@@ -29,6 +29,7 @@ use ShieldCI\Concerns\AnalyzesMiddleware;
 class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
 {
     use AnalyzesMiddleware;
+    use DetectsDeploymentPlatform;
 
     public static bool $runInCI = false;
 
@@ -36,8 +37,6 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
      * Allows tests to override API-only app detection.
      */
     protected ?bool $statelessOverride = null;
-
-    private ?string $deploymentPlatformOverride = null;
 
     public function __construct(
         Router $router,
@@ -51,14 +50,6 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
     public function setStatelessOverride(?bool $stateless): void
     {
         $this->statelessOverride = $stateless;
-    }
-
-    /**
-     * Override deployment platform detection (testing only).
-     */
-    public function setDeploymentPlatform(string $platform): void
-    {
-        $this->deploymentPlatformOverride = $platform;
     }
 
     public function shouldRun(): bool
@@ -625,18 +616,5 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
         }
 
         return false;
-    }
-
-    /**
-     * Check if the deployment platform is Laravel Vapor or another serverless environment.
-     */
-    private function isVaporOrServerless(): bool
-    {
-        if ($this->deploymentPlatformOverride !== null) {
-            return in_array($this->deploymentPlatformOverride, ['vapor', 'serverless'], true);
-        }
-
-        return PlatformDetector::isLaravelVapor($this->getBasePath())
-            || PlatformDetector::isServerless();
     }
 }

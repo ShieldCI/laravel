@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.6.10
+
+### Changed
+- `Issue::$code` field removed; issue-type string identifiers (e.g. `'missing-env'`, `'http_only'`, `'phpstan'`) are now stored in `metadata['code']` — follows the `analyzers-core` update that dropped the legacy `?string $code` property; `createIssue()` and `createIssueWithSnippet()` call sites across all analyzer categories are updated accordingly; `ParsesPHPStanResults` and `ParsesPHPStanAnalysis` abstract method signatures no longer accept a `$code` parameter (#169)
+
+### Fixed
+- `ConfigCachingAnalyzer` no longer false-positives on Laravel Vapor — on Vapor, config is always cached by the platform during bootstrap regardless of `APP_ENV`, so flagging cached config in dev environments was incorrect; the analyzer now skips on serverless using the shared `DetectsDeploymentPlatform` trait (consistent with `EnvFileSecurityAnalyzer` and `EnvFileAnalyzer`) instead of a hand-rolled `$_ENV` check, enabling proper test overrides via `setDeploymentPlatform()` (#170)
+- `PHPIniAnalyzer` no longer false-positives when a boolean ini setting is explicitly set to `Off` — PHP's `ini_get()` returns `''` for directives set to `Off`/`No`/`False`/`0`, which was previously reported as an ambiguous empty value; the analyzer now reads the raw text from the source ini file and classifies explicit boolean keywords correctly; genuinely empty values (e.g. `allow_url_fopen =`) still trigger the ambiguous warning; fixes false positives on Vapor/serverless where `allow_url_fopen = Off` and `expose_php = Off` are set in `/var/task/php/conf.d/php.ini` (#171)
+
 ## v1.6.9
 
 ### Fixed

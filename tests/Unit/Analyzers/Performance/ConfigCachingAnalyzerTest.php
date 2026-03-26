@@ -519,6 +519,28 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
         $this->assertEquals('bootstrap/cache/config.php', $issues[0]->metadata['detected_via']);
     }
 
+    public function test_passes_when_config_cached_in_local_on_vapor(): void
+    {
+        /** @var ConfigCachingAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer(environment: 'local', configIsCached: true);
+        $analyzer->setDeploymentPlatform('vapor');
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_config_cached_in_development_on_vapor(): void
+    {
+        /** @var ConfigCachingAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer(environment: 'development', configIsCached: true);
+        $analyzer->setDeploymentPlatform('vapor');
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();

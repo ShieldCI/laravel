@@ -699,7 +699,7 @@ BLADE;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertEquals('blade-has-db-query', $issues[0]->code);
+        $this->assertEquals('blade-has-db-query', $issues[0]->metadata['code']);
     }
 
     public function test_prevents_duplicate_issues_on_same_line(): void
@@ -2256,7 +2256,7 @@ BLADE;
         $issues = $result->getIssues();
         $nestedIssue = null;
         foreach ($issues as $issue) {
-            if ($issue->code === 'blade-nested-foreach') {
+            if (($issue->metadata['code'] ?? null) === 'blade-nested-foreach') {
                 $nestedIssue = $issue;
                 break;
             }
@@ -2442,7 +2442,7 @@ BLADE;
         $issues = $result->getIssues();
         $computeIssue = null;
         foreach ($issues as $issue) {
-            if ($issue->code === 'blade-expensive-computation') {
+            if (($issue->metadata['code'] ?? null) === 'blade-expensive-computation') {
                 $computeIssue = $issue;
                 break;
             }
@@ -2472,7 +2472,7 @@ BLADE;
 
         $nestedIssue = null;
         foreach ($result->getIssues() as $issue) {
-            if ($issue->code === 'blade-nested-foreach') {
+            if (($issue->metadata['code'] ?? null) === 'blade-nested-foreach') {
                 $nestedIssue = $issue;
                 break;
             }

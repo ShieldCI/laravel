@@ -223,11 +223,11 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
                 $this->formatUncachedAssets(),
                 $thresholdNote
             ),
-            code: 'cache-headers',
             metadata: [
                 'uncached_assets' => $this->uncachedAssets->toArray(),
                 'count' => $this->uncachedAssets->count(),
                 'hit_threshold' => $hitThreshold,
+                'code' => 'cache-headers',
             ]
         )];
 

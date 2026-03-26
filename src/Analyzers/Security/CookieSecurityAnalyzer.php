@@ -113,11 +113,11 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                     lineNumber: $entry['line'],
                     severity: Severity::Critical,
                     recommendation: 'Set "http_only" => true in config/session.php to protect against XSS attacks',
-                    code: 'http_only',
                     metadata: [
                         'file' => 'session.php',
                         'config_key' => 'http_only',
                         'current_value' => $this->configValueToString($effectiveValue),
+                        'code' => 'http_only',
                     ]
                 );
             }
@@ -135,11 +135,11 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                     lineNumber: $entry['line'],
                     severity: Severity::High,
                     recommendation: 'Set "secure" => env("SESSION_SECURE_COOKIE", true) for HTTPS-only applications',
-                    code: 'secure',
                     metadata: [
                         'file' => 'session.php',
                         'config_key' => 'secure',
                         'current_value' => $this->configValueToString($effectiveValue),
+                        'code' => 'secure',
                     ]
                 );
             }
@@ -164,11 +164,11 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                         lineNumber: $entry['line'],
                         severity: Severity::Medium,
                         recommendation: 'Use "same_site" => "lax" or "strict" to protect against CSRF attacks',
-                        code: 'same_site',
                         metadata: [
                             'file' => 'session.php',
                             'config_key' => 'same_site',
                             'current_value' => $this->configValueToString($effectiveValue),
+                            'code' => 'same_site',
                         ]
                     );
                 }
@@ -212,11 +212,11 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                 lineNumber: null,
                 severity: Severity::Critical,
                 recommendation: 'Add \\App\\Http\\Middleware\\EncryptCookies::class to $middleware array in app/Http/Kernel.php',
-                code: 'EncryptCookies',
                 metadata: [
                     'file' => 'Kernel.php',
                     'middleware' => 'EncryptCookies',
                     'status' => 'missing',
+                    'code' => 'EncryptCookies',
                 ]
             );
         }
@@ -236,12 +236,12 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                     lineNumber: $lineNumber + 1,
                     severity: Severity::Critical,
                     recommendation: 'Uncomment the EncryptCookies middleware to enable cookie encryption',
-                    code: 'EncryptCookies',
                     metadata: [
                         'file' => 'Kernel.php',
                         'middleware' => 'EncryptCookies',
                         'status' => 'commented',
                         'line' => $lineNumber + 1,
+                        'code' => 'EncryptCookies',
                     ]
                 );
             }
@@ -344,12 +344,12 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                         lineNumber: null,
                         severity: Severity::Critical,
                         recommendation: 'Register EncryptCookies middleware globally in app/Http/Kernel.php (Laravel 9/10) or bootstrap/app.php (Laravel 11+) to enable cookie encryption',
-                        code: 'EncryptCookies',
                         metadata: [
                             'file' => file_exists($kernelFile) ? 'Kernel.php' : 'bootstrap/app.php',
                             'middleware' => 'EncryptCookies',
                             'status' => 'missing',
                             'detection_method' => 'runtime',
+                            'code' => 'EncryptCookies',
                         ]
                     );
                 }
@@ -427,12 +427,12 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                 lineNumber: null,
                 severity: Severity::High,
                 recommendation: 'Add EncryptCookies middleware using ->withMiddleware() in bootstrap/app.php to enable cookie encryption',
-                code: 'EncryptCookies',
                 metadata: [
                     'file' => 'bootstrap/app.php',
                     'laravel_version' => '11+',
                     'middleware' => 'EncryptCookies',
                     'detection_method' => 'file_analysis',
+                    'code' => 'EncryptCookies',
                 ]
             );
         }

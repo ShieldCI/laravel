@@ -627,7 +627,6 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
             location: new Location($actualFile, $line),
             severity: $severity,
             recommendation: $recommendation,
-            code: FileParser::getCodeSnippet($actualFile, $line),
             metadata: $metadata
         );
     }

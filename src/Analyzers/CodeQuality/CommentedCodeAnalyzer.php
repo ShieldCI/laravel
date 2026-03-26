@@ -152,13 +152,13 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
                     recommendation: $this->getRecommendation($block['lineCount']),
                     column: null,
                     contextLines: null,
-                    code: 'commented-code',
                     metadata: [
                         'startLine' => $block['startLine'],
                         'endLine' => $block['endLine'],
                         'lineCount' => $block['lineCount'],
                         'preview' => $block['preview'],
                         'file' => $file,
+                        'code' => 'commented-code',
                     ]
                 );
             }

@@ -496,8 +496,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
             lineNumber: $line,
             severity: $severity,
             recommendation: $recommendation,
-            code: 'opcache-setting',
-            metadata: $metadata
+            metadata: array_merge($metadata, ['code' => 'opcache-setting'])
         );
     }
 

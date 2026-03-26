@@ -290,7 +290,6 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
                             location: new Location($this->getRelativePath($file), $lineNumber + 1),
                             severity: Severity::High,
                             recommendation: sprintf('Set HSTS max-age to at least %d (6 months) or 31536000 (1 year)', $minMaxAge),
-                            code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                             metadata: [
                                 'issue_type' => 'weak_max_age',
                                 'max_age' => $maxAge,
@@ -308,7 +307,6 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
                         location: new Location($this->getRelativePath($file), $lineNumber + 1),
                         severity: Severity::Medium,
                         recommendation: 'Add "includeSubDomains" to HSTS header for complete subdomain protection',
-                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                         metadata: [
                             'issue_type' => 'missing_directive',
                             'missing_directive' => 'includeSubDomains',
@@ -324,7 +322,6 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
                         location: new Location($this->getRelativePath($file), $lineNumber + 1),
                         severity: Severity::Low,
                         recommendation: 'Add "preload" to HSTS header and submit to https://hstspreload.org/ for browser preload list inclusion',
-                        code: FileParser::getCodeSnippet($file, $lineNumber + 1),
                         metadata: [
                             'issue_type' => 'missing_directive',
                             'missing_directive' => 'preload',
@@ -366,7 +363,6 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
                     location: new Location($this->getRelativePath($sessionConfig), $entry['line']),
                     severity: Severity::High,
                     recommendation: 'Set "secure" => true in config/session.php for HTTPS-only applications',
-                    code: FileParser::getCodeSnippet($sessionConfig, $entry['line']),
                     metadata: [
                         'issue_type' => 'insecure_cookies',
                         'https_only' => true,

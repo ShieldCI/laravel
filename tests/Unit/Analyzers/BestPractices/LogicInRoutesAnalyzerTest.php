@@ -559,7 +559,7 @@ PHP;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertEquals('route-has-raw-queries', $issues[0]->code);
+        $this->assertEquals('route-has-raw-queries', $issues[0]->metadata['code']);
     }
 
     public function test_issue_code_for_business_logic(): void
@@ -589,7 +589,7 @@ PHP;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertEquals('route-has-business-logic', $issues[0]->code);
+        $this->assertEquals('route-has-business-logic', $issues[0]->metadata['code']);
     }
 
     public function test_issue_code_for_long_closure(): void
@@ -620,7 +620,7 @@ PHP;
 
         $this->assertWarning($result);
         $issues = $result->getIssues();
-        $this->assertEquals('route-closure-too-long', $issues[0]->code);
+        $this->assertEquals('route-closure-too-long', $issues[0]->metadata['code']);
     }
 
     public function test_false_positive_config_get_not_flagged_as_query(): void
@@ -1751,7 +1751,7 @@ PHP;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertEquals('route-has-db-writes', $issues[0]->code);
+        $this->assertEquals('route-has-db-writes', $issues[0]->metadata['code']);
     }
 
     public function test_issue_code_for_complex_queries(): void
@@ -1777,7 +1777,7 @@ PHP;
 
         $this->assertWarning($result);
         $issues = $result->getIssues();
-        $this->assertEquals('route-has-complex-queries', $issues[0]->code);
+        $this->assertEquals('route-has-complex-queries', $issues[0]->metadata['code']);
     }
 
     public function test_allows_simple_first_by_default(): void

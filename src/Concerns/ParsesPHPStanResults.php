@@ -58,11 +58,11 @@ trait ParsesPHPStanResults
                 lineNumber: $line,
                 severity: $severity,
                 recommendation: $recommendationCallback($message),
-                code: 'phpstan',
                 metadata: [
                     'phpstan_message' => $message,
                     'file' => $file,
                     'line' => $line,
+                    'code' => 'phpstan',
                 ]
             );
         }
@@ -100,12 +100,11 @@ trait ParsesPHPStanResults
     abstract protected function createIssueWithSnippet(
         string $message,
         string $filePath,
-        int $lineNumber,
+        ?int $lineNumber,
         Severity $severity,
         string $recommendation,
         ?int $column = null,
         ?int $contextLines = null,
-        ?string $code = null,
         array $metadata = []
     ): \ShieldCI\AnalyzersCore\ValueObjects\Issue;
 }

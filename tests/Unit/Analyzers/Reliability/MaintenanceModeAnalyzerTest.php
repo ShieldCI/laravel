@@ -167,8 +167,8 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $issues = $result->getIssues();
         $issue = $issues[0];
 
-        // Code should be null since maintenance file is not PHP code
-        $this->assertNull($issue->code);
+        // No issue type code for maintenance mode issues
+        $this->assertArrayNotHasKey('code', $issue->metadata);
     }
 
     #[Test]

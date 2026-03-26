@@ -85,10 +85,10 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                         lineNumber: null,
                         severity: $this->metadata()->severity,
                         recommendation: 'This appears to be a new installation. Run "php artisan migrate:install" to create the migrations table, then run "php artisan migrate" to execute all migrations.',
-                        code: 'migrations-table-missing',
                         metadata: [
                             'table' => 'migrations',
                             'exists' => false,
+                            'code' => 'migrations-table-missing',
                         ]
                     )]
                 );
@@ -125,10 +125,10 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                     lineNumber: null,
                     severity: Severity::High,
                     recommendation: $this->getPendingMigrationsRecommendation($pendingMigrations),
-                    code: 'pending-migrations',
                     metadata: [
                         'pending_count' => count($pendingMigrations),
                         'pending_migrations' => $pendingMigrations,
+                        'code' => 'pending-migrations',
                     ]
                 )]
             );
@@ -145,11 +145,11 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                         lineNumber: null,
                         severity: $this->metadata()->severity,
                         recommendation: $this->getDatabaseErrorRecommendation($e),
-                        code: 'database-error',
                         metadata: [
                             'exception' => get_class($e),
                             'error' => $e->getMessage(),
                             'error_type' => 'database_connection',
+                            'code' => 'database-error',
                         ]
                     )]
                 )
@@ -161,10 +161,10 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                         lineNumber: null,
                         severity: $this->metadata()->severity,
                         recommendation: 'Ensure the database connection is working and the migrations table exists. If this is a new installation, run "php artisan migrate:install" followed by "php artisan migrate". Error: '.$e->getMessage(),
-                        code: 'migration-check-error',
                         metadata: [
                             'exception' => get_class($e),
                             'error' => $e->getMessage(),
+                            'code' => 'migration-check-error',
                         ]
                     )]
                 );

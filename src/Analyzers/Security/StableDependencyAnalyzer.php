@@ -87,7 +87,6 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                         location: new Location($this->getRelativePath($filePath)),
                         severity: Severity::Low,
                         recommendation: 'Run "composer update --prefer-stable" and ensure all dependencies resolve to stable releases.',
-                        code: $isLockFile ? null : FileParser::getCodeSnippet($filePath, 1),
                         metadata: [
                             'composer_version_check' => 'update --dry-run --prefer-stable',
                         ]
@@ -160,7 +159,6 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                     location: new Location($this->getRelativePath($composerJson), 1),
                     severity: Severity::Low,
                     recommendation: 'Explicitly set "minimum-stability": "stable" in composer.json to document your stability requirements',
-                    code: FileParser::getCodeSnippet($composerJson, 1),
                     metadata: [
                         'minimum_stability' => 'implicit_default',
                         'composer_default' => 'stable',
@@ -179,7 +177,6 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                 location: new Location($this->getRelativePath($composerJson), $line),
                 severity: Severity::Medium,
                 recommendation: 'Set "minimum-stability": "stable" in composer.json to prefer stable package versions',
-                code: FileParser::getCodeSnippet($composerJson, $line),
                 metadata: [
                     'minimum_stability' => $minimumStability,
                     'issue_type' => 'unstable_minimum_stability',
@@ -196,7 +193,6 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                 location: new Location($this->getRelativePath($composerJson), $line),
                 severity: Severity::Low,
                 recommendation: 'Set "prefer-stable": true in composer.json to prefer stable versions when possible',
-                code: FileParser::getCodeSnippet($composerJson, $line),
                 metadata: []
             );
         }
@@ -298,7 +294,6 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                     location: new Location($this->getRelativePath($composerJson), $line),
                     severity: $severity,
                     recommendation: sprintf('Update "%s" to use a stable version constraint', $package),
-                    code: FileParser::getCodeSnippet($composerJson, $line),
                     metadata: ['package' => $package, 'version' => $version, 'section' => $section]
                 );
 
@@ -314,7 +309,6 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                     location: new Location($this->getRelativePath($composerJson), $line),
                     severity: $severity,
                     recommendation: sprintf('Remove @%s flag and use stable version for "%s"', $stabilityFlag, $package),
-                    code: FileParser::getCodeSnippet($composerJson, $line),
                     metadata: ['package' => $package, 'version' => $version, 'stability' => $stabilityFlag, 'section' => $section]
                 );
             }
@@ -374,7 +368,6 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                     $examples,
                     $count > 3 ? sprintf(' and %d more', $count - 3) : ''
                 ),
-                code: null,
                 metadata: [
                     'count' => $count,
                     'examples' => array_slice($unstablePackages, 0, 3),

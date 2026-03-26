@@ -10,7 +10,6 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
-use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Support\DatabaseConnectionChecker;
@@ -75,7 +74,6 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
                     location: $configLocation,
                     severity: $severity,
                     recommendation: $this->buildRecommendation($connectionName, $result),
-                    code: $configLocation->line ? FileParser::getCodeSnippet($configLocation->file, $configLocation->line) : null,
                     metadata: [
                         'connection' => $connectionName,
                         'driver' => $this->getConnectionDriver($connectionName),

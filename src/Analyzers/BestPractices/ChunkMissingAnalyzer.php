@@ -60,7 +60,6 @@ class ChunkMissingAnalyzer extends AbstractFileAnalyzer
                         lineNumber: $issue['line'],
                         severity: $issue['severity'],
                         recommendation: $issue['recommendation'],
-                        code: $issue['code'] ?? null,
                     );
                 }
             } catch (\Throwable $e) {

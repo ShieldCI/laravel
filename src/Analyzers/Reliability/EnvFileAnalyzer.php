@@ -65,12 +65,12 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                     lineNumber: null,
                     severity: $this->metadata()->severity,
                     recommendation: sprintf('Fix the broken symlink. Target: %s', $target ?: 'unknown'),
-                    code: 'broken-symlink',
                     metadata: [
                         'env_path' => $envPath,
                         'is_symlink' => true,
                         'symlink_target' => $target ?: null,
                         'target_exists' => false,
+                        'code' => 'broken-symlink',
                     ]
                 )]
             );
@@ -91,10 +91,10 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                     lineNumber: null,
                     severity: $this->metadata()->severity,
                     recommendation: 'Fix file permissions to make .env readable. Run: chmod 600 .env',
-                    code: 'not-readable',
                     metadata: [
                         'env_path' => $envPath,
                         'is_readable' => false,
+                        'code' => 'not-readable',
                     ]
                 )]
             );
@@ -111,10 +111,10 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                     lineNumber: null,
                     severity: $this->metadata()->severity,
                     recommendation: 'Add environment variables to your .env file. At minimum, configure: APP_KEY, APP_ENV, APP_DEBUG, DB_CONNECTION',
-                    code: 'empty-file',
                     metadata: [
                         'env_path' => $envPath,
                         'is_empty' => true,
+                        'code' => 'empty-file',
                     ]
                 )]
             );
@@ -139,10 +139,10 @@ class EnvFileAnalyzer extends AbstractFileAnalyzer
                 lineNumber: null,
                 severity: Severity::Critical,
                 recommendation: $this->buildRecommendation($envExampleExists),
-                code: 'missing-file',
                 metadata: [
                     'env_path' => $envPath,
                     'env_example_exists' => $envExampleExists,
+                    'code' => 'missing-file',
                 ]
             )]
         );

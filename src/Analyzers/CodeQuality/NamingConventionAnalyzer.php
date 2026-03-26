@@ -70,7 +70,6 @@ class NamingConventionAnalyzer extends AbstractFileAnalyzer
                     recommendation: $this->getRecommendation($issue['type'], $issue['name'], $issue['suggestion']),
                     column: null,
                     contextLines: null,
-                    code: $issue['name'],
                     metadata: [
                         'type' => $issue['type'],
                         'name' => $issue['name'],

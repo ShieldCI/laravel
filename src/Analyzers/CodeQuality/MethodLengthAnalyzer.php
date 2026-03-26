@@ -102,7 +102,6 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
                     recommendation: $this->getRecommendation($issue['lines'], $threshold, $issue['type']),
                     column: null,
                     contextLines: null,
-                    code: $issue['name'],
                     metadata: [
                         'name' => $issue['name'],
                         'type' => $issue['type'],

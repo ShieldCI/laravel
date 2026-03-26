@@ -176,6 +176,46 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
 
             // Handle ambiguous empty values
             if ($isAmbiguous) {
+                // ini_get() returns '' for both explicit Off and genuinely empty values.
+                // Check the source file to distinguish between the two.
+                $source = $this->findSettingSource($setting);
+                if ($source !== null) {
+                    $rawFileValue = $this->readSettingValueFromFile($source['file'], $setting);
+                    if ($rawFileValue !== false && $rawFileValue !== '') {
+                        // The file has an explicit value (e.g. 'Off', 'No', 'False') — not ambiguous.
+                        $normalizedFile = strtolower($rawFileValue);
+                        $isEnabled = in_array($normalizedFile, ['1', 'on', 'yes', 'true'], true);
+                        $isDisabled = in_array($normalizedFile, ['0', 'off', 'no', 'false'], true);
+
+                        if ($isEnabled || $isDisabled) {
+                            $actual = $isEnabled ? 'enabled' : 'disabled';
+                            if ($expectedValue && ! $isEnabled) {
+                                $issues[] = $this->createPhpIniIssueWithValue(
+                                    phpIniPath: $phpIniPath,
+                                    setting: $setting,
+                                    expectedValue: true,
+                                    message: sprintf('PHP ini setting "%s" should be enabled but is %s', $setting, $actual),
+                                    severity: $this->getSeverityForSetting($setting),
+                                    metadata: ['setting' => $setting, 'current_value' => $rawFileValue, 'expected_value' => 'enabled'],
+                                );
+                            } elseif (! $expectedValue && $isEnabled) {
+                                $issues[] = $this->createPhpIniIssueWithValue(
+                                    phpIniPath: $phpIniPath,
+                                    setting: $setting,
+                                    expectedValue: false,
+                                    message: sprintf('PHP ini setting "%s" should be disabled but is %s', $setting, $actual),
+                                    severity: $this->getSeverityForSetting($setting),
+                                    metadata: ['setting' => $setting, 'current_value' => $rawFileValue, 'expected_value' => 'disabled'],
+                                );
+                            }
+
+                            // else: value matches expectation, no issue
+                            continue;
+                        }
+                    }
+                }
+
+                // Genuinely ambiguous (file has empty value or setting not found in any file)
                 $issues[] = $this->createPhpIniIssueWithValue(
                     phpIniPath: $phpIniPath,
                     setting: $setting,
@@ -544,6 +584,33 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
     private function settingExistsInFile(string $file, string $setting): bool
     {
         return $this->findSettingInFile($file, $setting)['found'];
+    }
+
+    /**
+     * Read the raw text value of a setting from an ini file.
+     *
+     * Returns the trimmed value string (e.g. 'Off', '1', '16'), empty string if
+     * the setting is present but has no value, or false if not found (uncommented).
+     */
+    private function readSettingValueFromFile(string $file, string $setting): string|false
+    {
+        $lines = $this->getPhpIniLines($file);
+
+        foreach ($lines as $line) {
+            if (! is_string($line)) {
+                continue;
+            }
+
+            $lineWithoutComments = preg_replace('/[;#].*$/', '', $line);
+            $lineWithoutComments = preg_replace('/\/\/.*$/', '', $lineWithoutComments ?? '');
+
+            $pattern = '/^\s*'.preg_quote($setting, '/').'\s*=\s*(.*)$/i';
+            if (preg_match($pattern, $lineWithoutComments ?? '', $matches) === 1) {
+                return trim($matches[1]);
+            }
+        }
+
+        return false;
     }
 
     /**

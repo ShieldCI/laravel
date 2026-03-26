@@ -568,6 +568,38 @@ class PHPIniAnalyzerTest extends AnalyzerTestCase
         $this->assertEquals('', $allowUrlFopenIssue->metadata['current_value']);
     }
 
+    public function test_it_does_not_flag_explicit_off_as_ambiguous(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'allow_url_fopen = Off',
+            'expose_php = Off',
+            'allow_url_include = Off',
+            'display_errors = Off',
+            'display_startup_errors = Off',
+            'log_errors = On',
+            'ignore_repeated_errors = Off',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        // Simulate what PHP actually returns for boolean Off settings
+        $analyzer->setIniValues([
+            'allow_url_fopen' => '',
+            'allow_url_include' => '',
+            'expose_php' => '',
+            'display_errors' => '',
+            'display_startup_errors' => '',
+            'log_errors' => '1',
+            'ignore_repeated_errors' => '',
+        ]);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
     public function test_it_distinguishes_between_zero_and_empty(): void
     {
         $iniPath = $this->createPhpIniFixture([

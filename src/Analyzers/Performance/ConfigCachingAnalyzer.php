@@ -13,6 +13,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\DetectsDeploymentPlatform;
 
 /**
  * Analyzes configuration caching setup using Laravel's proper API.
@@ -26,6 +27,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class ConfigCachingAnalyzer extends AbstractAnalyzer
 {
+    use DetectsDeploymentPlatform;
+
     /**
      * Config caching checks are not applicable in CI environments.
      */
@@ -98,7 +101,8 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
         $issues = [];
 
         // Config cached in local/development environment - not recommended
-        if ($this->isDevelopmentEnvironment($environment) && $configIsCached) {
+        // Skip this check on Vapor/serverless: config is always cached by the platform regardless of environment
+        if ($this->isDevelopmentEnvironment($environment) && $configIsCached && ! $this->isVaporOrServerless()) {
             $configPath = $this->getCachedConfigPath();
 
             $issues[] = $this->createIssue(

@@ -80,7 +80,6 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
                     location: new Location($this->getRelativePath($composerJsonPath)),
                     severity: $this->metadata()->severity,
                     recommendation: 'Run "composer validate" to see full details and resolve the reported issues. Ensure version constraints and schema match Composer expectations.',
-                    code: null,
                     metadata: ['composer_output' => trim($result->output)],
                 )]
             );
@@ -120,7 +119,6 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
                     location: new Location($this->getRelativePath($composerJsonPath)),
                     severity: $this->metadata()->severity,
                     recommendation: 'Fix the JSON syntax errors in composer.json. Use a JSON validator or run "composer validate" to see specific errors. Common issues: missing commas, trailing commas, unescaped quotes.',
-                    code: null,
                     metadata: [
                         'json_error' => json_last_error_msg(),
                     ]
@@ -138,7 +136,6 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
                     location: new Location($this->getRelativePath($composerJsonPath)),
                     severity: $this->metadata()->severity,
                     recommendation: 'composer.json must be a valid JSON object. Ensure the root element is an object (wrapped in curly braces {}), not an array (square brackets []).',
-                    code: null,
                     metadata: []
                 )]
             );

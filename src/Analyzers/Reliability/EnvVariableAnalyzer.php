@@ -70,7 +70,7 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
                     location: new Location($this->getRelativePath($envPath)),
                     severity: Severity::Critical,
                     recommendation: $this->buildMissingEnvFileRecommendation(),
-                    code: 'missing-env',
+                    metadata: ['code' => 'missing-env'],
                 )]
             );
         }
@@ -92,8 +92,7 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
                         "The .env.example file could not be parsed. Error: %s\n\nEnsure the file is readable and properly formatted.",
                         $exampleResult['error']
                     ),
-                    code: 'parse-error-example',
-                    metadata: ['error' => $exampleResult['error']]
+                    metadata: ['error' => $exampleResult['error'], 'code' => 'parse-error-example']
                 )]
             );
         }
@@ -109,8 +108,7 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
                         "The .env file could not be parsed. Error: %s\n\nEnsure the file is readable and properly formatted.",
                         $actualResult['error']
                     ),
-                    code: 'parse-error-env',
-                    metadata: ['error' => $actualResult['error']]
+                    metadata: ['error' => $actualResult['error'], 'code' => 'parse-error-env']
                 )]
             );
         }
@@ -154,10 +152,10 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
                     location: new Location($this->getRelativePath($envPath)),
                     severity: Severity::Low,
                     recommendation: $this->buildCommentedVariablesRecommendation($commentedOnlyVars),
-                    code: 'commented-variables',
                     metadata: [
                         'commented_count' => count($commentedOnlyVars),
                         'commented_variables' => array_keys($commentedOnlyVars),
+                        'code' => 'commented-variables',
                     ]
                 )]
             );
@@ -172,10 +170,10 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
                 location: new Location($this->getRelativePath($envPath)),
                 severity: Severity::High,
                 recommendation: $this->buildMissingVariablesRecommendation($missingVars),
-                code: 'missing-variables',
                 metadata: [
                     'missing_count' => count($missingVars),
                     'missing_variables' => array_keys($missingVars),
+                    'code' => 'missing-variables',
                 ]
             );
         }
@@ -186,10 +184,10 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
                 location: new Location($this->getRelativePath($envPath)),
                 severity: Severity::Low,
                 recommendation: $this->buildCommentedVariablesRecommendation($commentedOnlyVars),
-                code: 'commented-variables',
                 metadata: [
                     'commented_count' => count($commentedOnlyVars),
                     'commented_variables' => array_keys($commentedOnlyVars),
+                    'code' => 'commented-variables',
                 ]
             );
         }

@@ -182,12 +182,11 @@ class ParsesPHPStanAnalysisTest extends TestCase
             protected function createIssueWithSnippet(
                 string $message,
                 string $filePath,
-                int $lineNumber,
+                ?int $lineNumber,
                 Severity $severity,
                 string $recommendation,
                 ?int $column = null,
                 ?int $contextLines = null,
-                ?string $code = null,
                 array $metadata = []
             ): Issue {
                 return new Issue(
@@ -195,7 +194,6 @@ class ParsesPHPStanAnalysisTest extends TestCase
                     location: new Location($filePath, $lineNumber),
                     severity: $severity,
                     recommendation: $recommendation,
-                    code: $code,
                     metadata: $metadata,
                 );
             }

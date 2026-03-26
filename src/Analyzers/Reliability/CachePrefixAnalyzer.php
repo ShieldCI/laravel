@@ -10,7 +10,6 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
-use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -92,7 +91,6 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
                     location: new Location($this->getRelativePath($configFile), $prefixLine),
                     severity: $this->metadata()->severity,
                     recommendation: $this->getEmptyPrefixRecommendation(),
-                    code: FileParser::getCodeSnippet($configFile, $prefixLine),
                     metadata: [
                         'cache_driver' => $this->getDefaultDriver(),
                         'prefix' => $prefix,
@@ -110,7 +108,6 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
                     location: new Location($this->getRelativePath($configFile), $prefixLine),
                     severity: $this->metadata()->severity,
                     recommendation: $this->getGenericPrefixRecommendation($prefix),
-                    code: FileParser::getCodeSnippet($configFile, $prefixLine),
                     metadata: [
                         'cache_driver' => $this->getDefaultDriver(),
                         'prefix' => $prefix,

@@ -272,7 +272,6 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
             location: new Location($this->getRelativePath($locationPath)),
             severity: $this->metadata()->severity,
             recommendation: $this->buildRecommendation($formattedMissing, $formattedNonWritable),
-            code: null,
             metadata: [
                 'missing_directories' => $formattedMissing,
                 'non_writable_directories' => $formattedNonWritable,
@@ -534,7 +533,6 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
             location: new Location($this->getRelativePath($locationPath)),
             severity: $this->metadata()->severity,
             recommendation: $this->buildSymlinkRecommendation($formattedSymlinks),
-            code: null,
             metadata: [
                 'broken_symlinks' => $formattedSymlinks,
                 'broken_symlink_count' => count($brokenSymlinks),

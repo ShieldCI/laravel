@@ -179,7 +179,6 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
                         location: new Location($composerLock),
                         severity: Severity::Medium,
                         recommendation: sprintf('Investigate license for "%s" or contact the package maintainer', $packageName),
-                        code: null,
                         metadata: [
                             'package' => $packageName,
                             'issue_type' => 'missing_license',
@@ -250,7 +249,6 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
                         : ($isConjunctive
                             ? sprintf('Package "%s" has conjunctive license (AND) including GPL/AGPL - ALL licenses apply simultaneously. You must comply with GPL/AGPL terms. Consider finding an alternative package', $packageName)
                             : sprintf('GPL/AGPL licenses may require your application to be open-source. Review "%s" license implications or find an alternative package', $packageName)),
-                    code: null,
                     metadata: [
                         'package' => $packageName,
                         'licenses' => $licenses,
@@ -278,7 +276,6 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
                             $packageName,
                             $isConjunctive ? 'Note: This is a conjunctive license (AND) - ALL licenses apply simultaneously.' : ''
                         ),
-                        code: null,
                         metadata: [
                             'package' => $packageName,
                             'licenses' => $licenses,

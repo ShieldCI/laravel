@@ -378,7 +378,6 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                     location: new Location($this->getRelativePath($packageLock)),
                     severity: $severity,
                     recommendation: 'Run "npm audit" to see details and "npm audit fix" to automatically fix vulnerabilities',
-                    code: null,
                     metadata: [
                         'total_vulnerabilities' => $total,
                         'issue_type' => 'summary',
@@ -445,7 +444,6 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                         location: new Location($this->getRelativePath($yarnLock)),
                         severity: $severity,
                         recommendation: 'Run "yarn audit" to see details and upgrade vulnerable packages',
-                        code: null,
                         metadata: [
                             'total_vulnerabilities' => $total,
                             'issue_type' => 'summary',
@@ -467,7 +465,6 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                         location: new Location($this->getRelativePath($yarnLock)),
                         severity: Severity::High,
                         recommendation: 'Run "yarn audit" to see details and upgrade vulnerable packages',
-                        code: null,
                         metadata: [
                             'total_vulnerabilities' => $total,
                             'issue_type' => 'summary',
@@ -608,7 +605,6 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
             location: new Location($this->getRelativePath($lockFile)),
             severity: $severity,
             recommendation: $recommendation,
-            code: null,
             metadata: $metadata
         );
     }

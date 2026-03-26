@@ -76,7 +76,6 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
                     recommendation: $this->getRecommendation($issue['type'], $issue['method']),
                     column: null,
                     contextLines: null,
-                    code: $issue['method'],
                     metadata: [
                         'method' => $issue['method'],
                         'class' => $issue['class'],

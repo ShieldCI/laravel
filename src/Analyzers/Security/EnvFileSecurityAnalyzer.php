@@ -240,11 +240,11 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                             location: new Location($this->getRelativePath($envExample), $lineNumber + 1),
                             severity: Severity::High,
                             recommendation: 'Replace with placeholder value. .env.example should not contain real credentials',
-                            code: $key,
                             metadata: [
                                 'key' => $key,
                                 'value_length' => strlen($value),
                                 'file' => '.env.example',
+                                'code' => $key,
                             ]
                         );
                     }
@@ -277,10 +277,10 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                 location: new Location($this->getRelativePath($gitignorePath)),
                 severity: Severity::Critical,
                 recommendation: 'Add ".env" to .gitignore to prevent accidentally committing secrets to version control',
-                code: '.env',
                 metadata: [
                     'file' => '.gitignore',
                     'missing_pattern' => '.env',
+                    'code' => '.env',
                 ]
             );
         }
@@ -334,10 +334,10 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                 location: new Location($this->getRelativePath($envPath)),
                 severity: Severity::Critical,
                 recommendation: 'Remove .env from git: "git rm --cached .env" and ensure it\'s in .gitignore',
-                code: 'git-tracked',
                 metadata: [
                     'file' => '.env',
                     'git_tracked' => true,
+                    'code' => 'git-tracked',
                 ]
             );
         }
@@ -368,11 +368,11 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                 location: new Location($this->getRelativePath($envPath)),
                 severity: Severity::Critical,
                 recommendation: 'Restrict .env permissions: chmod 600 .env',
-                code: 'permissions',
                 metadata: [
                     'permissions' => $octal,
                     'world_readable' => (bool) ($perms & self::WORLD_READABLE),
                     'world_writable' => (bool) ($perms & self::WORLD_WRITABLE),
+                    'code' => 'permissions',
                 ]
             );
 
@@ -386,11 +386,11 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                 location: new Location($this->getRelativePath($envPath)),
                 severity: Severity::Medium,
                 recommendation: 'Consider restricting .env permissions: chmod 600 .env (readable only by owner)',
-                code: 'permissions',
                 metadata: [
                     'permissions' => $octal,
                     'group_readable' => (bool) ($perms & self::GROUP_READABLE),
                     'group_writable' => (bool) ($perms & self::GROUP_WRITABLE),
+                    'code' => 'permissions',
                 ]
             );
         }

@@ -688,7 +688,7 @@ APP_NAME=MyApp';
 
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertSame('parse-error-example', $issues[0]->code);
+        $this->assertSame('parse-error-example', $issues[0]->metadata['code']);
         $this->assertArrayHasKey('error', $issues[0]->metadata);
 
         $error = $issues[0]->metadata['error'];
@@ -720,7 +720,7 @@ APP_NAME=MyApp';
 
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertSame('parse-error-env', $issues[0]->code);
+        $this->assertSame('parse-error-env', $issues[0]->metadata['code']);
         $this->assertArrayHasKey('error', $issues[0]->metadata);
     }
 
@@ -771,8 +771,8 @@ REQUIRED_VAR=',
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertSame('missing-variables', $issues[0]->code);
-        $this->assertNotSame('parse-error-env', $issues[0]->code);
+        $this->assertSame('missing-variables', $issues[0]->metadata['code']);
+        $this->assertNotSame('parse-error-env', $issues[0]->metadata['code']);
     }
 
     public function test_is_not_run_in_ci_mode(): void

@@ -97,7 +97,6 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
                         lineNumber: $issue['line'],
                         severity: $issue['severity'],
                         recommendation: $issue['recommendation'],
-                        code: $issue['code'] ?? null,
                     );
                     $affectedModels[$file] = true;
                 }

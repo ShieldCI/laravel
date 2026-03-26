@@ -89,8 +89,7 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
                         lineNumber: $issue['line'],
                         severity: $issue['severity'],
                         recommendation: $issue['recommendation'],
-                        code: $issue['code'],
-                        metadata: $issue['metadata'] ?? []
+                        metadata: array_merge($issue['metadata'] ?? [], ['code' => $issue['code']])
                     );
                 }
             } catch (\Throwable $e) {

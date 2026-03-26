@@ -88,7 +88,6 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
                 lineNumber: $middlewareLine,
                 severity: $this->metadata()->severity,
                 recommendation: $middleware['recommendation'],
-                code: $middleware['name'],
                 metadata: [
                     'middleware_class' => $middleware['class'],
                     'middleware_name' => $middleware['name'],

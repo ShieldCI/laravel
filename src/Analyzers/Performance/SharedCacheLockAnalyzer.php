@@ -121,7 +121,6 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
                 location: new Location($this->getRelativePath($usage['file']), $usage['line']),
                 severity: $this->metadata()->severity,
                 recommendation: $this->getRecommendation(),
-                code: FileParser::getCodeSnippet($usage['file'], $usage['line']),
                 metadata: [
                     'file' => $usage['file'],
                     'line' => $usage['line'],

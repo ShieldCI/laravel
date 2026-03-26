@@ -80,7 +80,6 @@ class NestingDepthAnalyzer extends AbstractFileAnalyzer
                     recommendation: $this->getRecommendation($issue['depth'], $threshold),
                     column: null,
                     contextLines: null,
-                    code: $issue['context'],
                     metadata: [
                         'depth' => $issue['depth'],
                         'threshold' => $threshold,

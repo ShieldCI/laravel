@@ -36,10 +36,10 @@ trait ParsesPHPStanAnalysis
                 lineNumber: $trace['line'],
                 severity: Severity::High,
                 recommendation: $this->getRecommendationFromMessage($trace['message']),
-                code: 'phpstan',
                 metadata: [
                     'phpstan_message' => $trace['message'],
                     'detection_method' => 'phpstan',
+                    'code' => 'phpstan',
                 ]
             );
         }
@@ -60,10 +60,10 @@ trait ParsesPHPStanAnalysis
                 lineNumber: $trace['line'],
                 severity: Severity::High,
                 recommendation: $this->getRecommendationFromMessage($trace['message']),
-                code: 'phpstan',
                 metadata: [
                     'phpstan_message' => $trace['message'],
                     'detection_method' => 'phpstan',
+                    'code' => 'phpstan',
                 ]
             );
         }
@@ -92,10 +92,10 @@ trait ParsesPHPStanAnalysis
                 lineNumber: $trace['line'],
                 severity: Severity::High,
                 recommendation: $this->getRecommendationFromMessage($trace['message']),
-                code: 'phpstan',
                 metadata: [
                     'phpstan_message' => $trace['message'],
                     'detection_method' => 'phpstan',
+                    'code' => 'phpstan',
                 ]
             );
         }

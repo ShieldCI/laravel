@@ -181,11 +181,11 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
                         lineNumber: $phpBlockStart,
                         severity: Severity::Medium,
                         recommendation: 'Move complex PHP logic to controllers, view composers, or presenter classes. Blade templates should focus on presentation only',
-                        code: 'blade-php-block-too-long',
                         metadata: [
                             'block_lines' => $phpBlockLines,
                             'max_lines' => $this->maxPhpBlockLines,
                             'block_start' => $phpBlockStart,
+                            'code' => 'blade-php-block-too-long',
                         ]
                     );
                 }
@@ -216,8 +216,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
                     lineNumber: $lineNumber + 1,
                     severity: Severity::Medium,
                     recommendation: 'Use Blade directives (@php...@endphp) instead of inline PHP for consistency',
-                    code: 'blade-inline-php',
-                    metadata: ['line' => $lineNumber + 1]
+                    metadata: ['line' => $lineNumber + 1, 'code' => 'blade-inline-php']
                 );
             }
         }
@@ -230,10 +229,10 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
                 lineNumber: $phpBlockStart,
                 severity: Severity::High,
                 recommendation: 'Every @php directive must have a matching @endphp',
-                code: 'blade-unclosed-php-block',
                 metadata: [
                     'block_start' => $phpBlockStart,
                     'lines_counted' => $phpBlockLines,
+                    'code' => 'blade-unclosed-php-block',
                 ]
             );
         }
@@ -283,7 +282,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
 
             $this->reportedLines[$lineKey] = true;
 
-            $metadata = array_merge(['line' => $originalLine], $astIssue['metadata'] ?? []);
+            $metadata = array_merge(['line' => $originalLine, 'code' => $astIssue['code']], $astIssue['metadata'] ?? []);
 
             $issues[] = $this->createIssueWithSnippet(
                 message: $astIssue['message'],
@@ -291,7 +290,6 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
                 lineNumber: $originalLine,
                 severity: $astIssue['severity'],
                 recommendation: $astIssue['recommendation'],
-                code: $astIssue['code'],
                 metadata: $metadata
             );
         }

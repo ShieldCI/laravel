@@ -129,7 +129,6 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                     location: new Location($this->getRelativePath($composerLockPath)),
                     severity: Severity::Medium,
                     recommendation: $this->getBothDepsRecommendation(),
-                    code: null,
                     metadata: [
                         'scope' => 'unknown',
                         'composer_version_check' => 'install --dry-run',
@@ -152,7 +151,6 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                         location: new Location($this->getRelativePath($composerLockPath)),
                         severity: Severity::Medium,
                         recommendation: $this->getBothDepsRecommendation(),
-                        code: null,
                         metadata: [
                             'scope' => 'production and dev',
                             'composer_version_check' => 'install --dry-run',
@@ -167,7 +165,6 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                         location: new Location($this->getRelativePath($composerLockPath)),
                         severity: Severity::Medium,
                         recommendation: $this->getProductionDepsRecommendation(),
-                        code: null,
                         metadata: [
                             'scope' => 'production',
                             'composer_version_check' => 'install --dry-run',
@@ -181,7 +178,6 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                         location: new Location($this->getRelativePath($composerLockPath)),
                         severity: Severity::Low,
                         recommendation: $this->getDevDepsRecommendation(),
-                        code: null,
                         metadata: [
                             'scope' => 'dev',
                             'composer_version_check' => 'install --dry-run',

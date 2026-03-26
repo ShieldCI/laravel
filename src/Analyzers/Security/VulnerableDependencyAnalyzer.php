@@ -148,7 +148,6 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                 location: new Location($this->getRelativePath($composerLock)),
                 severity: Severity::Critical,
                 recommendation: $recommendation,
-                code: null,
                 metadata: [
                     'package' => $package,
                     'version' => $version,
@@ -207,7 +206,6 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
                 location: new Location($this->getRelativePath($composerLock)),
                 severity: Severity::Medium,
                 recommendation: $recommendation,
-                code: null,
                 metadata: [
                     'package' => $packageName,
                     'replacement' => $replacement,

@@ -96,10 +96,10 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
                 recommendation: $this->buildUndocumentedVariablesRecommendation($undocumentedVars),
                 column: null,
                 contextLines: null,
-                code: 'undocumented-variables',
                 metadata: [
                     'undocumented_count' => count($undocumentedVars),
                     'undocumented_variables' => array_keys($undocumentedVars),
+                    'code' => 'undocumented-variables',
                 ]
             )]
         );

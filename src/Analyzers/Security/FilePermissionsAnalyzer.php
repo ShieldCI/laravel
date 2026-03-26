@@ -200,7 +200,6 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
                     decoct($recommended),
                     $relativePath
                 ),
-                code: null,
                 metadata: [
                     'path' => $relativePath,
                     'permissions' => $permissions['octal'],
@@ -234,7 +233,6 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
                     decoct($recommended),
                     $relativePath
                 ),
-                code: null,
                 metadata: [
                     'path' => $relativePath,
                     'permissions' => $permissions['octal'],
@@ -264,7 +262,6 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
                     decoct($recommended),
                     $relativePath
                 ),
-                code: null,
                 metadata: [
                     'path' => $relativePath,
                     'permissions' => $permissions['octal'],
@@ -291,7 +288,6 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
                     decoct($recommended),
                     $relativePath
                 ),
-                code: null,
                 metadata: [
                     'path' => $relativePath,
                     'permissions' => $permissions['octal'],
@@ -319,7 +315,6 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
                     decoct($recommended),
                     $relativePath
                 ),
-                code: null,
                 metadata: [
                     'path' => $relativePath,
                     'permissions' => $permissions['octal'],

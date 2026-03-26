@@ -274,7 +274,7 @@ OUTPUT;
         // verify the message is correct
         if ($result->getStatus() === \ShieldCI\AnalyzersCore\Enums\Status::Failed) {
             $issues = $result->getIssues();
-            if (! empty($issues) && isset($issues[0]->code) && $issues[0]->code === 'migrations-table-missing') {
+            if (! empty($issues) && isset($issues[0]->metadata['code']) && $issues[0]->metadata['code'] === 'migrations-table-missing') {
                 $this->assertStringContainsString('migrations table', strtolower($issues[0]->message));
                 $this->assertStringContainsString('migrate:install', $issues[0]->recommendation);
             }

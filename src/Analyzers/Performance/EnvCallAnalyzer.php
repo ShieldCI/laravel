@@ -112,7 +112,6 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
                 lineNumber: $line,
                 severity: $this->metadata()->severity,
                 recommendation: ConfigSuggester::getRecommendation($varNameString),
-                code: $callType === 'static' ? 'Env::get' : 'env',
                 metadata: [
                     'function' => $callType === 'static' ? 'Env::get' : 'env',
                     'variable' => $varNameString,

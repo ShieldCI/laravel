@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.7.0
+
+### Changed
+- `MessageHelper` and `InlineSuppressionParser` moved to `analyzers-core` — callers now import from `ShieldCI\AnalyzersCore\Support`; the copies in `src/Support/` are deleted
+- `InspectsCode::parseConfigArray()` delegates to `ConfigFileHelper::parseConfigArray()` in `analyzers-core` — removes ~60 lines of duplicated AST parsing logic
+- `UnguardedModelsAnalyzer` replaces the inline `NodeTraverser` + `NameResolver` boilerplate with `$this->parser->resolveNames()` from `ParserInterface`
+
 ## v1.6.10
 
 ### Changed

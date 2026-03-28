@@ -14,7 +14,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Support\DatabaseConnectionChecker;
 use ShieldCI\Support\DatabaseConnectionResult;
-use ShieldCI\Support\MessageHelper;
+use ShieldCI\AnalyzersCore\Support\MessageHelper;
 
 /**
  * Checks that database connections are accessible.

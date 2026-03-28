@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Support;
 
 use PHPUnit\Framework\Attributes\Test;
-use ShieldCI\Support\InlineSuppressionParser;
+use ShieldCI\AnalyzersCore\Support\InlineSuppressionParser;
 use ShieldCI\Tests\TestCase;
 
 class InlineSuppressionParserTest extends TestCase

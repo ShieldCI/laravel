@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\Security;
 
 use PhpParser\Node;
-use PhpParser\NodeTraverser;
-use PhpParser\NodeVisitor\NameResolver;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -88,10 +86,8 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        // Resolve all class names using NameResolver
-        $traverser = new NodeTraverser;
-        $traverser->addVisitor(new NameResolver);
-        $ast = $traverser->traverse($ast);
+        // Resolve all class names to FQCNs
+        $ast = $this->parser->resolveNames($ast);
 
         $this->evaluateStaticCalls($ast, $file, $relativePath, $issues);
     }

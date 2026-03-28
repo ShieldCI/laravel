@@ -12,7 +12,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\Enums\AnalysisFailureReason;
-use ShieldCI\Support\InlineSuppressionParser;
+use ShieldCI\AnalyzersCore\Support\InlineSuppressionParser;
 use ShieldCI\ValueObjects\AnalysisReport;
 use ShieldCI\ValueObjects\FailureNotification;
 

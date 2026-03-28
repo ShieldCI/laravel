@@ -4,9 +4,6 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Concerns;
 
-use PhpParser\Node\ArrayItem;
-use PhpParser\Node\Expr\Array_;
-use PhpParser\Node\Scalar\String_;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Concerns\InspectsCode;
 use ShieldCI\Tests\TestCase;
@@ -318,49 +315,20 @@ class InspectsCodeTest extends TestCase
     }
 
     #[Test]
-    public function parse_config_array_skips_null_array_items(): void
+    public function parse_config_array_delegates_to_config_file_helper(): void
     {
-        // php-parser's Array_::$items is typed as (ArrayItem|null)[] — null items
-        // only occur in list() destructuring, never in real config files.
-        // Test by injecting a mock parser that returns an AST with a null item.
+        // parseConfigArray() now delegates to ConfigFileHelper::parseConfigArray()
+        // in analyzers-core. Verify the delegation works with a real fixture.
         $inspector = new ConcreteInspectsCode;
 
-        // Build a minimal AST: return ['key' => 'value', null]
-        $items = [
-            new ArrayItem(new String_('value'), new String_('key')),
-            null, // The null item that exercises the guard on line 118
-        ];
-        /** @phpstan-ignore argument.type (Intentionally injecting null to test defensive guard) */
-        $returnStmt = new \PhpParser\Node\Stmt\Return_(new Array_($items));
+        $result = $inspector->publicParseConfigArray(
+            __DIR__.'/../../Fixtures/inspects-code-config/config_standard.php'
+        );
 
-        // Create a mock parser that returns our crafted AST
-        $mockParser = new class($returnStmt) extends \ShieldCI\AnalyzersCore\Support\AstParser
-        {
-            private \PhpParser\Node\Stmt\Return_ $ast;
-
-            public function __construct(\PhpParser\Node\Stmt\Return_ $ast)
-            {
-                $this->ast = $ast;
-            }
-
-            /** @return array<\PhpParser\Node> */
-            public function parseFile(string $filePath): array
-            {
-                return [$this->ast];
-            }
-        };
-
-        // Inject the mock parser via reflection
-        $reflection = new \ReflectionProperty($inspector, 'parser');
-        $reflection->setAccessible(true);
-        $reflection->setValue($inspector, $mockParser);
-
-        $result = $inspector->publicParseConfigArray('/dev/null');
-
-        // Only 'key' should be present, null item should be skipped
-        $this->assertCount(1, $result);
-        $this->assertArrayHasKey('key', $result);
-        $this->assertSame('value', $result['key']['value']);
+        $this->assertNotEmpty($result);
+        $this->assertArrayHasKey('name', $result);
+        $this->assertSame('MyApp', $result['name']['value']);
+        $this->assertFalse($result['name']['isEnvCall']);
     }
 
     #[Test]

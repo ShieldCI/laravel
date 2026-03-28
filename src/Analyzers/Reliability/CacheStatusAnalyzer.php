@@ -13,7 +13,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
-use ShieldCI\Support\MessageHelper;
+use ShieldCI\AnalyzersCore\Support\MessageHelper;
 
 /**
  * Checks that the application cache is working properly.

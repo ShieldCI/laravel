@@ -1883,7 +1883,7 @@ PHP);
         // Initialize the suppression parser via reflection
         $parserProp = new \ReflectionProperty($command, 'suppressionParser');
         $parserProp->setAccessible(true);
-        $parserProp->setValue($command, new \ShieldCI\Support\InlineSuppressionParser);
+        $parserProp->setValue($command, new \ShieldCI\AnalyzersCore\Support\InlineSuppressionParser);
 
         $method = new \ReflectionMethod($command, 'filterAgainstInlineSuppressions');
         $method->setAccessible(true);
@@ -4123,7 +4123,7 @@ PHP);
 
         $parserProp = new \ReflectionProperty($command, 'suppressionParser');
         $parserProp->setAccessible(true);
-        $parserProp->setValue($command, new \ShieldCI\Support\InlineSuppressionParser);
+        $parserProp->setValue($command, new \ShieldCI\AnalyzersCore\Support\InlineSuppressionParser);
 
         $method = new \ReflectionMethod($command, 'filterAgainstInlineSuppressions');
         $method->setAccessible(true);

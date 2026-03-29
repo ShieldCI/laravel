@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Support\SecurityAdvisories;
 
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use PHPUnit\Framework\Attributes\Test;
 use Psr\Log\LoggerInterface;
@@ -102,9 +104,9 @@ class HttpAdvisoryFetcherTest extends TestCase
     public function it_returns_empty_array_on_connection_exception(): void
     {
         $mock = new MockHandler([
-            new \GuzzleHttp\Exception\ConnectException(
+            new ConnectException(
                 'Connection refused',
-                new \GuzzleHttp\Psr7\Request('POST', 'https://api.osv.dev/v1/querybatch')
+                new Request('POST', 'https://api.osv.dev/v1/querybatch')
             ),
         ]);
 
@@ -122,9 +124,9 @@ class HttpAdvisoryFetcherTest extends TestCase
     public function it_logs_failure_when_logger_is_provided(): void
     {
         $mock = new MockHandler([
-            new \GuzzleHttp\Exception\ConnectException(
+            new ConnectException(
                 'Connection refused',
-                new \GuzzleHttp\Psr7\Request('POST', 'https://api.osv.dev/v1/querybatch')
+                new Request('POST', 'https://api.osv.dev/v1/querybatch')
             ),
         ]);
 

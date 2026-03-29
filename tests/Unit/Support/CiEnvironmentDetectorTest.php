@@ -296,8 +296,8 @@ class CiEnvironmentDetectorTest extends TestCase
 
         // Either value is acceptable — we only assert no exception was thrown
         // and, if we are inside a git repo, the values are non-empty strings.
-        $this->assertTrue($branch === null || is_string($branch));
-        $this->assertTrue($commit === null || is_string($commit));
+        $this->assertTrue($branch === null || $branch !== '');
+        $this->assertTrue($commit === null || $commit !== '');
     }
 
     // ─────────────────────────────────────────────────────────────────────────

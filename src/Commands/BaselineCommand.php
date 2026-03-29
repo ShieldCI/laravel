@@ -56,11 +56,12 @@ class BaselineCommand extends Command
         if ($this->option('merge') && file_exists($outputPath)) {
             $content = FileParser::readFile($outputPath);
             $decoded = $content !== null ? json_decode($content, true) : null;
+            /** @var array<string, array<int, mixed>> $existingBaseline */
             $existingBaseline = is_array($decoded) && isset($decoded['errors']) && is_array($decoded['errors'])
                 ? $decoded['errors']
                 : [];
             $existingDontReport = is_array($decoded) && isset($decoded['dont_report']) && is_array($decoded['dont_report'])
-                ? $decoded['dont_report']
+                ? array_values(array_filter($decoded['dont_report'], 'is_string'))
                 : [];
             $this->info("📋 Merging with existing baseline at: {$outputPath}");
         }
@@ -80,7 +81,7 @@ class BaselineCommand extends Command
 
             // Get metadata for display
             $metadata = $result->getMetadata();
-            $analyzerName = is_array($metadata) && isset($metadata['name'])
+            $analyzerName = isset($metadata['name']) && is_string($metadata['name'])
                 ? $metadata['name']
                 : $analyzerId;
 
@@ -106,8 +107,8 @@ class BaselineCommand extends Command
             foreach ($issues as $issue) {
                 $issueData = [
                     'type' => 'hash',
-                    'path' => $issue->location?->file ?? 'unknown',
-                    'line' => $issue->location?->line ?? 0,
+                    'path' => $issue->location !== null ? $issue->location->file : 'unknown',
+                    'line' => $issue->location !== null ? $issue->location->line : 0,
                     'message' => $issue->message,
                     'hash' => $this->generateHash($issue),
                 ];
@@ -133,8 +134,8 @@ class BaselineCommand extends Command
             'generated_at' => date('c'),
             'generator' => 'ShieldCI Baseline Command',
             'version' => '1.0.0',
-            'total_issues' => array_sum(array_map('count', $baseline)),
-            'dont_report' => array_values(array_unique($dontReport)),
+            'total_issues' => array_sum(array_map(fn (array $issues): int => count($issues), $baseline)),
+            'dont_report' => array_values(array_unique(array_values(array_filter($dontReport, 'is_string')))),
             'errors' => $baseline,
         ];
 
@@ -167,8 +168,8 @@ class BaselineCommand extends Command
     private function generateHash(Issue $issue): string
     {
         $data = [
-            'file' => $issue->location?->file ?? 'unknown',
-            'line' => $issue->location?->line ?? 0,
+            'file' => $issue->location !== null ? $issue->location->file : 'unknown',
+            'line' => $issue->location !== null ? $issue->location->line : 0,
             'message' => $issue->message,
         ];
 

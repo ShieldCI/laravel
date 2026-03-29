@@ -7,6 +7,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\Security;
 use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\Security\FrontendVulnerableDependencyAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
@@ -207,7 +208,7 @@ class FrontendVulnerableDependencyAnalyzerTest extends AnalyzerTestCase
 
         // This will pass if npm audit returns no vulnerabilities
         // In test environment without actual npm, it will likely pass
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertInstanceOf(ResultInterface::class, $result);
     }
 
     public function test_passes_with_yarn_lock_and_no_vulnerabilities(): void
@@ -241,7 +242,7 @@ YARN;
         $result = $analyzer->analyze();
 
         // This will pass if yarn audit returns no vulnerabilities
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertInstanceOf(ResultInterface::class, $result);
     }
 
     public function test_prefers_package_lock_over_yarn_lock(): void
@@ -264,7 +265,7 @@ YARN;
         $result = $analyzer->analyze();
 
         // Should use npm audit (package-lock.json) when both are present
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertInstanceOf(ResultInterface::class, $result);
     }
 
     public function test_handles_empty_package_json(): void
@@ -292,7 +293,7 @@ YARN;
         $result = $analyzer->analyze();
 
         // Should handle empty dependencies gracefully
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertInstanceOf(ResultInterface::class, $result);
     }
 
     // ==================== Configuration Tests ====================
@@ -497,7 +498,7 @@ YARN;
         $result = $analyzer->analyze();
 
         // Result should be valid (pass this test even if no vulnerabilities found)
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertInstanceOf(ResultInterface::class, $result);
 
         // If vulnerabilities are found, check metadata
         if (count($result->getIssues()) > 0) {
@@ -727,7 +728,7 @@ TEXT;
         $result = $analyzer->analyze();
 
         // Result should be instance of ResultInterface
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertInstanceOf(ResultInterface::class, $result);
 
         // Should have getMessage() method (from resultBySeverity)
         $this->assertIsString($result->getMessage());
@@ -770,7 +771,7 @@ TEXT;
 
     public function test_skips_on_vapor(): void
     {
-        /** @var \ShieldCI\Analyzers\Security\FrontendVulnerableDependencyAnalyzer $analyzer */
+        /** @var FrontendVulnerableDependencyAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
         $analyzer->setDeploymentPlatform('vapor');
 
@@ -780,7 +781,7 @@ TEXT;
 
     public function test_skips_on_serverless(): void
     {
-        /** @var \ShieldCI\Analyzers\Security\FrontendVulnerableDependencyAnalyzer $analyzer */
+        /** @var FrontendVulnerableDependencyAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
         $analyzer->setDeploymentPlatform('serverless');
 

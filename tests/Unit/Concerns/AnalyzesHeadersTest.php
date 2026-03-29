@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Concerns;
 
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Concerns\AnalyzesHeaders;
@@ -234,9 +236,9 @@ class AnalyzesHeadersTest extends TestCase
     public function it_returns_false_on_connection_exception(): void
     {
         $mock = new MockHandler([
-            new \GuzzleHttp\Exception\ConnectException(
+            new ConnectException(
                 'Connection refused',
-                new \GuzzleHttp\Psr7\Request('GET', 'https://example.com')
+                new Request('GET', 'https://example.com')
             ),
         ]);
 

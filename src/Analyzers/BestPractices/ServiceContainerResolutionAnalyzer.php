@@ -144,7 +144,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             'database/factories',
             'routes',               // Route files use closures without DI support
         ]);
-        $this->whitelistDirs = is_array($configDirs) ? $configDirs : [];
+        $this->whitelistDirs = is_array($configDirs) ? array_values(array_filter($configDirs, 'is_string')) : [];
 
         // Load whitelist_classes
         $configClasses = $this->config->get("{$baseKey}.whitelist_classes", [
@@ -158,7 +158,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             '*Factory',
             '*Handler',
         ]);
-        $this->whitelistClasses = is_array($configClasses) ? $configClasses : [];
+        $this->whitelistClasses = is_array($configClasses) ? array_values(array_filter($configClasses, 'is_string')) : [];
 
         // Load whitelist_methods (non-resolution methods that are legitimate)
         $configMethods = $this->config->get("{$baseKey}.whitelist_methods", [
@@ -216,7 +216,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             'forgetInstances',
             'forgetScopedInstances',
         ]);
-        $this->whitelistMethods = is_array($configMethods) ? $configMethods : [];
+        $this->whitelistMethods = is_array($configMethods) ? array_values(array_filter($configMethods, 'is_string')) : [];
 
         // Load whitelist_services (service aliases that are legitimate to resolve)
         $configServices = $this->config->get("{$baseKey}.whitelist_services", [
@@ -242,7 +242,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             'blade.compiler',
             'encrypter',
         ]);
-        $this->whitelistServices = is_array($configServices) ? $configServices : [];
+        $this->whitelistServices = is_array($configServices) ? array_values(array_filter($configServices, 'is_string')) : [];
 
         // Load detect_psr_get (whether to detect PSR-11 get() method)
         $detectGet = $this->config->get("{$baseKey}.detect_psr_get", false);
@@ -258,7 +258,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             '*Repository',
             '*Handler',
         ]);
-        $this->manualInstantiationPatterns = is_array($instantiationPatterns) ? $instantiationPatterns : [];
+        $this->manualInstantiationPatterns = is_array($instantiationPatterns) ? array_values(array_filter($instantiationPatterns, 'is_string')) : [];
 
         // Load manual_instantiation_exclude_patterns (reduces false positives)
         $excludePatterns = $this->config->get("{$baseKey}.manual_instantiation_exclude_patterns", [
@@ -270,7 +270,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             '*Entity',
             '*Model',
         ]);
-        $this->manualInstantiationExcludePatterns = is_array($excludePatterns) ? $excludePatterns : [];
+        $this->manualInstantiationExcludePatterns = is_array($excludePatterns) ? array_values(array_filter($excludePatterns, 'is_string')) : [];
     }
 
     protected function runAnalysis(): ResultInterface

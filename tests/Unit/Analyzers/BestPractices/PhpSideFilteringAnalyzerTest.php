@@ -7,6 +7,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\BestPractices\PhpSideFilteringAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class PhpSideFilteringAnalyzerTest extends AnalyzerTestCase
@@ -1471,7 +1472,7 @@ PHP;
         $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+        $this->assertEquals(Severity::Medium, $issues[0]->severity);
         $this->assertStringContainsString('WARNING', $issues[0]->message);
     }
 
@@ -1503,7 +1504,7 @@ PHP;
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
         $this->assertStringContainsString('CRITICAL', $issues[0]->message);
     }
 
@@ -1535,7 +1536,7 @@ PHP;
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_cursor_filter_has_medium_severity(): void
@@ -1566,7 +1567,7 @@ PHP;
         $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+        $this->assertEquals(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_pluck_filter_has_medium_severity(): void
@@ -1597,7 +1598,7 @@ PHP;
         $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+        $this->assertEquals(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_simple_paginate_filter_has_medium_severity(): void
@@ -1628,7 +1629,7 @@ PHP;
         $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+        $this->assertEquals(Severity::Medium, $issues[0]->severity);
     }
 
     // ========================================================================
@@ -1829,7 +1830,7 @@ PHP;
         $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+        $this->assertEquals(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_relationship_recommendation_mentions_eager_loading(): void
@@ -2332,7 +2333,7 @@ PHP;
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_ignores_find_with_variable(): void

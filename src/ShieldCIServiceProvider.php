@@ -6,6 +6,7 @@ namespace ShieldCI;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
+use Illuminate\Contracts\Config\Repository;
 use Illuminate\Support\ServiceProvider;
 use Psr\Log\LoggerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -15,6 +16,9 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Commands\AnalyzeCommand;
 use ShieldCI\Commands\BaselineCommand;
 use ShieldCI\Contracts\ReporterInterface;
+use ShieldCI\Http\Client\ShieldCIClient;
+use ShieldCI\Support\Composer;
+use ShieldCI\Support\PathFilter;
 use ShieldCI\Support\Reporter;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryAnalyzer;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryAnalyzerInterface;
@@ -39,7 +43,7 @@ class ShieldCIServiceProvider extends ServiceProvider
         // This allows auto-generation of docs URLs from category + analyzer ID
         AnalyzerMetadata::setDocsBaseUrlResolver(
             function (): string {
-                /** @var \Illuminate\Contracts\Config\Repository $config */
+                /** @var Repository $config */
                 $config = $this->app->make('config');
                 /** @var string $baseUrl */
                 $baseUrl = $config->get('shieldci.docs_base_url', 'https://docs.shieldci.com');
@@ -51,11 +55,11 @@ class ShieldCIServiceProvider extends ServiceProvider
         // Register bindings
         $this->app->singleton(ParserInterface::class, AstParser::class);
         $this->app->singleton(ReporterInterface::class, Reporter::class);
-        $this->app->singleton(\ShieldCI\Contracts\ClientInterface::class, \ShieldCI\Http\Client\ShieldCIClient::class);
+        $this->app->singleton(Contracts\ClientInterface::class, ShieldCIClient::class);
 
         // Register Composer with correct working path
-        $this->app->singleton(\ShieldCI\Support\Composer::class, function ($app) {
-            return new \ShieldCI\Support\Composer(
+        $this->app->singleton(Composer::class, function ($app) {
+            return new Composer(
                 $app['files'],
                 $app->basePath()
             );
@@ -85,8 +89,8 @@ class ShieldCIServiceProvider extends ServiceProvider
         $this->app->singleton(ComposerDependencyReader::class);
 
         // Register path filter
-        $this->app->singleton(\ShieldCI\Support\PathFilter::class, function ($app) {
-            return new \ShieldCI\Support\PathFilter(
+        $this->app->singleton(PathFilter::class, function ($app) {
+            return new PathFilter(
                 $app['config']->get('shieldci.paths.analyze', []),
                 $app['config']->get('shieldci.excluded_paths', [])
             );

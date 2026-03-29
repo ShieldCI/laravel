@@ -9,6 +9,7 @@ use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Routing\Router;
 use Illuminate\Support\Str;
 use PhpParser\Node;
+use PhpParser\Node\Expr;
 use PhpParser\Node\Expr\FuncCall;
 use PhpParser\Node\Expr\StaticCall;
 use PhpParser\Node\Expr\Variable;
@@ -23,6 +24,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\AnalyzesHeaders;
 use ShieldCI\Concerns\AnalyzesMiddleware;
@@ -163,7 +165,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
      * - Non-Blade PHP files: AST-based analysis for echo/response patterns
      * - Blade files: Regex-based analysis for Blade syntax, HTML context, and PHP patterns
      *
-     * @return array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>
+     * @return array<Issue>
      */
     private function analyzeCodePatterns(): array
     {
@@ -323,7 +325,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
      * - Echo of request() data without escaping
      * - Response::make() with unescaped user input
      *
-     * @return array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>
+     * @return array<Issue>
      */
     private function analyzePhpFileWithAst(string $file): array
     {
@@ -377,7 +379,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            /** @var \PhpParser\Node\Expr $argExpr */
+            /** @var Expr $argExpr */
             $argExpr = $call->args[0]->value;
 
             // Skip if the argument is wrapped in an escape function
@@ -675,7 +677,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
      * - User input in data-* attributes
      * - Unescaped output in URL attributes
      *
-     * @return array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>
+     * @return array<Issue>
      */
     private function checkHtmlAttributeContext(string $line, string $file, int $lineNumber): array
     {
@@ -791,7 +793,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
      * - Ensures script-src or default-src directive exists
      * - Validates no unsafe-inline or unsafe-eval directives
      *
-     * @return array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>
+     * @return array<Issue>
      */
     private function analyzeHttpHeaders(): array
     {

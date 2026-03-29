@@ -6,8 +6,11 @@ namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Mockery;
+use Mockery\MockInterface;
 use ShieldCI\Analyzers\Performance\QueueDriverAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class QueueDriverAnalyzerTest extends AnalyzerTestCase
@@ -17,7 +20,7 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
      */
     protected function createAnalyzer(array $configValues = []): AnalyzerInterface
     {
-        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
         // Set up default config values
@@ -126,7 +129,7 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
         $this->assertStringContainsString('silently discards', $issues[0]->recommendation);
     }
 
@@ -154,7 +157,7 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
         $this->assertStringContainsString('synchronous manner', $issues[0]->recommendation);
         $this->assertEquals('production', $issues[0]->metadata['environment'] ?? '');
     }
@@ -182,7 +185,7 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
         // Lower severity in local
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
+        $this->assertEquals(Severity::Low, $issues[0]->severity);
         $this->assertStringContainsString('acceptable for development', $issues[0]->recommendation);
         $this->assertEquals('local', $issues[0]->metadata['environment'] ?? '');
     }
@@ -233,7 +236,7 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
+        $this->assertEquals(Severity::Low, $issues[0]->severity);
         $this->assertStringContainsString('deadlocks', $issues[0]->recommendation);
     }
 
@@ -397,8 +400,8 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $this->assertEquals('queue-driver', $metadata->id);
         $this->assertEquals('Queue Driver Configuration Analyzer', $metadata->name);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $metadata->severity);
+        $this->assertEquals(Category::Performance, $metadata->category);
+        $this->assertEquals(Severity::Medium, $metadata->severity);
         $this->assertContains('queue', $metadata->tags);
     }
 
@@ -428,7 +431,7 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
+        $this->assertEquals(Severity::Low, $issues[0]->severity);
         $this->assertStringContainsString('acceptable for development', $issues[0]->recommendation);
         $this->assertEquals('development', $issues[0]->metadata['environment'] ?? '');
     }
@@ -456,7 +459,7 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
         $this->assertStringContainsString('synchronous manner', $issues[0]->recommendation);
         $this->assertEquals('staging', $issues[0]->metadata['environment'] ?? '');
     }
@@ -506,7 +509,7 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
+        $this->assertEquals(Severity::Low, $issues[0]->severity);
         $this->assertStringContainsString('deadlocks', $issues[0]->recommendation);
         $this->assertEquals('staging', $issues[0]->metadata['environment'] ?? '');
     }
@@ -534,7 +537,7 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
         $this->assertStringContainsString('silently discards', $issues[0]->recommendation);
         $this->assertEquals('local', $issues[0]->metadata['environment'] ?? '');
     }
@@ -562,7 +565,7 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
         $this->assertEquals('testing', $issues[0]->metadata['environment'] ?? '');
     }
 

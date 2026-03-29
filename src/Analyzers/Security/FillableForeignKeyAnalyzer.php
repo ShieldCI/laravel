@@ -369,6 +369,8 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 
         // Merge config patterns with defaults
         // Config patterns take precedence (can override the relationship description)
-        $this->dangerousPatterns = array_merge($defaults, $configPatterns);
+        $merged = array_merge($defaults, $configPatterns);
+        /** @var array<string, string> $merged */
+        $this->dangerousPatterns = $merged;
     }
 }

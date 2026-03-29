@@ -106,7 +106,7 @@ class DatabaseConnectionCheckerTest extends TestCase
     public function it_works_with_real_database_manager(): void
     {
         // Test with the actual database manager from the container
-        $checker = new DatabaseConnectionChecker($this->app['db']);
+        $checker = new DatabaseConnectionChecker($this->app->make(DatabaseManager::class));
 
         // This should work with SQLite in-memory by default
         config(['database.default' => 'sqlite']);

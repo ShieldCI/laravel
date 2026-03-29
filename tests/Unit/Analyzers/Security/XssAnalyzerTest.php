@@ -10,7 +10,10 @@ use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
+use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\URL;
+use Psr\Http\Message\ResponseInterface;
 use ShieldCI\Analyzers\Security\XssAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -19,11 +22,11 @@ class XssAnalyzerTest extends AnalyzerTestCase
 {
     protected function createAnalyzer(): AnalyzerInterface
     {
-        /** @var \Illuminate\Routing\Router $router */
+        /** @var Router $router */
         $router = $this->app?->make('router');
 
-        /** @var \Illuminate\Contracts\Http\Kernel $kernel */
-        $kernel = $this->app?->make(\Illuminate\Contracts\Http\Kernel::class);
+        /** @var Kernel $kernel */
+        $kernel = $this->app?->make(Kernel::class);
 
         if ($router === null || $kernel === null) {
             throw new \RuntimeException('Router or Kernel not available in test application');
@@ -35,7 +38,7 @@ class XssAnalyzerTest extends AnalyzerTestCase
     /**
      * Create analyzer with mocked HTTP client for header testing.
      *
-     * @param  array<int, (\Psr\Http\Message\ResponseInterface|\Throwable)>  $responses
+     * @param  array<int, (ResponseInterface|\Throwable)>  $responses
      */
     protected function createAnalyzerWithHttpMock(array $responses): XssAnalyzer
     {
@@ -45,11 +48,11 @@ class XssAnalyzerTest extends AnalyzerTestCase
             URL::forceRootUrl($appUrl);
         }
 
-        /** @var \Illuminate\Routing\Router $router */
+        /** @var Router $router */
         $router = $this->app?->make('router');
 
-        /** @var \Illuminate\Contracts\Http\Kernel $kernel */
-        $kernel = $this->app?->make(\Illuminate\Contracts\Http\Kernel::class);
+        /** @var Kernel $kernel */
+        $kernel = $this->app?->make(Kernel::class);
 
         if ($router === null || $kernel === null) {
             throw new \RuntimeException('Router or Kernel not available in test application');

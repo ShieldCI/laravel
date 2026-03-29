@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
 use Mockery;
+use Mockery\MockInterface;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use ShieldCI\Analyzers\Security\StableDependencyAnalyzer;
@@ -22,11 +23,11 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
     }
 
     /**
-     * @return Composer&\Mockery\MockInterface
+     * @return Composer&MockInterface
      */
     private function mockComposer(?string $output = null, ?\Throwable $throwable = null): Composer
     {
-        /** @var Composer&\Mockery\MockInterface $composer */
+        /** @var Composer&MockInterface $composer */
         $composer = Mockery::mock(Composer::class);
 
         if ($throwable !== null) {
@@ -651,7 +652,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
             'composer.lock' => $composerLock,
         ]);
 
-        /** @var Composer&\Mockery\MockInterface $composer */
+        /** @var Composer&MockInterface $composer */
         $composer = Mockery::mock(Composer::class);
         $composer->shouldNotReceive('updateDryRun'); // dry-run must be skipped entirely
 
@@ -1206,10 +1207,10 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
             'composer.json' => $composerJson,
         ]);
 
-        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock = $this->createMock(Composer::class);
         $composerMock->method('updateDryRun')->willReturn($composerOutput);
 
-        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer = new StableDependencyAnalyzer($composerMock);
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 
@@ -1239,10 +1240,10 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
             'composer.json' => $composerJson,
         ]);
 
-        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock = $this->createMock(Composer::class);
         $composerMock->method('updateDryRun')->willReturn($composerOutput);
 
-        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer = new StableDependencyAnalyzer($composerMock);
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 
@@ -1274,10 +1275,10 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
             'composer.json' => $composerJson,
         ]);
 
-        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock = $this->createMock(Composer::class);
         $composerMock->method('updateDryRun')->willReturn($composerOutput);
 
-        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer = new StableDependencyAnalyzer($composerMock);
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 
@@ -1311,10 +1312,10 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
             'composer.json' => $composerJson,
         ]);
 
-        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock = $this->createMock(Composer::class);
         $composerMock->method('updateDryRun')->willReturn($composerOutput);
 
-        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer = new StableDependencyAnalyzer($composerMock);
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 
@@ -1339,10 +1340,10 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
             'composer.json' => $composerJson,
         ]);
 
-        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock = $this->createMock(Composer::class);
         $composerMock->method('updateDryRun')->willReturn('');
 
-        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer = new StableDependencyAnalyzer($composerMock);
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 
@@ -1374,10 +1375,10 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
             'composer.json' => $composerJson,
         ]);
 
-        $composerMock = $this->createMock(\ShieldCI\Support\Composer::class);
+        $composerMock = $this->createMock(Composer::class);
         $composerMock->method('updateDryRun')->willReturn($composerOutput);
 
-        $analyzer = new \ShieldCI\Analyzers\Security\StableDependencyAnalyzer($composerMock);
+        $analyzer = new StableDependencyAnalyzer($composerMock);
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 

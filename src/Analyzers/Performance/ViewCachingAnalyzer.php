@@ -6,6 +6,9 @@ namespace ShieldCI\Analyzers\Performance;
 
 use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Filesystem\Filesystem;
+use Illuminate\Support\Collection;
+use Illuminate\View\Factory;
+use Illuminate\View\FileViewFinder;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -86,7 +89,7 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
     {
         $environment = $this->getEnvironment();
 
-        if (! is_string($environment)) {
+        if ($environment === '') {
             return $this->error('Invalid environment configuration');
         }
 
@@ -186,28 +189,31 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
      *
      * Set 'shieldci.analyzers.performance.view-caching.include_package_views' to true to include them.
      *
-     * @return \Illuminate\Support\Collection<int, string>
+     * @return Collection<int, string>
      */
-    private function getViewPaths(): \Illuminate\Support\Collection
+    private function getViewPaths(): Collection
     {
         try {
-            /** @var \Illuminate\View\Factory $viewFactory */
+            /** @var Factory $viewFactory */
             $viewFactory = app('view');
             $finder = $viewFactory->getFinder();
 
-            /** @var \Illuminate\View\FileViewFinder $finder */
+            /** @var FileViewFinder $finder */
             $paths = collect($finder->getPaths());
 
             // Only include package views if explicitly configured
             $includePackageViews = $this->config->get('shieldci.analyzers.performance.view-caching.include_package_views', false);
 
             if ($includePackageViews) {
-                $paths = $paths->merge(
-                    collect($finder->getHints())->flatten()
-                );
+                /** @var Collection<int, string> $hintPaths */
+                $hintPaths = collect($finder->getHints())->flatten()->filter(fn ($v) => is_string($v))->values();
+                $paths = $paths->merge($hintPaths);
             }
 
-            return $paths->unique();
+            /** @var Collection<int, string> $result */
+            $result = $paths->unique()->values();
+
+            return $result;
         } catch (\Throwable $e) {
             // Fallback to default resource/views path if view factory not available
             return collect([resource_path('views')]);
@@ -221,8 +227,8 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
     {
         $newest = 0;
 
-        $this->getViewPaths()->each(function ($path) use (&$newest) {
-            if (! is_string($path) || empty(trim($path)) || ! is_dir($path)) {
+        $this->getViewPaths()->each(function (string $path) use (&$newest) {
+            if (empty(trim($path)) || ! is_dir($path)) {
                 return;
             }
 

@@ -5,18 +5,23 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Filesystem\Filesystem;
+use Psr\Http\Message\ResponseInterface;
 use ShieldCI\Analyzers\Performance\CacheHeaderAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class CacheHeaderAnalyzerTest extends AnalyzerTestCase
 {
     /**
-     * @param  array<\Psr\Http\Message\ResponseInterface|\Exception>  $responses
+     * @param  array<ResponseInterface|\Exception>  $responses
      */
     protected function createAnalyzer(array $responses = [], bool $setAppUrl = true): AnalyzerInterface
     {
@@ -49,9 +54,7 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
 
         $this->assertFalse($analyzer->shouldRun());
 
-        if (method_exists($analyzer, 'getSkipReason')) {
-            $this->assertStringContainsString('No asset build system', $analyzer->getSkipReason());
-        }
+        $this->assertStringContainsString('No asset build system', $analyzer->getSkipReason());
     }
 
     public function test_passes_when_mix_assets_have_cache_headers(): void
@@ -326,8 +329,8 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
 
         $this->assertEquals('asset-cache-headers', $metadata->id);
         $this->assertEquals('Asset Cache Headers Analyzer', $metadata->name);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $metadata->severity);
+        $this->assertEquals(Category::Performance, $metadata->category);
+        $this->assertEquals(Severity::High, $metadata->severity);
     }
 
     public function test_run_in_ci_property_is_false(): void
@@ -673,9 +676,9 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
 
         // Mock handler that throws exception
         $mock = new MockHandler([
-            new \GuzzleHttp\Exception\ConnectException(
+            new ConnectException(
                 'Connection failed',
-                new \GuzzleHttp\Psr7\Request('GET', 'test')
+                new Request('GET', 'test')
             ),
         ]);
         $handlerStack = HandlerStack::create($mock);

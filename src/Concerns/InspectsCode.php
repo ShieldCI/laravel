@@ -5,14 +5,11 @@ declare(strict_types=1);
 namespace ShieldCI\Concerns;
 
 use PhpParser\Node;
-use PhpParser\Node\ArrayItem;
-use PhpParser\Node\Expr\Array_;
-use PhpParser\Node\Expr\ConstFetch;
 use PhpParser\Node\Expr\FuncCall;
 use PhpParser\Node\Name;
-use PhpParser\Node\Stmt\Return_;
 use PhpParser\NodeFinder;
 use ShieldCI\AnalyzersCore\Support\AstParser;
+use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 
 /**
  * Trait for inspecting code using AST parsing.
@@ -88,70 +85,13 @@ trait InspectsCode
     /**
      * Parse a PHP config file and extract top-level array key-value pairs.
      *
-     * Handles value types: String_, LNumber, DNumber, ConstFetch (true/false/null), FuncCall (env()).
+     * Delegates to ConfigFileHelper::parseConfigArray() in analyzers-core.
      *
      * @return array<string, array{value: mixed, line: int, isEnvCall: bool, envDefault: mixed, envHasDefault: bool}>
      */
     protected function parseConfigArray(string $filePath): array
     {
-        $this->initializeParser();
-
-        $ast = $this->parser->parseFile($filePath);
-
-        if ($ast === []) {
-            return [];
-        }
-
-        $nodeFinder = new NodeFinder;
-
-        /** @var Return_|null $returnNode */
-        $returnNode = $nodeFinder->findFirstInstanceOf($ast, Return_::class);
-
-        if (! $returnNode instanceof Return_ || ! $returnNode->expr instanceof Array_) {
-            return [];
-        }
-
-        $result = [];
-
-        foreach ($returnNode->expr->items as $item) {
-            if (! $item instanceof ArrayItem) {
-                continue;
-            }
-
-            if (! $item->key instanceof Node\Scalar\String_) {
-                continue;
-            }
-
-            $key = $item->key->value;
-            $line = $item->getStartLine();
-            $isEnvCall = false;
-            $envDefault = null;
-            $envHasDefault = false;
-            $value = $this->extractConfigValue($item->value);
-
-            if ($item->value instanceof FuncCall
-                && $item->value->name instanceof Name
-                && $item->value->name->toString() === 'env'
-            ) {
-                $isEnvCall = true;
-                $value = null;
-
-                if (isset($item->value->args[1])) {
-                    $envHasDefault = true;
-                    $envDefault = $this->extractConfigValue($item->value->args[1]->value);
-                }
-            }
-
-            $result[$key] = [
-                'value' => $value,
-                'line' => $line,
-                'isEnvCall' => $isEnvCall,
-                'envDefault' => $envDefault,
-                'envHasDefault' => $envHasDefault,
-            ];
-        }
-
-        return $result;
+        return ConfigFileHelper::parseConfigArray($filePath);
     }
 
     /**
@@ -169,34 +109,6 @@ trait InspectsCode
         }
 
         return $entry['value'];
-    }
-
-    /**
-     * Extract a typed PHP value from an AST node.
-     *
-     * Returns actual PHP values: true, false, null for constants;
-     * string for String_ nodes; int/float for numeric nodes.
-     */
-    private function extractConfigValue(Node $node): mixed
-    {
-        if ($node instanceof Node\Scalar\String_) {
-            return $node->value;
-        }
-
-        if ($node instanceof Node\Scalar\LNumber || $node instanceof Node\Scalar\DNumber) {
-            return $node->value;
-        }
-
-        if ($node instanceof ConstFetch) {
-            return match (strtolower($node->name->toString())) {
-                'true' => true,
-                'false' => false,
-                'null' => null,
-                default => $node->name->toString(),
-            };
-        }
-
-        return null;
     }
 
     /**

@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace ShieldCI\Concerns;
 
 use Closure;
+use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Routing\Route;
 use Illuminate\Routing\Router;
 use Illuminate\Session\Middleware\StartSession;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use ReflectionClass;
 use ReflectionException;
@@ -26,14 +28,14 @@ trait AnalyzesMiddleware
     /**
      * The HTTP kernel instance.
      *
-     * @var \Illuminate\Contracts\Http\Kernel
+     * @var Kernel
      */
     protected $kernel;
 
     /**
      * Determine if the application uses the provided middleware.
      *
-     * @throws \ReflectionException
+     * @throws ReflectionException
      */
     protected function appUsesMiddleware(string $middlewareClass): bool
     {
@@ -46,9 +48,9 @@ trait AnalyzesMiddleware
     /**
      * Compile a list of all middlewares used by the application.
      *
-     * @return \Illuminate\Support\Collection<int, string>
+     * @return Collection<int, string>
      *
-     * @throws \ReflectionException
+     * @throws ReflectionException
      */
     protected function getAllMiddleware()
     {
@@ -58,7 +60,7 @@ trait AnalyzesMiddleware
     /**
      * Compile a list of all route middlewares used by the application.
      *
-     * @return \Illuminate\Support\Collection<int, string>
+     * @return Collection<int, string>
      */
     protected function getAllRouteMiddleware()
     {
@@ -68,12 +70,12 @@ trait AnalyzesMiddleware
         // RouteCollectionInterface implements IteratorAggregate, so it's iterable
         /** @phpstan-ignore-next-line */
         foreach ($routes as $route) {
-            if ($route instanceof \Illuminate\Routing\Route) {
+            if ($route instanceof Route) {
                 $routeList = array_merge($routeList, $this->getMiddleware($route));
             }
         }
 
-        /** @var \Illuminate\Support\Collection<int, string> */
+        /** @var Collection<int, string> */
         return collect($routeList)->unique()->values();
     }
 
@@ -92,7 +94,12 @@ trait AnalyzesMiddleware
             /** @phpstan-ignore-next-line method.notFound */
             $middleware = $this->kernel->getGlobalMiddleware();
 
-            return is_array($middleware) ? $middleware : [];
+            if (! is_array($middleware)) {
+                return [];
+            }
+
+            /** @var array<int, string> $middleware */
+            return $middleware;
         }
 
         // Reflection fallback for older Laravel
@@ -115,7 +122,7 @@ trait AnalyzesMiddleware
     /**
      * Determine if the application uses the provided global HTTP middleware.
      *
-     * @throws \ReflectionException
+     * @throws ReflectionException
      */
     protected function appUsesGlobalMiddleware(string $middlewareClass): bool
     {
@@ -128,7 +135,7 @@ trait AnalyzesMiddleware
     /**
      * Determine if the route uses the provided middleware.
      *
-     * @param  \Illuminate\Routing\Route  $route
+     * @param  Route  $route
      */
     protected function routeUsesMiddleware($route, string $middlewareClass): bool
     {
@@ -141,7 +148,7 @@ trait AnalyzesMiddleware
     /**
      * Get the middleware for a route.
      *
-     * @param  \Illuminate\Routing\Route  $route
+     * @param  Route  $route
      * @return array<int, string>
      */
     protected function getMiddleware($route): array
@@ -158,7 +165,7 @@ trait AnalyzesMiddleware
     /**
      * Determine if the route uses the provided middleware class (by basename).
      *
-     * @param  \Illuminate\Routing\Route  $route
+     * @param  Route  $route
      */
     protected function routeUsesBasenameMiddleware($route, string $basenameMiddlewareClass): bool
     {
@@ -171,7 +178,7 @@ trait AnalyzesMiddleware
     /**
      * Get the basename of the middleware classes for a route.
      *
-     * @param  \Illuminate\Routing\Route  $route
+     * @param  Route  $route
      * @return array<int, string>
      */
     protected function getBasenameMiddlewareClasses($route): array
@@ -286,11 +293,6 @@ trait AnalyzesMiddleware
      */
     protected function getGroupsContainingSession(): array
     {
-        if (! method_exists($this->router, 'getMiddlewareGroups')) {
-            return [];
-        }
-
-        /** @phpstan-ignore-next-line method.notFound */
         $groups = $this->router->getMiddlewareGroups();
 
         if (! is_array($groups)) {
@@ -328,12 +330,7 @@ trait AnalyzesMiddleware
      */
     protected function routeUsesSession(Route $route, array $sessionGroups): bool
     {
-        if (! method_exists($this->router, 'gatherRouteMiddleware')) {
-            return $this->routeMiddlewareContainsSession($route->middleware(), $sessionGroups);
-        }
-
         try {
-            /** @phpstan-ignore-next-line method.notFound */
             $gathered = $this->router->gatherRouteMiddleware($route);
         } catch (\Throwable) {
             return $this->routeMiddlewareContainsSession($route->middleware(), $sessionGroups);
@@ -411,7 +408,7 @@ trait AnalyzesMiddleware
     /**
      * Determine if the app uses cookies.
      *
-     * @throws \ReflectionException
+     * @throws ReflectionException
      */
     protected function appUsesCookies(): bool
     {

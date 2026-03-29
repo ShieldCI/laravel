@@ -6,6 +6,8 @@ namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
 use ShieldCI\Analyzers\Performance\MinificationAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class MinificationAnalyzerTest extends AnalyzerTestCase
@@ -385,8 +387,8 @@ JS;
 
         $this->assertEquals('asset-minification', $metadata->id);
         $this->assertEquals('Asset Minification Analyzer', $metadata->name);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $metadata->severity);
+        $this->assertEquals(Category::Performance, $metadata->category);
+        $this->assertEquals(Severity::Medium, $metadata->severity);
         $this->assertContains('minification', $metadata->tags);
     }
 
@@ -1783,7 +1785,7 @@ JS;
 
     public function test_skips_on_vapor(): void
     {
-        /** @var \ShieldCI\Analyzers\Performance\MinificationAnalyzer $analyzer */
+        /** @var MinificationAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
         $analyzer->setDeploymentPlatform('vapor');
 
@@ -1793,7 +1795,7 @@ JS;
 
     public function test_skips_on_serverless(): void
     {
-        /** @var \ShieldCI\Analyzers\Performance\MinificationAnalyzer $analyzer */
+        /** @var MinificationAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
         $analyzer->setDeploymentPlatform('serverless');
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Concerns;
 
 use Exception;
+use Illuminate\Contracts\Routing\UrlGenerator;
 use Illuminate\Routing\Route;
 use Illuminate\Routing\Router;
 use Illuminate\Support\Str;
@@ -62,7 +63,7 @@ trait FindsLoginRoute
     /**
      * Convert URL result to string.
      *
-     * @param  \Illuminate\Contracts\Routing\UrlGenerator|string  $url
+     * @param  UrlGenerator|string  $url
      */
     protected function convertToString($url): string
     {

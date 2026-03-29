@@ -312,6 +312,7 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
             // Check defaults
             $defaults = config('horizon.defaults', []);
             if (is_array($defaults)) {
+                /** @var array<string, mixed> $defaults */
                 $timeouts = array_merge($timeouts, $this->extractTimeoutsForQueue($defaults, $queueName));
             }
 
@@ -319,6 +320,7 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
             $currentEnv = config('app.env', 'production');
             $envConfig = config("horizon.environments.{$currentEnv}", []);
             if (is_array($envConfig)) {
+                /** @var array<string, mixed> $envConfig */
                 $timeouts = array_merge($timeouts, $this->extractTimeoutsForQueue($envConfig, $queueName));
             }
 

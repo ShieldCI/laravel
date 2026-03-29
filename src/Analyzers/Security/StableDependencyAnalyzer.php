@@ -130,6 +130,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             return [];
         }
 
+        /** @var array<string, mixed> $decoded */
         return $decoded;
     }
 
@@ -166,7 +167,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                     ]
                 );
             }
-        } elseif ($minimumStability !== 'stable' && $minimumStability !== null) {
+        } elseif ($minimumStability !== 'stable') {
             // Case 2: Dangerous values (dev, alpha, beta, RC)
             // Type assertion for PHPStan: $minimumStability is guaranteed to be a string here
             assert(is_string($minimumStability));

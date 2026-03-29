@@ -4,17 +4,30 @@ declare(strict_types=1);
 
 namespace ShieldCI\Commands;
 
+use Composer\InstalledVersions;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
 use ShieldCI\AnalyzerManager;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Status;
+use ShieldCI\AnalyzersCore\Results\AnalysisResult;
 use ShieldCI\AnalyzersCore\Support\FileParser;
+use ShieldCI\AnalyzersCore\Support\InlineSuppressionParser;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\Contracts\ClientInterface;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\Enums\AnalysisFailureReason;
-use ShieldCI\Support\InlineSuppressionParser;
+use ShieldCI\Enums\SuppressionType;
+use ShieldCI\Enums\TriggerSource;
+use ShieldCI\Support\CiEnvironmentDetector;
 use ShieldCI\ValueObjects\AnalysisReport;
 use ShieldCI\ValueObjects\FailureNotification;
+use ShieldCI\ValueObjects\FilterResult;
+use ShieldCI\ValueObjects\SuppressionRecord;
+use Symfony\Component\Console\Helper\ProgressBar;
+use Symfony\Component\Console\Output\StreamOutput;
 
 class AnalyzeCommand extends Command
 {
@@ -37,13 +50,13 @@ class AnalyzeCommand extends Command
 
     private InlineSuppressionParser $suppressionParser;
 
-    /** @var array<string, list<\ShieldCI\ValueObjects\SuppressionRecord>> */
+    /** @var array<string, list<SuppressionRecord>> */
     private array $suppressedIssues = [];
 
     public function handle(
         AnalyzerManager $manager,
         ReporterInterface $reporter,
-        \ShieldCI\Contracts\ClientInterface $client,
+        ClientInterface $client,
     ): int {
         $this->suppressionParser = new InlineSuppressionParser;
         $this->suppressedIssues = [];
@@ -79,8 +92,8 @@ class AnalyzeCommand extends Command
     private function executeAnalysis(
         AnalyzerManager $manager,
         ReporterInterface $reporter,
-        \ShieldCI\Contracts\ClientInterface $client,
-        \ShieldCI\Enums\TriggerSource $triggeredBy,
+        ClientInterface $client,
+        TriggerSource $triggeredBy,
     ): int {
         // Apply memory limit
         $memoryLimit = config('shieldci.memory_limit');
@@ -219,7 +232,7 @@ class AnalyzeCommand extends Command
         $category = $this->option('category');
         $analyzerOption = $this->option('analyzer');
 
-        if ($analyzerOption) {
+        if (is_string($analyzerOption) && $analyzerOption !== '') {
             // Support comma-separated analyzer IDs
             $analyzerIds = array_map('trim', explode(',', $analyzerOption));
             $analyzerIds = array_filter($analyzerIds, fn (string $id) => $id !== '');
@@ -258,7 +271,7 @@ class AnalyzeCommand extends Command
                 $metadata = $analyzer->getMetadata();
 
                 // Enrich result with metadata
-                $enrichedResult = new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
+                $enrichedResult = new AnalysisResult(
                     analyzerId: $result->getAnalyzerId(),
                     status: $result->getStatus(),
                     message: $result->getMessage(),
@@ -301,7 +314,7 @@ class AnalyzeCommand extends Command
 
         // Get analyzers (by category/categories or all)
         $normalizedCategories = null;
-        if ($category) {
+        if (is_string($category) && $category !== '') {
             $normalizedCategories = array_values(array_filter(
                 array_map(fn (string $c) => strtolower(trim($c)), explode(',', $category)),
                 fn (string $c) => $c !== ''
@@ -317,7 +330,7 @@ class AnalyzeCommand extends Command
         $skippedCount = 0;
         if ($normalizedCategories) {
             $skippedCount = $manager->getSkippedAnalyzers()
-                ->filter(function (\ShieldCI\AnalyzersCore\Contracts\ResultInterface $result) use ($normalizedCategories): bool {
+                ->filter(function (ResultInterface $result) use ($normalizedCategories): bool {
                     $metadata = $result->getMetadata();
                     $resultCategory = $metadata['category'] ?? 'Unknown';
                     if (is_object($resultCategory) && isset($resultCategory->value)) {
@@ -341,7 +354,7 @@ class AnalyzeCommand extends Command
             $allSkipped = $manager->getSkippedAnalyzers();
             if (! empty($enabledCategories)) {
                 $skippedCount = $allSkipped
-                    ->filter(function (\ShieldCI\AnalyzersCore\Contracts\ResultInterface $result) use ($enabledCategories): bool {
+                    ->filter(function (ResultInterface $result) use ($enabledCategories): bool {
                         $metadata = $result->getMetadata();
                         $resultCategory = $metadata['category'] ?? 'Unknown';
                         if (is_object($resultCategory) && isset($resultCategory->value)) {
@@ -394,7 +407,7 @@ class AnalyzeCommand extends Command
                 $metadata = $analyzer->getMetadata();
 
                 // Enrich result with metadata
-                $enrichedResult = new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
+                $enrichedResult = new AnalysisResult(
                     analyzerId: $result->getAnalyzerId(),
                     status: $result->getStatus(),
                     message: $result->getMessage(),
@@ -435,7 +448,7 @@ class AnalyzeCommand extends Command
         // Add skipped analyzers to results and stream them
         if ($normalizedCategories) {
             $skippedResults = $manager->getSkippedAnalyzers()
-                ->filter(function (\ShieldCI\AnalyzersCore\Contracts\ResultInterface $result) use ($normalizedCategories): bool {
+                ->filter(function (ResultInterface $result) use ($normalizedCategories): bool {
                     $metadata = $result->getMetadata();
                     $resultCategory = $metadata['category'] ?? 'Unknown';
                     if (is_object($resultCategory) && isset($resultCategory->value)) {
@@ -484,13 +497,14 @@ class AnalyzeCommand extends Command
         /** @var resource $stderrStream */
         $stderrStream = fopen('php://stderr', 'w');
         $showProgress = $this->isProgressEnabled($stderrStream);
-        $stderrOutput = new \Symfony\Component\Console\Output\StreamOutput(
+        $stderrOutput = new StreamOutput(
             $stderrStream,
             $this->getOutput()->getVerbosity(),
             $showProgress,
         );
 
-        if ($analyzerOption = $this->option('analyzer')) {
+        $analyzerOption = $this->option('analyzer');
+        if (is_string($analyzerOption) && $analyzerOption !== '') {
             // Support comma-separated analyzer IDs
             $analyzerIds = array_map('trim', explode(',', $analyzerOption));
             $analyzerIds = array_filter($analyzerIds, fn (string $id) => $id !== '');
@@ -501,7 +515,7 @@ class AnalyzeCommand extends Command
 
             $progressBar = null;
             if ($showProgress && count($analyzerIds) > 1) {
-                $progressBar = new \Symfony\Component\Console\Helper\ProgressBar($stderrOutput, count($analyzerIds));
+                $progressBar = new ProgressBar($stderrOutput, count($analyzerIds));
                 $progressBar->setFormat(' %current%/%max% [%bar%] %percent:3s%% — %message%');
                 $progressBar->setMessage('Starting...');
                 $progressBar->start();
@@ -539,7 +553,7 @@ class AnalyzeCommand extends Command
         $category = $this->option('category');
         $normalizedCategories = null;
 
-        if ($category) {
+        if (is_string($category) && $category !== '') {
             $normalizedCategories = array_values(array_filter(
                 array_map(fn (string $c) => strtolower(trim($c)), explode(',', $category)),
                 fn (string $c) => $c !== ''
@@ -616,7 +630,7 @@ class AnalyzeCommand extends Command
         // Run analyzers and collect results
         $progressBar = null;
         if ($showProgress) {
-            $progressBar = new \Symfony\Component\Console\Helper\ProgressBar($stderrOutput, $enabledCount);
+            $progressBar = new ProgressBar($stderrOutput, $enabledCount);
             $progressBar->setFormat(' %current%/%max% [%bar%] %percent:3s%% — %message%');
             $progressBar->setMessage('Starting...');
             $progressBar->start();
@@ -633,7 +647,7 @@ class AnalyzeCommand extends Command
                 $progressBar->advance();
             }
             // Enrich result with analyzer metadata (same as runAll)
-            $resultsList[] = new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
+            $resultsList[] = new AnalysisResult(
                 analyzerId: $result->getAnalyzerId(),
                 status: $result->getStatus(),
                 message: $result->getMessage(),
@@ -900,10 +914,10 @@ class AnalyzeCommand extends Command
      * Send a failure notification to the ShieldCI platform API.
      */
     private function notifyFailure(
-        \ShieldCI\Contracts\ClientInterface $client,
+        ClientInterface $client,
         AnalysisFailureReason $reason,
         string $errorMessage,
-        \ShieldCI\Enums\TriggerSource $triggeredBy,
+        TriggerSource $triggeredBy,
     ): void {
         if (! $this->shouldSendToApi()) {
             return;
@@ -972,9 +986,9 @@ class AnalyzeCommand extends Command
      */
     private function resolvePackageVersion(): string
     {
-        if (class_exists(\Composer\InstalledVersions::class)) {
+        if (class_exists(InstalledVersions::class)) {
             try {
-                $version = \Composer\InstalledVersions::getVersion('shieldci/laravel');
+                $version = InstalledVersions::getVersion('shieldci/laravel');
 
                 return is_string($version) ? $version : 'unknown';
             } catch (\Exception $e) {
@@ -1021,7 +1035,7 @@ class AnalyzeCommand extends Command
     /**
      * Send the analysis report to the ShieldCI platform API.
      */
-    protected function sendToApi(\ShieldCI\Contracts\ClientInterface $client, ReporterInterface $reporter, AnalysisReport $report): void
+    protected function sendToApi(ClientInterface $client, ReporterInterface $reporter, AnalysisReport $report): void
     {
         $this->info('Sending report to ShieldCI platform...');
 
@@ -1052,7 +1066,7 @@ class AnalyzeCommand extends Command
 
         // Get don't report analyzers (from config and baseline if using baseline)
         $dontReportConfig = config('shieldci.dont_report', []);
-        $dontReport = is_array($dontReportConfig) ? $dontReportConfig : [];
+        $dontReport = is_array($dontReportConfig) ? array_values(array_filter($dontReportConfig, 'is_string')) : [];
 
         // If baseline was used, merge with baseline's dont_report
         if ($this->option('baseline')) {
@@ -1063,7 +1077,8 @@ class AnalyzeCommand extends Command
                 $baselineContent = FileParser::readFile($baselineFile);
                 $baseline = $baselineContent !== null ? json_decode($baselineContent, true) : null;
                 if (is_array($baseline) && isset($baseline['dont_report']) && is_array($baseline['dont_report'])) {
-                    $dontReport = array_values(array_unique(array_merge($dontReport, $baseline['dont_report'])));
+                    $dontReportMerged = array_merge($dontReport, array_values(array_filter($baseline['dont_report'], 'is_string')));
+                    $dontReport = array_values(array_unique($dontReportMerged));
                 }
             }
         }
@@ -1130,8 +1145,8 @@ class AnalyzeCommand extends Command
                         // Fail on any severity (including low in warnings)
                         return true;
                     }
-                    if ($failOn === 'medium' && $severity === 'medium') {
-                        // Fail on medium severity in warnings
+                    if ($severity === 'medium') {
+                        // Fail on medium severity in warnings (failOn must be 'medium' at this point)
                         return true;
                     }
                 }
@@ -1249,32 +1264,35 @@ class AnalyzeCommand extends Command
      * Filter a single result against ignore_errors config.
      * Used in streaming mode to filter results before displaying them.
      */
-    protected function filterSingleResultAgainstIgnoreErrors(\ShieldCI\AnalyzersCore\Results\AnalysisResult $result): \ShieldCI\ValueObjects\FilterResult
+    protected function filterSingleResultAgainstIgnoreErrors(AnalysisResult $result): FilterResult
     {
         $configIgnoreErrors = config('shieldci.ignore_errors', []);
         $configIgnoreErrors = is_array($configIgnoreErrors) ? $configIgnoreErrors : [];
 
         if (empty($configIgnoreErrors)) {
-            return new \ShieldCI\ValueObjects\FilterResult($result, []);
+            return new FilterResult($result, []);
         }
 
         $analyzerId = $result->getAnalyzerId();
 
         // If no ignore_errors for this analyzer, return as-is
         if (! isset($configIgnoreErrors[$analyzerId])) {
-            return new \ShieldCI\ValueObjects\FilterResult($result, []);
+            return new FilterResult($result, []);
         }
 
         $currentIssues = $result->getIssues();
         $suppressedRecords = [];
 
+        /** @var array<int, array<string, mixed>> $analyzerIgnoreErrors */
+        $analyzerIgnoreErrors = is_array($configIgnoreErrors[$analyzerId]) ? $configIgnoreErrors[$analyzerId] : [];
+
         // Filter out issues that match ignore_errors config
-        $newIssues = collect($currentIssues)->filter(function ($issue) use ($configIgnoreErrors, $analyzerId, &$suppressedRecords) {
-            $matchingRule = $this->findMatchingIgnoreRule($issue, $configIgnoreErrors[$analyzerId]);
+        $newIssues = collect($currentIssues)->filter(function ($issue) use ($analyzerIgnoreErrors, &$suppressedRecords) {
+            $matchingRule = $this->findMatchingIgnoreRule($issue, $analyzerIgnoreErrors);
             if ($matchingRule !== null) {
-                $suppressedRecords[] = new \ShieldCI\ValueObjects\SuppressionRecord(
+                $suppressedRecords[] = new SuppressionRecord(
                     $issue,
-                    \ShieldCI\Enums\SuppressionType::Config,
+                    SuppressionType::Config,
                     $this->describeIgnoreRule($matchingRule)
                 );
 
@@ -1286,7 +1304,7 @@ class AnalyzeCommand extends Command
 
         // Create new result with filtered issues
         $status = $newIssues->isEmpty()
-            ? \ShieldCI\AnalyzersCore\Enums\Status::Passed
+            ? Status::Passed
             : $result->getStatus();
 
         // Update message to reflect filtered count
@@ -1318,8 +1336,8 @@ class AnalyzeCommand extends Command
             }
         }
 
-        return new \ShieldCI\ValueObjects\FilterResult(
-            new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
+        return new FilterResult(
+            new AnalysisResult(
                 analyzerId: $result->getAnalyzerId(),
                 status: $status,
                 message: $message,
@@ -1345,7 +1363,7 @@ class AnalyzeCommand extends Command
 
         // Filter results, accumulating suppression records via the single-result method
         $filteredResults = $report->results->map(function ($result) {
-            if (! $result instanceof \ShieldCI\AnalyzersCore\Results\AnalysisResult) {
+            if (! $result instanceof AnalysisResult) {
                 return $result;
             }
 
@@ -1373,12 +1391,12 @@ class AnalyzeCommand extends Command
      * Filter a single result against inline @shieldci-ignore comments.
      * Used in streaming mode to filter results before displaying them.
      */
-    protected function filterSingleResultAgainstInlineSuppressions(\ShieldCI\AnalyzersCore\Results\AnalysisResult $result): \ShieldCI\ValueObjects\FilterResult
+    protected function filterSingleResultAgainstInlineSuppressions(AnalysisResult $result): FilterResult
     {
         $currentIssues = $result->getIssues();
 
         if ($currentIssues === []) {
-            return new \ShieldCI\ValueObjects\FilterResult($result, []);
+            return new FilterResult($result, []);
         }
 
         $analyzerId = $result->getAnalyzerId();
@@ -1392,9 +1410,9 @@ class AnalyzeCommand extends Command
             }
 
             if ($this->suppressionParser->isLineSuppressed($location->file, $location->line, $analyzerId)) {
-                $suppressedRecords[] = new \ShieldCI\ValueObjects\SuppressionRecord(
+                $suppressedRecords[] = new SuppressionRecord(
                     $issue,
-                    \ShieldCI\Enums\SuppressionType::Inline,
+                    SuppressionType::Inline,
                     '@shieldci-ignore at '.$location->file.':'.$location->line
                 );
 
@@ -1405,17 +1423,17 @@ class AnalyzeCommand extends Command
         });
 
         if (count($newIssues) === count($currentIssues)) {
-            return new \ShieldCI\ValueObjects\FilterResult($result, []); // Nothing was suppressed
+            return new FilterResult($result, []); // Nothing was suppressed
         }
 
         $status = $newIssues === []
-            ? \ShieldCI\AnalyzersCore\Enums\Status::Passed
+            ? Status::Passed
             : $result->getStatus();
 
         $message = $this->adjustFilteredMessage($result->getMessage(), count($currentIssues), count($newIssues));
 
-        return new \ShieldCI\ValueObjects\FilterResult(
-            new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
+        return new FilterResult(
+            new AnalysisResult(
                 analyzerId: $result->getAnalyzerId(),
                 status: $status,
                 message: $message,
@@ -1433,7 +1451,7 @@ class AnalyzeCommand extends Command
     protected function filterAgainstInlineSuppressions(AnalysisReport $report): AnalysisReport
     {
         $filteredResults = $report->results->map(function (ResultInterface $result) {
-            if (! $result instanceof \ShieldCI\AnalyzersCore\Results\AnalysisResult) {
+            if (! $result instanceof AnalysisResult) {
                 return $result;
             }
 
@@ -1485,15 +1503,15 @@ class AnalyzeCommand extends Command
             ? $baseline['errors']
             : [];
 
-        /** @var array<int, string> $baselineDontReport */
-        $baselineDontReport = is_array($baseline) && isset($baseline['dont_report']) && is_array($baseline['dont_report'])
+        $baselineDontReportRaw = is_array($baseline) && isset($baseline['dont_report']) && is_array($baseline['dont_report'])
             ? $baseline['dont_report']
             : [];
+        $baselineDontReport = array_values(array_filter($baselineDontReportRaw, 'is_string'));
 
         // Merge baseline dont_report with config dont_report
         $configDontReport = config('shieldci.dont_report', []);
-        $configDontReport = is_array($configDontReport) ? $configDontReport : [];
-        $allDontReport = array_values(array_unique(array_merge($baselineDontReport, $configDontReport)));
+        $configDontReportFiltered = is_array($configDontReport) ? array_values(array_filter($configDontReport, 'is_string')) : [];
+        $allDontReport = array_values(array_unique(array_merge($baselineDontReport, $configDontReportFiltered)));
 
         $this->info('📋 Filtering against baseline...');
         if (count($baselineDontReport) > 0) {
@@ -1518,9 +1536,9 @@ class AnalyzeCommand extends Command
                 /** @var array<int, array<string, mixed>> $baselineIssues */
                 foreach ($baselineIssues as $baselineIssue) {
                     if (is_array($baselineIssue) && $this->matchesBaselineIssue($issue, $baselineIssue)) {
-                        $suppressedRecords[] = new \ShieldCI\ValueObjects\SuppressionRecord(
+                        $suppressedRecords[] = new SuppressionRecord(
                             $issue,
-                            \ShieldCI\Enums\SuppressionType::Baseline,
+                            SuppressionType::Baseline,
                             $this->describeBaselineMatch($baselineIssue)
                         );
 
@@ -1535,7 +1553,7 @@ class AnalyzeCommand extends Command
 
             // Create new result with filtered issues
             $status = $newIssues->isEmpty()
-                ? \ShieldCI\AnalyzersCore\Enums\Status::Passed
+                ? Status::Passed
                 : $result->getStatus();
 
             // Update message to reflect filtered count
@@ -1567,7 +1585,7 @@ class AnalyzeCommand extends Command
                 }
             }
 
-            return new \ShieldCI\AnalyzersCore\Results\AnalysisResult(
+            return new AnalysisResult(
                 analyzerId: $result->getAnalyzerId(),
                 status: $status,
                 message: $message,
@@ -1594,7 +1612,7 @@ class AnalyzeCommand extends Command
     /**
      * Push suppression records into the instance accumulator for a given analyzer.
      *
-     * @param  list<\ShieldCI\ValueObjects\SuppressionRecord>  $records
+     * @param  list<SuppressionRecord>  $records
      */
     private function accumulateSuppressed(array $records, string $analyzerId): void
     {
@@ -1665,12 +1683,8 @@ class AnalyzeCommand extends Command
      * @param  array<int, array<string, mixed>>  $ignoreErrors
      * @return array<string, mixed>|null
      */
-    private function findMatchingIgnoreRule(\ShieldCI\AnalyzersCore\ValueObjects\Issue $issue, array $ignoreErrors): ?array
+    private function findMatchingIgnoreRule(Issue $issue, array $ignoreErrors): ?array
     {
-        if (! is_array($ignoreErrors)) {
-            return null;
-        }
-
         $issuePath = $issue->location->file ?? 'unknown';
         $issueMessage = $issue->message;
 
@@ -1703,7 +1717,7 @@ class AnalyzeCommand extends Command
                 $normalizedIssuePath = str_replace('\\', '/', $issuePath);
                 $pathMatches = fnmatch($pattern, $issuePath) ||
                               fnmatch($pattern, $normalizedIssuePath) ||
-                              \Illuminate\Support\Str::is($pattern, $issuePath);
+                              Str::is($pattern, $issuePath);
             }
 
             if (isset($ignoreError['message']) && is_string($ignoreError['message'])) {
@@ -1713,8 +1727,8 @@ class AnalyzeCommand extends Command
             if (isset($ignoreError['message_pattern']) && is_string($ignoreError['message_pattern'])) {
                 $pattern = $ignoreError['message_pattern'];
                 $issueRecommendation = $issue->recommendation ?? '';
-                $messageMatches = \Illuminate\Support\Str::is($pattern, $issueMessage) ||
-                                 \Illuminate\Support\Str::is($pattern, $issueRecommendation);
+                $messageMatches = Str::is($pattern, $issueMessage) ||
+                                 Str::is($pattern, $issueRecommendation);
             }
 
             if ($pathMatches && $messageMatches) {
@@ -1730,12 +1744,8 @@ class AnalyzeCommand extends Command
      *
      * @param  array<string, mixed>  $baselineIssue
      */
-    private function matchesBaselineIssue(\ShieldCI\AnalyzersCore\ValueObjects\Issue $issue, array $baselineIssue): bool
+    private function matchesBaselineIssue(Issue $issue, array $baselineIssue): bool
     {
-        if (! is_array($baselineIssue)) {
-            return false;
-        }
-
         $issuePath = $issue->location->file ?? 'unknown';
         $issueMessage = $issue->message;
 
@@ -1765,7 +1775,7 @@ class AnalyzeCommand extends Command
             // Check message pattern
             if (isset($baselineIssue['message_pattern']) && is_string($baselineIssue['message_pattern'])) {
                 $messagePattern = $baselineIssue['message_pattern'];
-                $messageMatches = \Illuminate\Support\Str::is($messagePattern, $issueMessage);
+                $messageMatches = Str::is($messagePattern, $issueMessage);
             } elseif (isset($baselineIssue['message']) && is_string($baselineIssue['message'])) {
                 $messageMatches = $baselineIssue['message'] === $issueMessage;
             }
@@ -1814,11 +1824,11 @@ class AnalyzeCommand extends Command
     /**
      * Generate a unique hash for an issue.
      */
-    private function generateIssueHash(\ShieldCI\AnalyzersCore\ValueObjects\Issue $issue): string
+    private function generateIssueHash(Issue $issue): string
     {
         $data = [
-            'file' => $issue->location?->file ?? 'unknown',
-            'line' => $issue->location?->line ?? 0,
+            'file' => $issue->location !== null ? $issue->location->file : 'unknown',
+            'line' => $issue->location !== null ? $issue->location->line : 0,
             'message' => $issue->message,
         ];
 
@@ -1987,7 +1997,7 @@ class AnalyzeCommand extends Command
             // Get valid categories from Category enum
             $validCategories = array_map(
                 fn ($case) => $case->value,
-                \ShieldCI\AnalyzersCore\Enums\Category::cases()
+                Category::cases()
             );
 
             $analyzersConfig = config('shieldci.analyzers', []);
@@ -2198,7 +2208,7 @@ class AnalyzeCommand extends Command
                 return false;
             }
 
-            $validValues = array_map(fn ($case) => $case->value, \ShieldCI\Enums\TriggerSource::cases());
+            $validValues = array_map(fn ($case) => $case->value, TriggerSource::cases());
             if (! in_array($triggeredBy, $validValues, true)) {
                 $this->error("❌ Trigger source '{$triggeredBy}' is not valid. Must be one of: ".implode(', ', $validValues));
 
@@ -2212,12 +2222,12 @@ class AnalyzeCommand extends Command
     /**
      * Resolve the trigger source from CLI option, config, or default.
      */
-    protected function resolveTriggerSource(): \ShieldCI\Enums\TriggerSource
+    protected function resolveTriggerSource(): TriggerSource
     {
         // 1. Explicit CLI flag takes priority
         $option = $this->option('triggered-by');
         if (is_string($option) && $option !== '') {
-            $source = \ShieldCI\Enums\TriggerSource::tryFrom($option);
+            $source = TriggerSource::tryFrom($option);
             if ($source !== null) {
                 return $source;
             }
@@ -2225,11 +2235,11 @@ class AnalyzeCommand extends Command
 
         // 2. --ci flag or CI mode config implies ci_cd
         if ($this->option('ci') || config('shieldci.ci_mode')) {
-            return \ShieldCI\Enums\TriggerSource::CiCd;
+            return TriggerSource::CiCd;
         }
 
         // 3. Default to manual
-        return \ShieldCI\Enums\TriggerSource::Manual;
+        return TriggerSource::Manual;
     }
 
     /**
@@ -2253,7 +2263,7 @@ class AnalyzeCommand extends Command
         if (! is_string($branch) || $branch === '') {
             $branch = $detector->resolveBranch($provider);
         }
-        if (is_string($branch) && $branch !== '') {
+        if (is_string($branch)) {
             $context['branch'] = $branch;
         }
 
@@ -2270,7 +2280,7 @@ class AnalyzeCommand extends Command
             $resolved = $detector->resolvePrNumber($provider);
             $prNumber = $resolved !== null ? (string) $resolved : null;
         }
-        if (is_string($prNumber) && $prNumber !== '') {
+        if (is_string($prNumber)) {
             $context['pr_number'] = $prNumber;
         }
 
@@ -2278,7 +2288,7 @@ class AnalyzeCommand extends Command
         if (! is_string($repository) || $repository === '') {
             $repository = $detector->resolveRepository($provider);
         }
-        if (is_string($repository) && $repository !== '') {
+        if (is_string($repository)) {
             $context['repository'] = $repository;
         }
 
@@ -2293,8 +2303,8 @@ class AnalyzeCommand extends Command
         return $context;
     }
 
-    protected function makeCiDetector(): \ShieldCI\Support\CiEnvironmentDetector
+    protected function makeCiDetector(): CiEnvironmentDetector
     {
-        return app(\ShieldCI\Support\CiEnvironmentDetector::class);
+        return app(CiEnvironmentDetector::class);
     }
 }

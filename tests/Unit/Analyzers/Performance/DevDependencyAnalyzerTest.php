@@ -8,6 +8,8 @@ use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Foundation\Application as LaravelApplication;
 use ShieldCI\Analyzers\Performance\DevDependencyAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class DevDependencyAnalyzerTest extends AnalyzerTestCase
@@ -772,8 +774,8 @@ JSON;
 
         $this->assertEquals('dev-dependencies-production', $metadata->id);
         $this->assertEquals('Dev Dependencies in Production Analyzer', $metadata->name);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $metadata->severity);
+        $this->assertEquals(Category::Performance, $metadata->category);
+        $this->assertEquals(Severity::High, $metadata->severity);
         $this->assertContains('composer', $metadata->tags);
         $this->assertContains('performance', $metadata->tags);
     }
@@ -902,7 +904,7 @@ JSON;
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
     }
 
     public function test_mixed_dev_and_prod_packages(): void

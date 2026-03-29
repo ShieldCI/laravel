@@ -6,6 +6,8 @@ namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
 use ShieldCI\Analyzers\Performance\EnvCallAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class EnvCallAnalyzerTest extends AnalyzerTestCase
@@ -919,8 +921,8 @@ PHP;
 
         $this->assertEquals('env-call-outside-config', $metadata->id);
         $this->assertEquals('Env Calls Outside Config Analyzer', $metadata->name);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $metadata->severity);
+        $this->assertEquals(Category::Performance, $metadata->category);
+        $this->assertEquals(Severity::High, $metadata->severity);
         $this->assertContains('configuration', $metadata->tags);
         $this->assertContains('env', $metadata->tags);
     }
@@ -1050,6 +1052,6 @@ PHP;
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
     }
 }

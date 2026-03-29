@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Support;
 
 use PHPUnit\Framework\TestCase;
-use ShieldCI\Support\MessageHelper;
+use ShieldCI\AnalyzersCore\Support\MessageHelper;
 
 class MessageHelperTest extends TestCase
 {

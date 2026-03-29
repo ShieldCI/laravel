@@ -19,6 +19,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Support\BladeCompilerFactory;
 
 /**
@@ -119,7 +120,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
     /**
      * Two-pass analysis: structural regex checks + AST logic detection.
      *
-     * @param  array<int, array{message: string, filePath: string, lineNumber: int, severity: Severity, recommendation: string, code: string, metadata: array<string, mixed>}>  $issues
+     * @param  array<int, Issue>  $issues
      */
     private function analyzeBladeFile(string $file, array &$issues): void
     {
@@ -146,7 +147,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
      * - Unclosed @php blocks
      *
      * @param  array<int, string>  $lines
-     * @param  array<int, array{message: string, filePath: string, lineNumber: int, severity: Severity, recommendation: string, code: string, metadata: array<string, mixed>}>  $issues
+     * @param  array<int, Issue>  $issues
      */
     private function analyzeBladeStructure(string $file, array $lines, array &$issues): void
     {
@@ -245,7 +246,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
      * with BladeLogicVisitor to detect business logic patterns, then maps
      * compiled-PHP line numbers back to original Blade lines.
      *
-     * @param  array<int, array{message: string, filePath: string, lineNumber: int, severity: Severity, recommendation: string, code: string, metadata: array<string, mixed>}>  $issues
+     * @param  array<int, Issue>  $issues
      */
     private function analyzeBladeLogic(string $file, string $content, array &$issues): void
     {

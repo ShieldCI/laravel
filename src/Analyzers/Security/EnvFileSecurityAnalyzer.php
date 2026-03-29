@@ -265,7 +265,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
         }
 
         $content = FileParser::readFile($gitignorePath);
-        if ($content === null || ! is_string($content)) {
+        if ($content === null) {
             return;
         }
 

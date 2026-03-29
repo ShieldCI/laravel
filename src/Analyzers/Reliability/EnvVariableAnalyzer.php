@@ -304,10 +304,6 @@ RECOMMENDATION,
             return ['variables' => [], 'error' => $e->getMessage()];
         }
 
-        if (! is_array($lines)) {
-            return ['variables' => [], 'error' => 'Failed to read file lines'];
-        }
-
         if (empty($lines)) {
             // Empty file is valid, not an error
             return ['variables' => [], 'error' => null];
@@ -358,7 +354,7 @@ RECOMMENDATION,
             return ['variables' => [], 'error' => null];
         }
 
-        if (! is_array($lines) || empty($lines)) {
+        if (empty($lines)) {
             return ['variables' => [], 'error' => null];
         }
 

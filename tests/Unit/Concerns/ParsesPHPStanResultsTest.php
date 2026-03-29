@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Concerns;
 
+use Illuminate\Support\Collection;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
@@ -193,11 +194,11 @@ class ParsesPHPStanResultsTest extends TestCase
             use ParsesPHPStanResults;
 
             /**
-             * @param  \Illuminate\Support\Collection<int, array{file: string, line: int, message: string}>  $issues
+             * @param  Collection<int, array{file: string, line: int, message: string}>  $issues
              * @return array<int, Issue>
              */
             public function publicCreateIssuesFromPHPStanResults(
-                \Illuminate\Support\Collection $issues,
+                Collection $issues,
                 string $issueMessage,
                 Severity $severity,
                 callable $recommendationCallback

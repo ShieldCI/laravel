@@ -6,8 +6,11 @@ namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Mockery;
+use Mockery\MockInterface;
 use ShieldCI\Analyzers\Performance\MysqlSingleServerAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class MysqlSingleServerAnalyzerTest extends AnalyzerTestCase
@@ -17,7 +20,7 @@ class MysqlSingleServerAnalyzerTest extends AnalyzerTestCase
      */
     protected function createAnalyzer(array $configValues = []): AnalyzerInterface
     {
-        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
         // Set up default config values
@@ -245,12 +248,12 @@ class MysqlSingleServerAnalyzerTest extends AnalyzerTestCase
         // Default connection should have Medium severity
         $defaultIssue = collect($issues)->firstWhere(fn ($i) => $i->metadata['is_default'] ?? false);
         $this->assertNotNull($defaultIssue);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $defaultIssue->severity);
+        $this->assertEquals(Severity::Medium, $defaultIssue->severity);
 
         // Non-default connection should have Low severity
         $nonDefaultIssue = collect($issues)->firstWhere(fn ($i) => ! ($i->metadata['is_default'] ?? false));
         $this->assertNotNull($nonDefaultIssue);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $nonDefaultIssue->severity);
+        $this->assertEquals(Severity::Low, $nonDefaultIssue->severity);
     }
 
     public function test_skips_when_not_using_mysql(): void
@@ -296,8 +299,8 @@ class MysqlSingleServerAnalyzerTest extends AnalyzerTestCase
 
         $this->assertEquals('mysql-single-server-optimization', $metadata->id);
         $this->assertEquals('MySQL Single Server Optimization Analyzer', $metadata->name);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $metadata->severity);
+        $this->assertEquals(Category::Performance, $metadata->category);
+        $this->assertEquals(Severity::Medium, $metadata->severity);
         $this->assertContains('mysql', $metadata->tags);
     }
 
@@ -691,7 +694,7 @@ class MysqlSingleServerAnalyzerTest extends AnalyzerTestCase
 
     public function test_returns_error_when_connections_is_not_array(): void
     {
-        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
         $config->shouldReceive('get')
             ->andReturnUsing(function ($key, $default = null) {
@@ -962,7 +965,7 @@ class MysqlSingleServerAnalyzerTest extends AnalyzerTestCase
 
     public function test_recommendation_contains_connection_name(): void
     {
-        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
         $config->shouldReceive('get')
             ->andReturnUsing(function ($key, $default = null) {

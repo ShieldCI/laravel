@@ -4,14 +4,23 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Concerns;
 
+use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Foundation\Auth\User;
 use Illuminate\Routing\Route;
+use Illuminate\Routing\Router;
 use Illuminate\Session\Middleware\StartSession;
+use Illuminate\Support\Collection;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Concerns\AnalyzesMiddleware;
 use ShieldCI\Tests\TestCase;
 
 class AnalyzesMiddlewareTest extends TestCase
 {
+    private function getRouter(): Router
+    {
+        return $this->app->make(Router::class);
+    }
+
     #[Test]
     public function it_detects_global_middleware(): void
     {
@@ -26,8 +35,8 @@ class AnalyzesMiddlewareTest extends TestCase
     public function it_detects_all_route_middleware(): void
     {
         // Register some routes with middleware
-        $this->app['router']->get('/test', fn () => 'test')->middleware('auth');
-        $this->app['router']->get('/admin', fn () => 'admin')->middleware('auth', 'verified');
+        $this->getRouter()->get('/test', fn () => 'test')->middleware('auth');
+        $this->getRouter()->get('/admin', fn () => 'admin')->middleware('auth', 'verified');
 
         $class = $this->createMiddlewareAnalyzerClass();
         $routeMiddleware = $class->publicGetAllRouteMiddleware();
@@ -41,7 +50,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $class = $this->createMiddlewareAnalyzerClass();
         $allMiddleware = $class->publicGetAllMiddleware();
 
-        $this->assertInstanceOf(\Illuminate\Support\Collection::class, $allMiddleware);
+        $this->assertInstanceOf(Collection::class, $allMiddleware);
     }
 
     #[Test]
@@ -66,16 +75,16 @@ class AnalyzesMiddlewareTest extends TestCase
     #[Test]
     public function it_gets_middleware_for_a_route(): void
     {
-        $this->app['router']->get('/test-route', fn () => 'test')->middleware('auth');
+        $this->getRouter()->get('/test-route', fn () => 'test')->middleware('auth');
 
         // Collect routes to resolve
-        $routes = $this->app['router']->getRoutes();
-        $routes->refreshNameLookups();
+        $routeCollection = $this->getRouter()->getRoutes();
+        $routeCollection->refreshNameLookups();
 
         $class = $this->createMiddlewareAnalyzerClass();
 
-        foreach ($routes as $route) {
-            if ($route instanceof Route && $route->uri() === 'test-route') {
+        foreach ($routeCollection->getRoutes() as $route) {
+            if ($route->uri() === 'test-route') {
                 $middleware = $class->publicGetMiddleware($route);
                 $this->assertIsArray($middleware);
 
@@ -87,15 +96,15 @@ class AnalyzesMiddlewareTest extends TestCase
     #[Test]
     public function it_checks_route_uses_middleware(): void
     {
-        $this->app['router']->get('/protected', fn () => 'protected')->middleware('auth');
+        $this->getRouter()->get('/protected', fn () => 'protected')->middleware('auth');
 
-        $routes = $this->app['router']->getRoutes();
-        $routes->refreshNameLookups();
+        $routeCollection = $this->getRouter()->getRoutes();
+        $routeCollection->refreshNameLookups();
 
         $class = $this->createMiddlewareAnalyzerClass();
 
-        foreach ($routes as $route) {
-            if ($route instanceof Route && $route->uri() === 'protected') {
+        foreach ($routeCollection->getRoutes() as $route) {
+            if ($route->uri() === 'protected') {
                 $usesAuth = $class->publicRouteUsesMiddleware($route, 'auth');
                 $this->assertIsBool($usesAuth);
 
@@ -107,15 +116,15 @@ class AnalyzesMiddlewareTest extends TestCase
     #[Test]
     public function it_checks_route_uses_basename_middleware(): void
     {
-        $this->app['router']->get('/base', fn () => 'base')->middleware('auth');
+        $this->getRouter()->get('/base', fn () => 'base')->middleware('auth');
 
-        $routes = $this->app['router']->getRoutes();
-        $routes->refreshNameLookups();
+        $routeCollection = $this->getRouter()->getRoutes();
+        $routeCollection->refreshNameLookups();
 
         $class = $this->createMiddlewareAnalyzerClass();
 
-        foreach ($routes as $route) {
-            if ($route instanceof Route && $route->uri() === 'base') {
+        foreach ($routeCollection->getRoutes() as $route) {
+            if ($route->uri() === 'base') {
                 $result = $class->publicRouteUsesBasenameMiddleware($route, 'auth');
                 $this->assertIsBool($result);
 
@@ -127,15 +136,15 @@ class AnalyzesMiddlewareTest extends TestCase
     #[Test]
     public function it_gets_basename_middleware_classes(): void
     {
-        $this->app['router']->get('/basename-test', fn () => 'test')->middleware('auth');
+        $this->getRouter()->get('/basename-test', fn () => 'test')->middleware('auth');
 
-        $routes = $this->app['router']->getRoutes();
-        $routes->refreshNameLookups();
+        $routeCollection = $this->getRouter()->getRoutes();
+        $routeCollection->refreshNameLookups();
 
         $class = $this->createMiddlewareAnalyzerClass();
 
-        foreach ($routes as $route) {
-            if ($route instanceof Route && $route->uri() === 'basename-test') {
+        foreach ($routeCollection->getRoutes() as $route) {
+            if ($route->uri() === 'basename-test') {
                 $basenames = $class->publicGetBasenameMiddlewareClasses($route);
                 $this->assertIsArray($basenames);
 
@@ -214,7 +223,7 @@ class AnalyzesMiddlewareTest extends TestCase
     #[Test]
     public function get_groups_containing_session_returns_groups_with_start_session(): void
     {
-        $router = $this->app['router'];
+        $router = $this->getRouter();
         $router->middlewareGroup('web', [StartSession::class]);
         $router->middlewareGroup('api', ['throttle:api']);
 
@@ -228,7 +237,7 @@ class AnalyzesMiddlewareTest extends TestCase
     #[Test]
     public function get_groups_containing_session_excludes_groups_without_session(): void
     {
-        $router = $this->app['router'];
+        $router = $this->getRouter();
         // Register a group that has no session middleware
         $router->middlewareGroup('custom-api', ['throttle:60,1', 'auth:api']);
 
@@ -276,7 +285,7 @@ class AnalyzesMiddlewareTest extends TestCase
     #[Test]
     public function has_session_group_used_by_routes_returns_true_for_app_web_route(): void
     {
-        $router = $this->app['router'];
+        $router = $this->getRouter();
         $router->middlewareGroup('web', [StartSession::class]);
         // App-defined closure route using web (closures are not vendor routes)
         $router->get('/home', fn () => 'home')->middleware('web');
@@ -289,7 +298,7 @@ class AnalyzesMiddlewareTest extends TestCase
     #[Test]
     public function has_session_group_used_by_routes_returns_false_when_only_api_routes(): void
     {
-        $router = $this->app['router'];
+        $router = $this->getRouter();
         $router->middlewareGroup('web', [StartSession::class]);
         $router->get('/api/users', fn () => [])->middleware('api');
 
@@ -305,7 +314,7 @@ class AnalyzesMiddlewareTest extends TestCase
     #[Test]
     public function is_vendor_route_returns_false_for_closure_routes(): void
     {
-        $router = $this->app['router'];
+        $router = $this->getRouter();
         $route = $router->get('/closure', fn () => 'ok');
 
         $class = $this->createMiddlewareAnalyzerClass();
@@ -316,9 +325,9 @@ class AnalyzesMiddlewareTest extends TestCase
     #[Test]
     public function is_vendor_route_returns_true_for_vendor_controller(): void
     {
-        $router = $this->app['router'];
+        $router = $this->getRouter();
         // Illuminate\Foundation\Auth\User is in vendor/laravel/framework
-        $route = $router->get('/vendor-route', [\Illuminate\Foundation\Auth\User::class, 'all']);
+        $route = $router->get('/vendor-route', [User::class, 'all']);
 
         $class = $this->createMiddlewareAnalyzerClass();
 
@@ -330,7 +339,7 @@ class AnalyzesMiddlewareTest extends TestCase
     {
         // Interfaces resolved through the container (e.g. Vapor contracts) must also
         // be detected as vendor routes, since class_exists() returns false for interfaces.
-        $router = $this->app['router'];
+        $router = $this->getRouter();
         // StartSession itself is from vendor; use its interface counterpart via any
         // concrete vendor class that lives in vendor/ to prove the ReflectionClass path works.
         $route = $router->post('/vendor-if', StartSession::class.'@handle');
@@ -343,7 +352,7 @@ class AnalyzesMiddlewareTest extends TestCase
     #[Test]
     public function is_vendor_route_returns_false_for_unknown_class(): void
     {
-        $router = $this->app['router'];
+        $router = $this->getRouter();
         $route = $router->get('/unknown', 'App\Http\Controllers\NonExistentController@index');
 
         $class = $this->createMiddlewareAnalyzerClass();
@@ -415,7 +424,7 @@ class AnalyzesMiddlewareTest extends TestCase
     #[Test]
     public function app_is_not_stateless_when_closure_route_uses_session_group(): void
     {
-        $router = $this->app['router'];
+        $router = $this->getRouter();
         $router->middlewareGroup('web', [StartSession::class]);
         $router->get('/home', fn () => 'home')->middleware('web');
 
@@ -433,8 +442,8 @@ class AnalyzesMiddlewareTest extends TestCase
      */
     private function createMiddlewareAnalyzerClassWithGlobalMiddleware(array $globalMiddleware)
     {
-        $router = $this->app['router'];
-        $kernel = $this->app->make(\Illuminate\Contracts\Http\Kernel::class);
+        $router = $this->getRouter();
+        $kernel = $this->app->make(Kernel::class);
 
         return new class($router, $kernel, $globalMiddleware)
         {
@@ -442,7 +451,7 @@ class AnalyzesMiddlewareTest extends TestCase
 
             /** @param array<int, string> $fixedGlobal */
             public function __construct(
-                protected \Illuminate\Routing\Router $router,
+                protected Router $router,
                 protected $kernel,
                 private array $fixedGlobal,
             ) {}
@@ -469,15 +478,15 @@ class AnalyzesMiddlewareTest extends TestCase
      */
     private function createMiddlewareAnalyzerClass()
     {
-        $router = $this->app['router'];
-        $kernel = $this->app->make(\Illuminate\Contracts\Http\Kernel::class);
+        $router = $this->getRouter();
+        $kernel = $this->app->make(Kernel::class);
 
         return new class($router, $kernel)
         {
             use AnalyzesMiddleware;
 
             public function __construct(
-                protected \Illuminate\Routing\Router $router,
+                protected Router $router,
                 protected $kernel,
             ) {}
 
@@ -486,12 +495,12 @@ class AnalyzesMiddlewareTest extends TestCase
                 return $this->getGlobalMiddleware();
             }
 
-            public function publicGetAllRouteMiddleware(): \Illuminate\Support\Collection
+            public function publicGetAllRouteMiddleware(): Collection
             {
                 return $this->getAllRouteMiddleware();
             }
 
-            public function publicGetAllMiddleware(): \Illuminate\Support\Collection
+            public function publicGetAllMiddleware(): Collection
             {
                 return $this->getAllMiddleware();
             }
@@ -506,22 +515,22 @@ class AnalyzesMiddlewareTest extends TestCase
                 return $this->appUsesGlobalMiddleware($class);
             }
 
-            public function publicGetMiddleware(\Illuminate\Routing\Route $route): array
+            public function publicGetMiddleware(Route $route): array
             {
                 return $this->getMiddleware($route);
             }
 
-            public function publicRouteUsesMiddleware(\Illuminate\Routing\Route $route, string $class): bool
+            public function publicRouteUsesMiddleware(Route $route, string $class): bool
             {
                 return $this->routeUsesMiddleware($route, $class);
             }
 
-            public function publicRouteUsesBasenameMiddleware(\Illuminate\Routing\Route $route, string $class): bool
+            public function publicRouteUsesBasenameMiddleware(Route $route, string $class): bool
             {
                 return $this->routeUsesBasenameMiddleware($route, $class);
             }
 
-            public function publicGetBasenameMiddlewareClasses(\Illuminate\Routing\Route $route): array
+            public function publicGetBasenameMiddlewareClasses(Route $route): array
             {
                 return $this->getBasenameMiddlewareClasses($route);
             }
@@ -556,13 +565,13 @@ class AnalyzesMiddlewareTest extends TestCase
                 return $this->hasSessionGroupUsedByRoutes();
             }
 
-            public function publicIsVendorRoute(\Illuminate\Routing\Route $route): bool
+            public function publicIsVendorRoute(Route $route): bool
             {
                 return $this->isVendorRoute($route);
             }
 
             /** @param array<int, string> $sessionGroups */
-            public function publicRouteUsesSession(\Illuminate\Routing\Route $route, array $sessionGroups): bool
+            public function publicRouteUsesSession(Route $route, array $sessionGroups): bool
             {
                 return $this->routeUsesSession($route, $sessionGroups);
             }

@@ -180,7 +180,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
         if (function_exists('database_path')) {
             try {
                 $path = database_path('migrations');
-                if (is_string($path) && $path !== '') {
+                if ($path !== '') {
                     return $path;
                 }
             } catch (\Throwable $e) {

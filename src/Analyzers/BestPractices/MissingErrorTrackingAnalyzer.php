@@ -132,7 +132,7 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
         // If config has packages, use them; otherwise use defaults
         // This allows complete override rather than merge
         if (! empty($configPackages)) {
-            $this->knownPackages = array_values(array_unique($configPackages));
+            $this->knownPackages = array_values(array_unique(array_filter($configPackages, 'is_string')));
         } else {
             $this->knownPackages = $defaultPackages;
         }
@@ -216,6 +216,7 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
             return null;
         }
 
+        /** @var array<string, mixed> $decoded */
         return $decoded;
     }
 

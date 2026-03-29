@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Support;
 
+use Illuminate\Filesystem\Filesystem;
 use PHPUnit\Framework\TestCase;
 use ShieldCI\Support\Composer;
 
@@ -217,7 +218,7 @@ class ComposerTest extends TestCase
         file_put_contents($tempDir.'/composer.lock', '{}');
 
         try {
-            $composer = new Composer(new \Illuminate\Filesystem\Filesystem, $tempDir);
+            $composer = new Composer(new Filesystem, $tempDir);
 
             $this->assertEquals($tempDir.'/composer.lock', $composer->getLockFile());
         } finally {
@@ -232,7 +233,7 @@ class ComposerTest extends TestCase
         mkdir($tempDir);
 
         try {
-            $composer = new Composer(new \Illuminate\Filesystem\Filesystem, $tempDir);
+            $composer = new Composer(new Filesystem, $tempDir);
 
             $this->assertNull($composer->getLockFile());
         } finally {
@@ -247,7 +248,7 @@ class ComposerTest extends TestCase
         file_put_contents($tempDir.'/composer.json', '{}');
 
         try {
-            $composer = new Composer(new \Illuminate\Filesystem\Filesystem, $tempDir);
+            $composer = new Composer(new Filesystem, $tempDir);
 
             $this->assertEquals($tempDir.'/composer.json', $composer->getJsonFile());
         } finally {
@@ -262,7 +263,7 @@ class ComposerTest extends TestCase
         mkdir($tempDir);
 
         try {
-            $composer = new Composer(new \Illuminate\Filesystem\Filesystem, $tempDir);
+            $composer = new Composer(new Filesystem, $tempDir);
 
             $this->assertNull($composer->getJsonFile());
         } finally {
@@ -280,7 +281,7 @@ class ComposerTest extends TestCase
         ]));
 
         try {
-            $composer = new Composer(new \Illuminate\Filesystem\Filesystem, $tempDir);
+            $composer = new Composer(new Filesystem, $tempDir);
             $json = $composer->getJson();
 
             $this->assertIsArray($json);
@@ -298,7 +299,7 @@ class ComposerTest extends TestCase
         mkdir($tempDir);
 
         try {
-            $composer = new Composer(new \Illuminate\Filesystem\Filesystem, $tempDir);
+            $composer = new Composer(new Filesystem, $tempDir);
 
             $this->assertNull($composer->getJson());
         } finally {
@@ -308,7 +309,7 @@ class ComposerTest extends TestCase
 
     public function test_run_command_returns_output(): void
     {
-        $composer = new Composer(new \Illuminate\Filesystem\Filesystem, __DIR__.'/../../../');
+        $composer = new Composer(new Filesystem, __DIR__.'/../../../');
 
         $output = $composer->runCommand(['--version']);
 
@@ -318,7 +319,7 @@ class ComposerTest extends TestCase
 
     public function test_run_command_without_error_output(): void
     {
-        $composer = new Composer(new \Illuminate\Filesystem\Filesystem, __DIR__.'/../../../');
+        $composer = new Composer(new Filesystem, __DIR__.'/../../../');
 
         $output = $composer->runCommand(['--version'], false);
 
@@ -327,7 +328,7 @@ class ComposerTest extends TestCase
 
     public function test_install_dry_run_returns_string(): void
     {
-        $composer = new Composer(new \Illuminate\Filesystem\Filesystem, __DIR__.'/../../../');
+        $composer = new Composer(new Filesystem, __DIR__.'/../../../');
 
         $output = $composer->installDryRun(['--no-interaction']);
 
@@ -336,7 +337,7 @@ class ComposerTest extends TestCase
 
     public function test_update_dry_run_returns_string(): void
     {
-        $composer = new Composer(new \Illuminate\Filesystem\Filesystem, __DIR__.'/../../../');
+        $composer = new Composer(new Filesystem, __DIR__.'/../../../');
 
         $output = $composer->updateDryRun(['--no-interaction']);
 

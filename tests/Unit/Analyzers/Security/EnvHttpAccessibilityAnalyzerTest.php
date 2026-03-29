@@ -10,14 +10,18 @@ use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
+use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\URL;
+use Psr\Http\Message\ResponseInterface;
 use ShieldCI\Analyzers\Security\EnvHttpAccessibilityAnalyzer;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class EnvHttpAccessibilityAnalyzerTest extends AnalyzerTestCase
 {
     /**
-     * @param  array<\Psr\Http\Message\ResponseInterface|\Exception>  $responses
+     * @param  array<ResponseInterface|\Exception>  $responses
      */
     protected function createAnalyzer(array $responses = []): EnvHttpAccessibilityAnalyzer
     {
@@ -30,7 +34,7 @@ class EnvHttpAccessibilityAnalyzerTest extends AnalyzerTestCase
             URL::forceRootUrl($appUrl);
         }
 
-        /** @var \Illuminate\Routing\Router $router */
+        /** @var Router $router */
         $router = $this->app?->make('router');
         $analyzer = new EnvHttpAccessibilityAnalyzer($router);
 
@@ -220,7 +224,7 @@ ENV;
 
         $issue = $result->getIssues()[0];
         $this->assertStringContainsString('public/.env', $issue->message);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issue->severity);
+        $this->assertEquals(Severity::Critical, $issue->severity);
         $this->assertStringContainsString('public directory', $issue->recommendation);
     }
 
@@ -332,8 +336,8 @@ HTML;
 
         $this->assertEquals('env-http-accessibility', $metadata->id);
         $this->assertEquals('Environment File HTTP Accessibility Analyzer', $metadata->name);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Security, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $metadata->severity);
+        $this->assertEquals(Category::Security, $metadata->category);
+        $this->assertEquals(Severity::Critical, $metadata->severity);
     }
 
     public function test_detects_multiple_accessible_locations(): void
@@ -466,7 +470,7 @@ ENV;
         $method->setAccessible(true);
 
         $result = $method->invoke($analyzer, 'public/.env');
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $result);
+        $this->assertEquals(Severity::Critical, $result);
     }
 
     public function test_determine_severity_critical_for_root_env(): void
@@ -481,7 +485,7 @@ ENV;
         $method->setAccessible(true);
 
         $result = $method->invoke($analyzer, '.env');
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $result);
+        $this->assertEquals(Severity::Critical, $result);
     }
 
     public function test_determine_severity_critical_for_parent_env(): void
@@ -496,7 +500,7 @@ ENV;
         $method->setAccessible(true);
 
         $result = $method->invoke($analyzer, '../.env');
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $result);
+        $this->assertEquals(Severity::Critical, $result);
     }
 
     public function test_determine_severity_high_for_storage_path(): void
@@ -511,7 +515,7 @@ ENV;
         $method->setAccessible(true);
 
         $result = $method->invoke($analyzer, 'storage/.env');
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $result);
+        $this->assertEquals(Severity::High, $result);
     }
 
     public function test_determine_severity_high_for_app_path(): void
@@ -526,7 +530,7 @@ ENV;
         $method->setAccessible(true);
 
         $result = $method->invoke($analyzer, 'app/.env');
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $result);
+        $this->assertEquals(Severity::High, $result);
     }
 
     public function test_determine_severity_medium_for_deep_traversal(): void
@@ -541,7 +545,7 @@ ENV;
         $method->setAccessible(true);
 
         $result = $method->invoke($analyzer, '../../.env');
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $result);
+        $this->assertEquals(Severity::Medium, $result);
     }
 
     // ==================== getRecommendation() Tests ====================

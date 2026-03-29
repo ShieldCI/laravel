@@ -6,6 +6,7 @@ namespace ShieldCI\Concerns;
 
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 
 /**
  * Shared functionality for analyzers that parse PHPStan results.
@@ -22,7 +23,7 @@ trait ParsesPHPStanResults
      * @param  string  $issueMessage  The message to display for each issue
      * @param  Severity  $severity  The severity level for issues
      * @param  callable(string): string  $recommendationCallback  Callback to generate recommendations
-     * @return array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>
+     * @return array<int, Issue>
      */
     protected function createIssuesFromPHPStanResults(
         Collection $issues,
@@ -106,5 +107,5 @@ trait ParsesPHPStanResults
         ?int $column = null,
         ?int $contextLines = null,
         array $metadata = []
-    ): \ShieldCI\AnalyzersCore\ValueObjects\Issue;
+    ): Issue;
 }

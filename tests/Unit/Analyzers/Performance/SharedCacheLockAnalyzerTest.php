@@ -6,6 +6,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Mockery;
+use Mockery\MockInterface;
 use ShieldCI\Analyzers\Performance\SharedCacheLockAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -18,7 +19,7 @@ class SharedCacheLockAnalyzerTest extends AnalyzerTestCase
         ?string $lockConnection = null,
         ?string $cacheConnection = 'cache'
     ): AnalyzerInterface {
-        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
         // Mock cache.default
@@ -165,12 +166,10 @@ PHP;
             driver: 'file'
         );
 
-        if (method_exists($analyzer, 'getSkipReason')) {
-            $reason = $analyzer->getSkipReason();
+        $reason = $analyzer->getSkipReason();
 
-            $this->assertStringContainsString('file', $reason);
-            $this->assertStringContainsString('Not using Redis', $reason);
-        }
+        $this->assertStringContainsString('file', $reason);
+        $this->assertStringContainsString('Not using Redis', $reason);
     }
 
     public function test_passes_when_lock_and_cache_connections_are_different(): void
@@ -338,7 +337,7 @@ PHP;
         string $driver,
         array $stores
     ): AnalyzerInterface {
-        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
         // Mock cache.default

@@ -200,7 +200,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
         }
 
         $content = FileParser::readFile($kernelFile);
-        if ($content === null || ! is_string($content)) {
+        if ($content === null) {
             return;
         }
 

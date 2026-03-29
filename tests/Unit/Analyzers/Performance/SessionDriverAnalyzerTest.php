@@ -4,14 +4,19 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
+use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Routing\Route;
 use Illuminate\Routing\Router;
 use Illuminate\Session\Middleware\StartSession;
 use Mockery;
+use Mockery\MockInterface;
 use ShieldCI\Analyzers\Performance\SessionDriverAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class SessionDriverAnalyzerTest extends AnalyzerTestCase
@@ -30,7 +35,7 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
         ?array $middlewareGroups = null,
         ?array $routeMiddleware = null
     ): AnalyzerInterface {
-        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
         // Set up default config values
@@ -63,7 +68,7 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
                 return $value ?? $default;
             });
 
-        /** @var Router&\Mockery\MockInterface $router */
+        /** @var Router&MockInterface $router */
         $router = Mockery::mock(Router::class);
 
         // Determine middleware groups - default to 'web' containing StartSession when usesSession is true
@@ -122,7 +127,7 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
         if ($kernelInstance !== null) {
             $kernel = $kernelInstance;
         } else {
-            /** @var Kernel&\Mockery\MockInterface $kernel */
+            /** @var Kernel&MockInterface $kernel */
             $kernel = Mockery::mock(Kernel::class);
 
             // Mock kernel - return provided global middleware
@@ -373,11 +378,11 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
             public function terminate($request, $response): void {}
 
-            /** @return \Illuminate\Contracts\Foundation\Application */
+            /** @return Application */
             public function getApplication()
             {
-                /** @var \Illuminate\Contracts\Foundation\Application */
-                return \Mockery::mock('Illuminate\\Contracts\\Foundation\\Application');
+                /** @var Application */
+                return Mockery::mock('Illuminate\\Contracts\\Foundation\\Application');
             }
 
             /** @return array<string> */
@@ -417,7 +422,7 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_returns_failed_result_when_critical_severity_array_driver_in_production(): void
@@ -434,7 +439,7 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_returns_warning_result_when_medium_severity_file_driver(): void
@@ -451,7 +456,7 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+        $this->assertEquals(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_returns_warning_result_when_low_severity_cookie_driver(): void
@@ -468,7 +473,7 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
+        $this->assertEquals(Severity::Low, $issues[0]->severity);
     }
 
     public function test_passed_result_includes_environment_in_message(): void
@@ -529,7 +534,7 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
         $this->assertEquals('array', $metadata['driver']);
         $this->assertEquals('production', $metadata['environment']);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_file_driver_metadata_is_complete(): void
@@ -550,7 +555,7 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
         $this->assertEquals('file', $metadata['driver']);
         $this->assertEquals('production', $metadata['environment']);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+        $this->assertEquals(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_cookie_driver_metadata_is_complete(): void
@@ -571,7 +576,7 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
         $this->assertEquals('cookie', $metadata['driver']);
         $this->assertEquals('staging', $metadata['environment']);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
+        $this->assertEquals(Severity::Low, $issues[0]->severity);
     }
 
     // ============================================================
@@ -651,7 +656,7 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
             $this->assertFailed($result);
 
             $issues = $result->getIssues();
-            $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+            $this->assertEquals(Severity::Critical, $issues[0]->severity);
         }
     }
 
@@ -705,11 +710,11 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
             public function terminate($request, $response): void {}
 
-            /** @return \Illuminate\Contracts\Foundation\Application */
+            /** @return Application */
             public function getApplication()
             {
-                /** @var \Illuminate\Contracts\Foundation\Application */
-                return \Mockery::mock('Illuminate\\Contracts\\Foundation\\Application');
+                /** @var Application */
+                return Mockery::mock('Illuminate\\Contracts\\Foundation\\Application');
             }
 
             /** @return array<string> */
@@ -845,15 +850,15 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
     public function test_reflection_exception_defaults_to_running(): void
     {
-        /** @var \Illuminate\Contracts\Config\Repository&\Mockery\MockInterface $config */
-        $config = Mockery::mock(\Illuminate\Contracts\Config\Repository::class);
+        /** @var Repository&MockInterface $config */
+        $config = Mockery::mock(Repository::class);
         /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $config->shouldReceive('get')->andReturn('redis');
 
-        /** @var \Illuminate\Routing\Router&\Mockery\MockInterface $router */
-        $router = Mockery::mock(\Illuminate\Routing\Router::class);
-        /** @var \Illuminate\Contracts\Http\Kernel&\Mockery\MockInterface $kernel */
-        $kernel = Mockery::mock(\Illuminate\Contracts\Http\Kernel::class);
+        /** @var Router&MockInterface $router */
+        $router = Mockery::mock(Router::class);
+        /** @var Kernel&MockInterface $kernel */
+        $kernel = Mockery::mock(Kernel::class);
 
         $analyzer = new class($config, $router, $kernel) extends SessionDriverAnalyzer
         {
@@ -873,8 +878,8 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
         $this->assertEquals('session-driver', $metadata->id);
         $this->assertEquals('Session Driver Configuration Analyzer', $metadata->name);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $metadata->severity);
+        $this->assertEquals(Category::Performance, $metadata->category);
+        $this->assertEquals(Severity::Critical, $metadata->severity);
         $this->assertContains('session', $metadata->tags);
         $this->assertContains('performance', $metadata->tags);
         $this->assertEquals(30, $metadata->timeToFix);

@@ -6,6 +6,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
 use Illuminate\Contracts\Config\Repository as Config;
 use Mockery;
+use Mockery\MockInterface;
 use ShieldCI\Analyzers\Security\SqlInjectionAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -14,7 +15,7 @@ class SqlInjectionAnalyzerTest extends AnalyzerTestCase
 {
     protected function createAnalyzer(): AnalyzerInterface
     {
-        /** @var Config&\Mockery\MockInterface $config */
+        /** @var Config&MockInterface $config */
         $config = Mockery::mock(Config::class);
 
         /** @phpstan-ignore-next-line */

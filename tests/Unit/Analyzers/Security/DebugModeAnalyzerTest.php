@@ -6,6 +6,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
 use ShieldCI\Analyzers\Security\DebugModeAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class DebugModeAnalyzerTest extends AnalyzerTestCase
@@ -53,7 +54,7 @@ ENV;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('APP_DEBUG', $result);
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_detects_app_debug_true_in_staging_env(): void
@@ -73,7 +74,7 @@ ENV;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('APP_DEBUG', $result);
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_ignores_commented_app_debug(): void
@@ -194,7 +195,7 @@ ENV;
         $result = $analyzer->analyze();
 
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_passes_when_app_env_is_testing(): void
@@ -254,7 +255,7 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('hardcoded', $result);
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_ignores_env_based_debug_config(): void
@@ -375,7 +376,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     // =================================================================
@@ -410,7 +411,7 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('dd()', $result);
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
     }
 
     public function test_detects_dump_function(): void
@@ -496,7 +497,7 @@ PHP;
         $this->assertWarning($result);
         $this->assertHasIssueContaining('var_export()', $result);
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+        $this->assertEquals(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_detects_debug_backtrace_function(): void
@@ -560,7 +561,7 @@ PHP;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
     }
 
     public function test_detects_error_reporting_e_all(): void
@@ -735,7 +736,7 @@ PHP;
         $issues = $result->getIssues();
         // All HIGH_SEVERITY_FUNCTIONS should be High
         foreach ($issues as $issue) {
-            $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issue->severity);
+            $this->assertEquals(Severity::High, $issue->severity);
         }
     }
 
@@ -1151,7 +1152,7 @@ PHP;
 
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+        $this->assertEquals(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_die_severity_is_medium(): void
@@ -1173,7 +1174,7 @@ PHP;
 
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+        $this->assertEquals(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_ignores_method_calls_named_exit(): void

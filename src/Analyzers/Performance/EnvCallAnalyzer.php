@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Performance;
 
+use PhpParser\Node;
 use PhpParser\Node\Expr\ConstFetch;
+use PhpParser\Node\Expr\FuncCall;
 use PhpParser\Node\Expr\StaticCall;
 use PhpParser\Node\Identifier;
 use PhpParser\Node\Name;
@@ -92,7 +94,7 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
             $filePath = $call['file'];
             $node = $call['node'];
 
-            if (! $node instanceof \PhpParser\Node) {
+            if (! $node instanceof Node) {
                 continue;
             }
 
@@ -144,7 +146,7 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
      * Parses each file only once to detect both patterns, avoiding duplicate AST parsing.
      *
      * @param  array<int, string>  $excludePaths
-     * @return array<int, array{file: string, node: \PhpParser\Node, args: array<int, mixed>, type: string}>
+     * @return array<int, array{file: string, node: Node, args: array<int, mixed>, type: string}>
      */
     private function findAllEnvCalls(array $excludePaths): array
     {
@@ -170,9 +172,9 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
                 $nodeFinder = new NodeFinder;
 
                 // 1. Find env() function calls
-                $functionCalls = $nodeFinder->findInstanceOf($ast, \PhpParser\Node\Expr\FuncCall::class);
+                $functionCalls = $nodeFinder->findInstanceOf($ast, FuncCall::class);
                 foreach ($functionCalls as $funcCall) {
-                    if ($funcCall->name instanceof \PhpParser\Node\Name
+                    if ($funcCall->name instanceof Name
                         && $funcCall->name->toString() === 'env'
                     ) {
                         $results[] = [
@@ -210,7 +212,7 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
      *
      * @return array<int, mixed>
      */
-    private function extractFunctionCallArguments(\PhpParser\Node\Expr\FuncCall $funcCall): array
+    private function extractFunctionCallArguments(FuncCall $funcCall): array
     {
         $args = [];
 
@@ -224,7 +226,7 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
     /**
      * Find Env::get() static calls in AST.
      *
-     * @param  array<\PhpParser\Node>  $ast
+     * @param  array<Node>  $ast
      * @return array<int, StaticCall>
      */
     /**
@@ -277,7 +279,7 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
     /**
      * Extract value from a node (for static calls).
      */
-    private function extractStaticArgumentValue(\PhpParser\Node $node): mixed
+    private function extractStaticArgumentValue(Node $node): mixed
     {
         if ($node instanceof String_) {
             return $node->value;
@@ -334,7 +336,7 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * @param  array<\PhpParser\Node>  $ast
+     * @param  array<Node>  $ast
      * @return array<int, string>
      */
     private function getEnvClassAliases(array $ast): array

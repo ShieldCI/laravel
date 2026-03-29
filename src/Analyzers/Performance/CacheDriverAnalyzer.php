@@ -77,7 +77,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
         $basePath = $this->getBasePath();
         $configFile = ConfigFileHelper::getConfigPath($basePath, 'cache.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
-        if (! is_string($configFile) || ! file_exists($configFile)) {
+        if (! file_exists($configFile)) {
             return $this->error('Laravel cache configuration file could not be located', [
                 'expected_path' => $configFile,
             ]);

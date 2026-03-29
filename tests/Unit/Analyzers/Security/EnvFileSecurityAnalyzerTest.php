@@ -6,6 +6,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
 use ShieldCI\Analyzers\Security\EnvFileSecurityAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
@@ -893,7 +894,7 @@ GITIGNORE;
         $result = $analyzer->analyze();
 
         // Should return a result (not crash)
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertInstanceOf(ResultInterface::class, $result);
     }
 
     // ==================== CODE SNIPPET TESTS ====================
@@ -943,7 +944,7 @@ ENV;
 
     public function test_skips_on_vapor(): void
     {
-        /** @var \ShieldCI\Analyzers\Security\EnvFileSecurityAnalyzer $analyzer */
+        /** @var EnvFileSecurityAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
         $analyzer->setDeploymentPlatform('vapor');
 
@@ -953,7 +954,7 @@ ENV;
 
     public function test_skips_on_serverless(): void
     {
-        /** @var \ShieldCI\Analyzers\Security\EnvFileSecurityAnalyzer $analyzer */
+        /** @var EnvFileSecurityAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
         $analyzer->setDeploymentPlatform('serverless');
 

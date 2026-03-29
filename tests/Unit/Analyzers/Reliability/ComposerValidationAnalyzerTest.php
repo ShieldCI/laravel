@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\Reliability;
 
 use Mockery;
+use Mockery\MockInterface;
 use ShieldCI\Analyzers\Reliability\ComposerValidationAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Support\ComposerValidator;
@@ -57,7 +58,7 @@ class ComposerValidationAnalyzerTest extends AnalyzerTestCase
             'composer.json' => '{"name":"shieldci/demo"}',
         ]);
 
-        /** @var ComposerValidator&\Mockery\MockInterface $validator */
+        /** @var ComposerValidator&MockInterface $validator */
         $validator = Mockery::mock(ComposerValidator::class);
         $validator->shouldReceive('validate')
             ->andReturn(new ComposerValidatorResult(true, 'composer.json is valid'));
@@ -76,7 +77,7 @@ class ComposerValidationAnalyzerTest extends AnalyzerTestCase
             'composer.json' => '{"name":"shieldci/demo"}',
         ]);
 
-        /** @var ComposerValidator&\Mockery\MockInterface $validator */
+        /** @var ComposerValidator&MockInterface $validator */
         $validator = Mockery::mock(ComposerValidator::class);
         $validator->shouldReceive('validate')
             ->andReturn(new ComposerValidatorResult(false, 'composer.json is invalid'));
@@ -209,7 +210,7 @@ class ComposerValidationAnalyzerTest extends AnalyzerTestCase
             'composer.json' => '{}',
         ]);
 
-        /** @var ComposerValidator&\Mockery\MockInterface $validator */
+        /** @var ComposerValidator&MockInterface $validator */
         $validator = Mockery::mock(ComposerValidator::class);
         $validator->shouldReceive('validate')
             ->andReturn(new ComposerValidatorResult(true, 'composer.json is valid'));
@@ -259,7 +260,7 @@ class ComposerValidationAnalyzerTest extends AnalyzerTestCase
             'composer.json' => '{"name":"vendor/package"}',
         ]);
 
-        /** @var ComposerValidator&\Mockery\MockInterface $validator */
+        /** @var ComposerValidator&MockInterface $validator */
         $validator = Mockery::mock(ComposerValidator::class);
         $validator->shouldReceive('validate')
             ->andReturn(new ComposerValidatorResult(true, 'composer.json is valid'));
@@ -278,7 +279,7 @@ class ComposerValidationAnalyzerTest extends AnalyzerTestCase
             'composer.json' => '{"name":"shieldci/demo"}',
         ]);
 
-        /** @var ComposerValidator&\Mockery\MockInterface $validator */
+        /** @var ComposerValidator&MockInterface $validator */
         $validator = Mockery::mock(ComposerValidator::class);
         $validator->shouldReceive('validate')
             ->andReturn(new ComposerValidatorResult(false, 'name is required'));
@@ -325,7 +326,7 @@ class ComposerValidationAnalyzerTest extends AnalyzerTestCase
 
         putenv('VAPOR_SSM_PATH=/app/production');
 
-        /** @var ComposerValidator&\Mockery\MockInterface $mockValidator */
+        /** @var ComposerValidator&MockInterface $mockValidator */
         $mockValidator = Mockery::mock(ComposerValidator::class);
         $mockValidator->shouldNotReceive('validate');
 

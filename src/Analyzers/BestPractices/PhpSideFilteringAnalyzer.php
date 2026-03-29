@@ -73,14 +73,14 @@ class PhpSideFilteringAnalyzer extends AbstractFileAnalyzer
         }
 
         // Merge defaults with config (config takes precedence)
-        $this->whitelist = array_values(array_unique(array_merge($defaultWhitelist, $configWhitelist)));
+        $this->whitelist = array_values(array_unique(array_filter(array_merge($defaultWhitelist, $configWhitelist), 'is_string')));
 
         // Load model namespaces from config
         $configModelNamespaces = $this->config->get(
             'shieldci.analyzers.best-practices.php-side-filtering.model_namespaces'
         );
         if (is_array($configModelNamespaces) && count($configModelNamespaces) > 0) {
-            $this->modelNamespaces = $configModelNamespaces;
+            $this->modelNamespaces = array_values(array_filter($configModelNamespaces, 'is_string'));
         }
     }
 
@@ -816,13 +816,11 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
 
             if ($current instanceof Node\Expr\MethodCall) {
                 $current = $current->var;
-            } elseif ($current instanceof Node\Expr\StaticCall) {
-                // Include class name in chain for context
+            } else {
+                // $current instanceof Node\Expr\StaticCall - include class name in chain for context
                 if ($current->class instanceof Node\Name) {
                     array_unshift($chain, $current->class->toString());
                 }
-                break;
-            } else {
                 break;
             }
         }

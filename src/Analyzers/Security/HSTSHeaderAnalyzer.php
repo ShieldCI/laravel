@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
+use PhpParser\Node\Expr\StaticCall;
+use PhpParser\Node\Scalar\String_;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -102,7 +104,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
         $envFile = $this->getBasePath().DIRECTORY_SEPARATOR.'.env';
         if (file_exists($envFile)) {
             $content = FileParser::readFile($envFile);
-            if ($content !== null && is_string($content)) {
+            if ($content !== null) {
                 if (preg_match('/^APP_URL\s*=\s*https:/im', $content) ||
                     preg_match('/^FORCE_HTTPS\s*=\s*true/im', $content)) {
                     return true;
@@ -162,9 +164,9 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
         $forceSchemeCallNodes = $astParser->findStaticCalls($ast, 'URL', 'forceScheme');
 
         foreach ($forceSchemeCallNodes as $call) {
-            /** @var \PhpParser\Node\Expr\StaticCall $call */
+            /** @var StaticCall $call */
             if (isset($call->args[0])
-                && $call->args[0]->value instanceof \PhpParser\Node\Scalar\String_
+                && $call->args[0]->value instanceof String_
                 && $call->args[0]->value->value === 'https'
             ) {
                 return true;
@@ -223,7 +225,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
                 }
 
                 $content = FileParser::readFile($file->getPathname());
-                if ($content === null || ! is_string($content)) {
+                if ($content === null) {
                     continue;
                 }
 
@@ -384,7 +386,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
         }
 
         $content = FileParser::readFile($composerJson);
-        if ($content === null || ! is_string($content)) {
+        if ($content === null) {
             return false;
         }
 

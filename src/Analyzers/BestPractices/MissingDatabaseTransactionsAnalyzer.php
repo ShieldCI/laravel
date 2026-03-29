@@ -639,6 +639,6 @@ class TransactionVisitor extends NodeVisitorAbstract
             return true;
         }
 
-        return $last instanceof Node\Stmt\Return_ || $last instanceof Node\Stmt\Throw_;
+        return $last instanceof Node\Stmt\Return_ || $last instanceof Node\Expr\Throw_;
     }
 }

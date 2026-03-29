@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
 use Mockery;
+use Mockery\MockInterface;
 use ShieldCI\Analyzers\Performance\CollectionCallAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Support\PHPStan;
 use ShieldCI\Tests\AnalyzerTestCase;
 
@@ -18,7 +21,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
     protected function createAnalyzer(
         ?array $phpstanResult = null
     ): AnalyzerInterface {
-        /** @var PHPStan&\Mockery\MockInterface $phpStan */
+        /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
         if ($phpstanResult !== null) {
@@ -88,7 +91,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
 
     public function test_handles_phpstan_errors_gracefully(): void
     {
-        /** @var PHPStan&\Mockery\MockInterface $phpStan */
+        /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
         /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
@@ -117,8 +120,8 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
 
         $this->assertEquals('collection-call-optimization', $metadata->id);
         $this->assertEquals('Collection Call Optimization Analyzer', $metadata->name);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $metadata->severity);
+        $this->assertEquals(Category::Performance, $metadata->category);
+        $this->assertEquals(Severity::High, $metadata->severity);
         $this->assertContains('phpstan', $metadata->tags);
     }
 
@@ -129,7 +132,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
 
     public function test_defaults_to_app_directory_when_paths_empty(): void
     {
-        /** @var PHPStan&\Mockery\MockInterface $phpStan */
+        /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
         /** @phpstan-ignore-next-line */
@@ -157,7 +160,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
 
     public function test_defaults_to_app_when_paths_null(): void
     {
-        /** @var PHPStan&\Mockery\MockInterface $phpStan */
+        /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
         /** @phpstan-ignore-next-line */
@@ -187,7 +190,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
     {
         $paths = ['app', 'packages', 'modules'];
 
-        /** @var PHPStan&\Mockery\MockInterface $phpStan */
+        /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
         /** @phpstan-ignore-next-line */
@@ -215,7 +218,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
 
     public function test_handles_empty_base_path(): void
     {
-        /** @var PHPStan&\Mockery\MockInterface $phpStan */
+        /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
         /** @phpstan-ignore-next-line */
@@ -249,7 +252,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ['path' => '/valid/path.php', 'line' => 10],  // Missing message
         ];
 
-        /** @var PHPStan&\Mockery\MockInterface $phpStan */
+        /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
         /** @phpstan-ignore-next-line */
@@ -287,7 +290,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ['path' => '/invalid/path.php'],  // Missing line and message
         ];
 
-        /** @var PHPStan&\Mockery\MockInterface $phpStan */
+        /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
         /** @phpstan-ignore-next-line */
@@ -393,7 +396,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
 
     public function test_handles_phpstan_exception_during_start(): void
     {
-        /** @var PHPStan&\Mockery\MockInterface $phpStan */
+        /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
         /** @phpstan-ignore-next-line */
@@ -416,7 +419,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
 
     public function test_handles_phpstan_exception_during_parse(): void
     {
-        /** @var PHPStan&\Mockery\MockInterface $phpStan */
+        /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
         /** @phpstan-ignore-next-line */
@@ -656,7 +659,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         // Mock config to return custom paths
         config(['shieldci.paths.analyze' => ['app', 'packages', 'modules', 'config', 'database']]);
 
-        /** @var PHPStan&\Mockery\MockInterface $phpStan */
+        /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
         /** @phpstan-ignore-next-line */
@@ -688,7 +691,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         // Config has only non-code paths
         config(['shieldci.paths.analyze' => ['config', 'database', 'resources/views', 'routes']]);
 
-        /** @var PHPStan&\Mockery\MockInterface $phpStan */
+        /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
         /** @phpstan-ignore-next-line */

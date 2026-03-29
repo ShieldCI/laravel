@@ -169,15 +169,15 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
 
         // Load whitelist configuration
         $configDirs = $analyzerConfig['whitelist_dirs'] ?? self::DEFAULT_WHITELIST_DIRS;
-        $this->whitelistDirs = is_array($configDirs) ? $configDirs : self::DEFAULT_WHITELIST_DIRS;
+        $this->whitelistDirs = is_array($configDirs) ? array_values(array_filter($configDirs, 'is_string')) : self::DEFAULT_WHITELIST_DIRS;
 
         $configClasses = $analyzerConfig['whitelist_classes'] ?? self::DEFAULT_WHITELIST_CLASSES;
-        $this->whitelistClasses = is_array($configClasses) ? $configClasses : self::DEFAULT_WHITELIST_CLASSES;
+        $this->whitelistClasses = is_array($configClasses) ? array_values(array_filter($configClasses, 'is_string')) : self::DEFAULT_WHITELIST_CLASSES;
 
         // Build helper list - backward compatible with custom helper_functions config
         $helperFuncs = $analyzerConfig['helper_functions'] ?? null;
         $this->helperFunctions = (is_array($helperFuncs) && ! empty($helperFuncs))
-            ? $helperFuncs
+            ? array_values(array_filter($helperFuncs, 'is_string'))
             : self::DEPENDENCY_HIDING_HELPERS;
 
         $issues = [];

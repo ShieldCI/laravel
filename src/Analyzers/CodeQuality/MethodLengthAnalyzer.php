@@ -70,10 +70,12 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
         $analyzerConfig = $this->config->get('shieldci.analyzers.code-quality.method-length', []);
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
-        $this->threshold = (int) ($analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD);
+        $thresholdVal = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;
+        $this->threshold = is_int($thresholdVal) ? $thresholdVal : self::DEFAULT_THRESHOLD;
         $excludePatterns = $analyzerConfig['exclude_patterns'] ?? null;
-        $this->excludedPatterns = is_array($excludePatterns) ? $excludePatterns : self::DEFAULT_EXCLUDED_PATTERNS;
-        $this->simpleAccessorMaxLines = (int) ($analyzerConfig['simple_accessor_max_lines'] ?? self::SIMPLE_ACCESSOR_MAX_LINES);
+        $this->excludedPatterns = is_array($excludePatterns) ? array_values(array_filter($excludePatterns, 'is_string')) : self::DEFAULT_EXCLUDED_PATTERNS;
+        $simpleAccessorVal = $analyzerConfig['simple_accessor_max_lines'] ?? self::SIMPLE_ACCESSOR_MAX_LINES;
+        $this->simpleAccessorMaxLines = is_int($simpleAccessorVal) ? $simpleAccessorVal : self::SIMPLE_ACCESSOR_MAX_LINES;
 
         $issues = [];
         $threshold = $this->threshold;

@@ -6,8 +6,10 @@ namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Mockery;
+use Mockery\MockInterface;
 use ShieldCI\Analyzers\Performance\CacheDriverAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class CacheDriverAnalyzerTest extends AnalyzerTestCase
@@ -17,7 +19,7 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
      */
     protected function createAnalyzer(array $configValues = []): AnalyzerInterface
     {
-        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
         // Set up default config values
@@ -451,7 +453,7 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
         $this->assertEquals('nonexistent', $issues[0]->metadata['store'] ?? '');
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_fails_with_dynamodb_driver_with_null_table(): void

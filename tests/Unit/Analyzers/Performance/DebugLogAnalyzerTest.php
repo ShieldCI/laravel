@@ -6,8 +6,11 @@ namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Mockery;
+use Mockery\MockInterface;
 use ShieldCI\Analyzers\Performance\DebugLogAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class DebugLogAnalyzerTest extends AnalyzerTestCase
@@ -17,7 +20,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
      */
     protected function createAnalyzer(array $configValues = []): AnalyzerInterface
     {
-        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
         // Set up config mock with default values
@@ -223,8 +226,8 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
 
         $this->assertEquals('debug-log-level', $metadata->id);
         $this->assertEquals('Debug Log Level Analyzer', $metadata->name);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $metadata->severity);
+        $this->assertEquals(Category::Performance, $metadata->category);
+        $this->assertEquals(Severity::High, $metadata->severity);
         $this->assertContains('logging', $metadata->tags);
         $this->assertContains('performance', $metadata->tags);
     }
@@ -658,7 +661,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
     }
 
     public function test_detection_method_in_metadata(): void

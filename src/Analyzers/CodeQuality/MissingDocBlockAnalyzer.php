@@ -95,7 +95,9 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
         // Count unique methods affected (one method can have multiple issues)
         $uniqueMethods = [];
         foreach ($issues as $issue) {
-            $methodKey = $issue->metadata['class'].'@'.$issue->metadata['method'];
+            $class = is_string($issue->metadata['class'] ?? null) ? $issue->metadata['class'] : '';
+            $method = is_string($issue->metadata['method'] ?? null) ? $issue->metadata['method'] : '';
+            $methodKey = $class.'@'.$method;
             $uniqueMethods[$methodKey] = true;
         }
         $affectedMethodCount = count($uniqueMethods);
@@ -429,13 +431,13 @@ class DocBlockVisitor extends NodeVisitorAbstract
     /**
      * Recursively check for throw statements in statement list.
      *
-     * @param  array<Node\Stmt>  $stmts
+     * @param  array<Stmt>  $stmts
      */
     private function hasThrowStatement(array $stmts): bool
     {
         foreach ($stmts as $stmt) {
-            // Direct throw statement (PHP < 8)
-            if ($stmt instanceof Stmt\Throw_) {
+            // Throw expression (PHP 8+)
+            if ($stmt instanceof Expr\Throw_) {
                 return true;
             }
 

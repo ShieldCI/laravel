@@ -9,6 +9,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
@@ -91,6 +92,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
             ? 'File and directory permissions are secure'
             : sprintf('Found %d file permission security issue%s', count($issues), count($issues) === 1 ? '' : 's');
 
+        /** @var array<Issue> $issues */
         return $this->resultBySeverity($summary, $issues);
     }
 

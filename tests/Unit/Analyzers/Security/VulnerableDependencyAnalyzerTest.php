@@ -9,6 +9,8 @@ use Mockery\MockInterface;
 use RuntimeException;
 use ShieldCI\Analyzers\Security\VulnerableDependencyAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryAnalyzerInterface;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryFetcherInterface;
 use ShieldCI\Support\SecurityAdvisories\ComposerDependencyReader;
@@ -52,9 +54,7 @@ class VulnerableDependencyAnalyzerTest extends AnalyzerTestCase
         // Should not run when composer.lock is missing - can't check vulnerabilities without it
         $this->assertFalse($analyzer->shouldRun());
 
-        if (method_exists($analyzer, 'getSkipReason')) {
-            $this->assertStringContainsString('composer.lock', $analyzer->getSkipReason());
-        }
+        $this->assertStringContainsString('composer.lock', $analyzer->getSkipReason());
     }
 
     public function test_reports_vulnerabilities_from_scanner(): void
@@ -209,7 +209,7 @@ JSON;
             'composer.lock' => $composerLock,
         ]);
 
-        /** @var AdvisoryFetcherInterface&\Mockery\MockInterface $fetcher */
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
         /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->never();
@@ -251,7 +251,7 @@ JSON;
             'composer.lock' => $composerLock,
         ]);
 
-        /** @var AdvisoryFetcherInterface&\Mockery\MockInterface $fetcher */
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
         /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->never();
@@ -293,7 +293,7 @@ JSON;
             'composer.lock' => $composerLock,
         ]);
 
-        /** @var AdvisoryFetcherInterface&\Mockery\MockInterface $fetcher */
+        /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
         /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->never();
@@ -759,7 +759,7 @@ JSON;
         $result = $analyzer->analyze();
 
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_severity_is_medium_for_abandoned_packages(): void
@@ -800,7 +800,7 @@ JSON;
         $result = $analyzer->analyze();
 
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+        $this->assertEquals(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_metadata_structure(): void
@@ -810,8 +810,8 @@ JSON;
 
         $this->assertEquals('vulnerable-dependencies', $metadata->id);
         $this->assertEquals('Vulnerable Dependencies Analyzer', $metadata->name);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Security, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $metadata->severity);
+        $this->assertEquals(Category::Security, $metadata->category);
+        $this->assertEquals(Severity::Critical, $metadata->severity);
         $this->assertContains('vulnerabilities', $metadata->tags);
         $this->assertContains('cve', $metadata->tags);
     }

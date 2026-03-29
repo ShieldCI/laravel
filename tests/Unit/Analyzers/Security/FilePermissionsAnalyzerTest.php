@@ -6,6 +6,8 @@ namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
 use ShieldCI\Analyzers\Security\FilePermissionsAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
@@ -413,7 +415,7 @@ class FilePermissionsAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         // Should not crash, just skip unreadable paths
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertInstanceOf(ResultInterface::class, $result);
 
         // Restore permissions for cleanup
         chmod($tempDir.'/app', 0755);
@@ -610,7 +612,7 @@ class FilePermissionsAnalyzerTest extends AnalyzerTestCase
 
         $this->assertEquals('file-permissions', $metadata->id);
         $this->assertEquals('File Permissions Analyzer', $metadata->name);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Security, $metadata->category);
+        $this->assertEquals(Category::Security, $metadata->category);
         $this->assertEquals(Severity::Critical, $metadata->severity);
         $this->assertEquals(15, $metadata->timeToFix);
     }

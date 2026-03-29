@@ -6,6 +6,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
 use ShieldCI\Analyzers\Security\CsrfAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class CsrfAnalyzerTest extends AnalyzerTestCase
@@ -939,7 +940,7 @@ PHP;
         $this->assertHasIssueContaining('wildcard', $result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_fails_critical_with_wildcard_slash_asterisk(): void
@@ -970,7 +971,7 @@ PHP;
         $this->assertHasIssueContaining('wildcard', $result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_fails_with_broad_admin_wildcard(): void
@@ -1460,7 +1461,7 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('ValidateCsrfToken removed from web middleware group', $result);
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_fails_when_csrf_removed_entirely(): void
@@ -1491,7 +1492,7 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('ValidateCsrfToken middleware has been removed', $result);
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_fails_when_validate_csrf_tokens_excludes_all_with_wildcard(): void
@@ -1522,7 +1523,7 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('All routes excluded from CSRF protection', $result);
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_passes_validate_csrf_tokens_with_known_webhook(): void

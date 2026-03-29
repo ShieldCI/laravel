@@ -7,6 +7,7 @@ namespace ShieldCI\Analyzers\BestPractices;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
+use PhpParser\PrettyPrinter\Standard;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -224,8 +225,8 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
 
             if ($current instanceof Node\Expr\MethodCall) {
                 $current = $current->var;
-            } elseif ($current instanceof Node\Expr\StaticCall) {
-                // For static calls, check if the class itself is a method chain
+            } else {
+                // StaticCall: check if the class itself is a method chain
                 // e.g., SomeClass::method()->anotherMethod()
                 if ($current->class instanceof Node\Expr\StaticCall || $current->class instanceof Node\Expr\MethodCall) {
                     $current = $current->class;
@@ -233,8 +234,6 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
                     // Reached the base class (e.g., User::where()->get())
                     break;
                 }
-            } else {
-                break;
             }
         }
 
@@ -246,7 +245,7 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
      */
     private function getCodeSnippet(Node\Expr $expr): string
     {
-        $printer = new \PhpParser\PrettyPrinter\Standard;
+        $printer = new Standard;
 
         return $printer->prettyPrintExpr($expr);
     }

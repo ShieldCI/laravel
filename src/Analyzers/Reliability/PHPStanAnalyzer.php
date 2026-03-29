@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\Reliability;
 
 use Illuminate\Contracts\Config\Repository as Config;
+use Illuminate\Support\Collection;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -298,11 +299,10 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         /** @var array<string> $paths */
         $paths = is_array($pathsConfig) ? $pathsConfig : [$pathsConfig];
 
-        $enabledCategories = (array) $this->config->get('shieldci.analyzers.reliability.phpstan.categories', array_keys(self::ISSUE_CATEGORIES));
-        $disabledCategories = (array) $this->config->get('shieldci.analyzers.reliability.phpstan.disabled_categories', []);
+        $enabledCategories = array_values(array_filter((array) $this->config->get('shieldci.analyzers.reliability.phpstan.categories', array_keys(self::ISSUE_CATEGORIES)), 'is_string'));
+        $disabledCategories = array_values(array_filter((array) $this->config->get('shieldci.analyzers.reliability.phpstan.disabled_categories', []), 'is_string'));
 
         // Filter categories
-        /** @var array<string> $activeCategories */
         $activeCategories = array_values(array_diff($enabledCategories, $disabledCategories));
 
         try {
@@ -356,7 +356,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
      * Categorize PHPStan issues by matching patterns.
      *
      * @param  array<string>  $activeCategories
-     * @return array<string, \Illuminate\Support\Collection>
+     * @return array<string, Collection>
      */
     private function categorizeIssues(PHPStanRunner $runner, array $activeCategories): array
     {
@@ -372,10 +372,8 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
             // Filter by patterns or regex
             if (isset($config['regex'])) {
                 $categorized[$category] = $runner->filterByRegex($config['regex']);
-            } elseif (isset($config['patterns'])) {
-                $categorized[$category] = $runner->filterByPattern($config['patterns']);
             } else {
-                $categorized[$category] = collect();
+                $categorized[$category] = $runner->filterByPattern($config['patterns']);
             }
         }
 

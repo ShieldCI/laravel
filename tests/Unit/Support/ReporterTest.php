@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Support;
 
 use PHPUnit\Framework\Attributes\Test;
+use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Enums\Status;
 use ShieldCI\AnalyzersCore\Results\AnalysisResult;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
@@ -111,8 +113,10 @@ class ReporterTest extends TestCase
         $this->assertJson($json);
 
         $decoded = json_decode($json, true);
+        $this->assertIsArray($decoded);
         $this->assertArrayHasKey('project_id', $decoded);
         $this->assertArrayHasKey('summary', $decoded);
+        $this->assertIsArray($decoded['summary']);
         $this->assertArrayHasKey('score', $decoded['summary']);
         $this->assertArrayHasKey('results', $decoded);
     }
@@ -217,7 +221,7 @@ class ReporterTest extends TestCase
     {
         $result = new AnalysisResult(
             analyzerId: 'test-analyzer',
-            status: \ShieldCI\AnalyzersCore\Enums\Status::Failed,
+            status: Status::Failed,
             message: 'Found 2 issues',
             issues: [
                 new Issue(
@@ -264,7 +268,7 @@ class ReporterTest extends TestCase
     {
         $result = new AnalysisResult(
             analyzerId: 'test-analyzer',
-            status: \ShieldCI\AnalyzersCore\Enums\Status::Failed,
+            status: Status::Failed,
             message: 'Found issues',
             issues: [
                 new Issue(
@@ -291,7 +295,7 @@ class ReporterTest extends TestCase
     {
         $result = new AnalysisResult(
             analyzerId: 'test-analyzer',
-            status: \ShieldCI\AnalyzersCore\Enums\Status::Warning,
+            status: Status::Warning,
             message: 'Warning issued',
             issues: [
                 new Issue(
@@ -330,7 +334,7 @@ class ReporterTest extends TestCase
 
         $result = new AnalysisResult(
             analyzerId: 'test-analyzer',
-            status: \ShieldCI\AnalyzersCore\Enums\Status::Failed,
+            status: Status::Failed,
             message: 'Found 10 issues',
             issues: $issues,
             executionTime: 0.1,
@@ -348,15 +352,15 @@ class ReporterTest extends TestCase
         $results = collect([
             new AnalysisResult(
                 analyzerId: 'sec-1',
-                status: \ShieldCI\AnalyzersCore\Enums\Status::Passed,
+                status: Status::Passed,
                 message: 'Passed',
                 issues: [],
                 executionTime: 0.1,
-                metadata: ['category' => \ShieldCI\AnalyzersCore\Enums\Category::Security, 'name' => 'Security 1'],
+                metadata: ['category' => Category::Security, 'name' => 'Security 1'],
             ),
             new AnalysisResult(
                 analyzerId: 'perf-1',
-                status: \ShieldCI\AnalyzersCore\Enums\Status::Failed,
+                status: Status::Failed,
                 message: 'Failed',
                 issues: [
                     new Issue(
@@ -367,7 +371,7 @@ class ReporterTest extends TestCase
                     ),
                 ],
                 executionTime: 0.2,
-                metadata: ['category' => \ShieldCI\AnalyzersCore\Enums\Category::Performance, 'name' => 'Perf 1'],
+                metadata: ['category' => Category::Performance, 'name' => 'Perf 1'],
             ),
         ]);
 
@@ -387,7 +391,7 @@ class ReporterTest extends TestCase
 
         $result = new AnalysisResult(
             analyzerId: 'test-analyzer',
-            status: \ShieldCI\AnalyzersCore\Enums\Status::Failed,
+            status: Status::Failed,
             message: 'Found issues',
             issues: [
                 new Issue(
@@ -413,7 +417,7 @@ class ReporterTest extends TestCase
 
         $result = new AnalysisResult(
             analyzerId: 'test-analyzer',
-            status: \ShieldCI\AnalyzersCore\Enums\Status::Failed,
+            status: Status::Failed,
             message: 'Found issues',
             issues: [
                 new Issue(
@@ -437,7 +441,7 @@ class ReporterTest extends TestCase
     {
         $result = new AnalysisResult(
             analyzerId: 'test-analyzer',
-            status: \ShieldCI\AnalyzersCore\Enums\Status::Failed,
+            status: Status::Failed,
             message: 'Found issues',
             issues: [
                 new Issue(
@@ -476,7 +480,7 @@ class ReporterTest extends TestCase
         $results = collect([
             new AnalysisResult(
                 analyzerId: 'test-analyzer',
-                status: \ShieldCI\AnalyzersCore\Enums\Status::Failed,
+                status: Status::Failed,
                 message: 'Found issues',
                 issues: [
                     new Issue(
@@ -489,7 +493,7 @@ class ReporterTest extends TestCase
                 executionTime: 0.1,
                 metadata: [
                     'name' => 'Test Analyzer',
-                    'category' => \ShieldCI\AnalyzersCore\Enums\Category::Security,
+                    'category' => Category::Security,
                     'timeToFix' => 5,
                 ],
             ),
@@ -507,7 +511,7 @@ class ReporterTest extends TestCase
         $results = collect([
             new AnalysisResult(
                 analyzerId: 'test-analyzer',
-                status: \ShieldCI\AnalyzersCore\Enums\Status::Failed,
+                status: Status::Failed,
                 message: 'Found issues',
                 issues: [
                     new Issue(
@@ -520,7 +524,7 @@ class ReporterTest extends TestCase
                 executionTime: 0.1,
                 metadata: [
                     'name' => 'Test Analyzer',
-                    'category' => \ShieldCI\AnalyzersCore\Enums\Category::Security,
+                    'category' => Category::Security,
                     'docsUrl' => 'https://docs.shieldci.com/test-analyzer',
                 ],
             ),
@@ -538,7 +542,7 @@ class ReporterTest extends TestCase
     {
         $result = new AnalysisResult(
             analyzerId: 'test-analyzer',
-            status: \ShieldCI\AnalyzersCore\Enums\Status::Failed,
+            status: Status::Failed,
             message: 'Found 2 issues',
             issues: [
                 new Issue(
@@ -572,7 +576,7 @@ class ReporterTest extends TestCase
 
         $result = new AnalysisResult(
             analyzerId: 'test-analyzer',
-            status: \ShieldCI\AnalyzersCore\Enums\Status::Failed,
+            status: Status::Failed,
             message: 'Found 5 issues',
             issues: array_map(fn ($i) => new Issue(
                 message: "Issue {$i}",
@@ -596,7 +600,7 @@ class ReporterTest extends TestCase
 
         $result = new AnalysisResult(
             analyzerId: 'test-analyzer',
-            status: \ShieldCI\AnalyzersCore\Enums\Status::Failed,
+            status: Status::Failed,
             message: 'Found 3 issues',
             issues: array_map(fn ($i) => new Issue(
                 message: "Issue {$i}",
@@ -619,14 +623,14 @@ class ReporterTest extends TestCase
         $results = collect([
             new AnalysisResult(
                 analyzerId: 'pass-1',
-                status: \ShieldCI\AnalyzersCore\Enums\Status::Passed,
+                status: Status::Passed,
                 message: 'OK',
                 issues: [],
                 executionTime: 0.1,
-                metadata: ['category' => \ShieldCI\AnalyzersCore\Enums\Category::Security, 'name' => 'Sec Test'],
+                metadata: ['category' => Category::Security, 'name' => 'Sec Test'],
             ),
             AnalysisResult::skipped('skip-1', 'Skipped', 0.0, [
-                'category' => \ShieldCI\AnalyzersCore\Enums\Category::Performance,
+                'category' => Category::Performance,
                 'name' => 'Perf Test',
             ]),
         ]);
@@ -645,7 +649,7 @@ class ReporterTest extends TestCase
         $results = collect([
             new AnalysisResult(
                 analyzerId: 'test-analyzer',
-                status: \ShieldCI\AnalyzersCore\Enums\Status::Failed,
+                status: Status::Failed,
                 message: 'Found issues',
                 issues: [
                     new Issue(
@@ -658,7 +662,7 @@ class ReporterTest extends TestCase
                 executionTime: 0.1,
                 metadata: [
                     'name' => 'Config Analyzer',
-                    'category' => \ShieldCI\AnalyzersCore\Enums\Category::Security,
+                    'category' => Category::Security,
                 ],
             ),
         ]);
@@ -678,7 +682,7 @@ class ReporterTest extends TestCase
         $results = collect([
             new AnalysisResult(
                 analyzerId: 'test-analyzer',
-                status: \ShieldCI\AnalyzersCore\Enums\Status::Failed,
+                status: Status::Failed,
                 message: 'Found 3 issues',
                 issues: [
                     new Issue(message: 'Issue 1', location: new Location('/a.php', 1), severity: Severity::Medium, recommendation: 'Fix'),
@@ -688,7 +692,7 @@ class ReporterTest extends TestCase
                 executionTime: 0.1,
                 metadata: [
                     'name' => 'Test Analyzer',
-                    'category' => \ShieldCI\AnalyzersCore\Enums\Category::Security,
+                    'category' => Category::Security,
                 ],
             ),
         ]);
@@ -708,7 +712,7 @@ class ReporterTest extends TestCase
         $results = collect([
             new AnalysisResult(
                 analyzerId: 'test-analyzer',
-                status: \ShieldCI\AnalyzersCore\Enums\Status::Failed,
+                status: Status::Failed,
                 message: 'Found issues',
                 issues: [
                     new Issue(
@@ -721,7 +725,7 @@ class ReporterTest extends TestCase
                 executionTime: 0.1,
                 metadata: [
                     'name' => 'SQL Analyzer',
-                    'category' => \ShieldCI\AnalyzersCore\Enums\Category::Security,
+                    'category' => Category::Security,
                 ],
             ),
         ]);
@@ -739,7 +743,7 @@ class ReporterTest extends TestCase
         $results = collect([
             new AnalysisResult(
                 analyzerId: 'test-analyzer',
-                status: \ShieldCI\AnalyzersCore\Enums\Status::Failed,
+                status: Status::Failed,
                 message: 'Issue found',
                 issues: [
                     new Issue(
@@ -752,7 +756,7 @@ class ReporterTest extends TestCase
                 executionTime: 0.1,
                 metadata: [
                     'name' => 'Test Analyzer',
-                    'category' => \ShieldCI\AnalyzersCore\Enums\Category::Security,
+                    'category' => Category::Security,
                     'docsUrl' => 'https://docs.shieldci.com/test',
                 ],
             ),
@@ -770,7 +774,7 @@ class ReporterTest extends TestCase
         // Exercises line 377 (all categories only have skipped analyzers)
         $results = collect([
             AnalysisResult::skipped('skip-1', 'Not applicable', 0.0, [
-                'category' => \ShieldCI\AnalyzersCore\Enums\Category::Security,
+                'category' => Category::Security,
                 'name' => 'Skipped Analyzer',
             ]),
         ]);
@@ -788,7 +792,7 @@ class ReporterTest extends TestCase
         $results = collect([
             new AnalysisResult(
                 analyzerId: 'test-analyzer',
-                status: \ShieldCI\AnalyzersCore\Enums\Status::Failed,
+                status: Status::Failed,
                 message: 'Found 1 issue',
                 issues: [
                     new Issue(
@@ -799,15 +803,17 @@ class ReporterTest extends TestCase
                     ),
                 ],
                 executionTime: 0.5,
-                metadata: ['name' => 'Test Analyzer', 'category' => \ShieldCI\AnalyzersCore\Enums\Category::Security],
+                metadata: ['name' => 'Test Analyzer', 'category' => Category::Security],
             ),
         ]);
 
         $report = $this->reporter->generate($results);
         $json = $this->reporter->toJson($report);
         $decoded = json_decode($json, true);
+        $this->assertIsArray($decoded);
 
         $this->assertArrayHasKey('summary', $decoded);
+        $this->assertIsArray($decoded['summary']);
         $this->assertArrayHasKey('total', $decoded['summary']);
         $this->assertArrayHasKey('passed', $decoded['summary']);
         $this->assertArrayHasKey('failed', $decoded['summary']);
@@ -821,13 +827,13 @@ class ReporterTest extends TestCase
         $results = collect([
             new AnalysisResult(
                 analyzerId: 'test-error-analyzer',
-                status: \ShieldCI\AnalyzersCore\Enums\Status::Error,
+                status: Status::Error,
                 message: 'Analyzer encountered an error',
                 issues: [],
                 executionTime: 0.1,
                 metadata: [
                     'name' => 'Test Error Analyzer',
-                    'category' => \ShieldCI\AnalyzersCore\Enums\Category::Security,
+                    'category' => Category::Security,
                 ],
             ),
         ]);
@@ -901,7 +907,7 @@ class ReporterTest extends TestCase
         $results = collect([
             new AnalysisResult(
                 analyzerId: 'test-analyzer',
-                status: \ShieldCI\AnalyzersCore\Enums\Status::Passed,
+                status: Status::Passed,
                 message: 'All checks passed',
                 issues: [],
                 executionTime: 0.1,
@@ -1005,8 +1011,10 @@ class ReporterTest extends TestCase
 
         $json = $this->reporter->toJson($report);
         $decoded = json_decode($json, true);
+        $this->assertIsArray($decoded);
 
         $this->assertArrayHasKey('metadata', $decoded);
+        $this->assertIsArray($decoded['metadata']);
         $this->assertEquals(PHP_VERSION, $decoded['metadata']['php_version']);
         $this->assertEquals('main', $decoded['metadata']['git_branch']);
     }
@@ -1424,8 +1432,10 @@ class ReporterTest extends TestCase
         $report = $this->reporter->generate($results);
 
         $decoded = json_decode($this->reporter->toJson($report), true);
+        $this->assertIsArray($decoded);
 
         $this->assertArrayHasKey('configuration', $decoded);
+        $this->assertIsArray($decoded['configuration']);
         foreach ([
             'paths', 'excluded_paths', 'categories', 'disabled_analyzers',
             'dont_report', 'ignore_errors', 'environment_mapping',

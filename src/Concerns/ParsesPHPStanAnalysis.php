@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Concerns;
 
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Support\PHPStan;
 
 /**
@@ -16,7 +17,7 @@ trait ParsesPHPStanAnalysis
      * Parse the PHPStan analysis and add issues for the errors.
      *
      * @param  string|array<int, string>  $search
-     * @param  array<int, mixed>  $issues
+     * @param  array<int, Issue>  $issues
      */
     protected function parsePHPStanAnalysis(PHPStan $phpStan, string|array $search, array &$issues): void
     {
@@ -49,7 +50,7 @@ trait ParsesPHPStanAnalysis
      * Parse the PHPStan analysis using pattern matching.
      *
      * @param  string|array<int, string>  $pattern
-     * @param  array<int, mixed>  $issues
+     * @param  array<int, Issue>  $issues
      */
     protected function matchPHPStanAnalysis(PHPStan $phpStan, string|array $pattern, array &$issues): void
     {
@@ -72,7 +73,7 @@ trait ParsesPHPStanAnalysis
     /**
      * Parse the PHPStan analysis using regex pattern matching.
      *
-     * @param  array<int, mixed>  $issues
+     * @param  array<int, Issue>  $issues
      */
     protected function pregMatchPHPStanAnalysis(PHPStan $phpStan, string $pattern, array &$issues): void
     {

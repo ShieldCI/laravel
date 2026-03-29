@@ -80,6 +80,11 @@ parameters:
         # Mockery method chaining in tests
         - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage::with\(\)#'
         - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage::andThrow\(\)#'
+        - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage::andReturnSelf\(\)#'
+        - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage\|Mockery\\MockInterface::with\(\)#'
+
+        # Test files: PHPUnit assertions on already-narrowed types are intentional defensive checks
+        - '#Call to method PHPUnit\\Framework\\Assert::(assertIsArray|assertIsString|assertIsBool|assertTrue|assertFalse)\(\) with .* will always evaluate to true#'
 
         # Test file singleton/container mock binding
         - '#Cannot call method singleton\(\) on Illuminate\\Foundation\\Application\|null#'

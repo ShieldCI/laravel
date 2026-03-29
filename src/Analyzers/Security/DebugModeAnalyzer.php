@@ -4,9 +4,13 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
+use PhpParser\Node\Expr\ConstFetch;
 use PhpParser\Node\Expr\Exit_;
 use PhpParser\Node\Expr\FuncCall;
+use PhpParser\Node\Expr\UnaryMinus;
 use PhpParser\Node\Name;
+use PhpParser\Node\Scalar\LNumber;
+use PhpParser\Node\Scalar\String_;
 use PhpParser\NodeFinder;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -344,15 +348,15 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
         $isVerbose = false;
 
         // Check for E_ALL constant
-        if ($arg instanceof \PhpParser\Node\Expr\ConstFetch
+        if ($arg instanceof ConstFetch
             && $arg->name->toString() === 'E_ALL'
         ) {
             $isVerbose = true;
         }
 
         // Check for -1 (UnaryMinus with LNumber 1)
-        if ($arg instanceof \PhpParser\Node\Expr\UnaryMinus
-            && $arg->expr instanceof \PhpParser\Node\Scalar\LNumber
+        if ($arg instanceof UnaryMinus
+            && $arg->expr instanceof LNumber
             && $arg->expr->value === 1
         ) {
             $isVerbose = true;
@@ -384,7 +388,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
         $settingArg = $funcCall->args[0]->value;
 
-        if (! $settingArg instanceof \PhpParser\Node\Scalar\String_) {
+        if (! $settingArg instanceof String_) {
             return;
         }
 
@@ -398,17 +402,17 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
         $isTruthy = false;
 
-        if ($valueArg instanceof \PhpParser\Node\Scalar\LNumber && $valueArg->value >= 1) {
+        if ($valueArg instanceof LNumber && $valueArg->value >= 1) {
             $isTruthy = true;
         }
 
-        if ($valueArg instanceof \PhpParser\Node\Scalar\String_
+        if ($valueArg instanceof String_
             && in_array(strtolower($valueArg->value), ['1', 'true', 'on', 'yes'], true)
         ) {
             $isTruthy = true;
         }
 
-        if ($valueArg instanceof \PhpParser\Node\Expr\ConstFetch
+        if ($valueArg instanceof ConstFetch
             && strtolower($valueArg->name->toString()) === 'true'
         ) {
             $isTruthy = true;

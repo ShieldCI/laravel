@@ -60,29 +60,29 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
         // Set root path for PHPStan
         $basePath = $this->getBasePath();
 
-        if (is_string($basePath) && $basePath !== '') {
+        if ($basePath !== '') {
             $this->phpStan->setRootPath($basePath);
         }
 
         // Run PHPStan on configured paths
         $paths = $this->paths;
-        if (! is_array($paths) || empty($paths)) {
+        if (empty($paths)) {
             // Use paths from config, filtering to code directories only
             // PHPStan should analyze code, not configs/views/migrations
             $configPaths = config('shieldci.paths.analyze', ['app']);
 
             if (is_array($configPaths)) {
-                $paths = array_values(array_filter($configPaths, function ($path) {
-                    // Only analyze code directories, not configs, views, migrations, etc.
-                    if (! is_string($path)) {
-                        return false;
+                /** @var array<int, string> $paths */
+                $paths = array_values(array_filter(
+                    array_filter($configPaths, 'is_string'),
+                    static function (string $path): bool {
+                        // Only analyze code directories, not configs, views, migrations, etc.
+                        return ! str_starts_with($path, 'config')
+                            && ! str_starts_with($path, 'database')
+                            && ! str_starts_with($path, 'resources')
+                            && ! str_starts_with($path, 'routes');
                     }
-
-                    return ! str_starts_with($path, 'config')
-                        && ! str_starts_with($path, 'database')
-                        && ! str_starts_with($path, 'resources')
-                        && ! str_starts_with($path, 'routes');
-                }));
+                ));
             } else {
                 $paths = ['app'];
             }

@@ -235,7 +235,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
 
         $phpIniPath = php_ini_loaded_file();
 
-        return $phpIniPath !== false && is_string($phpIniPath) ? $phpIniPath : 'php.ini';
+        return $phpIniPath !== false ? $phpIniPath : 'php.ini';
     }
 
     private function isOpcacheLoaded(): bool
@@ -284,7 +284,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
      * Check OPcache configuration for optimization opportunities.
      *
      * @param  array<string, mixed>  $config
-     * @param  array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<Issue>  $issues
      */
     private function checkOpcacheConfiguration(array $config, array &$issues, string $phpIniPath): void
     {
@@ -292,6 +292,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
             return; // Can't check configuration without directives
         }
 
+        /** @var array<string, mixed> $directives */
         $directives = $config['directives'];
 
         // Check opcache.validate_timestamps (should be 0 in production)
@@ -314,7 +315,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
      * Check opcache.validate_timestamps setting.
      *
      * @param  array<string, mixed>  $directives
-     * @param  array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<Issue>  $issues
      */
     private function checkValidateTimestamps(array $directives, array &$issues, string $phpIniPath): void
     {
@@ -340,7 +341,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
      * Check opcache.memory_consumption setting.
      *
      * @param  array<string, mixed>  $directives
-     * @param  array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<Issue>  $issues
      */
     private function checkMemoryConsumption(array $directives, array &$issues, string $phpIniPath): void
     {
@@ -374,7 +375,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
      * Check opcache.interned_strings_buffer setting.
      *
      * @param  array<string, mixed>  $directives
-     * @param  array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<Issue>  $issues
      */
     private function checkInternedStringsBuffer(array $directives, array &$issues, string $phpIniPath): void
     {
@@ -407,7 +408,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
      * Check opcache.max_accelerated_files setting.
      *
      * @param  array<string, mixed>  $directives
-     * @param  array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<Issue>  $issues
      */
     private function checkMaxAcceleratedFiles(array $directives, array &$issues, string $phpIniPath): void
     {
@@ -441,7 +442,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
      * Check opcache.revalidate_freq setting.
      *
      * @param  array<string, mixed>  $directives
-     * @param  array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<Issue>  $issues
      */
     private function checkRevalidateFreq(array $directives, array &$issues, string $phpIniPath): void
     {

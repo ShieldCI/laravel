@@ -114,8 +114,8 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         // Merge config with defaults, ensuring no duplicates
-        $this->ignoredPackages = array_values(array_unique(array_merge($defaultIgnoredPackages, $configIgnoredPackages)));
-        $this->ignoredAdvisories = array_values(array_unique(array_merge($defaultIgnoredAdvisories, $configIgnoredAdvisories)));
+        $this->ignoredPackages = array_values(array_unique(array_filter(array_merge($defaultIgnoredPackages, $configIgnoredPackages), 'is_string')));
+        $this->ignoredAdvisories = array_values(array_unique(array_filter(array_merge($defaultIgnoredAdvisories, $configIgnoredAdvisories), 'is_string')));
     }
 
     protected function runAnalysis(): ResultInterface
@@ -318,15 +318,13 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
         // Look for vulnerability patterns in output
         if (preg_match('/(\d+)\s+vulnerabilit/i', $output, $matches)) {
-            if (is_numeric($matches[1])) {
-                $count = (int) $matches[1];
-                if ($count > 0) {
-                    $result['metadata'] = [
-                        'vulnerabilities' => [
-                            'total' => $count,
-                        ],
-                    ];
-                }
+            $count = (int) $matches[1];
+            if ($count > 0) {
+                $result['metadata'] = [
+                    'vulnerabilities' => [
+                        'total' => $count,
+                    ],
+                ];
             }
         }
 
@@ -551,11 +549,13 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
             $fixName = $advisory['fixAvailable']['name'] ?? null;
             $fixVersion = $advisory['fixAvailable']['version'] ?? null;
 
-            if ($fixName && $fixVersion) {
-                if ($fixName === $package) {
-                    $recommendation = sprintf('Update "%s" to version %s or later', $package, $fixVersion);
+            if (is_string($fixName) && is_string($fixVersion) && $fixName !== '' && $fixVersion !== '') {
+                $fixNameStr = $fixName;
+                $fixVersionStr = $fixVersion;
+                if ($fixNameStr === $package) {
+                    $recommendation = sprintf('Update "%s" to version %s or later', $package, $fixVersionStr);
                 } else {
-                    $recommendation = sprintf('Update "%s" to version %s to fix vulnerability in "%s"', $fixName, $fixVersion, $package);
+                    $recommendation = sprintf('Update "%s" to version %s to fix vulnerability in "%s"', $fixNameStr, $fixVersionStr, $package);
                 }
             }
         }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\Performance;
 
 use Illuminate\Filesystem\Filesystem;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -52,7 +53,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     /**
      * The list of uncached assets and their sources.
      *
-     * @var \Illuminate\Support\Collection<int, array{path: string, source: string, type?: string}>
+     * @var Collection<int, array{path: string, source: string, type?: string}>
      */
     protected $uncachedAssets;
 
@@ -287,6 +288,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
                 return;
             }
 
+            /** @var array<string, mixed> $manifest */
             $visited = [];
 
             foreach ($manifest as $key => $entry) {
@@ -294,7 +296,8 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
                     continue;
                 }
 
-                $this->checkViteManifestEntry($entry, $manifest, $visited, is_string($key) ? $key : null, 0);
+                /** @var array<string, mixed> $entry */
+                $this->checkViteManifestEntry($entry, $manifest, $visited, $key, 0);
             }
         } catch (\Throwable) {
             // Gracefully handle missing or invalid manifest
@@ -344,11 +347,15 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
 
         // Check preloaded imports (Vite feature for code splitting)
         if (isset($entry['imports']) && is_array($entry['imports'])) {
-            $this->checkViteImports($entry['imports'], $manifest, $visited, $depth);
+            /** @var array<int, string> $imports */
+            $imports = array_values(array_filter($entry['imports'], 'is_string'));
+            $this->checkViteImports($imports, $manifest, $visited, $depth);
         }
 
         if (isset($entry['dynamicImports']) && is_array($entry['dynamicImports'])) {
-            $this->checkViteImports($entry['dynamicImports'], $manifest, $visited, $depth);
+            /** @var array<int, string> $dynamicImports */
+            $dynamicImports = array_values(array_filter($entry['dynamicImports'], 'is_string'));
+            $this->checkViteImports($dynamicImports, $manifest, $visited, $depth);
         }
 
         if (isset($entry['assets']) && is_array($entry['assets'])) {
@@ -402,7 +409,9 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             }
 
             if (isset($manifest[$importKey]) && is_array($manifest[$importKey])) {
-                $this->checkViteManifestEntry($manifest[$importKey], $manifest, $visited, $importKey, $depth + 1);
+                /** @var array<string, mixed> $importEntry */
+                $importEntry = $manifest[$importKey];
+                $this->checkViteManifestEntry($importEntry, $manifest, $visited, $importKey, $depth + 1);
 
                 continue;
             }

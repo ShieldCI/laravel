@@ -6,6 +6,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\Reliability;
 
 use ShieldCI\Analyzers\Reliability\EnvVariableAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class EnvVariableAnalyzerTest extends AnalyzerTestCase
@@ -491,7 +492,7 @@ APP_ENV=local';
         $result = $analyzer->analyze();
 
         // Should return warning - .env.example not found
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertInstanceOf(ResultInterface::class, $result);
     }
 
     public function test_handles_both_files_missing(): void
@@ -786,7 +787,7 @@ REQUIRED_VAR=',
 
     public function test_skips_on_vapor(): void
     {
-        /** @var \ShieldCI\Analyzers\Reliability\EnvVariableAnalyzer $analyzer */
+        /** @var EnvVariableAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
         $analyzer->setDeploymentPlatform('vapor');
 
@@ -796,7 +797,7 @@ REQUIRED_VAR=',
 
     public function test_skips_on_serverless(): void
     {
-        /** @var \ShieldCI\Analyzers\Reliability\EnvVariableAnalyzer $analyzer */
+        /** @var EnvVariableAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
         $analyzer->setDeploymentPlatform('serverless');
 

@@ -386,7 +386,7 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
 
         $phpIniPath = php_ini_loaded_file();
 
-        return $phpIniPath !== false && is_string($phpIniPath) ? $phpIniPath : 'php.ini';
+        return $phpIniPath !== false ? $phpIniPath : 'php.ini';
     }
 
     /**
@@ -453,7 +453,7 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
             $sources['main'] = $this->phpIniPathOverride;
         } else {
             $mainIni = php_ini_loaded_file();
-            if ($mainIni !== false && is_string($mainIni) && $mainIni !== '') {
+            if ($mainIni !== false) {
                 $sources['main'] = $mainIni;
             }
         }
@@ -462,10 +462,10 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
         // Note: In test mode with override, we don't scan for additional files
         if (! is_string($this->phpIniPathOverride) || $this->phpIniPathOverride === '') {
             $scannedFiles = php_ini_scanned_files();
-            if ($scannedFiles !== false && is_string($scannedFiles) && $scannedFiles !== '') {
+            if ($scannedFiles !== false && $scannedFiles !== '') {
                 $files = array_filter(
                     array_map('trim', explode(',', $scannedFiles)),
-                    fn ($file) => $file !== '' && is_string($file)
+                    fn (string $file) => $file !== ''
                 );
                 $sources['additional'] = $files;
             }

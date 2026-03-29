@@ -188,7 +188,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     private function hasLoginThrottlingInFile(string $file): bool
     {
         $content = FileParser::readFile($file);
-        if ($content === null || ! is_string($content)) {
+        if ($content === null) {
             return false;
         }
 
@@ -306,6 +306,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         return true;
                     }
                 } elseif (is_array($subNode)) {
+                    /** @var array<Node> $subNode */
                     if ($this->nodeContainsRateLimiter($subNode)) {
                         return true;
                     }
@@ -465,7 +466,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     private function hasThrottleInWebMiddlewareGroupFallback(string $kernelPath): bool
     {
         $content = FileParser::readFile($kernelPath);
-        if ($content === null || ! is_string($content)) {
+        if ($content === null) {
             return false;
         }
 
@@ -551,7 +552,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         } catch (\Throwable $e) {
             // If parsing fails, fall back to string matching
             $content = FileParser::readFile($kernelPath);
-            if ($content === null || ! is_string($content)) {
+            if ($content === null) {
                 return false;
             }
 
@@ -588,7 +589,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         }
 
         $content = FileParser::readFile($bootstrapPath);
-        if ($content === null || ! is_string($content)) {
+        if ($content === null) {
             return false;
         }
 
@@ -641,7 +642,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
                 $isApiRoute = $file->getFilename() === 'api.php';
                 $content = FileParser::readFile($filePath);
-                if ($content === null || ! is_string($content)) {
+                if ($content === null) {
                     continue;
                 }
 
@@ -831,7 +832,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 }
 
                 $content = FileParser::readFile($controllerPath);
-                if ($content === null || ! is_string($content)) {
+                if ($content === null) {
                     continue;
                 }
 
@@ -900,7 +901,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
         if (file_exists($composerLock)) {
             $lockContent = FileParser::readFile($composerLock);
-            if ($lockContent !== null && is_string($lockContent)) {
+            if ($lockContent !== null) {
                 $hasFortify = str_contains($lockContent, '"name": "laravel/fortify"');
                 $hasBreeze = str_contains($lockContent, '"name": "laravel/breeze"');
                 $hasJetstream = str_contains($lockContent, '"name": "laravel/jetstream"');
@@ -949,7 +950,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
                     if ($file->isFile() && $file->getExtension() === 'php') {
                         $content = FileParser::readFile($file->getPathname());
-                        if ($content === null || ! is_string($content)) {
+                        if ($content === null) {
                             continue;
                         }
 
@@ -996,7 +997,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         $fortifyConfigPath = $basePath.DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'fortify.php';
         if (file_exists($fortifyConfigPath)) {
             $fortifyConfig = FileParser::readFile($fortifyConfigPath);
-            if ($fortifyConfig !== null && is_string($fortifyConfig)) {
+            if ($fortifyConfig !== null) {
                 // Check if limiters configuration exists
                 if (! preg_match('/["\']limiters["\']\s*=>/i', $fortifyConfig)) {
                     $issues[] = $this->createIssueWithSnippet(
@@ -1036,7 +1037,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
         if (file_exists($authRoutesPath)) {
             $authRoutes = FileParser::readFile($authRoutesPath);
-            if ($authRoutes !== null && is_string($authRoutes)) {
+            if ($authRoutes !== null) {
                 // Check if these are custom routes (not using Fortify/Breeze defaults)
                 $hasCustomLoginRoute = preg_match('/Route::(post|get|any)\s*\(["\'][^"\']*login[^"\']*["\'],\s*\[.*Controller/i', $authRoutes);
 

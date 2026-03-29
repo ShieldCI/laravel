@@ -405,9 +405,7 @@ class AnalyzerManager
 
         // Check shouldRun - use analyzer's custom skip reason
         if (! $analyzer->shouldRun()) {
-            return method_exists($analyzer, 'getSkipReason')
-                ? $analyzer->getSkipReason()
-                : 'Analyzer conditions not met';
+            return $analyzer->getSkipReason();
         }
 
         return 'Unknown reason';

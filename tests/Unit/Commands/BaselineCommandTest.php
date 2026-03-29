@@ -78,6 +78,7 @@ class BaselineCommandTest extends TestCase
 
         // Verify baseline content
         $content = json_decode(file_get_contents($this->baselinePath), true);
+        $this->assertIsArray($content);
         $this->assertArrayHasKey('errors', $content);
         $this->assertArrayHasKey('generated_at', $content);
         $this->assertArrayHasKey('version', $content);
@@ -134,6 +135,7 @@ class BaselineCommandTest extends TestCase
 
         // Verify merged content
         $content = json_decode(file_get_contents($this->baselinePath), true);
+        $this->assertIsArray($content);
         $this->assertArrayHasKey('errors', $content);
     }
 
@@ -166,6 +168,7 @@ class BaselineCommandTest extends TestCase
 
         // Verify dont_report contains the analyzer
         $content = json_decode(file_get_contents($this->baselinePath), true);
+        $this->assertIsArray($content);
         $this->assertArrayHasKey('dont_report', $content);
         $this->assertContains('failed-no-issues', $content['dont_report']);
     }
@@ -275,17 +278,22 @@ class BaselineCommandTest extends TestCase
             ->assertSuccessful();
 
         $content = json_decode(file_get_contents($this->baselinePath), true);
+        $this->assertIsArray($content);
 
         // Verify hashes are present and unique
         $hashes = [];
-        foreach ($content['errors'] as $analyzer => $analyzerIssues) {
+        $errors = $content['errors'] ?? [];
+        $this->assertIsArray($errors);
+        foreach ($errors as $analyzerIssues) {
+            $this->assertIsArray($analyzerIssues);
             foreach ($analyzerIssues as $issue) {
+                $this->assertIsArray($issue);
                 $this->assertArrayHasKey('hash', $issue);
                 $hashes[] = $issue['hash'];
             }
         }
 
-        $this->assertCount(count($hashes), array_unique($hashes), 'Hashes should be unique');
+        $this->assertCount(count($hashes), array_unique(array_values(array_filter($hashes, 'is_string'))), 'Hashes should be unique');
     }
 
     #[Test]
@@ -365,6 +373,7 @@ class BaselineCommandTest extends TestCase
             ->assertSuccessful();
 
         $content = json_decode(file_get_contents($this->baselinePath), true);
+        $this->assertIsArray($content);
         $this->assertArrayHasKey('errors', $content);
         $this->assertContains('some-analyzer', $content['dont_report']);
     }
@@ -391,7 +400,9 @@ class BaselineCommandTest extends TestCase
             ->assertSuccessful();
 
         $content = json_decode(file_get_contents($this->baselinePath), true);
+        $this->assertIsArray($content);
         $this->assertArrayHasKey('errors', $content);
+        $this->assertIsArray($content['errors']);
         $this->assertArrayHasKey('old-analyzer', $content['errors']);
     }
 

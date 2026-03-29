@@ -7,6 +7,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 use Illuminate\Contracts\Config\Repository as Config;
 use ShieldCI\Analyzers\Performance\AutoloaderOptimizationAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class AutoloaderOptimizationAnalyzerTest extends AnalyzerTestCase
@@ -695,7 +696,7 @@ PHP,
         $this->assertHasIssueContaining('not optimized', $result);
 
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
     }
 
     public function test_handles_invalid_composer_json(): void

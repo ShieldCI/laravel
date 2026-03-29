@@ -8,14 +8,17 @@ use Fruitcake\Cors\HandleCors as FruitcakeHandleCors;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Middleware\HandleCors;
 use Illuminate\Http\Middleware\TrustHosts;
 use Illuminate\Http\Middleware\TrustProxies;
 use Illuminate\Routing\Router;
 use Mockery;
+use Mockery\MockInterface;
 use ReflectionClass;
 use ShieldCI\Analyzers\Performance\UnusedGlobalMiddlewareAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
@@ -28,16 +31,16 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         array $globalMiddleware = [],
         array $configValues = []
     ): AnalyzerInterface {
-        /** @var Application&\Mockery\MockInterface $app */
+        /** @var Application&MockInterface $app */
         $app = Mockery::mock(Application::class);
 
-        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
-        /** @var Router&\Mockery\MockInterface $router */
+        /** @var Router&MockInterface $router */
         $router = Mockery::mock(Router::class);
 
-        /** @var Kernel&\Mockery\MockInterface $kernel */
+        /** @var Kernel&MockInterface $kernel */
         $kernel = Mockery::mock(Kernel::class);
 
         // Mock the kernel to return global middleware via reflection
@@ -137,7 +140,7 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
      */
     private function skipOnLaravel11(string $reason = ''): void
     {
-        if (class_exists(\Illuminate\Foundation\Configuration\Middleware::class)) {
+        if (class_exists(Middleware::class)) {
             $this->markTestSkipped(
                 'TrustProxies/TrustHosts checks are suppressed on Laravel 11+'.($reason ? ": $reason" : '.')
             );
@@ -910,13 +913,13 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         foreach ($issues as $issue) {
-            $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issue->severity);
+            $this->assertEquals(Severity::Low, $issue->severity);
         }
     }
 
     public function test_reports_bootstrap_app_path_on_laravel_11(): void
     {
-        if (! class_exists(\Illuminate\Foundation\Configuration\Middleware::class)) {
+        if (! class_exists(Middleware::class)) {
             $this->markTestSkipped('bootstrap/app.php path and withMiddleware() recommendations only apply to Laravel 11+.');
         }
 

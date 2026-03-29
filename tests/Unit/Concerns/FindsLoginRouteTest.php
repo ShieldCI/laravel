@@ -13,6 +13,11 @@ use ShieldCI\Tests\TestCase;
 
 class FindsLoginRouteTest extends TestCase
 {
+    private function getRouter(): Router
+    {
+        return $this->app->make(Router::class);
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();
@@ -37,10 +42,10 @@ class FindsLoginRouteTest extends TestCase
         config(['shieldci.guest_url' => null]);
 
         // Register a named 'login' route
-        $this->app['router']->get('/login', fn () => 'Login Page')->name('login');
+        $this->getRouter()->get('/login', fn () => 'Login Page')->name('login');
 
         $class = $this->createFindsLoginRouteClass();
-        $class->setRouter($this->app['router']);
+        $class->setRouter($this->getRouter());
 
         $result = $class->publicFindLoginRoute();
 
@@ -53,7 +58,7 @@ class FindsLoginRouteTest extends TestCase
         config(['shieldci.guest_url' => null]);
 
         // Create a route with 'guest' middleware (without a named 'login' route)
-        $router = $this->app['router'];
+        $router = $this->getRouter();
         $router->get('/register', fn () => 'Register')->middleware('guest');
 
         $class = $this->createFindsLoginRouteClass();
@@ -71,7 +76,7 @@ class FindsLoginRouteTest extends TestCase
         config(['shieldci.guest_url' => null]);
 
         // Create router with no 'login' route and no 'guest' middleware routes
-        $router = $this->app['router'];
+        $router = $this->getRouter();
         $router->get('/dashboard', fn () => 'Dashboard')->middleware('auth');
 
         $class = $this->createFindsLoginRouteClass();
@@ -129,7 +134,7 @@ class FindsLoginRouteTest extends TestCase
     public function it_can_set_router(): void
     {
         $class = $this->createFindsLoginRouteClass();
-        $router = $this->app['router'];
+        $router = $this->getRouter();
 
         $class->setRouter($router);
 

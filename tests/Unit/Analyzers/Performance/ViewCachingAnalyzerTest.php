@@ -9,8 +9,11 @@ use Illuminate\Filesystem\Filesystem;
 use Illuminate\View\Factory as ViewFactory;
 use Illuminate\View\FileViewFinder;
 use Mockery;
+use Mockery\MockInterface;
 use ShieldCI\Analyzers\Performance\ViewCachingAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class ViewCachingAnalyzerTest extends AnalyzerTestCase
@@ -53,10 +56,10 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
         array $viewHints = [],
         array|false|null $globReturn = null,
     ): AnalyzerInterface {
-        /** @var Filesystem&\Mockery\MockInterface $files */
+        /** @var Filesystem&MockInterface $files */
         $files = Mockery::mock(Filesystem::class);
 
-        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
         // Set up default config values
@@ -471,7 +474,7 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertInstanceOf(ResultInterface::class, $result);
     }
 
     public function test_handles_empty_view_path_string(): void
@@ -579,7 +582,7 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         foreach ($issues as $issue) {
-            $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issue->severity);
+            $this->assertEquals(Severity::Medium, $issue->severity);
         }
     }
 
@@ -594,13 +597,11 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
         $shouldRun = $analyzer->shouldRun();
         $this->assertFalse($shouldRun);
 
-        if (method_exists($analyzer, 'getSkipReason')) {
-            $reason = $analyzer->getSkipReason();
+        $reason = $analyzer->getSkipReason();
 
-            $this->assertStringContainsString('local', $reason);
-            $this->assertStringContainsString('production', $reason);
-            $this->assertStringContainsString('staging', $reason);
-        }
+        $this->assertStringContainsString('local', $reason);
+        $this->assertStringContainsString('production', $reason);
+        $this->assertStringContainsString('staging', $reason);
     }
 
     public function test_handles_empty_view_hints(): void

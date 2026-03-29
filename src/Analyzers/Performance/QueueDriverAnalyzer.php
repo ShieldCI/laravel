@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
@@ -236,7 +237,7 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
      * These are generally acceptable, but we can add specific checks if needed.
      *
      * @param  string  $driver  The queue driver name
-     * @param  array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues  Issues array to append to
+     * @param  array<Issue>  $issues  Issues array to append to
      * @param  string  $configFile  Path to the queue config file
      * @param  string  $defaultConnection  The default queue connection name
      */

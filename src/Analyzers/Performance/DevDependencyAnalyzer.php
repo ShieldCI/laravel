@@ -190,7 +190,6 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
         if (preg_match('/-\s+(Removing|would\s+remove)\s+([a-z0-9\-_.]+\/[a-z0-9\-_.]+)/i', $output)) {
             // Extract package names for better reporting
             preg_match_all('/-\s+(Removing|would\s+remove)\s+([a-z0-9\-_.]+\/[a-z0-9\-_.]+)/i', $output, $allMatches);
-            /** @var array<int, string> $packageNames */
             $packageNames = $allMatches[2];
             $removedPackages = array_slice($packageNames, 0, 10);
 

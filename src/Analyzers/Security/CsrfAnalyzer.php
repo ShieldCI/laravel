@@ -387,10 +387,6 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
                 // Check for dangerous wildcards
                 foreach ($exceptions as $exception) {
-                    if (! is_string($exception)) {
-                        continue;
-                    }
-
                     if ($exception === '*' || $exception === '/*') {
                         $issues[] = $this->createIssueWithSnippet(
                             message: 'Critical: All routes excluded from CSRF protection with wildcard',
@@ -487,7 +483,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         $content = FileParser::readFile($kernelFile);
-        if ($content === null || ! is_string($content)) {
+        if ($content === null) {
             return;
         }
 
@@ -549,7 +545,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     private function checkBootstrapApp(string $file, array &$issues): void
     {
         $content = FileParser::readFile($file);
-        if ($content === null || ! is_string($content)) {
+        if ($content === null) {
             return;
         }
 
@@ -723,10 +719,6 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
                 // Check each exception pattern using the same logic as middleware $except
                 foreach ($exceptions as $exception) {
-                    if (! is_string($exception)) {
-                        continue;
-                    }
-
                     if ($exception === '*' || $exception === '/*') {
                         // Already caught above, skip duplicate
                         continue;

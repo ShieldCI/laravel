@@ -9,6 +9,7 @@ use Fruitcake\Cors\HandleCors as FruitcakeHandleCors;
 use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Middleware\HandleCors;
 use Illuminate\Http\Middleware\TrustHosts;
 use Illuminate\Http\Middleware\TrustProxies;
@@ -319,7 +320,7 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
      */
     private function isLaravel11OrNewer(): bool
     {
-        return class_exists(\Illuminate\Foundation\Configuration\Middleware::class);
+        return class_exists(Middleware::class);
     }
 
     /**

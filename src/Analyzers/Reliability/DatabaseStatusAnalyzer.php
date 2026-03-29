@@ -10,11 +10,11 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
+use ShieldCI\AnalyzersCore\Support\MessageHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Support\DatabaseConnectionChecker;
 use ShieldCI\Support\DatabaseConnectionResult;
-use ShieldCI\AnalyzersCore\Support\MessageHelper;
 
 /**
  * Checks that database connections are accessible.

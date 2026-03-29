@@ -80,9 +80,6 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         $vulnerabilities = $this->advisoryAnalyzer->analyze($dependencies, $advisories);
-        if (! is_array($vulnerabilities)) {
-            return $this->error('Invalid advisory analysis result');
-        }
 
         // Aggregate advisories per package to avoid flooding output with multiple issues
         // for the same package (e.g., a package with 5 CVEs creates 5 issues → now 1 issue)
@@ -101,8 +98,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
             // Filter out invalid advisories
             $validAdvisories = array_filter($packageAdvisories, function ($advisory) {
-                return is_array($advisory)
-                    && ! empty($advisory)
+                return ! empty($advisory)
                     && isset($advisory['title'])
                     && is_string($advisory['title']);
             });
@@ -286,6 +282,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
             return null;
         }
 
+        /** @var array<string, mixed> $lockData */
         return $lockData;
     }
 

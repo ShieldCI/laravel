@@ -108,11 +108,6 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
             // This is significantly faster than running it twice (once with --no-dev, once without)
             $allDepsOutput = $this->composer->installDryRun();
 
-            // Validate output is string
-            if (! is_string($allDepsOutput)) {
-                return $this->error('Unable to check dependency status - Composer command failed');
-            }
-
             // EARLY EXIT: If everything is up-to-date, no need for further parsing
             if ($this->isUpToDate($allDepsOutput)) {
                 return $this->passed('All dependencies are up-to-date');

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Support;
 
 use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
 use Symfony\Component\Process\Process;
 
 /**
@@ -214,10 +215,12 @@ class PHPStanRunner
                     continue;
                 }
 
+                $line = $message['line'] ?? 0;
+                $msg = $message['message'] ?? '';
                 $issues[] = [
                     'file' => $file,
-                    'line' => (int) ($message['line'] ?? 0),
-                    'message' => (string) ($message['message'] ?? ''),
+                    'line' => is_int($line) ? $line : 0,
+                    'message' => is_string($msg) ? $msg : '',
                 ];
             }
         }
@@ -256,7 +259,7 @@ class PHPStanRunner
 
         return $this->getIssues()->filter(function (array $issue) use ($patterns) {
             foreach ($patterns as $pattern) {
-                if (\Illuminate\Support\Str::is($pattern, $issue['message'])) {
+                if (Str::is($pattern, $issue['message'])) {
                     return true;
                 }
             }

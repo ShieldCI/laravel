@@ -6,6 +6,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
 use ShieldCI\Analyzers\Security\PasswordSecurityAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
@@ -1631,7 +1632,7 @@ PHP;
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
 
-        $this->app['config']->set('shieldci.analyzers.security.password-security.password_confirmation_max_timeout', 3600);
+        config()->set('shieldci.analyzers.security.password-security.password_confirmation_max_timeout', 3600);
 
         $result = $analyzer->analyze();
 
@@ -5035,7 +5036,7 @@ PHP;
 
     // ==================== Helper Assertions ====================
 
-    private function assertNoPlainTextPasswordIssue(\ShieldCI\AnalyzersCore\Contracts\ResultInterface $result): void
+    private function assertNoPlainTextPasswordIssue(ResultInterface $result): void
     {
         foreach ($result->getIssues() as $issue) {
             if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'plain_text_password') {
@@ -5046,7 +5047,7 @@ PHP;
         $this->addToAssertionCount(1);
     }
 
-    private function assertHasPlainTextPasswordIssue(\ShieldCI\AnalyzersCore\Contracts\ResultInterface $result): void
+    private function assertHasPlainTextPasswordIssue(ResultInterface $result): void
     {
         foreach ($result->getIssues() as $issue) {
             if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'plain_text_password') {
@@ -5059,7 +5060,7 @@ PHP;
         $this->fail('Expected a plain-text password issue, but none was found');
     }
 
-    private function assertNoRehashIssue(\ShieldCI\AnalyzersCore\Contracts\ResultInterface $result): void
+    private function assertNoRehashIssue(ResultInterface $result): void
     {
         foreach ($result->getIssues() as $issue) {
             $type = $issue->metadata['issue_type'] ?? '';

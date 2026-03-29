@@ -176,7 +176,7 @@ RECOMMENDATION,
             return [];
         }
 
-        if (! is_array($lines) || empty($lines)) {
+        if (empty($lines)) {
             return [];
         }
 

@@ -451,7 +451,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     {
         $custom = $this->config->get('shieldci.analyzers.security.sql-injection.mysqli_functions');
         if (is_array($custom) && ! empty($custom)) {
-            return $custom;
+            return array_values(array_filter($custom, 'is_string'));
         }
 
         return $this->nativeMysqliFunctions;
@@ -466,7 +466,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     {
         $custom = $this->config->get('shieldci.analyzers.security.sql-injection.postgres_functions');
         if (is_array($custom) && ! empty($custom)) {
-            return $custom;
+            return array_values(array_filter($custom, 'is_string'));
         }
 
         return $this->nativePostgresFunctions;

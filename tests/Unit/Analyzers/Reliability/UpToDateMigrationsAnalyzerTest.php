@@ -7,7 +7,9 @@ namespace ShieldCI\Tests\Unit\Analyzers\Reliability;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Analyzers\Reliability\UpToDateMigrationsAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Enums\Status;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class UpToDateMigrationsAnalyzerTest extends AnalyzerTestCase
@@ -32,7 +34,7 @@ class UpToDateMigrationsAnalyzerTest extends AnalyzerTestCase
         // The analyzer should return a valid result
         // It may pass (no pending migrations) or fail (pending migrations exist)
         // depending on the actual state of the test database
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertInstanceOf(ResultInterface::class, $result);
     }
 
     #[Test]
@@ -268,11 +270,11 @@ OUTPUT;
 
         // The result should be valid (either passed, failed, warning, or error)
         // depending on whether migrations table exists in test database
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertInstanceOf(ResultInterface::class, $result);
 
         // If the result is failed with code 'migrations-table-missing',
         // verify the message is correct
-        if ($result->getStatus() === \ShieldCI\AnalyzersCore\Enums\Status::Failed) {
+        if ($result->getStatus() === Status::Failed) {
             $issues = $result->getIssues();
             if (! empty($issues) && isset($issues[0]->metadata['code']) && $issues[0]->metadata['code'] === 'migrations-table-missing') {
                 $this->assertStringContainsString('migrations table', strtolower($issues[0]->message));

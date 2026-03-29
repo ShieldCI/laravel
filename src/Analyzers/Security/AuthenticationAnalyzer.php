@@ -6,6 +6,7 @@ namespace ShieldCI\Analyzers\Security;
 
 use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
+use PhpParser\Node\VariadicPlaceholder;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
@@ -16,6 +17,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 
 /**
  * Detects missing authentication and authorization protection.
@@ -150,6 +152,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             ? 'No authentication/authorization issues detected'
             : sprintf('Found %d potential authentication/authorization issue%s', count($issues), count($issues) === 1 ? '' : 's');
 
+        /** @var array<Issue> $issues */
         return $this->resultBySeverity($summary, $issues);
     }
 
@@ -179,7 +182,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             $configRoutes = [];
         }
 
-        $this->publicRoutes = array_values(array_unique(array_merge($defaultRoutes, $configRoutes)));
+        $this->publicRoutes = array_values(array_unique(array_filter(array_merge($defaultRoutes, $configRoutes), 'is_string')));
     }
 
     /**
@@ -1055,7 +1058,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      * Check if auth method is used with proper null safety.
      *
      * @param  array<int, string>  $lines
-     * @param  array<\PhpParser\Node>  $ast
+     * @param  array<Node>  $ast
      * @param  array<mixed>  $issues
      */
     private function checkAuthUsageWithNullSafety(
@@ -1104,7 +1107,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      * Return true when the method enclosing $lineNumber is guaranteed to receive
      * only authenticated requests, making Auth::user() / $request->user() non-null.
      *
-     * @param  array<\PhpParser\Node>  $ast
+     * @param  array<Node>  $ast
      */
     private function isLineInAuthProtectedMethod(array $ast, string $namespace, int $lineNumber): bool
     {
@@ -1143,7 +1146,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     /**
      * Find the class and method that encloses the given (0-indexed) line number.
      *
-     * @param  array<\PhpParser\Node>  $ast
+     * @param  array<Node>  $ast
      * @return array{className: string, methodName: string, classNode: Node\Stmt\Class_}|null
      */
     private function findEnclosingClassMethod(array $ast, int $lineNumber): ?array
@@ -1741,7 +1744,7 @@ class RouteAuthVisitor extends NodeVisitorAbstract
      *   ->middleware(['auth', 'verified'])
      *   ->middleware(SomeClass::class)
      *
-     * @param  array<Node\Arg|\PhpParser\Node\VariadicPlaceholder>  $args
+     * @param  array<Node\Arg|VariadicPlaceholder>  $args
      * @return list<string>
      */
     private function extractMiddlewareArgs(array $args): array

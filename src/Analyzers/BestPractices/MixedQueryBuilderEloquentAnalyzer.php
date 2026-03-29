@@ -104,7 +104,7 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
         }
 
         // Merge config with defaults, ensuring no duplicates
-        $this->whitelist = array_values(array_unique(array_merge($defaultWhitelist, $configWhitelist)));
+        $this->whitelist = array_values(array_unique(array_filter(array_merge($defaultWhitelist, $configWhitelist), 'is_string')));
 
         // Load toBase/getQuery configuration
         $treatToBaseConfig = $this->config->get('shieldci.analyzers.best-practices.mixed-query-builder-eloquent.treat_tobase_as_query_builder');
@@ -121,7 +121,7 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
         // Load model paths for scanning
         $modelPathsConfig = $this->config->get('shieldci.analyzers.best-practices.mixed-query-builder-eloquent.model_paths');
         if (is_array($modelPathsConfig) && count($modelPathsConfig) > 0) {
-            $this->modelPaths = $modelPathsConfig;
+            $this->modelPaths = array_values(array_filter($modelPathsConfig, 'is_string'));
         }
 
         // Load explicit table mappings (highest priority - overrides scanning)
@@ -733,7 +733,7 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             fn (string $table): bool => $this->tableHasModel($table)
         );
 
-        if (count($eloquentTables) > 0 && count($modeledQbTables) > $this->mixingThreshold) {
+        if (count($eloquentTables) > 0 && count($modeledQbTables) > $this->mixingThreshold && $queryBuilderTables !== []) {
             $firstQbLine = min($queryBuilderTables);
             $this->issues[] = [
                 'message' => sprintf(

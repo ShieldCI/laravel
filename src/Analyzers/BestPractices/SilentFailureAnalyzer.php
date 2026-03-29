@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\BestPractices;
 
 use Illuminate\Contracts\Config\Repository as Config;
+use PhpParser\Comment;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
@@ -55,7 +56,7 @@ class SilentFailureAnalyzer extends AbstractFileAnalyzer
             'database/seeders',
             'database/factories',
         ]);
-        $this->whitelistDirs = is_array($configDirs) ? $configDirs : [];
+        $this->whitelistDirs = is_array($configDirs) ? array_values(array_filter($configDirs, 'is_string')) : [];
 
         // Load whitelisted classes (test classes, seeders, etc.)
         $configClasses = $this->config->get("{$baseKey}.whitelist_classes", [
@@ -64,7 +65,7 @@ class SilentFailureAnalyzer extends AbstractFileAnalyzer
             '*Seeder',
             'DatabaseSeeder',
         ]);
-        $this->whitelistClasses = is_array($configClasses) ? $configClasses : [];
+        $this->whitelistClasses = is_array($configClasses) ? array_values(array_filter($configClasses, 'is_string')) : [];
 
         // Load whitelisted exception types (expected exceptions that can be safely caught)
         $configExceptions = $this->config->get("{$baseKey}.whitelist_exceptions", [
@@ -73,7 +74,7 @@ class SilentFailureAnalyzer extends AbstractFileAnalyzer
             'NotFoundHttpException',
             'ValidationException',
         ]);
-        $this->whitelistExceptions = is_array($configExceptions) ? $configExceptions : [];
+        $this->whitelistExceptions = is_array($configExceptions) ? array_values(array_filter($configExceptions, 'is_string')) : [];
 
         // Load whitelisted functions for error suppression (legitimate uses of @)
         $configFunctions = $this->config->get("{$baseKey}.whitelist_error_suppression_functions", [
@@ -83,7 +84,7 @@ class SilentFailureAnalyzer extends AbstractFileAnalyzer
             'mkdir',
             'rmdir',
         ]);
-        $this->whitelistErrorSuppressionFunctions = is_array($configFunctions) ? $configFunctions : [];
+        $this->whitelistErrorSuppressionFunctions = is_array($configFunctions) ? array_values(array_filter($configFunctions, 'is_string')) : [];
 
         // Load whitelisted static methods for error suppression (e.g., @Storage::delete())
         $configStaticMethods = $this->config->get("{$baseKey}.whitelist_error_suppression_static_methods", [
@@ -92,7 +93,7 @@ class SilentFailureAnalyzer extends AbstractFileAnalyzer
             'File::delete',
             'File::deleteDirectory',
         ]);
-        $this->whitelistErrorSuppressionStaticMethods = is_array($configStaticMethods) ? $configStaticMethods : [];
+        $this->whitelistErrorSuppressionStaticMethods = is_array($configStaticMethods) ? array_values(array_filter($configStaticMethods, 'is_string')) : [];
 
         // Load whitelisted instance methods for error suppression (e.g., @$file->delete())
         $configInstanceMethods = $this->config->get("{$baseKey}.whitelist_error_suppression_instance_methods", [
@@ -100,7 +101,7 @@ class SilentFailureAnalyzer extends AbstractFileAnalyzer
             'close',
             'unlink',
         ]);
-        $this->whitelistErrorSuppressionInstanceMethods = is_array($configInstanceMethods) ? $configInstanceMethods : [];
+        $this->whitelistErrorSuppressionInstanceMethods = is_array($configInstanceMethods) ? array_values(array_filter($configInstanceMethods, 'is_string')) : [];
     }
 
     protected function metadata(): AnalyzerMetadata
@@ -288,7 +289,7 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                     });
 
                     $hasRethrow = $this->subtreeContainsMatch($catch->stmts, function (Node $n): bool {
-                        return $n instanceof Node\Stmt\Throw_
+                        return $n instanceof Node\Expr\Throw_
                             || ($n instanceof Node\Stmt\Expression && $n->expr instanceof Node\Expr\Throw_);
                     });
 
@@ -423,7 +424,7 @@ class SilentFailureVisitor extends NodeVisitorAbstract
         }
 
         // Collect comments from attributes
-        /** @var array<\PhpParser\Comment> $attributes */
+        /** @var array<Comment> $attributes */
         $attributes = $catch->getAttribute('comments', []);
         $allComments = array_merge($allComments, $attributes);
 

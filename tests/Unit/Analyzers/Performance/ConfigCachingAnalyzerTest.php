@@ -8,8 +8,11 @@ use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Foundation\CachesConfiguration;
 use Mockery;
+use Mockery\MockInterface;
 use ShieldCI\Analyzers\Performance\ConfigCachingAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class ConfigCachingAnalyzerTest extends AnalyzerTestCase
@@ -19,7 +22,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
         bool $configIsCached = false,
         bool $implementsCachesConfiguration = true
     ): AnalyzerInterface {
-        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
         /** @phpstan-ignore-next-line */
@@ -29,14 +32,14 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         // Mock Application with CachesConfiguration interface
         if ($implementsCachesConfiguration) {
-            /** @var Application&CachesConfiguration&\Mockery\MockInterface $app */
+            /** @var Application&CachesConfiguration&MockInterface $app */
             $app = Mockery::mock(Application::class.', '.CachesConfiguration::class);
 
             /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
             $app->shouldReceive('configurationIsCached')
                 ->andReturn($configIsCached);
         } else {
-            /** @var Application&\Mockery\MockInterface $app */
+            /** @var Application&MockInterface $app */
             $app = Mockery::mock(Application::class);
         }
 
@@ -105,10 +108,10 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
     public function test_skips_when_caches_configuration_not_available(): void
     {
         // Create analyzer without mocking CachesConfiguration interface
-        /** @var Application&\Mockery\MockInterface $app */
+        /** @var Application&MockInterface $app */
         $app = Mockery::mock(Application::class);
 
-        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
         /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')->andReturn('production');
@@ -129,8 +132,8 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $this->assertEquals('config-caching', $metadata->id);
         $this->assertEquals('Configuration Caching Analyzer', $metadata->name);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $metadata->severity);
+        $this->assertEquals(Category::Performance, $metadata->category);
+        $this->assertEquals(Severity::High, $metadata->severity);
         $this->assertContains('cache', $metadata->tags);
     }
 
@@ -234,7 +237,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
     public function test_handles_configuration_is_cached_exception(): void
     {
-        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
         /** @phpstan-ignore-next-line */
@@ -242,7 +245,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
             ->with('app.env', Mockery::any())
             ->andReturn('production');
 
-        /** @var Application&CachesConfiguration&\Mockery\MockInterface $app */
+        /** @var Application&CachesConfiguration&MockInterface $app */
         $app = Mockery::mock(Application::class.', '.CachesConfiguration::class);
 
         /** @phpstan-ignore-next-line */
@@ -322,7 +325,7 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
     }
 
     public function test_creates_exactly_one_issue_for_dev_environment(): void
@@ -375,10 +378,10 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
     public function test_skip_reason_mentions_caches_configuration_interface(): void
     {
-        /** @var Application&\Mockery\MockInterface $app */
+        /** @var Application&MockInterface $app */
         $app = Mockery::mock(Application::class);
 
-        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
         /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')->andReturn('production');

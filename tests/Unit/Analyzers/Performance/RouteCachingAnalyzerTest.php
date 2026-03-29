@@ -8,8 +8,11 @@ use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Foundation\CachesRoutes;
 use Mockery;
+use Mockery\MockInterface;
 use ShieldCI\Analyzers\Performance\RouteCachingAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class RouteCachingAnalyzerTest extends AnalyzerTestCase
@@ -22,7 +25,7 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
         bool $routesAreCached = false,
         bool $implementsCachesRoutes = true
     ): AnalyzerInterface {
-        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
         // Set up default config values
@@ -54,14 +57,14 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
 
         // Mock Application with CachesRoutes interface
         if ($implementsCachesRoutes) {
-            /** @var Application&CachesRoutes&\Mockery\MockInterface $app */
+            /** @var Application&CachesRoutes&MockInterface $app */
             $app = Mockery::mock(Application::class.', '.CachesRoutes::class);
 
             /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
             $app->shouldReceive('routesAreCached')
                 ->andReturn($routesAreCached);
         } else {
-            /** @var Application&\Mockery\MockInterface $app */
+            /** @var Application&MockInterface $app */
             $app = Mockery::mock(Application::class);
         }
 
@@ -267,7 +270,7 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
     }
 
     public function test_returns_warning_result_when_low_severity_issue_in_local(): void
@@ -284,7 +287,7 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
+        $this->assertEquals(Severity::Low, $issues[0]->severity);
     }
 
     public function test_passed_result_includes_environment_in_message(): void
@@ -364,7 +367,7 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
     }
 
     public function test_development_cached_routes_has_correct_severity(): void
@@ -378,7 +381,7 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
+        $this->assertEquals(Severity::Low, $issues[0]->severity);
     }
 
     // ============================================================
@@ -504,8 +507,8 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
 
         $this->assertEquals('route-caching', $metadata->id);
         $this->assertEquals('Route Caching Analyzer', $metadata->name);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $metadata->severity);
+        $this->assertEquals(Category::Performance, $metadata->category);
+        $this->assertEquals(Severity::High, $metadata->severity);
         $this->assertContains('cache', $metadata->tags);
         $this->assertContains('routes', $metadata->tags);
         $this->assertEquals(5, $metadata->timeToFix);

@@ -11,9 +11,11 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Results\AnalysisResult;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Enums\SuppressionType;
 use ShieldCI\Enums\TriggerSource;
 use ShieldCI\Tests\TestCase;
 use ShieldCI\ValueObjects\AnalysisReport;
+use ShieldCI\ValueObjects\SuppressionRecord;
 
 class AnalysisReportTest extends TestCase
 {
@@ -509,10 +511,10 @@ class AnalysisReportTest extends TestCase
             analyzedAt: new DateTimeImmutable,
             suppressedIssues: [
                 'analyzer-1' => [
-                    new \ShieldCI\ValueObjects\SuppressionRecord($issue, \ShieldCI\Enums\SuppressionType::Inline, '@shieldci-ignore'),
-                    new \ShieldCI\ValueObjects\SuppressionRecord($issue, \ShieldCI\Enums\SuppressionType::Config, 'path: test.php'),
-                    new \ShieldCI\ValueObjects\SuppressionRecord($issue, \ShieldCI\Enums\SuppressionType::Config, 'path: other.php'),
-                    new \ShieldCI\ValueObjects\SuppressionRecord($issue, \ShieldCI\Enums\SuppressionType::Baseline, 'baseline hash: abc123...'),
+                    new SuppressionRecord($issue, SuppressionType::Inline, '@shieldci-ignore'),
+                    new SuppressionRecord($issue, SuppressionType::Config, 'path: test.php'),
+                    new SuppressionRecord($issue, SuppressionType::Config, 'path: other.php'),
+                    new SuppressionRecord($issue, SuppressionType::Baseline, 'baseline hash: abc123...'),
                 ],
             ],
         );
@@ -557,7 +559,7 @@ class AnalysisReportTest extends TestCase
             analyzedAt: new DateTimeImmutable,
             suppressedIssues: [
                 'analyzer-1' => [
-                    new \ShieldCI\ValueObjects\SuppressionRecord($issue, \ShieldCI\Enums\SuppressionType::Config, 'path: test.php'),
+                    new SuppressionRecord($issue, SuppressionType::Config, 'path: test.php'),
                 ],
             ],
         );
@@ -589,7 +591,7 @@ class AnalysisReportTest extends TestCase
             analyzedAt: new DateTimeImmutable,
             suppressedIssues: [
                 'xss-detection' => [
-                    new \ShieldCI\ValueObjects\SuppressionRecord($issue, \ShieldCI\Enums\SuppressionType::Config, 'path_pattern: app/Legacy/*.php'),
+                    new SuppressionRecord($issue, SuppressionType::Config, 'path_pattern: app/Legacy/*.php'),
                 ],
             ],
         );

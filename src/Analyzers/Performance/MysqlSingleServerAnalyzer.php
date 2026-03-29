@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
@@ -158,6 +159,7 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
                 continue;
             }
 
+            /** @var array<string, mixed> $connection */
             // Check if this is a MySQL connection
             if (! $this->isMysqlConnection($connection)) {
                 continue;
@@ -201,7 +203,7 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
      *
      * @param  array<string, mixed>  $connection
      */
-    private function checkConnectionOptimization(string $connectionName, array $connection, string $defaultConnection): ?\ShieldCI\AnalyzersCore\ValueObjects\Issue
+    private function checkConnectionOptimization(string $connectionName, array $connection, string $defaultConnection): ?Issue
     {
         // SSL-configured connections target remote databases — skip socket recommendation
         if ($this->hasSSLConfiguration($connection)) {

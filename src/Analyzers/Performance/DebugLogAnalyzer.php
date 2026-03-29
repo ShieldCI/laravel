@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 
 /**
  * Analyzes log level configuration for performance issues.
@@ -88,6 +89,7 @@ class DebugLogAnalyzer extends AbstractAnalyzer
             return $this->passed("Log level is properly configured for {$environment} environment");
         }
 
+        /** @var array<Issue> $issues */
         return $this->resultBySeverity(
             sprintf('Debug log level detected in %s environment', $environment),
             $issues

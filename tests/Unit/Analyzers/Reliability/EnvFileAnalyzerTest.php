@@ -6,6 +6,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\Reliability;
 
 use ShieldCI\Analyzers\Reliability\EnvFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class EnvFileAnalyzerTest extends AnalyzerTestCase
@@ -258,7 +259,7 @@ APP_KEY=base64:test123',
         $result = $analyzer->analyze();
 
         // Should not crash with empty basepath
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertInstanceOf(ResultInterface::class, $result);
     }
 
     // =========================================================================
@@ -267,7 +268,7 @@ APP_KEY=base64:test123',
 
     public function test_skips_on_vapor(): void
     {
-        /** @var \ShieldCI\Analyzers\Reliability\EnvFileAnalyzer $analyzer */
+        /** @var EnvFileAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
         $analyzer->setDeploymentPlatform('vapor');
 
@@ -277,7 +278,7 @@ APP_KEY=base64:test123',
 
     public function test_skips_on_serverless(): void
     {
-        /** @var \ShieldCI\Analyzers\Reliability\EnvFileAnalyzer $analyzer */
+        /** @var EnvFileAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
         $analyzer->setDeploymentPlatform('serverless');
 

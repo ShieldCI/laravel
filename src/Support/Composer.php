@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Support;
 
+use Illuminate\Contracts\Filesystem\FileNotFoundException;
 use Illuminate\Support\Composer as BaseComposer;
 
 /**
@@ -88,7 +89,7 @@ class Composer extends BaseComposer
      *
      * @return array<string, mixed>|null
      *
-     * @throws \Illuminate\Contracts\Filesystem\FileNotFoundException
+     * @throws FileNotFoundException
      */
     public function getJson(): ?array
     {

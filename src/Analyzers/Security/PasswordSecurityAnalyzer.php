@@ -13,6 +13,8 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
  * Validates password security: hashing configuration AND password policies.
@@ -106,7 +108,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<int, Issue>  $issues
      */
     private function checkHashingConfig(array &$issues): void
     {
@@ -246,7 +248,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<int, Issue>  $issues
      */
     private function checkWeakHashingInCode(array &$issues): void
     {
@@ -272,7 +274,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
     /**
      * @param  array<Node>  $ast
      * @param  array{bcrypt_min_rounds: int, argon2_min_memory: int, argon2_min_time: int, argon2_min_threads: int, ignored_paths: array<int, string>, allowed_weak_hash_patterns: array<int, string>, password_confirmation_max_timeout: int}  $config
-     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<int, Issue>  $issues
      */
     private function detectWeakHashing(string $file, array $ast, array $config, array &$issues): void
     {
@@ -365,7 +367,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
     /**
      * @param  array<Node>  $ast
      * @param  array{bcrypt_min_rounds: int, argon2_min_memory: int, argon2_min_time: int, argon2_min_threads: int, ignored_paths: array<int, string>, allowed_weak_hash_patterns: array<int, string>, password_confirmation_max_timeout: int}  $config
-     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<int, Issue>  $issues
      */
     private function detectWeakPasswordHashAlgorithm(string $file, array $ast, array $config, array &$issues): void
     {
@@ -398,7 +400,6 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             $algoArg = $call->args[1]->value;
 
             $isSafeAlgo = $algoArg instanceof Node\Expr\ConstFetch
-                && $algoArg->name instanceof Node\Name
                 && in_array($algoArg->name->toString(), $safeConstants, true);
 
             if (! $isSafeAlgo) {
@@ -418,7 +419,6 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 && $call->args[2] instanceof Node\Arg
                 && $call->args[2]->value instanceof Node\Expr\Array_
                 && $algoArg instanceof Node\Expr\ConstFetch
-                && $algoArg->name instanceof Node\Name
             ) {
                 $this->validatePasswordHashOptions($file, $call, $call->args[2]->value, $algoArg->name->toString(), $config, $issues);
             }
@@ -427,7 +427,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 
     /**
      * @param  array{bcrypt_min_rounds: int, argon2_min_memory: int, argon2_min_time: int, argon2_min_threads: int, ignored_paths: array<int, string>, allowed_weak_hash_patterns: array<int, string>, password_confirmation_max_timeout: int}  $config
-     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<int, Issue>  $issues
      */
     private function validatePasswordHashOptions(
         string $file,
@@ -581,7 +581,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 
     /**
      * @param  array<Node>  $ast
-     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<int, Issue>  $issues
      */
     private function detectPlainTextPasswordStorage(string $file, array $ast, array &$issues): void
     {
@@ -621,7 +621,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 
     /**
      * @param  array<Node>  $ast
-     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<int, Issue>  $issues
      */
     private function detectPlainTextPasswordInMethodCalls(string $file, array $ast, array &$issues): void
     {
@@ -669,7 +669,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
      * @param  array<string>  $hasherVars
      * @param  array<string>  $plaintextVars
      * @param  array<string>  $taintedVars
-     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<int, Issue>  $issues
      */
     private function checkArgsForPlaintextPassword(
         string $file,
@@ -1021,7 +1021,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<int, Issue>  $issues
      */
     private function checkPasswordPolicyDefaults(array &$issues): void
     {
@@ -1092,7 +1092,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 
             $issues[] = $this->createIssue(
                 message: 'No Password::defaults() configured in service providers',
-                location: new \ShieldCI\AnalyzersCore\ValueObjects\Location('app/Providers/AppServiceProvider.php'),
+                location: new Location('app/Providers/AppServiceProvider.php'),
                 severity: Severity::Medium,
                 recommendation: 'Define password validation defaults in a service provider boot() method or bootstrap/app.php: Password::defaults(function () { return Password::min(8)->letters()->mixedCase()->numbers()->symbols()->uncompromised(); });',
                 metadata: ['issue_type' => 'missing_password_defaults']
@@ -1124,7 +1124,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         if (! $hasMinLength) {
             $issues[] = $this->createIssue(
                 message: 'Password::defaults() does not enforce minimum 8 character length',
-                location: new \ShieldCI\AnalyzersCore\ValueObjects\Location('app/Providers/AppServiceProvider.php'),
+                location: new Location('app/Providers/AppServiceProvider.php'),
                 severity: Severity::Medium,
                 recommendation: 'Set minimum password length: Password::min(8)',
                 metadata: ['issue_type' => 'weak_password_min_length']
@@ -1134,7 +1134,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         if (! $hasMixedCase) {
             $issues[] = $this->createIssue(
                 message: 'Password::defaults() does not require mixed case characters',
-                location: new \ShieldCI\AnalyzersCore\ValueObjects\Location('app/Providers/AppServiceProvider.php'),
+                location: new Location('app/Providers/AppServiceProvider.php'),
                 severity: Severity::Low,
                 recommendation: 'Add mixed case requirement: Password::min(8)->mixedCase()',
                 metadata: ['issue_type' => 'no_mixed_case_requirement']
@@ -1144,7 +1144,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         if (! $hasUncompromised) {
             $issues[] = $this->createIssue(
                 message: 'Password::defaults() does not check against breached password databases',
-                location: new \ShieldCI\AnalyzersCore\ValueObjects\Location('app/Providers/AppServiceProvider.php'),
+                location: new Location('app/Providers/AppServiceProvider.php'),
                 severity: Severity::Low,
                 recommendation: 'Add breached password check: Password::min(8)->uncompromised()',
                 metadata: ['issue_type' => 'no_breached_password_check']
@@ -1191,7 +1191,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<int, Issue>  $issues
      */
     private function checkPasswordValidationRules(array &$issues): void
     {
@@ -1361,7 +1361,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<int, Issue>  $issues
      */
     private function checkPasswordConfirmationTimeout(array &$issues): void
     {
@@ -1487,7 +1487,12 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         try {
             $config = require $path;
 
-            return is_array($config) ? $config : null;
+            if (! is_array($config)) {
+                return null;
+            }
+
+            /** @var array<string, mixed> $config */
+            return $config;
         } catch (\Throwable) {
             return null;
         }
@@ -1643,7 +1648,6 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 
         $providersDir = $this->buildPath('app', 'Providers');
         if (is_dir($providersDir)) {
-            /** @var array<int, string>|false $files */
             $files = glob($providersDir.'/*.php');
             if (is_array($files)) {
                 foreach ($files as $file) {
@@ -1693,7 +1697,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * @param  array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
+     * @param  array<int, Issue>  $issues
      */
     private function checkPasswordRehashUsage(array &$issues): void
     {
@@ -1783,7 +1787,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         if (! $hasRehash) {
             $issues[] = $this->createIssue(
                 message: 'Login flow detected but never rehashes passwords when hash parameters change',
-                location: new \ShieldCI\AnalyzersCore\ValueObjects\Location(
+                location: new Location(
                     $this->getRelativePath($loginFlowFile)
                 ),
                 severity: Severity::Medium,

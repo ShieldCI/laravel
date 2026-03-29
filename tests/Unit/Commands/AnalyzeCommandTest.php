@@ -4,18 +4,31 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Commands;
 
+use Illuminate\Console\OutputStyle;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Http;
 use Mockery;
 use Mockery\MockInterface;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\AnalyzerManager;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Enums\Status;
 use ShieldCI\AnalyzersCore\Results\AnalysisResult;
+use ShieldCI\AnalyzersCore\Support\InlineSuppressionParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Commands\AnalyzeCommand;
+use ShieldCI\Contracts\ClientInterface;
+use ShieldCI\Support\CiEnvironmentDetector;
 use ShieldCI\Tests\TestCase;
+use ShieldCI\ValueObjects\AnalysisReport;
+use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Output\NullOutput;
 
 /**
  * @phpstan-type TestAnalyzerMock MockInterface&AnalyzerInterface
@@ -1490,7 +1503,7 @@ class AnalyzeCommandTest extends TestCase
     {
         /** @phpstan-ignore-next-line */
         $this->app->singleton(AnalyzerManager::class, function ($app) {
-            /** @var \Mockery\MockInterface&AnalyzerManager $manager */
+            /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
             /** @phpstan-ignore-next-line */
@@ -1568,7 +1581,7 @@ PHP);
             issues: [
                 new Issue(
                     message: 'SQL Injection detected',
-                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 3),
+                    location: new Location($file, 3),
                     severity: Severity::Critical,
                     recommendation: 'Use prepared statements',
                 ),
@@ -1609,7 +1622,7 @@ PHP);
             issues: [
                 new Issue(
                     message: 'SQL Injection detected',
-                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 3),
+                    location: new Location($file, 3),
                     severity: Severity::Critical,
                     recommendation: 'Use prepared statements',
                 ),
@@ -1649,7 +1662,7 @@ PHP);
             issues: [
                 new Issue(
                     message: 'SQL Injection detected',
-                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 3),
+                    location: new Location($file, 3),
                     severity: Severity::Critical,
                     recommendation: 'Use prepared statements',
                 ),
@@ -1667,8 +1680,8 @@ PHP);
         $this->registerManagerWithResults([$result]);
         config(['shieldci.fail_on' => 'never']);
 
-        \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'console']);
-        $output = \Illuminate\Support\Facades\Artisan::output();
+        Artisan::call('shield:analyze', ['--format' => 'console']);
+        $output = Artisan::output();
 
         // Note must be present
         $this->assertStringContainsString('(1 issue suppressed — use --format=json to see details)', $output);
@@ -1710,13 +1723,13 @@ PHP);
             issues: [
                 new Issue(
                     message: 'SQL Injection on suppressed line',
-                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 3),
+                    location: new Location($file, 3),
                     severity: Severity::High,
                     recommendation: 'Use prepared statements',
                 ),
                 new Issue(
                     message: 'SQL Injection on unsuppressed line',
-                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 5),
+                    location: new Location($file, 5),
                     severity: Severity::High,
                     recommendation: 'Use prepared statements',
                 ),
@@ -1759,13 +1772,13 @@ PHP);
             issues: [
                 new Issue(
                     message: 'SQL Injection issue 1',
-                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 3),
+                    location: new Location($file, 3),
                     severity: Severity::High,
                     recommendation: 'Use prepared statements',
                 ),
                 new Issue(
                     message: 'SQL Injection issue 2',
-                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 5),
+                    location: new Location($file, 5),
                     severity: Severity::High,
                     recommendation: 'Use prepared statements',
                 ),
@@ -1783,8 +1796,8 @@ PHP);
         $this->registerManagerWithResults([$result]);
         config(['shieldci.fail_on' => 'never']);
 
-        $exitCode = \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
-        $output = \Illuminate\Support\Facades\Artisan::output();
+        $exitCode = Artisan::call('shield:analyze', ['--format' => 'json']);
+        $output = Artisan::output();
 
         $this->assertSame(0, $exitCode);
         $this->assertStringContainsString('"status": "passed"', $output);
@@ -1850,7 +1863,7 @@ PHP);
             issues: [
                 new Issue(
                     message: 'Issue at line zero',
-                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 0),
+                    location: new Location($file, 0),
                     severity: Severity::Medium,
                     recommendation: 'Fix it',
                 ),
@@ -1878,19 +1891,19 @@ PHP);
     #[Test]
     public function inline_suppression_passes_non_analysis_result_unchanged(): void
     {
-        $command = new \ShieldCI\Commands\AnalyzeCommand;
+        $command = new AnalyzeCommand;
 
         // Initialize the suppression parser via reflection
         $parserProp = new \ReflectionProperty($command, 'suppressionParser');
         $parserProp->setAccessible(true);
-        $parserProp->setValue($command, new \ShieldCI\AnalyzersCore\Support\InlineSuppressionParser);
+        $parserProp->setValue($command, new InlineSuppressionParser);
 
         $method = new \ReflectionMethod($command, 'filterAgainstInlineSuppressions');
         $method->setAccessible(true);
 
         // Create a mock ResultInterface that is NOT an AnalysisResult
-        /** @var \ShieldCI\AnalyzersCore\Contracts\ResultInterface&MockInterface $mockResult */
-        $mockResult = Mockery::mock(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class);
+        /** @var ResultInterface&MockInterface $mockResult */
+        $mockResult = Mockery::mock(ResultInterface::class);
         /** @phpstan-ignore-next-line */
         $mockResult->shouldReceive('getAnalyzerId')->andReturn('mock-analyzer');
         /** @phpstan-ignore-next-line */
@@ -1908,7 +1921,7 @@ PHP);
         /** @phpstan-ignore-next-line */
         $mockResult->shouldReceive('toArray')->andReturn([]);
 
-        $report = new \ShieldCI\ValueObjects\AnalysisReport(
+        $report = new AnalysisReport(
             projectId: 'test-project-id',
             laravelVersion: '11.0',
             packageVersion: '1.0.0',
@@ -1917,7 +1930,7 @@ PHP);
             analyzedAt: new \DateTimeImmutable('2026-01-01T00:00:00Z'),
         );
 
-        /** @var \ShieldCI\ValueObjects\AnalysisReport $filteredReport */
+        /** @var AnalysisReport $filteredReport */
         $filteredReport = $method->invoke($command, $report);
 
         // The non-AnalysisResult object should pass through unchanged
@@ -1931,7 +1944,7 @@ PHP);
     #[Test]
     public function adjust_filtered_message_all_filtered_returns_suppressed_message(): void
     {
-        $command = new \ShieldCI\Commands\AnalyzeCommand;
+        $command = new AnalyzeCommand;
         $method = new \ReflectionMethod($command, 'adjustFilteredMessage');
         $method->setAccessible(true);
 
@@ -1943,7 +1956,7 @@ PHP);
     #[Test]
     public function adjust_filtered_message_none_filtered_returns_original(): void
     {
-        $command = new \ShieldCI\Commands\AnalyzeCommand;
+        $command = new AnalyzeCommand;
         $method = new \ReflectionMethod($command, 'adjustFilteredMessage');
         $method->setAccessible(true);
 
@@ -1955,7 +1968,7 @@ PHP);
     #[Test]
     public function adjust_filtered_message_partial_filter_updates_count(): void
     {
-        $command = new \ShieldCI\Commands\AnalyzeCommand;
+        $command = new AnalyzeCommand;
         $method = new \ReflectionMethod($command, 'adjustFilteredMessage');
         $method->setAccessible(true);
 
@@ -1967,7 +1980,7 @@ PHP);
     #[Test]
     public function adjust_filtered_message_singular_grammar_for_issues(): void
     {
-        $command = new \ShieldCI\Commands\AnalyzeCommand;
+        $command = new AnalyzeCommand;
         $method = new \ReflectionMethod($command, 'adjustFilteredMessage');
         $method->setAccessible(true);
 
@@ -1981,7 +1994,7 @@ PHP);
     #[Test]
     public function adjust_filtered_message_zero_original_and_zero_filtered(): void
     {
-        $command = new \ShieldCI\Commands\AnalyzeCommand;
+        $command = new AnalyzeCommand;
         $method = new \ReflectionMethod($command, 'adjustFilteredMessage');
         $method->setAccessible(true);
 
@@ -2013,8 +2026,8 @@ PHP);
 
         config(['shieldci.report.send_to_api' => false]);
 
-        \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/reports' => \Illuminate\Support\Facades\Http::response([
+        Http::fake([
+            'api.test.shieldci.com/api/reports' => Http::response([
                 'success' => true,
             ]),
         ]);
@@ -2031,8 +2044,8 @@ PHP);
 
         config(['shieldci.report.send_to_api' => true]);
 
-        \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/reports' => \Illuminate\Support\Facades\Http::response([
+        Http::fake([
+            'api.test.shieldci.com/api/reports' => Http::response([
                 'success' => true,
             ]),
         ]);
@@ -2050,8 +2063,8 @@ PHP);
 
         config(['shieldci.report.send_to_api' => true]);
 
-        \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/reports' => \Illuminate\Support\Facades\Http::response([
+        Http::fake([
+            'api.test.shieldci.com/api/reports' => Http::response([
                 'success' => false,
                 'message' => 'Invalid token',
             ]),
@@ -2069,8 +2082,8 @@ PHP);
 
         config(['shieldci.report.send_to_api' => true]);
 
-        \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/reports' => \Illuminate\Support\Facades\Http::response([
+        Http::fake([
+            'api.test.shieldci.com/api/reports' => Http::response([
                 'error' => 'something',
             ]),
         ]);
@@ -2088,8 +2101,8 @@ PHP);
         config(['shieldci.report.send_to_api' => true]);
 
         // Mock the ClientInterface to throw an exception
-        $this->app->singleton(\ShieldCI\Contracts\ClientInterface::class, function () {
-            $mock = Mockery::mock(\ShieldCI\Contracts\ClientInterface::class);
+        $this->app->singleton(ClientInterface::class, function () {
+            $mock = Mockery::mock(ClientInterface::class);
             /** @phpstan-ignore-next-line */
             $mock->shouldReceive('sendReport')
                 ->andThrow(new \Exception('Connection timed out'));
@@ -2109,8 +2122,8 @@ PHP);
 
         config(['shieldci.report.send_to_api' => true]);
 
-        \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/reports' => \Illuminate\Support\Facades\Http::response([
+        Http::fake([
+            'api.test.shieldci.com/api/reports' => Http::response([
                 'success' => true,
             ]),
         ]);
@@ -2272,13 +2285,13 @@ PHP);
         $this->registerTestAnalyzers();
 
         // Use Artisan::call to capture full output and assert both fields
-        \Illuminate\Support\Facades\Artisan::call('shield:analyze', [
+        Artisan::call('shield:analyze', [
             '--format' => 'json',
             '--git-branch' => 'main',
             '--git-commit' => 'deadbeef',
         ]);
 
-        $output = \Illuminate\Support\Facades\Artisan::output();
+        $output = Artisan::output();
 
         $this->assertStringContainsString('"git_branch": "main"', $output);
         $this->assertStringContainsString('"git_commit": "deadbeef"', $output);
@@ -2290,8 +2303,8 @@ PHP);
         $this->registerTestAnalyzers();
         $this->bindNullCiDetector();
 
-        \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
-        $output = \Illuminate\Support\Facades\Artisan::output();
+        Artisan::call('shield:analyze', ['--format' => 'json']);
+        $output = Artisan::output();
 
         $this->assertStringNotContainsString('"git_branch"', $output);
         $this->assertStringNotContainsString('"git_commit"', $output);
@@ -2323,7 +2336,7 @@ PHP);
             [
                 new Issue(
                     message: 'SQL Injection vulnerability',
-                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location('/app/Vulnerable.php', 42),
+                    location: new Location('/app/Vulnerable.php', 42),
                     severity: Severity::High,
                     recommendation: 'Use prepared statements',
                 ),
@@ -2332,7 +2345,7 @@ PHP);
 
         /** @phpstan-ignore-next-line */
         $this->app->singleton(AnalyzerManager::class, function ($app) use ($failedAnalyzer) {
-            /** @var \Mockery\MockInterface&AnalyzerManager $manager */
+            /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
             /** @phpstan-ignore-next-line */
@@ -2381,13 +2394,13 @@ PHP);
             [
                 new Issue(
                     message: 'SQL Injection vulnerability',
-                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location('/app/Vulnerable.php', 42),
+                    location: new Location('/app/Vulnerable.php', 42),
                     severity: Severity::High,
                     recommendation: 'Use prepared statements',
                 ),
                 new Issue(
                     message: 'XSS vulnerability',
-                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location('/app/Other.php', 10),
+                    location: new Location('/app/Other.php', 10),
                     severity: Severity::High,
                     recommendation: 'Escape output',
                 ),
@@ -2396,7 +2409,7 @@ PHP);
 
         /** @phpstan-ignore-next-line */
         $this->app->singleton(AnalyzerManager::class, function ($app) use ($failedAnalyzer) {
-            /** @var \Mockery\MockInterface&AnalyzerManager $manager */
+            /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
             /** @phpstan-ignore-next-line */
@@ -2445,7 +2458,7 @@ PHP);
             [
                 new Issue(
                     message: 'Minor concern',
-                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location('/app/Minor.php', 5),
+                    location: new Location('/app/Minor.php', 5),
                     severity: Severity::Low,
                     recommendation: 'Consider fixing',
                 ),
@@ -2454,7 +2467,7 @@ PHP);
 
         /** @phpstan-ignore-next-line */
         $this->app->singleton(AnalyzerManager::class, function ($app) use ($warningAnalyzer) {
-            /** @var \Mockery\MockInterface&AnalyzerManager $manager */
+            /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
             /** @phpstan-ignore-next-line */
@@ -2503,7 +2516,7 @@ PHP);
             [
                 new Issue(
                     message: 'Test vulnerability',
-                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location('/app/Test.php', 10),
+                    location: new Location('/app/Test.php', 10),
                     severity: $severity,
                     recommendation: 'Fix it',
                 ),
@@ -2512,7 +2525,7 @@ PHP);
 
         /** @phpstan-ignore-next-line */
         $this->app->singleton(AnalyzerManager::class, function ($app) use ($failedAnalyzer) {
-            /** @var \Mockery\MockInterface&AnalyzerManager $manager */
+            /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
             /** @phpstan-ignore-next-line */
@@ -2660,7 +2673,7 @@ PHP);
             [
                 new Issue(
                     message: 'Warning issue',
-                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location('/app/Warn.php', 5),
+                    location: new Location('/app/Warn.php', 5),
                     severity: $severity,
                     recommendation: 'Consider fixing',
                 ),
@@ -2669,7 +2682,7 @@ PHP);
 
         /** @phpstan-ignore-next-line */
         $this->app->singleton(AnalyzerManager::class, function ($app) use ($warningAnalyzer) {
-            /** @var \Mockery\MockInterface&AnalyzerManager $manager */
+            /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
             /** @phpstan-ignore-next-line */
@@ -2733,7 +2746,7 @@ PHP);
 
         /** @phpstan-ignore-next-line */
         $this->app->singleton(AnalyzerManager::class, function ($app) use ($passedAnalyzer, $skippedResult) {
-            /** @var \Mockery\MockInterface&AnalyzerManager $manager */
+            /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
             /** @phpstan-ignore-next-line */
@@ -2871,7 +2884,7 @@ PHP);
 
         /** @phpstan-ignore-next-line */
         $this->app->singleton(AnalyzerManager::class, function ($app) use ($skipped) {
-            /** @var \Mockery\MockInterface&AnalyzerManager $manager */
+            /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
             /** @phpstan-ignore-next-line */
@@ -2924,7 +2937,7 @@ PHP);
 
         /** @phpstan-ignore-next-line */
         $this->app->singleton(AnalyzerManager::class, function ($app) use ($passedAnalyzer, $skippedResult) {
-            /** @var \Mockery\MockInterface&AnalyzerManager $manager */
+            /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
             /** @phpstan-ignore-next-line */
@@ -2997,7 +3010,7 @@ PHP);
 
         /** @phpstan-ignore-next-line */
         $this->app->singleton(AnalyzerManager::class, function ($app) use ($analyzers, $results) {
-            /** @var \Mockery\MockInterface&AnalyzerManager $manager */
+            /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
             /** @phpstan-ignore-next-line */
@@ -3094,8 +3107,8 @@ PHP);
     {
         $this->registerTestAnalyzers();
 
-        \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => Http::response(['success' => true]),
         ]);
 
         $this->artisan('shield:analyze', [
@@ -3103,7 +3116,7 @@ PHP);
             '--report' => true,
         ])->assertFailed();
 
-        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+        Http::assertSent(function ($request) {
             return str_contains($request->url(), '/api/reports/failure')
                 && $request['status'] === 'failed'
                 && $request['failure_reason'] === 'invalid_options';
@@ -3117,13 +3130,13 @@ PHP);
 
         config(['shieldci.report.send_to_api' => false]);
 
-        \Illuminate\Support\Facades\Http::fake();
+        Http::fake();
 
         $this->artisan('shield:analyze', [
             '--analyzer' => 'non-existent-analyzer',
         ])->assertFailed();
 
-        \Illuminate\Support\Facades\Http::assertNothingSent();
+        Http::assertNothingSent();
     }
 
     #[Test]
@@ -3139,14 +3152,14 @@ PHP);
             'shieldci.analyzers.best-practices.enabled' => false,
         ]);
 
-        \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => Http::response(['success' => true]),
         ]);
 
         $this->artisan('shield:analyze', ['--report' => true])
             ->assertFailed();
 
-        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+        Http::assertSent(function ($request) {
             return str_contains($request->url(), '/api/reports/failure')
                 && $request['failure_reason'] === 'all_categories_disabled';
         });
@@ -3158,7 +3171,7 @@ PHP);
         // Register a manager that returns empty results
         /** @phpstan-ignore-next-line */
         $this->app->singleton(AnalyzerManager::class, function () {
-            /** @var \Mockery\MockInterface&AnalyzerManager $manager */
+            /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
             /** @phpstan-ignore-next-line */
@@ -3173,14 +3186,14 @@ PHP);
             return $manager;
         });
 
-        \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => Http::response(['success' => true]),
         ]);
 
         $this->artisan('shield:analyze', ['--format' => 'json', '--report' => true])
             ->assertFailed();
 
-        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+        Http::assertSent(function ($request) {
             return str_contains($request->url(), '/api/reports/failure')
                 && $request['failure_reason'] === 'no_analyzers_ran';
         });
@@ -3211,7 +3224,7 @@ PHP);
 
         /** @phpstan-ignore-next-line */
         $this->app->singleton(AnalyzerManager::class, function () use ($throwingAnalyzer) {
-            /** @var \Mockery\MockInterface&AnalyzerManager $manager */
+            /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
             /** @phpstan-ignore-next-line */
@@ -3224,15 +3237,15 @@ PHP);
             return $manager;
         });
 
-        \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => Http::response(['success' => true]),
         ]);
 
         $this->artisan('shield:analyze', ['--format' => 'json', '--report' => true])
             ->assertFailed()
             ->expectsOutputToContain('Analysis failed with error: AST parser crashed');
 
-        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+        Http::assertSent(function ($request) {
             return str_contains($request->url(), '/api/reports/failure')
                 && $request['failure_reason'] === 'uncaught_exception'
                 && str_contains($request['error_message'], 'AST parser crashed');
@@ -3246,8 +3259,8 @@ PHP);
 
         // Mock the client to throw on sendFailureNotification
         /** @phpstan-ignore-next-line */
-        $this->app->singleton(\ShieldCI\Contracts\ClientInterface::class, function () {
-            $mock = Mockery::mock(\ShieldCI\Contracts\ClientInterface::class);
+        $this->app->singleton(ClientInterface::class, function () {
+            $mock = Mockery::mock(ClientInterface::class);
             /** @phpstan-ignore-next-line */
             $mock->shouldReceive('sendFailureNotification')
                 ->andThrow(new \Exception('Connection refused'));
@@ -3269,8 +3282,8 @@ PHP);
     {
         $this->registerTestAnalyzers();
 
-        \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => Http::response(['success' => true]),
         ]);
 
         $this->artisan('shield:analyze', [
@@ -3278,7 +3291,7 @@ PHP);
             '--report' => true,
         ])->assertFailed();
 
-        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+        Http::assertSent(function ($request) {
             $metadata = $request['metadata'] ?? [];
 
             return str_contains($request->url(), '/api/reports/failure')
@@ -3295,8 +3308,8 @@ PHP);
     {
         $this->registerTestAnalyzers();
 
-        \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => Http::response(['success' => true]),
         ]);
 
         $this->artisan('shield:analyze', [
@@ -3306,7 +3319,7 @@ PHP);
             '--git-commit' => 'abc123',
         ])->assertFailed();
 
-        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+        Http::assertSent(function ($request) {
             $metadata = $request['metadata'] ?? [];
 
             return str_contains($request->url(), '/api/reports/failure')
@@ -3322,15 +3335,15 @@ PHP);
 
         config(['shieldci.report.send_to_api' => true]);
 
-        \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => Http::response(['success' => true]),
         ]);
 
         $this->artisan('shield:analyze', [
             '--analyzer' => 'non-existent-analyzer',
         ])->assertFailed();
 
-        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+        Http::assertSent(function ($request) {
             return str_contains($request->url(), '/api/reports/failure');
         });
     }
@@ -3347,8 +3360,8 @@ PHP);
         putenv('GITHUB_SHA=abc1234def5678');
 
         try {
-            \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
-            $output = \Illuminate\Support\Facades\Artisan::output();
+            Artisan::call('shield:analyze', ['--format' => 'json']);
+            $output = Artisan::output();
         } finally {
             putenv('GITHUB_ACTIONS');
             putenv('GITHUB_REF_NAME');
@@ -3364,8 +3377,8 @@ PHP);
         $this->registerTestAnalyzers();
         $this->bindNullCiDetector();
 
-        \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
-        $output = \Illuminate\Support\Facades\Artisan::output();
+        Artisan::call('shield:analyze', ['--format' => 'json']);
+        $output = Artisan::output();
 
         $this->assertStringNotContainsString('"ci_provider"', $output);
     }
@@ -3380,8 +3393,8 @@ PHP);
         putenv('GITHUB_SHA=abc1234');
 
         try {
-            \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
-            $output = \Illuminate\Support\Facades\Artisan::output();
+            Artisan::call('shield:analyze', ['--format' => 'json']);
+            $output = Artisan::output();
         } finally {
             putenv('GITHUB_ACTIONS');
             putenv('GITHUB_HEAD_REF');
@@ -3401,8 +3414,8 @@ PHP);
         putenv('GITHUB_SHA=deadbeef12345678');
 
         try {
-            \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
-            $output = \Illuminate\Support\Facades\Artisan::output();
+            Artisan::call('shield:analyze', ['--format' => 'json']);
+            $output = Artisan::output();
         } finally {
             putenv('GITHUB_ACTIONS');
             putenv('GITHUB_REF_NAME');
@@ -3422,11 +3435,11 @@ PHP);
         putenv('GITHUB_SHA=abc1234');
 
         try {
-            \Illuminate\Support\Facades\Artisan::call('shield:analyze', [
+            Artisan::call('shield:analyze', [
                 '--format' => 'json',
                 '--git-branch' => 'cli-override-branch',
             ]);
-            $output = \Illuminate\Support\Facades\Artisan::output();
+            $output = Artisan::output();
         } finally {
             putenv('GITHUB_ACTIONS');
             putenv('GITHUB_REF_NAME');
@@ -3447,11 +3460,11 @@ PHP);
         putenv('GITHUB_SHA=env-sha-000');
 
         try {
-            \Illuminate\Support\Facades\Artisan::call('shield:analyze', [
+            Artisan::call('shield:analyze', [
                 '--format' => 'json',
                 '--git-commit' => 'cli-override-sha',
             ]);
-            $output = \Illuminate\Support\Facades\Artisan::output();
+            $output = Artisan::output();
         } finally {
             putenv('GITHUB_ACTIONS');
             putenv('GITHUB_REF_NAME');
@@ -3471,8 +3484,8 @@ PHP);
         putenv('GITHUB_REF_NAME=main');
         putenv('GITHUB_SHA=abc1234');
 
-        \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => Http::response(['success' => true]),
         ]);
 
         try {
@@ -3486,7 +3499,7 @@ PHP);
             putenv('GITHUB_SHA');
         }
 
-        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+        Http::assertSent(function ($request) {
             $metadata = $request['metadata'] ?? [];
 
             return str_contains($request->url(), '/api/reports/failure')
@@ -3502,8 +3515,8 @@ PHP);
     private function bindNullCiDetector(): void
     {
         /** @phpstan-ignore-next-line */
-        $this->app->bind(\ShieldCI\Support\CiEnvironmentDetector::class, function () {
-            return new class extends \ShieldCI\Support\CiEnvironmentDetector
+        $this->app->bind(CiEnvironmentDetector::class, function () {
+            return new class extends CiEnvironmentDetector
             {
                 public function detectProvider(): ?string
                 {
@@ -3551,8 +3564,8 @@ PHP);
         putenv('GITHUB_REF_NAME=main');
 
         try {
-            \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
-            $output = \Illuminate\Support\Facades\Artisan::output();
+            Artisan::call('shield:analyze', ['--format' => 'json']);
+            $output = Artisan::output();
         } finally {
             putenv('GITHUB_ACTIONS');
             putenv('GITHUB_REF_NUMBER');
@@ -3574,8 +3587,8 @@ PHP);
         putenv('GITHUB_REF_NAME=main');
 
         try {
-            \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
-            $output = \Illuminate\Support\Facades\Artisan::output();
+            Artisan::call('shield:analyze', ['--format' => 'json']);
+            $output = Artisan::output();
         } finally {
             putenv('GITHUB_ACTIONS');
             putenv('GITHUB_REPOSITORY');
@@ -3597,8 +3610,8 @@ PHP);
         putenv('GITHUB_REF_NAME=feature/x');
 
         try {
-            \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
-            $output = \Illuminate\Support\Facades\Artisan::output();
+            Artisan::call('shield:analyze', ['--format' => 'json']);
+            $output = Artisan::output();
         } finally {
             putenv('GITHUB_ACTIONS');
             putenv('GITHUB_BASE_REF');
@@ -3620,11 +3633,11 @@ PHP);
         putenv('GITHUB_REF_NAME=main');
 
         try {
-            \Illuminate\Support\Facades\Artisan::call('shield:analyze', [
+            Artisan::call('shield:analyze', [
                 '--format' => 'json',
                 '--git-pr-number' => '99',
             ]);
-            $output = \Illuminate\Support\Facades\Artisan::output();
+            $output = Artisan::output();
         } finally {
             putenv('GITHUB_ACTIONS');
             putenv('GITHUB_REF_NUMBER');
@@ -3642,8 +3655,8 @@ PHP);
         $this->registerTestAnalyzers();
         $this->bindNullCiDetector();
 
-        \Illuminate\Support\Facades\Artisan::call('shield:analyze', ['--format' => 'json']);
-        $output = \Illuminate\Support\Facades\Artisan::output();
+        Artisan::call('shield:analyze', ['--format' => 'json']);
+        $output = Artisan::output();
 
         $this->assertStringNotContainsString('"pr_number"', $output);
         $this->assertStringNotContainsString('"repository"', $output);
@@ -3662,8 +3675,8 @@ PHP);
         putenv('GITHUB_SHA=abc1234');
         putenv('GITHUB_REF_NAME=feature/x');
 
-        \Illuminate\Support\Facades\Http::fake([
-            'api.test.shieldci.com/api/reports/failure' => \Illuminate\Support\Facades\Http::response(['success' => true]),
+        Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => Http::response(['success' => true]),
         ]);
 
         try {
@@ -3680,7 +3693,7 @@ PHP);
             putenv('GITHUB_REF_NAME');
         }
 
-        \Illuminate\Support\Facades\Http::assertSent(function ($request) {
+        Http::assertSent(function ($request) {
             $metadata = $request['metadata'] ?? [];
 
             return str_contains($request->url(), '/api/reports/failure')
@@ -3719,6 +3732,7 @@ PHP);
         // Verify suppressed_issues present in result
         $result = collect((array) $data['results'])->firstWhere('analyzer_id', 'test-security-failed');
         $this->assertNotNull($result, 'Result for test-security-failed not found');
+        $this->assertIsArray($result);
         $this->assertArrayHasKey('suppressed_issues', $result);
         $this->assertCount(1, $result['suppressed_issues']);
         $this->assertSame('config', $result['suppressed_issues'][0]['suppression']['type']);
@@ -3747,7 +3761,7 @@ PHP);
             issues: [
                 new Issue(
                     message: 'SQL Injection detected',
-                    location: new \ShieldCI\AnalyzersCore\ValueObjects\Location($file, 3),
+                    location: new Location($file, 3),
                     severity: Severity::Critical,
                     recommendation: 'Use prepared statements',
                 ),
@@ -3780,6 +3794,7 @@ PHP);
 
         $result = collect((array) $data['results'])->firstWhere('analyzer_id', 'sql-injection');
         $this->assertNotNull($result, 'Result for sql-injection not found');
+        $this->assertIsArray($result);
         $this->assertArrayHasKey('suppressed_issues', $result);
         $this->assertCount(1, $result['suppressed_issues']);
         $this->assertSame('inline', $result['suppressed_issues'][0]['suppression']['type']);
@@ -3830,6 +3845,7 @@ PHP);
 
         $result = collect((array) $data['results'])->firstWhere('analyzer_id', 'test-security-failed');
         $this->assertNotNull($result, 'Result for test-security-failed not found');
+        $this->assertIsArray($result);
         $this->assertArrayHasKey('suppressed_issues', $result);
         $this->assertCount(1, $result['suppressed_issues']);
         $this->assertSame('baseline', $result['suppressed_issues'][0]['suppression']['type']);
@@ -4022,11 +4038,11 @@ PHP);
      * bypassing the full Artisan stack so we get clean coverage of the progress bar branches.
      *
      * @param  array<string, mixed>  $options
-     * @return \Illuminate\Support\Collection<int, mixed>
+     * @return Collection<int, mixed>
      */
-    private function invokeRunAnalysisWithProgress(array $options, AnalyzerManager $manager): \Illuminate\Support\Collection
+    private function invokeRunAnalysisWithProgress(array $options, AnalyzerManager $manager): Collection
     {
-        $command = new class extends \ShieldCI\Commands\AnalyzeCommand
+        $command = new class extends AnalyzeCommand
         {
             protected function isProgressEnabled(mixed $stderrStream): bool
             {
@@ -4034,15 +4050,15 @@ PHP);
             }
         };
 
-        $input = new \Symfony\Component\Console\Input\ArrayInput($options);
+        $input = new ArrayInput($options);
         $input->bind($command->getDefinition());
-        $output = new \Symfony\Component\Console\Output\NullOutput;
+        $output = new NullOutput;
         $command->setInput($input);
-        $command->setOutput(new \Illuminate\Console\OutputStyle($input, $output));
+        $command->setOutput(new OutputStyle($input, $output));
 
         $reflection = new \ReflectionMethod($command, 'runAnalysis');
 
-        /** @var \Illuminate\Support\Collection<int, mixed> */
+        /** @var Collection<int, mixed> */
         return $reflection->invoke($command, $manager);
     }
 
@@ -4093,12 +4109,12 @@ PHP);
     #[Test]
     public function filter_against_ignore_errors_forwards_configuration(): void
     {
-        $command = new \ShieldCI\Commands\AnalyzeCommand;
+        $command = new AnalyzeCommand;
         $method = new \ReflectionMethod($command, 'filterAgainstIgnoreErrors');
         $method->setAccessible(true);
 
         $configuration = ['paths' => ['app'], 'categories' => ['security']];
-        $report = new \ShieldCI\ValueObjects\AnalysisReport(
+        $report = new AnalysisReport(
             projectId: 'proj',
             laravelVersion: '11.0',
             packageVersion: '1.0.0',
@@ -4110,7 +4126,7 @@ PHP);
 
         config(['shieldci.ignore_errors' => []]);
 
-        /** @var \ShieldCI\ValueObjects\AnalysisReport $result */
+        /** @var AnalysisReport $result */
         $result = $method->invoke($command, $report);
 
         $this->assertSame($configuration, $result->configuration);
@@ -4119,17 +4135,17 @@ PHP);
     #[Test]
     public function filter_against_inline_suppressions_forwards_configuration(): void
     {
-        $command = new \ShieldCI\Commands\AnalyzeCommand;
+        $command = new AnalyzeCommand;
 
         $parserProp = new \ReflectionProperty($command, 'suppressionParser');
         $parserProp->setAccessible(true);
-        $parserProp->setValue($command, new \ShieldCI\AnalyzersCore\Support\InlineSuppressionParser);
+        $parserProp->setValue($command, new InlineSuppressionParser);
 
         $method = new \ReflectionMethod($command, 'filterAgainstInlineSuppressions');
         $method->setAccessible(true);
 
         $configuration = ['paths' => ['app'], 'categories' => ['security']];
-        $report = new \ShieldCI\ValueObjects\AnalysisReport(
+        $report = new AnalysisReport(
             projectId: 'proj',
             laravelVersion: '11.0',
             packageVersion: '1.0.0',
@@ -4139,7 +4155,7 @@ PHP);
             configuration: $configuration,
         );
 
-        /** @var \ShieldCI\ValueObjects\AnalysisReport $result */
+        /** @var AnalysisReport $result */
         $result = $method->invoke($command, $report);
 
         $this->assertSame($configuration, $result->configuration);

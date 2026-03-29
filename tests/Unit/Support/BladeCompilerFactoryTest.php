@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Support;
 
 use PHPUnit\Framework\TestCase;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Support\BladeCompilerFactory;
 
 class BladeCompilerFactoryTest extends TestCase
@@ -46,7 +47,7 @@ class BladeCompilerFactoryTest extends TestCase
         $this->assertNotNull($result);
 
         // Compiled PHP should be parseable
-        $ast = (new \ShieldCI\AnalyzersCore\Support\AstParser)->parseCode($result['compiledPhp']);
+        $ast = (new AstParser)->parseCode($result['compiledPhp']);
         $this->assertNotEmpty($ast);
     }
 
@@ -59,7 +60,7 @@ class BladeCompilerFactoryTest extends TestCase
         $this->assertNotNull($result);
 
         // Compiled PHP should be parseable even with block comments
-        $ast = (new \ShieldCI\AnalyzersCore\Support\AstParser)->parseCode($result['compiledPhp']);
+        $ast = (new AstParser)->parseCode($result['compiledPhp']);
         $this->assertNotEmpty($ast);
     }
 

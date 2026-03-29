@@ -6,6 +6,8 @@ namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
 use ShieldCI\Analyzers\Performance\OpcacheAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class OpcacheAnalyzerTest extends AnalyzerTestCase
@@ -641,7 +643,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_opcache_disabled_has_high_severity(): void
@@ -657,7 +659,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
     }
 
     public function test_configuration_issues_have_low_severity(): void
@@ -676,7 +678,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $this->assertWarning($result);
         $issues = $result->getIssues();
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
+        $this->assertEquals(Severity::Low, $issues[0]->severity);
     }
 
     public function test_issue_metadata_contains_php_version(): void
@@ -737,8 +739,8 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $this->assertEquals('opcache-enabled', $metadata->id);
         $this->assertEquals('OPcache Enabled Analyzer', $metadata->name);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::High, $metadata->severity);
+        $this->assertEquals(Category::Performance, $metadata->category);
+        $this->assertEquals(Severity::High, $metadata->severity);
         $this->assertContains('opcache', $metadata->tags);
         $this->assertContains('performance', $metadata->tags);
     }

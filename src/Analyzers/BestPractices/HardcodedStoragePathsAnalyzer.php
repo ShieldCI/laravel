@@ -65,7 +65,15 @@ class HardcodedStoragePathsAnalyzer extends AbstractFileAnalyzer
         $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
         $this->allowedPaths = $analyzerConfig['allowed_paths'] ?? [];
-        $additionalPatterns = $analyzerConfig['additional_patterns'] ?? [];
+        $additionalPatternsRaw = $analyzerConfig['additional_patterns'] ?? [];
+        $additionalPatterns = [];
+        if (is_array($additionalPatternsRaw)) {
+            foreach ($additionalPatternsRaw as $pattern => $replacement) {
+                if (is_string($pattern) && is_string($replacement)) {
+                    $additionalPatterns[$pattern] = $replacement;
+                }
+            }
+        }
 
         // Patterns that ALWAYS indicate hardcoded paths (absolute system paths, relative paths)
         // These are clearly filesystem paths regardless of context

@@ -12,6 +12,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\AnalyzesMiddleware;
 use ShieldCI\Concerns\DetectsDeploymentPlatform;
@@ -252,7 +253,7 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
      *
      * @param  array<string>  $missingDirs
      * @param  array<string>  $nonWritableDirs
-     * @return array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>
+     * @return array<int, Issue>
      */
     private function createIssuesForFailedDirectories(array $missingDirs, array $nonWritableDirs, string $basePath): array
     {
@@ -508,7 +509,7 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
      * Create issues for broken symlinks.
      *
      * @param  array<int, array{link: string, target: string, reason: string}>  $brokenSymlinks
-     * @return array<int, \ShieldCI\AnalyzersCore\ValueObjects\Issue>
+     * @return array<int, Issue>
      */
     private function createIssuesForBrokenSymlinks(array $brokenSymlinks, string $basePath): array
     {

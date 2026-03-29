@@ -6,7 +6,9 @@ namespace ShieldCI\Tests\Unit\Analyzers\Reliability;
 
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Filesystem\Filesystem;
+use Illuminate\Foundation\Auth\User;
 use Illuminate\Routing\Router;
+use Illuminate\Session\Middleware\StartSession;
 use Illuminate\Support\Facades\View;
 use ShieldCI\Analyzers\Reliability\CustomErrorPageAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
@@ -92,9 +94,7 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         // Test environment is stateless (no session middleware)
         $this->assertFalse($analyzer->shouldRun());
 
-        if (method_exists($analyzer, 'getSkipReason')) {
-            $this->assertStringContainsString('stateless', $analyzer->getSkipReason());
-        }
+        $this->assertStringContainsString('stateless', $analyzer->getSkipReason());
     }
 
     public function test_skips_when_api_only_app_has_web_group_defined_but_unused(): void
@@ -103,7 +103,7 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         // but only register API routes that don't use it.
         // shouldRun() must return false — the group is defined but not assigned.
         $router = app(Router::class);
-        $router->middlewareGroup('web', [\Illuminate\Session\Middleware\StartSession::class]);
+        $router->middlewareGroup('web', [StartSession::class]);
         $router->get('/api/test', fn () => 'ok')->middleware('api');
 
         $analyzer = $this->createAnalyzer();
@@ -116,7 +116,7 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         // If the app defines its own closure route using a session-containing group,
         // shouldRun() must return true — the app does serve HTML pages.
         $router = app(Router::class);
-        $router->middlewareGroup('web', [\Illuminate\Session\Middleware\StartSession::class]);
+        $router->middlewareGroup('web', [StartSession::class]);
         $router->get('/home', fn () => 'welcome')->middleware('web');
 
         $analyzer = $this->createAnalyzer();
@@ -129,10 +129,10 @@ class CustomErrorPageAnalyzerTest extends AnalyzerTestCase
         // injecting a web-group route. The 'web' group IS used, but only by vendor
         // infrastructure code — the app itself has no web routes.
         $router = app(Router::class);
-        $router->middlewareGroup('web', [\Illuminate\Session\Middleware\StartSession::class]);
+        $router->middlewareGroup('web', [StartSession::class]);
 
         // Use a real vendor class so isVendorRoute() correctly identifies it
-        $router->post('/vendor/signed-url', [\Illuminate\Foundation\Auth\User::class, 'all'])
+        $router->post('/vendor/signed-url', [User::class, 'all'])
             ->middleware('web');
 
         // App's own routes use api only

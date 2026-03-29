@@ -43,7 +43,10 @@ class HttpAdvisoryFetcher implements AdvisoryFetcherInterface
                 return [];
             }
 
-            return $this->mapResults($decoded['results'], $queries);
+            /** @var array<int, array<string, mixed>> $results */
+            $results = $decoded['results'];
+
+            return $this->mapResults($results, $queries);
         } catch (Throwable $exception) {
             $this->logFailure($exception);
 
@@ -108,6 +111,7 @@ class HttpAdvisoryFetcher implements AdvisoryFetcherInterface
                     continue;
                 }
 
+                /** @var array<string, mixed> $vuln */
                 $advisories[$package][] = $this->formatVulnerability($vuln, $version);
             }
         }

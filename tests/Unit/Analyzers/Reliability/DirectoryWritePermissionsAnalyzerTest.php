@@ -9,6 +9,7 @@ use Illuminate\Filesystem\Filesystem;
 use Illuminate\Routing\Router;
 use ShieldCI\Analyzers\Reliability\DirectoryWritePermissionsAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
@@ -584,7 +585,7 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         // Should not crash, even with empty basepath
-        $this->assertInstanceOf(\ShieldCI\AnalyzersCore\Contracts\ResultInterface::class, $result);
+        $this->assertInstanceOf(ResultInterface::class, $result);
     }
 
     // =========================================================================

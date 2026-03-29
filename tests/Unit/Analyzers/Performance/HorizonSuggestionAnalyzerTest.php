@@ -5,9 +5,13 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Laravel\Horizon\Horizon;
 use Mockery;
+use Mockery\MockInterface;
 use ShieldCI\Analyzers\Performance\HorizonSuggestionAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
@@ -17,7 +21,7 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
      */
     protected function createAnalyzer(array $configValues = []): AnalyzerInterface
     {
-        /** @var ConfigRepository&\Mockery\MockInterface $config */
+        /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
         // Set up default config values
@@ -69,8 +73,8 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
 
         $this->assertEquals('horizon-suggestion', $metadata->id);
         $this->assertEquals('Horizon Suggestion Analyzer', $metadata->name);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Performance, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $metadata->severity);
+        $this->assertEquals(Category::Performance, $metadata->category);
+        $this->assertEquals(Severity::Low, $metadata->severity);
         $this->assertContains('queue', $metadata->tags);
         $this->assertContains('horizon', $metadata->tags);
         $this->assertContains('redis', $metadata->tags);
@@ -158,7 +162,7 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
     {
         // This test assumes Horizon is NOT installed in the test environment
         // If Horizon is installed, this test will fail
-        if (class_exists(\Laravel\Horizon\Horizon::class)) {
+        if (class_exists(Horizon::class)) {
             $this->markTestSkipped('Horizon is installed, skipping test for missing Horizon');
         }
 
@@ -183,7 +187,7 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
     public function test_passes_when_horizon_is_installed(): void
     {
         // This test only runs if Horizon IS installed
-        if (! class_exists(\Laravel\Horizon\Horizon::class)) {
+        if (! class_exists(Horizon::class)) {
             $this->markTestSkipped('Horizon is not installed, skipping test for installed Horizon');
         }
 
@@ -206,7 +210,7 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
 
     public function test_issue_contains_correct_metadata(): void
     {
-        if (class_exists(\Laravel\Horizon\Horizon::class)) {
+        if (class_exists(Horizon::class)) {
             $this->markTestSkipped('Horizon is installed, skipping test for missing Horizon');
         }
 
@@ -229,7 +233,7 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
         $this->assertCount(1, $issues);
 
         $issue = $issues[0];
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issue->severity);
+        $this->assertEquals(Severity::Low, $issue->severity);
         $this->assertNull($issue->location);
 
         $metadata = $issue->metadata;
@@ -241,7 +245,7 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
 
     public function test_issue_contains_installation_instructions(): void
     {
-        if (class_exists(\Laravel\Horizon\Horizon::class)) {
+        if (class_exists(Horizon::class)) {
             $this->markTestSkipped('Horizon is installed, skipping test for missing Horizon');
         }
 
@@ -269,7 +273,7 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
 
     public function test_works_with_custom_redis_connection_name(): void
     {
-        if (class_exists(\Laravel\Horizon\Horizon::class)) {
+        if (class_exists(Horizon::class)) {
             $this->markTestSkipped('Horizon is installed, skipping test for missing Horizon');
         }
 
@@ -299,7 +303,7 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
 
     public function test_recommendation_mentions_key_features(): void
     {
-        if (class_exists(\Laravel\Horizon\Horizon::class)) {
+        if (class_exists(Horizon::class)) {
             $this->markTestSkipped('Horizon is installed, skipping test for missing Horizon');
         }
 
@@ -429,7 +433,7 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
 
     public function test_runs_normally_when_vapor_not_detected(): void
     {
-        if (class_exists(\Laravel\Horizon\Horizon::class)) {
+        if (class_exists(Horizon::class)) {
             $this->markTestSkipped('Horizon is installed, skipping test for missing Horizon');
         }
 

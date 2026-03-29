@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
@@ -68,6 +69,7 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
             ? 'Application encryption key is properly configured'
             : sprintf('Found %d application key security issue%s', count($issues), count($issues) === 1 ? '' : 's');
 
+        /** @var array<Issue> $issues */
         return $this->resultBySeverity($summary, $issues);
     }
 
@@ -120,10 +122,7 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
 
                 $hasAppKey = true;
 
-                // Extract and validate match result
-                if (! is_string($matches[1])) {
-                    continue;
-                }
+                // Extract match result
 
                 $rawValue = $this->stripInlineComment($matches[1]);
                 $appKeyValue = $this->normalizeKeyValue($rawValue);
@@ -247,25 +246,25 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
 
             // Check for insecure cipher configuration
             if (preg_match('/["\']cipher["\']\s*=>\s*["\']([^"\']+)["\']/i', $line, $matches)) {
-                if (is_string($matches[1])) {
-                    $cipher = strtolower($matches[1]);
 
-                    // Laravel supports AES-128-CBC and AES-256-CBC
-                    if (! in_array($cipher, ['aes-128-cbc', 'aes-256-cbc'], true)) {
-                        $issues[] = $this->createIssueWithSnippet(
-                            message: sprintf('Unsupported or weak cipher algorithm: %s', $cipher),
-                            filePath: $appConfig,
-                            lineNumber: $lineNumber + 1,
-                            severity: Severity::High,
-                            recommendation: 'Use "AES-256-CBC" or "AES-128-CBC" cipher',
-                            metadata: [
-                                'file' => 'app.php',
-                                'config_key' => 'cipher',
-                                'cipher' => $cipher,
-                            ]
-                        );
-                    }
+                $cipher = strtolower($matches[1]);
+
+                // Laravel supports AES-128-CBC and AES-256-CBC
+                if (! in_array($cipher, ['aes-128-cbc', 'aes-256-cbc'], true)) {
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: sprintf('Unsupported or weak cipher algorithm: %s', $cipher),
+                        filePath: $appConfig,
+                        lineNumber: $lineNumber + 1,
+                        severity: Severity::High,
+                        recommendation: 'Use "AES-256-CBC" or "AES-128-CBC" cipher',
+                        metadata: [
+                            'file' => 'app.php',
+                            'config_key' => 'cipher',
+                            'cipher' => $cipher,
+                        ]
+                    );
                 }
+
             }
         }
     }

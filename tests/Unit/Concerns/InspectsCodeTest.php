@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Concerns;
 
+use PhpParser\Node;
+use PhpParser\Node\Expr\FuncCall;
 use PHPUnit\Framework\Attributes\Test;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Concerns\InspectsCode;
 use ShieldCI\Tests\TestCase;
 
@@ -155,9 +158,9 @@ class InspectsCodeTest extends TestCase
         $inspector->setFixturePath(__DIR__.'/../../Fixtures/inspects-code');
 
         // Inject a mock parser that throws on parseFile to trigger the catch block
-        $mockParser = new class extends \ShieldCI\AnalyzersCore\Support\AstParser
+        $mockParser = new class extends AstParser
         {
-            /** @return array<\PhpParser\Node> */
+            /** @return array<Node> */
             public function parseFile(string $filePath): array
             {
                 // Throw for any file to exercise the catch block
@@ -407,7 +410,7 @@ class ConcreteInspectsCode
     /**
      * @param  array<int, string>  $paths
      * @param  array<int, string>  $excludePaths
-     * @return array<int, array{file: string, node: \PhpParser\Node\Expr\FuncCall, args: array<int, mixed>}>
+     * @return array<int, array{file: string, node: FuncCall, args: array<int, mixed>}>
      */
     public function publicFindFunctionCalls(
         string $functionName,

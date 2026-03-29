@@ -7,6 +7,7 @@ namespace ShieldCI\Tests\Unit\Support;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Support\PHPStan;
 use ShieldCI\Tests\TestCase;
+use Symfony\Component\Process\Process;
 
 class PHPStanTest extends TestCase
 {
@@ -297,7 +298,7 @@ class PHPStanTest extends TestCase
         $phpstan->setRootPath(base_path());
         $process = $phpstan->publicGetProcess(['--version']);
 
-        $this->assertInstanceOf(\Symfony\Component\Process\Process::class, $process);
+        $this->assertInstanceOf(Process::class, $process);
     }
 
     #[Test]
@@ -392,7 +393,7 @@ class TestablePHPStan extends PHPStan
     /**
      * @param  array<int, string>  $command
      */
-    public function publicGetProcess(array $command): \Symfony\Component\Process\Process
+    public function publicGetProcess(array $command): Process
     {
         return $this->getProcess($command);
     }

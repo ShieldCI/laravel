@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
 use Mockery;
+use Mockery\MockInterface;
 use ShieldCI\Analyzers\Security\UpToDateDependencyAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Support\Composer;
 use ShieldCI\Tests\AnalyzerTestCase;
 
@@ -23,7 +26,7 @@ class UpToDateDependencyAnalyzerTest extends AnalyzerTestCase
         ?array $composerJsonData = null,
         ?\Throwable $installDryRunException = null
     ): AnalyzerInterface {
-        /** @var Composer&\Mockery\MockInterface $composer */
+        /** @var Composer&MockInterface $composer */
         $composer = Mockery::mock(Composer::class);
 
         // Mock getLockFile
@@ -60,9 +63,7 @@ class UpToDateDependencyAnalyzerTest extends AnalyzerTestCase
 
         $this->assertFalse($analyzer->shouldRun());
 
-        if (method_exists($analyzer, 'getSkipReason')) {
-            $this->assertStringContainsString('composer.json', $analyzer->getSkipReason());
-        }
+        $this->assertStringContainsString('composer.json', $analyzer->getSkipReason());
     }
 
     public function test_warns_when_composer_lock_missing_but_json_exists(): void
@@ -170,7 +171,7 @@ OUTPUT;
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
         $this->assertEquals('production', $issues[0]->metadata['scope'] ?? '');
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+        $this->assertEquals(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_fails_with_low_severity_when_only_dev_dependencies_need_updates(): void
@@ -202,7 +203,7 @@ OUTPUT;
         // Dev dependencies should be low severity
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Low, $issues[0]->severity);
+        $this->assertEquals(Severity::Low, $issues[0]->severity);
         $this->assertEquals('dev', $issues[0]->metadata['scope'] ?? '');
     }
 
@@ -213,8 +214,8 @@ OUTPUT;
 
         $this->assertEquals('up-to-date-dependencies', $metadata->id);
         $this->assertEquals('Up-to-Date Dependencies Analyzer', $metadata->name);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Category::Security, $metadata->category);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $metadata->severity);
+        $this->assertEquals(Category::Security, $metadata->category);
+        $this->assertEquals(Severity::Medium, $metadata->severity);
         $this->assertContains('dependencies', $metadata->tags);
         $this->assertContains('security-patches', $metadata->tags);
     }
@@ -265,7 +266,7 @@ OUTPUT;
 
     public function test_handles_non_string_composer_output(): void
     {
-        /** @var Composer&\Mockery\MockInterface $composer */
+        /** @var Composer&MockInterface $composer */
         $composer = Mockery::mock(Composer::class);
 
         $composer->shouldReceive('getLockFile')
@@ -378,7 +379,7 @@ OUTPUT;
 
     public function test_composer_install_dry_run_called_once_for_performance(): void
     {
-        /** @var Composer&\Mockery\MockInterface $composer */
+        /** @var Composer&MockInterface $composer */
         $composer = Mockery::mock(Composer::class);
 
         $composer->shouldReceive('getLockFile')
@@ -526,7 +527,7 @@ OUTPUT;
 
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+        $this->assertEquals(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_both_updates_scenario_includes_both_in_recommendation(): void

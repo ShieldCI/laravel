@@ -5,15 +5,18 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit;
 
 use PHPUnit\Framework\Attributes\Test;
+use Psr\Log\LoggerInterface;
 use ShieldCI\AnalyzerManager;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\Contracts\ReporterInterface;
+use ShieldCI\ShieldCIServiceProvider;
 use ShieldCI\Support\Composer;
 use ShieldCI\Support\PathFilter;
 use ShieldCI\Support\Reporter;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryAnalyzerInterface;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryFetcherInterface;
 use ShieldCI\Support\SecurityAdvisories\ComposerDependencyReader;
+use ShieldCI\Support\SecurityAdvisories\HttpAdvisoryFetcher;
 use ShieldCI\Support\SecurityAdvisories\VersionConstraintMatcher;
 use ShieldCI\Tests\TestCase;
 
@@ -168,8 +171,8 @@ class ShieldCIServiceProviderTest extends TestCase
     public function it_resolves_logger_from_log_binding(): void
     {
         // Fully remove LoggerInterface binding using reflection
-        $this->app->offsetUnset(\Psr\Log\LoggerInterface::class);
-        $this->app->forgetInstance(\Psr\Log\LoggerInterface::class);
+        $this->app->offsetUnset(LoggerInterface::class);
+        $this->app->forgetInstance(LoggerInterface::class);
 
         // Remove from bindings via reflection to ensure bound() returns false
         $app = $this->app;
@@ -177,30 +180,30 @@ class ShieldCIServiceProviderTest extends TestCase
         $ref = new \ReflectionProperty($app, 'bindings');
         $ref->setAccessible(true);
         $bindings = $ref->getValue($app);
-        unset($bindings[\Psr\Log\LoggerInterface::class]);
+        unset($bindings[LoggerInterface::class]);
         $ref->setValue($app, $bindings);
 
         // Also remove from aliases if present
         $aliasRef = new \ReflectionProperty($app, 'aliases');
         $aliasRef->setAccessible(true);
         $aliases = $aliasRef->getValue($app);
-        unset($aliases[\Psr\Log\LoggerInterface::class]);
+        unset($aliases[LoggerInterface::class]);
         $aliasRef->setValue($app, $aliases);
 
         // Keep 'log' binding available
-        $this->app->bind('log', fn () => \Mockery::mock(\Psr\Log\LoggerInterface::class));
+        $this->app->bind('log', fn () => \Mockery::mock(LoggerInterface::class));
 
         // Force re-resolution of AdvisoryFetcherInterface
-        $this->app->forgetInstance(\ShieldCI\Support\SecurityAdvisories\AdvisoryFetcherInterface::class);
-        $fetcher = $this->app->make(\ShieldCI\Support\SecurityAdvisories\AdvisoryFetcherInterface::class);
+        $this->app->forgetInstance(AdvisoryFetcherInterface::class);
+        $fetcher = $this->app->make(AdvisoryFetcherInterface::class);
 
-        $this->assertInstanceOf(\ShieldCI\Support\SecurityAdvisories\HttpAdvisoryFetcher::class, $fetcher);
+        $this->assertInstanceOf(HttpAdvisoryFetcher::class, $fetcher);
     }
 
     #[Test]
     public function it_returns_null_for_file_without_namespace(): void
     {
-        $provider = new \ShieldCI\ShieldCIServiceProvider($this->app);
+        $provider = new ShieldCIServiceProvider($this->app);
 
         $tempFile = tempnam(sys_get_temp_dir(), 'shieldci_test_');
         file_put_contents($tempFile, "<?php\nclass NoNamespace {}\n");
@@ -220,7 +223,7 @@ class ShieldCIServiceProviderTest extends TestCase
     #[Test]
     public function it_returns_null_for_file_without_class_declaration(): void
     {
-        $provider = new \ShieldCI\ShieldCIServiceProvider($this->app);
+        $provider = new ShieldCIServiceProvider($this->app);
 
         $tempFile = tempnam(sys_get_temp_dir(), 'shieldci_test_');
         file_put_contents($tempFile, "<?php\nnamespace App\\Test;\n\nfunction helper() {}\n");
@@ -240,7 +243,7 @@ class ShieldCIServiceProviderTest extends TestCase
     #[Test]
     public function it_skips_non_existent_analyzer_directory(): void
     {
-        $provider = new \ShieldCI\ShieldCIServiceProvider($this->app);
+        $provider = new ShieldCIServiceProvider($this->app);
 
         $reflection = new \ReflectionMethod($provider, 'discoverAnalyzers');
         $reflection->setAccessible(true);

@@ -510,7 +510,7 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
      */
     private function joinPaths(string ...$paths): string
     {
-        $filtered = array_filter($paths, fn ($path) => $path !== '' && $path !== null);
+        $filtered = array_filter($paths, fn (string $path) => $path !== '');
 
         if (empty($filtered)) {
             return '';

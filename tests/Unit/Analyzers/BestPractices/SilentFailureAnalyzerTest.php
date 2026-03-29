@@ -7,6 +7,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\BestPractices\SilentFailureAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class SilentFailureAnalyzerTest extends AnalyzerTestCase
@@ -3352,7 +3353,7 @@ PHP;
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertStringContainsString('Dynamic', $issues[0]->message);
-        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+        $this->assertSame(Severity::High, $issues[0]->severity);
     }
 
     public function test_suppression_inside_catch_is_high_severity(): void
@@ -3395,7 +3396,7 @@ PHP;
             }
         }
         $this->assertNotNull($suppressionIssue, 'Should have double silencing issue');
-        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::High, $suppressionIssue->severity);
+        $this->assertSame(Severity::High, $suppressionIssue->severity);
     }
 
     public function test_static_suppression_is_medium_severity(): void
@@ -3426,7 +3427,7 @@ PHP;
         $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $issues[0]->severity);
+        $this->assertSame(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_dynamic_static_method_suppression_is_high_severity(): void
@@ -3458,7 +3459,7 @@ PHP;
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertStringContainsString('Dynamic', $issues[0]->message);
-        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+        $this->assertSame(Severity::High, $issues[0]->severity);
     }
 
     public function test_dynamic_instance_method_suppression_is_high_severity(): void
@@ -3490,7 +3491,7 @@ PHP;
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertStringContainsString('Dynamic', $issues[0]->message);
-        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::High, $issues[0]->severity);
+        $this->assertSame(Severity::High, $issues[0]->severity);
     }
 
     // ========================================================================
@@ -3531,7 +3532,7 @@ PHP;
         $issues = $result->getIssues();
         $broadIssue = collect($issues)->first(fn ($i) => str_contains($i->message, 'overly broad'));
         $this->assertNotNull($broadIssue);
-        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $broadIssue->severity);
+        $this->assertSame(Severity::Medium, $broadIssue->severity);
         $this->assertStringContainsString('include the exception variable', $broadIssue->recommendation);
     }
 
@@ -3567,7 +3568,7 @@ PHP;
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $highIssue = collect($issues)->first(fn ($i) => $i->severity === \ShieldCI\AnalyzersCore\Enums\Severity::High);
+        $highIssue = collect($issues)->first(fn ($i) => $i->severity === Severity::High);
         $this->assertNotNull($highIssue);
     }
 
@@ -3608,7 +3609,7 @@ PHP;
         $issues = $result->getIssues();
         $broadIssue = collect($issues)->first(fn ($i) => str_contains($i->message, 'overly broad'));
         $this->assertNotNull($broadIssue);
-        $this->assertSame(\ShieldCI\AnalyzersCore\Enums\Severity::Medium, $broadIssue->severity);
+        $this->assertSame(Severity::Medium, $broadIssue->severity);
         $this->assertStringContainsString('include the exception variable', $broadIssue->recommendation);
     }
 }

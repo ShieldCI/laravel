@@ -92,7 +92,7 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
         $driver = $this->config->get('session.driver', 'file');
         $environment = $this->getEnvironment();
 
-        if (! is_string($driver) || ! is_string($environment)) {
+        if (! is_string($driver)) {
             return $this->error('Invalid session driver or environment configuration');
         }
 

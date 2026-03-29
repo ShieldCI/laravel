@@ -9,6 +9,8 @@ use DateTimeImmutable;
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Status;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\Enums\TriggerSource;
 use ShieldCI\ValueObjects\AnalysisReport;
@@ -201,8 +203,8 @@ class Reporter implements ReporterInterface
     /**
      * Group results by category.
      *
-     * @param  Collection<int, \ShieldCI\AnalyzersCore\Contracts\ResultInterface>  $results
-     * @return array<string, array<int, \ShieldCI\AnalyzersCore\Contracts\ResultInterface>>
+     * @param  Collection<int, ResultInterface>  $results
+     * @return array<string, array<int, ResultInterface>>
      */
     private function groupByCategory(Collection $results): array
     {
@@ -247,7 +249,7 @@ class Reporter implements ReporterInterface
     /**
      * Get colored status label for display.
      */
-    private function getColoredStatusLabel(\ShieldCI\AnalyzersCore\Enums\Status $status): string
+    private function getColoredStatusLabel(Status $status): string
     {
         return match ($status->value) {
             'passed' => $this->color('Passed', 'green'),
@@ -402,7 +404,7 @@ class Reporter implements ReporterInterface
     /**
      * Generate report card table.
      *
-     * @param  array<string, array<int, \ShieldCI\AnalyzersCore\Contracts\ResultInterface>>  $byCategory
+     * @param  array<string, array<int, ResultInterface>>  $byCategory
      */
     private function generateReportCard(AnalysisReport $report, array $byCategory): string
     {
@@ -748,7 +750,7 @@ class Reporter implements ReporterInterface
      * Stream a single result to console as it completes.
      */
     public function streamResult(
-        \ShieldCI\AnalyzersCore\Contracts\ResultInterface $result,
+        ResultInterface $result,
         int $current,
         int $total,
         string $category
@@ -898,8 +900,8 @@ class Reporter implements ReporterInterface
      * When multiple issues occur on the same line (e.g., multiple PHPStan errors),
      * this groups them so we show the location once, with individual messages underneath.
      *
-     * @param  array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>  $issues
-     * @return array<string, array<\ShieldCI\AnalyzersCore\ValueObjects\Issue>>
+     * @param  array<Issue>  $issues
+     * @return array<string, array<Issue>>
      */
     private function groupIssuesByLocation(array $issues): array
     {

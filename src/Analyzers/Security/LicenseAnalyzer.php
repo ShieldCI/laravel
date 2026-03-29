@@ -123,8 +123,10 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
         $config = $this->getConfiguration();
 
         // Check production dependencies
+        /** @var array<int, mixed> $packages */
+        $packages = $lockData['packages'];
         $this->checkPackageLicenses(
-            $lockData['packages'],
+            $packages,
             $composerLock,
             $issues,
             $config,
@@ -133,8 +135,10 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
 
         // Check dev dependencies separately (less critical)
         if (isset($lockData['packages-dev']) && is_array($lockData['packages-dev'])) {
+            /** @var array<int, mixed> $packagesDev */
+            $packagesDev = $lockData['packages-dev'];
             $this->checkPackageLicenses(
-                $lockData['packages-dev'],
+                $packagesDev,
                 $composerLock,
                 $issues,
                 $config,
@@ -310,7 +314,7 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
         // Handle array license (composer format - always disjunctive/OR)
         if (is_array($license)) {
             return [
-                'licenses' => $license,
+                'licenses' => array_values(array_filter($license, 'is_string')),
                 'is_conjunctive' => false,  // Arrays in composer.json are always OR
             ];
         }

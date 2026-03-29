@@ -1216,7 +1216,6 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     private function buildRelationshipChain(Expr\PropertyFetch $node, string $loopVariable): ?array
     {
         $chain = [];
-        /** @var Node $current */
         $current = $node;
 
         // Walk up the PropertyFetch chain

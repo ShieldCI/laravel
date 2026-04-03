@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.7.1
+
+### Added
+- `AnalyzeCommand` now emits a warning when `APP_ENV` is set to a non-standard value (e.g. `production-eu`) and no matching entry exists in `shieldci.environment_mapping` — prevents silent skips of environment-scoped analyzers without any developer feedback (#174)
+
+### Fixed
+- `DebugModeAnalyzer` no longer false-positives on non-standard environment names (e.g. `test`, `dev`, `qa`, `sandbox`) — the allowlist `['local', 'development', 'testing']` is replaced with a blocklist approach that only flags `APP_DEBUG=true` when `APP_ENV` is explicitly `production` or `staging`; any other name is treated as non-production (#175)
+
 ## v1.7.0
 
 ### Changed

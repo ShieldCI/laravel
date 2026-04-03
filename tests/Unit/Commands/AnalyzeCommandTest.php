@@ -4255,4 +4255,39 @@ PHP);
 
         @unlink($outputPath);
     }
+
+    #[Test]
+    public function it_warns_when_app_env_is_unrecognized_and_not_mapped(): void
+    {
+        config(['app.env' => 'production-eu']);
+        config(['shieldci.environment_mapping' => []]);
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->expectsOutputToContain("APP_ENV 'production-eu' is not a recognized standard environment");
+    }
+
+    #[Test]
+    public function it_does_not_warn_when_app_env_is_standard(): void
+    {
+        config(['app.env' => 'production']);
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->doesntExpectOutputToContain('is not a recognized standard environment');
+    }
+
+    #[Test]
+    public function it_does_not_warn_when_custom_env_has_mapping(): void
+    {
+        config(['app.env' => 'production-eu']);
+        config(['shieldci.environment_mapping' => ['production-eu' => 'production']]);
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->doesntExpectOutputToContain('is not a recognized standard environment');
+    }
 }

@@ -182,7 +182,9 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if environment is local/development.
+     * Check if environment is non-production (i.e. debug check should be skipped).
+     *
+     * Uses an inverted approach: only flag when the environment is explicitly 'production' or 'staging'.
      */
     private function isLocalEnvironment(?string $env): bool
     {
@@ -190,7 +192,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        return in_array(strtolower($env), ['local', 'development', 'testing'], true);
+        return ! in_array(strtolower($env), ['production', 'staging'], true);
     }
 
     /**

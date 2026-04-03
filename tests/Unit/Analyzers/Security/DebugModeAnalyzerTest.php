@@ -128,6 +128,23 @@ ENV;
         $this->assertPassed($result);
     }
 
+    public function test_passes_when_app_env_is_unrecognized_non_production(): void
+    {
+        // 'test', 'dev', 'qa', 'sandbox' etc. are not in ['production','staging']
+        // so they should be treated as non-production and the check should be skipped.
+        foreach (['test', 'dev', 'qa', 'sandbox'] as $env) {
+            $envContent = "APP_DEBUG=true\nAPP_ENV={$env}";
+            $tempDir = $this->createTempDirectory(['.env' => $envContent]);
+
+            $analyzer = $this->createAnalyzer();
+            $analyzer->setBasePath($tempDir);
+
+            $result = $analyzer->analyze();
+
+            $this->assertPassed($result);
+        }
+    }
+
     public function test_includes_metadata_for_env_issues(): void
     {
         $envContent = <<<'ENV'

@@ -120,6 +120,7 @@ class AnalyzeCommand extends Command
 
         // Validate ignore_errors config early (before analysis starts)
         $this->validateIgnoreErrorsConfig($manager);
+        $this->warnIfUnrecognizedEnvironment();
 
         // Check if any categories are enabled
         $analyzersConfig = config('shieldci.analyzers', []);
@@ -1164,6 +1165,27 @@ class AnalyzeCommand extends Command
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Warn if APP_ENV is non-standard and has no environment_mapping entry.
+     */
+    private function warnIfUnrecognizedEnvironment(): void
+    {
+        $standardEnvs = ['local', 'development', 'staging', 'production', 'testing'];
+        $rawEnv = config('app.env');
+
+        if (! is_string($rawEnv) || $rawEnv === '' || in_array($rawEnv, $standardEnvs, true)) {
+            return;
+        }
+
+        $mapping = config('shieldci.environment_mapping', []);
+        if (is_array($mapping) && isset($mapping[$rawEnv])) {
+            return;
+        }
+
+        $this->warn("⚠️  APP_ENV '{$rawEnv}' is not a recognized standard environment. Environment-scoped analyzers may be skipped. Add a mapping in config/shieldci.php.");
+        $this->newLine();
     }
 
     /**

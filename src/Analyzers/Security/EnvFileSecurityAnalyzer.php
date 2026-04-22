@@ -280,7 +280,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                 metadata: [
                     'file' => '.gitignore',
                     'missing_pattern' => '.env',
-                    'code' => '.env',
+                    'code' => 'env-file',
                 ]
             );
         }

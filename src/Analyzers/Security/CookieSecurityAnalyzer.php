@@ -117,7 +117,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                         'file' => 'session.php',
                         'config_key' => 'http_only',
                         'current_value' => $this->configValueToString($effectiveValue),
-                        'code' => 'http_only',
+                        'code' => 'http-only',
                     ]
                 );
             }
@@ -168,7 +168,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                             'file' => 'session.php',
                             'config_key' => 'same_site',
                             'current_value' => $this->configValueToString($effectiveValue),
-                            'code' => 'same_site',
+                            'code' => 'same-site',
                         ]
                     );
                 }
@@ -216,7 +216,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                     'file' => 'Kernel.php',
                     'middleware' => 'EncryptCookies',
                     'status' => 'missing',
-                    'code' => 'EncryptCookies',
+                    'code' => 'encrypt-cookies',
                 ]
             );
         }
@@ -241,7 +241,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                         'middleware' => 'EncryptCookies',
                         'status' => 'commented',
                         'line' => $lineNumber + 1,
-                        'code' => 'EncryptCookies',
+                        'code' => 'encrypt-cookies',
                     ]
                 );
             }
@@ -349,7 +349,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                             'middleware' => 'EncryptCookies',
                             'status' => 'missing',
                             'detection_method' => 'runtime',
-                            'code' => 'EncryptCookies',
+                            'code' => 'encrypt-cookies',
                         ]
                     );
                 }
@@ -432,7 +432,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                     'laravel_version' => '11+',
                     'middleware' => 'EncryptCookies',
                     'detection_method' => 'file_analysis',
-                    'code' => 'EncryptCookies',
+                    'code' => 'encrypt-cookies',
                 ]
             );
         }

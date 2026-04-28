@@ -29,11 +29,15 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        return ! $this->isVaporOrServerless();
+        return ! $this->isVaporOrServerless() && ! $this->isLaravelCloud();
     }
 
     public function getSkipReason(): string
     {
+        if ($this->isLaravelCloud()) {
+            return 'Laravel Cloud injects environment variables (NIGHTWATCH_*, LOG_*, REDIS_*, etc.) directly into the container — these are platform-managed and should not be documented in .env.example';
+        }
+
         return 'Vapor removes .env and .env.example from the deployment; environment variables are provided via Vapor UI (SSM Parameter Store, plaintext vars, or encrypted environment files)';
     }
 

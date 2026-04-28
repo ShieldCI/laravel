@@ -30,4 +30,13 @@ trait DetectsDeploymentPlatform
         return PlatformDetector::isLaravelVapor($this->getBasePath())
             || PlatformDetector::isServerless();
     }
+
+    private function isLaravelCloud(): bool
+    {
+        if ($this->deploymentPlatformOverride !== null) {
+            return $this->deploymentPlatformOverride === 'laravel-cloud';
+        }
+
+        return PlatformDetector::isLaravelCloud();
+    }
 }

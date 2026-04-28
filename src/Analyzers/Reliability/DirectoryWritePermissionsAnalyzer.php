@@ -55,11 +55,15 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        return ! $this->isVaporOrServerless();
+        return ! $this->isVaporOrServerless() && ! $this->isLaravelCloud();
     }
 
     public function getSkipReason(): string
     {
+        if ($this->isLaravelCloud()) {
+            return 'Laravel Cloud does not persist filesystem changes made during deploy commands — `php artisan storage:link` is explicitly listed as unnecessary. Use Laravel Object Storage (an attached bucket) for persistent file storage';
+        }
+
         return 'Directory write permissions are managed by Laravel Vapor and cannot be changed by the user';
     }
 

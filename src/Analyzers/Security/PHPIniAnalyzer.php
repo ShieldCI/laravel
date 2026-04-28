@@ -122,6 +122,18 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
             unset($secureSettings['log_errors'], $secureSettings['display_startup_errors']);
         }
 
+        // These three are PHP_INI_SYSTEM — confirmed unfixable on Laravel Cloud (serversideup/docker-php
+        // base image sets them and Cloud does not expose a way to override PHP_INI_SYSTEM directives).
+        // display_errors, log_errors, and ignore_repeated_errors are PHP_INI_ALL and remain actionable
+        // via public/.user.ini on Cloud.
+        if ($this->isLaravelCloud()) {
+            unset(
+                $secureSettings['allow_url_fopen'],
+                $secureSettings['allow_url_include'],
+                $secureSettings['expose_php'],
+            );
+        }
+
         $this->checkPhpIniSettings($issues, $phpIniPath, $secureSettings);
 
         if (empty($issues)) {
@@ -327,6 +339,18 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
 
         return PlatformDetector::isLaravelVapor($this->getBasePath())
             || PlatformDetector::isServerless();
+    }
+
+    /**
+     * Check if the deployment platform is Laravel Cloud.
+     */
+    private function isLaravelCloud(): bool
+    {
+        if ($this->deploymentPlatformOverride !== null) {
+            return $this->deploymentPlatformOverride === 'laravel-cloud';
+        }
+
+        return PlatformDetector::isLaravelCloud();
     }
 
     /**

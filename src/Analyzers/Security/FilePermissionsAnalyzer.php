@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\DetectsDeploymentPlatform;
 
 /**
  * Validates file and directory permissions for security.
@@ -24,6 +25,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 {
+    use DetectsDeploymentPlatform;
+
     public static bool $runInCI = false;
 
     /** Mask to isolate permission bits (strip file type and special bits) */
@@ -112,7 +115,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
      *
      * @return array<string, array{type: string, max: int, recommended: int, critical?: bool, executable?: bool}>
      */
-    private function getPathsToCheck(): array
+    protected function getPathsToCheck(): array
     {
         /** @var array<string, array{type: string, max: int, recommended: int, critical?: bool, executable?: bool}> $defaults */
         $defaults = [
@@ -137,6 +140,11 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
             // Executable files
             'artisan' => ['type' => 'file', 'max' => octdec('775'), 'recommended' => octdec('755'), 'executable' => true],
         ];
+
+        // On Laravel Cloud, .env is platform-managed (always 644 — unfixable by the application)
+        if ($this->isLaravelCloud()) {
+            unset($defaults['.env']);
+        }
 
         // Allow configuration override
         /** @var array<string, array{type: string, max: int, recommended: int, critical?: bool, executable?: bool}> $config */

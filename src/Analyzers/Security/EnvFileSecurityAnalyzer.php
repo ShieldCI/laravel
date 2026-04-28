@@ -78,7 +78,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        if ($this->isVaporOrServerless()) {
+        if ($this->isVaporOrServerless() || $this->isLaravelCloud()) {
             return false;
         }
 
@@ -112,6 +112,10 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 
     public function getSkipReason(): string
     {
+        if ($this->isLaravelCloud()) {
+            return 'Laravel Cloud writes a platform-managed .env with 644 permissions; this is controlled by the platform and cannot be changed by the application';
+        }
+
         if ($this->isVaporOrServerless()) {
             return 'Vapor removes the plain .env file from the deployment; environment variables are provided via Vapor UI (SSM Parameter Store, plaintext vars, or encrypted environment files)';
         }

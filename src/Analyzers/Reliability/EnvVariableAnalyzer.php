@@ -29,11 +29,15 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        return ! $this->isVaporOrServerless();
+        return ! $this->isVaporOrServerless() && ! $this->isLaravelCloud();
     }
 
     public function getSkipReason(): string
     {
+        if ($this->isLaravelCloud()) {
+            return 'Laravel Cloud writes a platform-managed .env; missing variables are provided via the Cloud dashboard, not .env.example';
+        }
+
         return 'Vapor removes the plain .env file from the deployment; environment variables are provided via Vapor UI (SSM Parameter Store, plaintext vars, or encrypted environment files)';
     }
 

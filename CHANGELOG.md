@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.2
+
+### Fixed
+- Seven analyzers no longer false-positive on Laravel Cloud — `EnvFileAnalyzer`, `EnvVariableAnalyzer`, `EnvFileSecurityAnalyzer`, and `EnvExampleAnalyzer` now skip entirely on Cloud because the platform writes a managed `.env` (permissions are fixed at 644 and cannot be changed by the application) and auto-injects `NIGHTWATCH_*`, `LOG_*`, and `REDIS_*` variables directly into the container rather than via `.env.example`; `DirectoryWritePermissionsAnalyzer` skips on Cloud because `php artisan storage:link` is explicitly listed as unnecessary (symlinks do not persist post-deploy); `FilePermissionsAnalyzer` removes only the `.env` entry from its paths-to-check on Cloud while continuing to check all directories; `PHPIniAnalyzer` no longer flags `allow_url_fopen`, `allow_url_include`, or `expose_php` on Cloud — these directives cannot be overridden in a Cloud container; `display_errors` and `log_errors` remain actionable and are still checked; detection uses the sole signal `LARAVEL_CLOUD=1`, which Cloud sets on all compute types (web, worker, scheduled task) (#178)
+
 ## v1.7.1
 
 ### Added

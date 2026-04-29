@@ -4097,4 +4097,36 @@ PHP;
         $this->assertFalse($result->isSuccess());
         $this->assertHasIssueContaining('$request->user()', $result);
     }
+
+    public function test_does_not_flag_auth_usage_inside_heredoc_string(): void
+    {
+        $service = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DocumentationHelper
+{
+    public function getAuthDocs(): string
+    {
+        return <<<'MD'
+        Use Auth::user()->name to display the user's name.
+        Or use auth()->user()->name for the helper form.
+        MD;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => '<?php',
+            'app/Services/DocumentationHelper.php' => $service,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $result = $analyzer->analyze();
+
+        $this->assertEmpty($result->getIssues());
+    }
 }

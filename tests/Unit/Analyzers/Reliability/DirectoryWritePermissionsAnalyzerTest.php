@@ -1029,4 +1029,18 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 
         $this->assertFalse($analyzer->shouldRun());
     }
+
+    // =========================================================================
+    // Docker Skip Tests
+    // =========================================================================
+
+    public function test_skips_on_docker(): void
+    {
+        /** @var DirectoryWritePermissionsAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setDeploymentPlatform('docker');
+
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertStringContainsString('Docker', $analyzer->getSkipReason());
+    }
 }

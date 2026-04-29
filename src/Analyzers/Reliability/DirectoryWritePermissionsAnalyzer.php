@@ -55,11 +55,15 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        return ! $this->isVaporOrServerless() && ! $this->isLaravelCloud();
+        return ! $this->isVaporOrServerless() && ! $this->isLaravelCloud() && ! $this->isDocker();
     }
 
     public function getSkipReason(): string
     {
+        if ($this->isDocker()) {
+            return 'Directory write permissions and symlinks are managed by the Docker image and container entrypoint; these checks are not reliable inside containers';
+        }
+
         if ($this->isLaravelCloud()) {
             return 'Laravel Cloud does not persist filesystem changes made during deploy commands — `php artisan storage:link` is explicitly listed as unnecessary. Use Laravel Object Storage (an attached bucket) for persistent file storage';
         }

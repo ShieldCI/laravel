@@ -960,4 +960,36 @@ ENV;
 
         $this->assertFalse($analyzer->shouldRun());
     }
+
+    // =========================================================================
+    // Docker Skip Tests
+    // =========================================================================
+
+    public function test_skips_env_permissions_check_on_docker(): void
+    {
+        // World-readable .env would normally trigger a Critical permissions issue
+        $tempDir = $this->createTempDirectory([
+            '.env' => "APP_KEY=base64:abc123\n",
+            '.env.example' => "APP_KEY=\n",
+            '.gitignore' => ".env\n",
+        ]);
+
+        chmod($tempDir.'/.env', 0644); // world-readable — would flag without Docker skip
+
+        /** @var EnvFileSecurityAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setDeploymentPlatform('docker');
+
+        // shouldRun() still returns true — other checks (git, public dir, .env.example) are valid
+        $this->assertTrue($analyzer->shouldRun());
+
+        $result = $analyzer->analyze();
+
+        // No permission-related issues — permissions check is skipped in Docker
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringNotContainsString('permissions', strtolower($issue->message));
+            $this->assertStringNotContainsString('chmod', strtolower($issue->recommendation));
+        }
+    }
 }

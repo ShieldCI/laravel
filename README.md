@@ -10,7 +10,7 @@
 
 ![ShieldCI terminal demo](https://raw.githubusercontent.com/ShieldCI/laravel/master/.github/assets/analyzer-terminal.gif)
 
-Open-source AI-powered code quality analysis for Laravel applications with 73 comprehensive analyzers covering security, performance, reliability, code quality, and best practices.
+Open-source code quality analysis for Laravel applications with 73 comprehensive analyzers covering security, performance, reliability, code quality, and best practices.
 
 Built on top of [`shieldci/analyzers-core`](https://github.com/ShieldCI/analyzers-core) (v1.x) - a shared, framework-agnostic foundation for static analysis tools.
 

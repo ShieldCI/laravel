@@ -1012,6 +1012,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         $stringLines = $this->parser->collectStringLines($ast);
 
         foreach ($lines as $lineNumber => $line) {
+            // $lines is 0-indexed (FileParser::getLines); $stringLines keys are 1-indexed (AST lines).
             if (isset($stringLines[$lineNumber + 1])) {
                 continue;
             }

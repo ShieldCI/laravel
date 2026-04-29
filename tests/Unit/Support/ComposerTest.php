@@ -364,6 +364,31 @@ class ComposerTest extends TestCase
         }
     }
 
+    public function test_are_dev_packages_installed_returns_true_when_file_unreadable(): void
+    {
+        if (posix_getuid() === 0) {
+            $this->markTestSkipped('Cannot test unreadable file as root — chmod 000 has no effect');
+        }
+
+        $tempDir = sys_get_temp_dir().'/composer-test-'.uniqid();
+        mkdir($tempDir.'/vendor/composer', recursive: true);
+        $installedJson = $tempDir.'/vendor/composer/installed.json';
+        file_put_contents($installedJson, json_encode(['packages' => [], 'dev' => false]));
+        chmod($installedJson, 0000);
+
+        try {
+            $composer = new Composer(new Filesystem, $tempDir);
+
+            $this->assertTrue($composer->areDevPackagesInstalled());
+        } finally {
+            chmod($installedJson, 0644);
+            unlink($installedJson);
+            rmdir($tempDir.'/vendor/composer');
+            rmdir($tempDir.'/vendor');
+            rmdir($tempDir);
+        }
+    }
+
     public function test_are_dev_packages_installed_returns_true_when_dev_key_absent(): void
     {
         // Simulates Composer 1.x format: installed.json is a flat array with no "dev" key

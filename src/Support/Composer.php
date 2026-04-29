@@ -99,7 +99,7 @@ class Composer extends BaseComposer
             return true;
         }
 
-        $content = file_get_contents($installedJsonPath);
+        $content = @file_get_contents($installedJsonPath);
         if ($content === false) {
             return true;
         }

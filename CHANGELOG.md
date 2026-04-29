@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.3
+
+### Fixed
+- Five analyzers no longer false-positive inside Docker containers — `FilePermissionsAnalyzer` and `DirectoryWritePermissionsAnalyzer` skip entirely on Docker because file ownership is controlled by the image and host volume mounts, making `chmod` recommendations unactionable and `is_writable()` results unreliable; `MysqlSingleServerAnalyzer` skips on Docker because MySQL runs in a separate container and inter-container communication correctly uses TCP, making Unix socket recommendations inapplicable; `EnvFileSecurityAnalyzer` skips only its `checkEnvPermissions()` sub-check on Docker while continuing to check for `.env` in public directories, sensitive data in `.env.example`, and `.gitignore` hygiene; `PHPIniAnalyzer` no longer flags `allow_url_fopen`, `allow_url_include`, or `expose_php` on Docker — these are PHP_INI_SYSTEM directives set by the Docker base image and cannot be overridden at the application level, mirroring the existing Laravel Cloud suppression; `display_errors`, `log_errors`, and `ignore_repeated_errors` remain actionable and are still checked; Docker detection is added to the shared `DetectsDeploymentPlatform` trait via `isDocker()` backed by `PlatformDetector::isDocker()`, and all affected analyzers support `setDeploymentPlatform('docker')` for unit testing without a real Docker environment (#179)
+
 ## v1.7.2
 
 ### Fixed

@@ -307,6 +307,85 @@ class ComposerTest extends TestCase
         }
     }
 
+    public function test_are_dev_packages_installed_returns_true_when_installed_json_absent(): void
+    {
+        $tempDir = sys_get_temp_dir().'/composer-test-'.uniqid();
+        mkdir($tempDir);
+
+        try {
+            $composer = new Composer(new Filesystem, $tempDir);
+
+            $this->assertTrue($composer->areDevPackagesInstalled());
+        } finally {
+            rmdir($tempDir);
+        }
+    }
+
+    public function test_are_dev_packages_installed_returns_true_when_dev_key_is_true(): void
+    {
+        $tempDir = sys_get_temp_dir().'/composer-test-'.uniqid();
+        mkdir($tempDir.'/vendor/composer', recursive: true);
+        file_put_contents(
+            $tempDir.'/vendor/composer/installed.json',
+            json_encode(['packages' => [], 'dev' => true])
+        );
+
+        try {
+            $composer = new Composer(new Filesystem, $tempDir);
+
+            $this->assertTrue($composer->areDevPackagesInstalled());
+        } finally {
+            unlink($tempDir.'/vendor/composer/installed.json');
+            rmdir($tempDir.'/vendor/composer');
+            rmdir($tempDir.'/vendor');
+            rmdir($tempDir);
+        }
+    }
+
+    public function test_are_dev_packages_installed_returns_false_when_dev_key_is_false(): void
+    {
+        // Simulates: `composer install --no-dev` was run (Composer 2.x sets "dev": false)
+        $tempDir = sys_get_temp_dir().'/composer-test-'.uniqid();
+        mkdir($tempDir.'/vendor/composer', recursive: true);
+        file_put_contents(
+            $tempDir.'/vendor/composer/installed.json',
+            json_encode(['packages' => [], 'dev' => false])
+        );
+
+        try {
+            $composer = new Composer(new Filesystem, $tempDir);
+
+            $this->assertFalse($composer->areDevPackagesInstalled());
+        } finally {
+            unlink($tempDir.'/vendor/composer/installed.json');
+            rmdir($tempDir.'/vendor/composer');
+            rmdir($tempDir.'/vendor');
+            rmdir($tempDir);
+        }
+    }
+
+    public function test_are_dev_packages_installed_returns_true_when_dev_key_absent(): void
+    {
+        // Simulates Composer 1.x format: installed.json is a flat array with no "dev" key
+        $tempDir = sys_get_temp_dir().'/composer-test-'.uniqid();
+        mkdir($tempDir.'/vendor/composer', recursive: true);
+        file_put_contents(
+            $tempDir.'/vendor/composer/installed.json',
+            json_encode([['name' => 'vendor/package', 'version' => '1.0.0']])
+        );
+
+        try {
+            $composer = new Composer(new Filesystem, $tempDir);
+
+            $this->assertTrue($composer->areDevPackagesInstalled());
+        } finally {
+            unlink($tempDir.'/vendor/composer/installed.json');
+            rmdir($tempDir.'/vendor/composer');
+            rmdir($tempDir.'/vendor');
+            rmdir($tempDir);
+        }
+    }
+
     public function test_run_command_returns_output(): void
     {
         $composer = new Composer(new Filesystem, __DIR__.'/../../../');

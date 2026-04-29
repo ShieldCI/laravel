@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.4
+
+### Fixed
+- `AuthenticationAnalyzer` no longer false-positives when `Auth::user()->`, `auth()->user()->`, or `$request->user()->` appears inside a heredoc, nowdoc, or string literal — `checkUnsafeAuthUsage()` now uses `collectStringLines()` from `analyzers-core` to build a set of 1-indexed line numbers that fall inside string literals and skips those lines before applying the three `preg_match` checks, so documentation blocks or inline string examples referencing the pattern are not reported as unsafe auth usage (#180)
+- `UpToDateDependencyAnalyzer` no longer false-positives when `composer install --no-dev` was previously run — the analyzer reads `vendor/composer/installed.json` (Composer 2.x) to detect whether dev packages are installed and scopes the `composer install --dry-run` call with `--no-dev` when they are absent; all updates detected in that mode are classified as production-only, eliminating the false "Production and development dependencies are not up-to-date" warning for projects that intentionally exclude dev packages (#181)
+
 ## v1.7.3
 
 ### Fixed

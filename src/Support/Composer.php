@@ -85,6 +85,31 @@ class Composer extends BaseComposer
     }
 
     /**
+     * Determine whether dev packages are currently installed.
+     *
+     * Reads vendor/composer/installed.json which, in Composer 2.x, contains a
+     * root-level "dev" boolean set to false when `composer install --no-dev` was used.
+     * Defaults to true when the file is absent or the key is missing (Composer 1.x / fresh vendor/).
+     */
+    public function areDevPackagesInstalled(): bool
+    {
+        $installedJsonPath = $this->workingPath.'/vendor/composer/installed.json';
+
+        if (! file_exists($installedJsonPath)) {
+            return true;
+        }
+
+        $content = @file_get_contents($installedJsonPath);
+        if ($content === false) {
+            return true;
+        }
+
+        $data = json_decode($content, true);
+
+        return ($data['dev'] ?? true) === true;
+    }
+
+    /**
      * Get the parsed composer.json content.
      *
      * @return array<string, mixed>|null

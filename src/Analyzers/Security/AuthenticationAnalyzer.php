@@ -1009,7 +1009,13 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             $namespace = $namespaceNodes[0]->name->toString();
         }
 
+        $stringLines = $this->parser->collectStringLines($ast);
+
         foreach ($lines as $lineNumber => $line) {
+            if (isset($stringLines[$lineNumber + 1])) {
+                continue;
+            }
+
             // Check for Auth::user()-> (but NOT Auth::user()?-> which is safe)
             if (preg_match('/Auth::user\(\)\s*->/i', $line) && ! preg_match('/Auth::user\(\)\s*\?->/i', $line)) {
                 $this->checkAuthUsageWithNullSafety(

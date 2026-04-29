@@ -136,8 +136,10 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
         // Check if .env is in .gitignore
         $this->checkGitignore($issues);
 
-        // Check .env file permissions
-        $this->checkEnvPermissions($issues);
+        // Check .env file permissions (skipped in Docker — permissions are host/image-controlled)
+        if (! $this->isDocker()) {
+            $this->checkEnvPermissions($issues);
+        }
 
         $summary = empty($issues)
             ? 'Environment files are properly secured'

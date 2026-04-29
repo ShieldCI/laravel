@@ -73,6 +73,21 @@ class FilePermissionsAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('No configured files', $reason);
     }
 
+    public function test_skips_on_docker(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php class User {}',
+        ]);
+
+        /** @var FilePermissionsAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setDeploymentPlatform('docker');
+
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertStringContainsString('Docker', $analyzer->getSkipReason());
+    }
+
     // ==================== Directory Permission Tests ====================
 
     public function test_detects_world_writable_directory(): void

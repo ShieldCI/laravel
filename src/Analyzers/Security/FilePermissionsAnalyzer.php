@@ -61,6 +61,10 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
+        if ($this->isDocker()) {
+            return false;
+        }
+
         // Check if at least one configured path exists
         foreach ($this->getPathsToCheck() as $relativePath => $config) {
             $path = $this->buildPath($relativePath);
@@ -74,6 +78,10 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 
     public function getSkipReason(): string
     {
+        if ($this->isDocker()) {
+            return 'File permissions are managed by the Docker image and host volume mounts; chmod recommendations are not actionable inside containers';
+        }
+
         return 'No configured files or directories found to analyze';
     }
 

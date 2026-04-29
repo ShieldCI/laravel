@@ -39,4 +39,13 @@ trait DetectsDeploymentPlatform
 
         return PlatformDetector::isLaravelCloud();
     }
+
+    private function isDocker(): bool
+    {
+        if ($this->deploymentPlatformOverride !== null) {
+            return $this->deploymentPlatformOverride === 'docker';
+        }
+
+        return PlatformDetector::isDocker();
+    }
 }

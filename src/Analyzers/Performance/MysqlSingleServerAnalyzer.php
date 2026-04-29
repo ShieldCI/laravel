@@ -13,6 +13,7 @@ use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\DetectsDeploymentPlatform;
 
 /**
  * Checks MySQL connection configuration for single-server setups.
@@ -31,6 +32,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class MysqlSingleServerAnalyzer extends AbstractAnalyzer
 {
+    use DetectsDeploymentPlatform;
+
     /**
      * MySQL SSL-related PDO attributes (constants 1007–1011).
      *
@@ -95,6 +98,10 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
 
     public function shouldRun(): bool
     {
+        if ($this->isDocker()) {
+            return false;
+        }
+
         // Check environment relevance first
         if (! $this->isRelevantForCurrentEnvironment()) {
             return false;
@@ -114,6 +121,10 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
 
     public function getSkipReason(): string
     {
+        if ($this->isDocker()) {
+            return 'MySQL runs in a separate container in Docker environments; Unix socket optimization is not applicable as inter-container communication uses TCP';
+        }
+
         if (! $this->isRelevantForCurrentEnvironment()) {
             $currentEnv = $this->getEnvironment();
             $relevantEnvs = implode(', ', $this->relevantEnvironments ?? []);

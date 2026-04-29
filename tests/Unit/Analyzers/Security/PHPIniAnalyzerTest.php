@@ -894,6 +894,46 @@ class PHPIniAnalyzerTest extends AnalyzerTestCase
         $this->assertIssueCount(0, $result);
     }
 
+    // ── Docker Skip Tests ────────────────────────────────────────────
+
+    public function test_skips_php_ini_system_settings_on_docker(): void
+    {
+        // All three PHP_INI_SYSTEM settings are "insecure" at runtime
+        $iniPath = $this->createPhpIniFixture([
+            'allow_url_fopen = On',
+            'allow_url_include = On',
+            'expose_php = On',
+            'display_errors = On',  // PHP_INI_ALL — still checked in Docker
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setDeploymentPlatform('docker');
+        $analyzer->setIniValues($this->secureIniValues([
+            'allow_url_fopen' => '1',
+            'allow_url_include' => '1',
+            'expose_php' => '1',
+            'display_errors' => '1',
+        ]));
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $issueMessages = array_map(fn (Issue $i) => $i->message, $issues);
+
+        // PHP_INI_SYSTEM settings are suppressed on Docker (unfixable from base image)
+        foreach ($issueMessages as $message) {
+            $this->assertStringNotContainsString('allow_url_fopen', $message);
+            $this->assertStringNotContainsString('allow_url_include', $message);
+            $this->assertStringNotContainsString('expose_php', $message);
+        }
+
+        // PHP_INI_ALL setting (display_errors) is still reported — app can fix it
+        $displayErrorsIssue = $this->findIssueContaining('display_errors', $issues);
+        $this->assertNotNull($displayErrorsIssue, 'display_errors should still be reported in Docker');
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────
 
     /**

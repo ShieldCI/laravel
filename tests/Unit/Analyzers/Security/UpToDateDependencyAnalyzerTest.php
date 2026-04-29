@@ -24,7 +24,8 @@ class UpToDateDependencyAnalyzerTest extends AnalyzerTestCase
         ?string $prodDepsOutput = null,  // DEPRECATED: No longer used (optimization)
         ?string $composerJsonPath = '/path/to/composer.json',
         ?array $composerJsonData = null,
-        ?\Throwable $installDryRunException = null
+        ?\Throwable $installDryRunException = null,
+        bool $devPackagesInstalled = true,
     ): AnalyzerInterface {
         /** @var Composer&MockInterface $composer */
         $composer = Mockery::mock(Composer::class);
@@ -35,6 +36,9 @@ class UpToDateDependencyAnalyzerTest extends AnalyzerTestCase
 
         $composer->shouldReceive('getJsonFile')
             ->andReturn($composerJsonPath);
+
+        $composer->shouldReceive('areDevPackagesInstalled')
+            ->andReturn($devPackagesInstalled);
 
         // Create temporary composer.json with require-dev if data provided
         if ($composerJsonPath !== null && $composerJsonData !== null) {
@@ -275,6 +279,9 @@ OUTPUT;
         $composer->shouldReceive('getJsonFile')
             ->andReturn('/path/to/composer.json');
 
+        $composer->shouldReceive('areDevPackagesInstalled')
+            ->andReturn(true);
+
         // Return non-string values
         $composer->shouldReceive('installDryRun')
             ->andReturn(null);
@@ -388,12 +395,14 @@ OUTPUT;
         $composer->shouldReceive('getJsonFile')
             ->andReturn('/path/to/composer.json');
 
+        $composer->shouldReceive('areDevPackagesInstalled')
+            ->andReturn(true);
+
         // OPTIMIZATION: Verify installDryRun is called only ONCE (not twice)
         // This cuts CI execution time in half for large projects
         /** @phpstan-ignore-next-line Mockery expectation chaining */
         $composer->shouldReceive('installDryRun')
             ->once()
-            ->with()  // Called without --no-dev (all dependencies)
             ->andReturn("Nothing to install or update\n");
 
         $analyzer = new UpToDateDependencyAnalyzer($composer);
@@ -692,6 +701,67 @@ OUTPUT;
 
         $this->assertPassed($result);
         $this->assertStringContainsString('up-to-date', $result->getMessage());
+    }
+
+    public function test_passes_when_no_dev_installed_and_production_up_to_date(): void
+    {
+        // Simulates: composer install --no-dev was run, all production deps are current.
+        // The analyzer should run --dry-run --no-dev and report "passed", not flag missing dev packages.
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: "Nothing to install or update\n",
+            devPackagesInstalled: false,
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString('up-to-date', $result->getMessage());
+    }
+
+    public function test_warns_production_only_when_dev_packages_not_installed(): void
+    {
+        // Simulates: composer install --no-dev was run, one production package has an update.
+        // Dev packages (phpunit) are intentionally absent and must NOT appear in the report.
+        $allDepsOutput = <<<'OUTPUT'
+Loading composer repositories with package information
+Installing dependencies from lock file
+Package operations: 0 installs, 1 update, 0 removals
+  - Updating vendor/prod-package (v1.0.0 => v1.0.1)
+OUTPUT;
+
+        $composerJsonPath = sys_get_temp_dir().'/composer_nodev_'.uniqid().'.json';
+
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $allDepsOutput,
+            composerJsonPath: $composerJsonPath,
+            composerJsonData: [
+                'require' => ['vendor/prod-package' => '^1.0'],
+                'require-dev' => ['phpunit/phpunit' => '^9.0'],
+            ],
+            devPackagesInstalled: false,
+        );
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertHasIssueContaining('Production dependencies are not up-to-date', $result);
+
+        // Scope must be production-only — dev packages are intentionally excluded
+        $this->assertEquals('production', $issues[0]->metadata['scope'] ?? '');
+        $this->assertEquals(Severity::Medium, $issues[0]->severity);
+
+        // Dry-run flag recorded in metadata must reflect --no-dev mode
+        $versionCheck = $issues[0]->metadata['composer_version_check'] ?? '';
+        $this->assertIsString($versionCheck);
+        $this->assertStringContainsString('--no-dev', $versionCheck);
+
+        // The false-positive message must NOT appear
+        $this->assertStringNotContainsString('development', strtolower($issues[0]->message));
     }
 
     protected function tearDown(): void

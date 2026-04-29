@@ -104,9 +104,17 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
         $issues = [];
 
         try {
-            // OPTIMIZATION: Run composer install --dry-run only ONCE (all dependencies)
-            // This is significantly faster than running it twice (once with --no-dev, once without)
-            $allDepsOutput = $this->composer->installDryRun();
+            // Detect whether dev packages are currently installed.
+            // When `composer install --no-dev` was previously run, dev packages are absent
+            // from vendor/. Running `--dry-run` without `--no-dev` would then report those
+            // packages as needing installation, producing a false positive. Scoping the
+            // dry-run to match the actual install mode avoids this.
+            $devPackagesInstalled = $this->composer->areDevPackagesInstalled();
+
+            // OPTIMIZATION: Run composer install --dry-run only ONCE.
+            // Scope matches whatever was installed: full deps or production-only.
+            $dryRunOptions = $devPackagesInstalled ? [] : ['--no-dev'];
+            $allDepsOutput = $this->composer->installDryRun($dryRunOptions);
 
             // EARLY EXIT: If everything is up-to-date, no need for further parsing
             if ($this->isUpToDate($allDepsOutput)) {
@@ -117,6 +125,8 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
             // Extract which packages are being updated from Composer output
             $updatedPackages = $this->extractUpdatedPackages($allDepsOutput);
 
+            $dryRunFlag = $devPackagesInstalled ? 'install --dry-run' : 'install --dry-run --no-dev';
+
             // If we can't extract packages (unexpected output format), report general update needed
             if (empty($updatedPackages)) {
                 $issues[] = $this->createIssue(
@@ -126,7 +136,21 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                     recommendation: $this->getBothDepsRecommendation(),
                     metadata: [
                         'scope' => 'unknown',
-                        'composer_version_check' => 'install --dry-run',
+                        'composer_version_check' => $dryRunFlag,
+                    ]
+                );
+            } elseif (! $devPackagesInstalled) {
+                // Dev packages were intentionally excluded via --no-dev.
+                // All detected updates are production-only by definition.
+                $issues[] = $this->createIssue(
+                    message: 'Production dependencies are not up-to-date',
+                    location: new Location($this->getRelativePath($composerLockPath)),
+                    severity: Severity::Medium,
+                    recommendation: $this->getProductionDepsRecommendation(),
+                    metadata: [
+                        'scope' => 'production',
+                        'composer_version_check' => $dryRunFlag,
+                        'packages' => $updatedPackages,
                     ]
                 );
             } else {
@@ -148,7 +172,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                         recommendation: $this->getBothDepsRecommendation(),
                         metadata: [
                             'scope' => 'production and dev',
-                            'composer_version_check' => 'install --dry-run',
+                            'composer_version_check' => $dryRunFlag,
                             'prod_packages' => $categorized['prod'],
                             'dev_packages' => $categorized['dev'],
                         ]
@@ -162,7 +186,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                         recommendation: $this->getProductionDepsRecommendation(),
                         metadata: [
                             'scope' => 'production',
-                            'composer_version_check' => 'install --dry-run',
+                            'composer_version_check' => $dryRunFlag,
                             'packages' => $categorized['prod'],
                         ]
                     );
@@ -175,7 +199,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
                         recommendation: $this->getDevDepsRecommendation(),
                         metadata: [
                             'scope' => 'dev',
-                            'composer_version_check' => 'install --dry-run',
+                            'composer_version_check' => $dryRunFlag,
                             'packages' => $categorized['dev'],
                         ]
                     );

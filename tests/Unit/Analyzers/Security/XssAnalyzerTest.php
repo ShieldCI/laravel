@@ -439,6 +439,66 @@ BLADE;
         $this->assertPassed($result);
     }
 
+    public function test_passes_when_style_src_has_unsafe_inline_but_script_src_is_clean(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        // Mirrors the platform's real CSP: nonce-based script-src with unsafe-inline only in style-src
+        $responses = [
+            new Response(200, [
+                'Content-Security-Policy' => "default-src 'self'; script-src 'self' 'nonce-abc123' https://cdn.example.com; style-src 'self' 'unsafe-inline' https://fonts.example.com",
+            ], '<html></html>'),
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        $result = $analyzer->analyze();
+
+        // unsafe-inline in style-src must not flag as XSS — only script-src matters
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_script_src_itself_has_unsafe_inline(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        $responses = [
+            new Response(200, [
+                'Content-Security-Policy' => "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+            ], '<html></html>'),
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        $result = $analyzer->analyze();
+
+        // script-src with unsafe-inline is still a genuine issue
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('inadequate', $result);
+    }
+
+    public function test_fails_when_default_src_has_unsafe_inline_and_no_script_src(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        // No explicit script-src — default-src acts as fallback and it allows unsafe-inline
+        $responses = [
+            new Response(200, [
+                'Content-Security-Policy' => "default-src 'self' 'unsafe-inline'",
+            ], '<html></html>'),
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('inadequate', $result);
+    }
+
     public function test_skips_http_checks_in_ci_mode(): void
     {
         config(['shieldci.ci_mode' => true]); // CI mode enabled

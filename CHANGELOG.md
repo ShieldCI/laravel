@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.7.6
+
+### Fixed
+- `XssDetectionAnalyzer` no longer false-positives on `style-src 'unsafe-inline'` in Content Security Policy headers — CSP directives are now parsed individually rather than matched against the full header string, so `style-src 'unsafe-inline'` is only flagged when it appears as its own directive; previously, a valid `default-src 'none'; style-src 'unsafe-inline'` policy was incorrectly passing because `'unsafe-inline'` was found anywhere in the string without checking which directive it belonged to (#183)
+
+### Changed
+- `EnvFileSecurityAnalyzer` no longer checks `.env` file permissions — `FilePermissionsAnalyzer` already owns this responsibility with a more thorough bitwise, multi-stage implementation; running both analyzers was producing two separate findings for the same problem; `EnvFileSecurityAnalyzer` continues to check for `.env` in public directories, real credentials in `.env.example`, and `.gitignore` / git-tracking hygiene (#184)
+
 ## v1.7.5
 
 ### Fixed

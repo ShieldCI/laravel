@@ -891,20 +891,35 @@ class XssAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if CSP policy is valid (has script-src/default-src without unsafe).
+     *
+     * Parses directives individually so that 'unsafe-inline' in style-src does
+     * not trigger a false positive — only the script-governing directive matters
+     * for XSS protection (script-src, or default-src when script-src is absent).
      */
     private function isValidCspPolicy(string $policy): bool
     {
-        // Must contain script-src or default-src
-        if (! Str::contains($policy, ['default-src', 'script-src'])) {
+        $directives = array_filter(array_map('trim', explode(';', $policy)));
+
+        $scriptSrc = null;
+        $defaultSrc = null;
+
+        foreach ($directives as $directive) {
+            if (str_starts_with($directive, 'script-src')) {
+                $scriptSrc = $directive;
+            } elseif (str_starts_with($directive, 'default-src')) {
+                $defaultSrc = $directive;
+            }
+        }
+
+        // Policy must contain script-src or default-src
+        $relevantDirective = $scriptSrc ?? $defaultSrc;
+        if ($relevantDirective === null) {
             return false;
         }
 
-        // Must not contain unsafe-eval or unsafe-inline
-        if (Str::contains($policy, ['unsafe-eval', 'unsafe-inline'])) {
-            return false;
-        }
-
-        return true;
+        // Only the script-governing directive must not allow unsafe execution.
+        // 'unsafe-inline' in style-src is irrelevant to script XSS.
+        return ! Str::contains($relevantDirective, ["'unsafe-eval'", "'unsafe-inline'"]);
     }
 
     /**

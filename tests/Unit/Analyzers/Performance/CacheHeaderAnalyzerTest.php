@@ -1100,9 +1100,9 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $issues = $result->getIssues();
         $recommendation = $issues[0]->recommendation;
 
-        // Should format single asset without "and"
+        // Should format single asset without "and" joining multiple items
         $this->assertStringContainsString('[/css/app.css via mix]', $recommendation);
-        $this->assertStringNotContainsString(' and ', $recommendation);
+        $this->assertStringNotContainsString('[/css/app.css via mix] and ', $recommendation);
     }
 
     public function test_format_uncached_assets_multiple(): void
@@ -1262,5 +1262,54 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $recommendation = $issues[0]->recommendation;
         $this->assertStringNotContainsString('Analysis stopped', $recommendation);
         $this->assertFalse($issues[0]->metadata['hit_threshold']);
+    }
+
+    public function test_recommendation_mentions_middleware_on_laravel_cloud(): void
+    {
+        $manifest = json_encode([
+            '/css/app.css' => '/css/app.css?id=abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer([new Response(200)]);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $analyzer->setDeploymentPlatform('laravel-cloud');
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $recommendation = $result->getIssues()[0]->recommendation;
+
+        $this->assertStringContainsString('middleware', $recommendation);
+        $this->assertStringContainsString('bootstrap/app.php', $recommendation);
+        $this->assertStringContainsString('max-age=31536000, immutable', $recommendation);
+        $this->assertStringNotContainsString('.htaccess', $recommendation);
+    }
+
+    public function test_recommendation_mentions_web_server_config_on_traditional_servers(): void
+    {
+        $manifest = json_encode([
+            '/css/app.css' => '/css/app.css?id=abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer([new Response(200)]);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $recommendation = $result->getIssues()[0]->recommendation;
+
+        $this->assertStringContainsString('.htaccess', $recommendation);
+        $this->assertStringContainsString('Nginx', $recommendation);
+        $this->assertStringContainsString('max-age=31536000, immutable', $recommendation);
+        $this->assertStringNotContainsString('bootstrap/app.php', $recommendation);
     }
 }

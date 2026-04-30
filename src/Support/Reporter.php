@@ -149,7 +149,7 @@ class Reporter implements ReporterInterface
                                 : "At {$issue->location}";
 
                             // Highlight critical issues with background color
-                            if (isset($issue->severity) && $issue->severity->value === 'critical') {
+                            if ($issue->severity->value === 'critical') {
                                 $output[] = $this->color($displayText, 'white', 'bg_red');
                             } else {
                                 $output[] = $this->color($displayText, 'magenta');
@@ -816,7 +816,7 @@ class Reporter implements ReporterInterface
                     // Highlight critical issues with background color
                     $hasCritical = false;
                     foreach ($locationIssues as $issue) {
-                        if (isset($issue->severity) && $issue->severity->value === 'critical') {
+                        if ($issue->severity->value === 'critical') {
                             $hasCritical = true;
                             break;
                         }

@@ -126,13 +126,22 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
         // base image sets them and Cloud does not expose a way to override PHP_INI_SYSTEM directives).
         // The same applies in Docker containers generally: the base image controls these settings and
         // there is no application-level override mechanism for PHP_INI_SYSTEM directives.
-        // display_errors, log_errors, and ignore_repeated_errors are PHP_INI_ALL and remain actionable
-        // via public/.user.ini on Cloud or ini_set() in Docker.
         if ($this->isLaravelCloud() || $this->isDocker()) {
             unset(
                 $secureSettings['allow_url_fopen'],
                 $secureSettings['allow_url_include'],
                 $secureSettings['expose_php'],
+            );
+        }
+
+        // On Laravel Cloud, no mechanism is documented for changing any PHP ini settings beyond
+        // memory_limit (via ini_set() in public/index.php). Suppress all remaining checks.
+        if ($this->isLaravelCloud()) {
+            unset(
+                $secureSettings['display_errors'],
+                $secureSettings['display_startup_errors'],
+                $secureSettings['log_errors'],
+                $secureSettings['ignore_repeated_errors'],
             );
         }
 

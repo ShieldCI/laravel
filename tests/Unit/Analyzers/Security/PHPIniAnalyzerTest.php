@@ -934,6 +934,38 @@ class PHPIniAnalyzerTest extends AnalyzerTestCase
         $this->assertNotNull($displayErrorsIssue, 'display_errors should still be reported in Docker');
     }
 
+    public function test_skips_all_checks_on_laravel_cloud(): void
+    {
+        $iniPath = $this->createPhpIniFixture([
+            'allow_url_fopen = On',
+            'allow_url_include = On',
+            'expose_php = On',
+            'display_errors = On',
+            'display_startup_errors = On',
+            'log_errors = Off',
+            'ignore_repeated_errors = On',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPhpIniPath($iniPath);
+        $analyzer->setBasePath(dirname($iniPath));
+        $analyzer->setDeploymentPlatform('laravel-cloud');
+        $analyzer->setIniValues($this->secureIniValues([
+            'allow_url_fopen' => '1',
+            'allow_url_include' => '1',
+            'expose_php' => '1',
+            'display_errors' => '1',
+            'display_startup_errors' => '1',
+            'log_errors' => '0',
+            'ignore_repeated_errors' => '1',
+        ]));
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertCount(0, $result->getIssues());
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────
 
     /**

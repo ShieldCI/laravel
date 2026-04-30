@@ -13,6 +13,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Concerns\AnalyzesHeaders;
+use ShieldCI\Concerns\DetectsDeploymentPlatform;
 
 /**
  * Analyzes cache headers for compiled assets using HTTP verification.
@@ -34,6 +35,7 @@ use ShieldCI\Concerns\AnalyzesHeaders;
 class CacheHeaderAnalyzer extends AbstractAnalyzer
 {
     use AnalyzesHeaders;
+    use DetectsDeploymentPlatform;
 
     /**
      * HTTP cache header checks require a live web server, not applicable in CI.
@@ -215,15 +217,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             filePath: $this->buildPath($issueLocation),
             lineNumber: null,
             severity: Severity::High,
-            recommendation: sprintf(
-                'Your application does not set appropriate cache headers on compiled assets. '.
-                'To improve performance, configure Cache-Control headers via your web server. '.
-                'Uncached assets: %s. '.
-                'For Apache, add rules to .htaccess. For Nginx, add cache headers in server config. '.
-                'Versioned assets should use "Cache-Control: public, max-age=31536000, immutable".%s',
-                $this->formatUncachedAssets(),
-                $thresholdNote
-            ),
+            recommendation: $this->buildRecommendation($thresholdNote),
             metadata: [
                 'uncached_assets' => $this->uncachedAssets->toArray(),
                 'count' => $this->uncachedAssets->count(),
@@ -469,6 +463,29 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
         $path = $this->getPublicPath('build/manifest.json');
 
         return $path !== '' && file_exists($path);
+    }
+
+    private function buildRecommendation(string $thresholdNote): string
+    {
+        $assets = $this->formatUncachedAssets();
+
+        if ($this->isLaravelCloud()) {
+            return sprintf(
+                'Compiled assets are missing long-lived cache headers. Uncached assets: %s. '.
+                'Add a middleware that sets "Cache-Control: public, max-age=31536000, immutable" for /build/* '.
+                'requests and register it in bootstrap/app.php.%s',
+                $assets,
+                $thresholdNote
+            );
+        }
+
+        return sprintf(
+            'Compiled assets are missing long-lived cache headers. Uncached assets: %s. '.
+            'For Apache, add rules to .htaccess. For Nginx, add cache headers in server config. '.
+            'Versioned assets should use "Cache-Control: public, max-age=31536000, immutable".%s',
+            $assets,
+            $thresholdNote
+        );
     }
 
     /**

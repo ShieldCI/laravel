@@ -1748,7 +1748,7 @@ class AnalyzeCommand extends Command
 
             if (isset($ignoreError['message_pattern']) && is_string($ignoreError['message_pattern'])) {
                 $pattern = $ignoreError['message_pattern'];
-                $issueRecommendation = $issue->recommendation ?? '';
+                $issueRecommendation = $issue->recommendation;
                 $messageMatches = Str::is($pattern, $issueMessage) ||
                                  Str::is($pattern, $issueRecommendation);
             }

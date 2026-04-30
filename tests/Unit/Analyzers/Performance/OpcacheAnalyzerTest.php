@@ -814,13 +814,13 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $issues = $result->getIssues();
         $this->assertCount(2, $issues);
 
-        // validate_timestamps is active on line 4 (not commented line 2)
+        // memory_consumption is active on line 5 (PHP_INI_SYSTEM — checked first)
         $this->assertNotNull($issues[0]->location);
-        $this->assertEquals(4, $issues[0]->location->line);
+        $this->assertEquals(5, $issues[0]->location->line);
 
-        // memory_consumption is active on line 5
+        // validate_timestamps is active on line 4 (PHP_INI_ALL — checked second)
         $this->assertNotNull($issues[1]->location);
-        $this->assertEquals(5, $issues[1]->location->line);
+        $this->assertEquals(4, $issues[1]->location->line);
     }
 
     // Category 12: Vapor / Serverless Support
@@ -858,6 +858,70 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $this->assertArrayHasKey('deployment_platform', $issues[0]->metadata);
         $this->assertEquals('vapor', $issues[0]->metadata['deployment_platform']);
+    }
+
+    // Category 13: Laravel Cloud / Docker Support
+
+    public function test_skips_all_config_checks_on_laravel_cloud(): void
+    {
+        /** @var OpcacheAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        // @phpstan-ignore-next-line
+        $analyzer->setScenario(true, [
+            'directives' => [
+                'opcache.enable' => true,
+                'opcache.memory_consumption' => 32,          // below MIN — would normally flag
+                'opcache.interned_strings_buffer' => 4,       // below MIN — would normally flag
+                'opcache.max_accelerated_files' => 1000,      // below MIN — would normally flag
+                'opcache.validate_timestamps' => true,        // enabled — would normally flag
+                'opcache.revalidate_freq' => 60,              // non-zero — would normally flag
+            ],
+        ]);
+        $analyzer->setDeploymentPlatform('laravel-cloud');
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertCount(0, $result->getIssues());
+    }
+
+    public function test_skips_php_ini_system_checks_on_docker_but_keeps_php_ini_all(): void
+    {
+        /** @var OpcacheAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        // @phpstan-ignore-next-line
+        $analyzer->setScenario(true, [
+            'directives' => [
+                'opcache.enable' => true,
+                'opcache.memory_consumption' => 32,          // PHP_INI_SYSTEM — should be suppressed
+                'opcache.interned_strings_buffer' => 4,       // PHP_INI_SYSTEM — should be suppressed
+                'opcache.max_accelerated_files' => 1000,      // PHP_INI_SYSTEM — should be suppressed
+                'opcache.validate_timestamps' => true,        // PHP_INI_ALL — should still flag
+            ],
+        ]);
+        $analyzer->setDeploymentPlatform('docker');
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $issueMessages = array_map(fn ($i) => $i->message, $issues);
+
+        // PHP_INI_SYSTEM settings are suppressed on Docker
+        foreach ($issueMessages as $message) {
+            $this->assertStringNotContainsString('memory consumption', $message);
+            $this->assertStringNotContainsString('interned strings buffer', $message);
+            $this->assertStringNotContainsString('max accelerated files', $message);
+        }
+
+        // PHP_INI_ALL (validate_timestamps) is still reported on Docker — user controls container build
+        $validateIssue = null;
+        foreach ($issues as $issue) {
+            if (str_contains($issue->message, 'validate_timestamps')) {
+                $validateIssue = $issue;
+                break;
+            }
+        }
+        $this->assertNotNull($validateIssue, 'validate_timestamps should still be reported on Docker');
     }
 
     public function test_traditional_platform_does_not_mention_vapor(): void

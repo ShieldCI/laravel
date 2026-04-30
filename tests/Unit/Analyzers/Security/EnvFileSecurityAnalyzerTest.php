@@ -227,10 +227,7 @@ ENV;
         $result = $analyzer->analyze();
 
         // Should not flag placeholders as real credentials
-        $issues = $result->getIssues();
-        foreach ($issues as $issue) {
-            $this->assertStringNotContainsString('real credentials', $issue->message);
-        }
+        $this->assertPassed($result);
     }
 
     public function test_allows_base64_encoded_values_in_env_example(): void
@@ -248,10 +245,7 @@ ENV;
         $result = $analyzer->analyze();
 
         // Should not flag base64 values as real credentials
-        $issues = $result->getIssues();
-        foreach ($issues as $issue) {
-            $this->assertNotEquals(Severity::High, $issue->severity);
-        }
+        $this->assertPassed($result);
     }
 
     public function test_allows_stripe_test_keys_in_env_example(): void
@@ -269,10 +263,7 @@ ENV;
         $result = $analyzer->analyze();
 
         // Stripe test keys are safe to include in .env.example
-        $issues = $result->getIssues();
-        foreach ($issues as $issue) {
-            $this->assertStringNotContainsString('real credentials', $issue->message);
-        }
+        $this->assertPassed($result);
     }
 
     public function test_allows_sandbox_keys_in_env_example(): void
@@ -289,10 +280,7 @@ ENV;
 
         $result = $analyzer->analyze();
 
-        $issues = $result->getIssues();
-        foreach ($issues as $issue) {
-            $this->assertStringNotContainsString('real credentials', $issue->message);
-        }
+        $this->assertPassed($result);
     }
 
     public function test_allows_test_prefixed_bearer_tokens_in_env_example(): void
@@ -309,10 +297,7 @@ ENV;
 
         $result = $analyzer->analyze();
 
-        $issues = $result->getIssues();
-        foreach ($issues as $issue) {
-            $this->assertStringNotContainsString('real credentials', $issue->message);
-        }
+        $this->assertPassed($result);
     }
 
     public function test_allows_short_values_in_env_example(): void
@@ -334,10 +319,7 @@ ENV;
         $result = $analyzer->analyze();
 
         // Short values shouldn't be flagged as real credentials
-        $issues = $result->getIssues();
-        foreach ($issues as $issue) {
-            $this->assertStringNotContainsString('real credentials', $issue->message);
-        }
+        $this->assertPassed($result);
     }
 
     // ==========================================

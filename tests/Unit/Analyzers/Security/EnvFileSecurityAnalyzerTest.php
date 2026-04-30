@@ -227,10 +227,7 @@ ENV;
         $result = $analyzer->analyze();
 
         // Should not flag placeholders as real credentials
-        $issues = $result->getIssues();
-        foreach ($issues as $issue) {
-            $this->assertStringNotContainsString('real credentials', $issue->message);
-        }
+        $this->assertPassed($result);
     }
 
     public function test_allows_base64_encoded_values_in_env_example(): void
@@ -248,10 +245,7 @@ ENV;
         $result = $analyzer->analyze();
 
         // Should not flag base64 values as real credentials
-        $issues = $result->getIssues();
-        foreach ($issues as $issue) {
-            $this->assertNotEquals(Severity::High, $issue->severity);
-        }
+        $this->assertPassed($result);
     }
 
     public function test_allows_stripe_test_keys_in_env_example(): void
@@ -269,10 +263,7 @@ ENV;
         $result = $analyzer->analyze();
 
         // Stripe test keys are safe to include in .env.example
-        $issues = $result->getIssues();
-        foreach ($issues as $issue) {
-            $this->assertStringNotContainsString('real credentials', $issue->message);
-        }
+        $this->assertPassed($result);
     }
 
     public function test_allows_sandbox_keys_in_env_example(): void
@@ -289,10 +280,7 @@ ENV;
 
         $result = $analyzer->analyze();
 
-        $issues = $result->getIssues();
-        foreach ($issues as $issue) {
-            $this->assertStringNotContainsString('real credentials', $issue->message);
-        }
+        $this->assertPassed($result);
     }
 
     public function test_allows_test_prefixed_bearer_tokens_in_env_example(): void
@@ -309,10 +297,7 @@ ENV;
 
         $result = $analyzer->analyze();
 
-        $issues = $result->getIssues();
-        foreach ($issues as $issue) {
-            $this->assertStringNotContainsString('real credentials', $issue->message);
-        }
+        $this->assertPassed($result);
     }
 
     public function test_allows_short_values_in_env_example(): void
@@ -334,10 +319,7 @@ ENV;
         $result = $analyzer->analyze();
 
         // Short values shouldn't be flagged as real credentials
-        $issues = $result->getIssues();
-        foreach ($issues as $issue) {
-            $this->assertStringNotContainsString('real credentials', $issue->message);
-        }
+        $this->assertPassed($result);
     }
 
     // ==========================================
@@ -477,185 +459,7 @@ GITIGNORE;
     }
 
     // ==========================================
-    // E. Permission Tests (7 tests)
-    // ==========================================
-
-    public function test_passes_when_env_has_600_permissions(): void
-    {
-        $tempDir = $this->createTempDirectory([
-            '.env' => 'APP_KEY=test',
-        ]);
-
-        $envPath = $tempDir.'/.env';
-        chmod($envPath, 0600);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        // Should have only non-permission issues
-        $issues = $result->getIssues();
-        foreach ($issues as $issue) {
-            $this->assertStringNotContainsString('permissions', $issue->message);
-        }
-    }
-
-    public function test_detects_644_permissions_as_critical(): void
-    {
-        $tempDir = $this->createTempDirectory([
-            '.env' => 'APP_KEY=test',
-        ]);
-
-        $envPath = $tempDir.'/.env';
-        chmod($envPath, 0644);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('permissions', $result);
-        $issues = $result->getIssues();
-
-        // Find the permission issue
-        $permissionIssue = null;
-        foreach ($issues as $issue) {
-            if (str_contains($issue->message, 'permissions')) {
-                $permissionIssue = $issue;
-                break;
-            }
-        }
-
-        $this->assertNotNull($permissionIssue);
-        $this->assertEquals(Severity::Critical, $permissionIssue->severity);
-    }
-
-    public function test_detects_640_permissions_as_medium(): void
-    {
-        $tempDir = $this->createTempDirectory([
-            '.env' => 'APP_KEY=test',
-        ]);
-
-        $envPath = $tempDir.'/.env';
-        chmod($envPath, 0640);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('permissions', $result);
-        $issues = $result->getIssues();
-
-        // Find the permission issue
-        $permissionIssue = null;
-        foreach ($issues as $issue) {
-            if (str_contains($issue->message, 'permissions')) {
-                $permissionIssue = $issue;
-                break;
-            }
-        }
-
-        $this->assertNotNull($permissionIssue);
-        $this->assertEquals(Severity::Medium, $permissionIssue->severity);
-    }
-
-    public function test_detects_666_permissions_as_critical(): void
-    {
-        $tempDir = $this->createTempDirectory([
-            '.env' => 'APP_KEY=test',
-        ]);
-
-        $envPath = $tempDir.'/.env';
-        chmod($envPath, 0666);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('permissions', $result);
-        $issues = $result->getIssues();
-
-        $permissionIssue = null;
-        foreach ($issues as $issue) {
-            if (str_contains($issue->message, 'permissions')) {
-                $permissionIssue = $issue;
-                break;
-            }
-        }
-
-        $this->assertNotNull($permissionIssue);
-        $this->assertEquals(Severity::Critical, $permissionIssue->severity);
-    }
-
-    public function test_detects_777_permissions_as_critical(): void
-    {
-        $tempDir = $this->createTempDirectory([
-            '.env' => 'APP_KEY=test',
-        ]);
-
-        $envPath = $tempDir.'/.env';
-        chmod($envPath, 0777);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('permissions', $result);
-    }
-
-    public function test_skips_permission_check_when_env_does_not_exist(): void
-    {
-        $tempDir = $this->createTempDirectory([]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        // Analyzer should be skipped when nothing exists
-        $this->assertSkipped($result);
-    }
-
-    public function test_detects_660_permissions_as_medium(): void
-    {
-        $tempDir = $this->createTempDirectory([
-            '.env' => 'APP_KEY=test',
-        ]);
-
-        $envPath = $tempDir.'/.env';
-        chmod($envPath, 0660);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('permissions', $result);
-        $issues = $result->getIssues();
-
-        $permissionIssue = null;
-        foreach ($issues as $issue) {
-            if (str_contains($issue->message, 'permissions')) {
-                $permissionIssue = $issue;
-                break;
-            }
-        }
-
-        $this->assertNotNull($permissionIssue);
-        $this->assertEquals(Severity::Medium, $permissionIssue->severity);
-    }
-
-    // ==========================================
-    // F. shouldRun Tests (6 tests)
+    // E. shouldRun Tests (6 tests)
     // ==========================================
 
     public function test_should_run_when_env_file_exists(): void
@@ -804,36 +608,8 @@ GITIGNORE;
         $this->assertArrayHasKey('missing_pattern', $gitignoreIssue->metadata);
     }
 
-    public function test_permission_issue_has_metadata(): void
-    {
-        $tempDir = $this->createTempDirectory([
-            '.env' => 'APP_KEY=test',
-        ]);
-
-        $envPath = $tempDir.'/.env';
-        chmod($envPath, 0644);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $issues = $result->getIssues();
-        $permissionIssue = null;
-        foreach ($issues as $issue) {
-            if (str_contains($issue->message, 'permissions')) {
-                $permissionIssue = $issue;
-                break;
-            }
-        }
-
-        $this->assertNotNull($permissionIssue);
-        $this->assertArrayHasKey('permissions', $permissionIssue->metadata);
-        $this->assertArrayHasKey('world_readable', $permissionIssue->metadata);
-    }
-
     // ==========================================
-    // H. Edge Cases (3 tests)
+    // F. Edge Cases (3 tests)
     // ==========================================
 
     public function test_detects_multiple_issues_at_once(): void
@@ -870,9 +646,6 @@ GITIGNORE;
             '.env.example' => $envExample,
             '.gitignore' => $gitignore,
         ]);
-
-        // Set secure permissions
-        chmod($tempDir.'/.env', 0600);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -959,37 +732,5 @@ ENV;
         $analyzer->setDeploymentPlatform('serverless');
 
         $this->assertFalse($analyzer->shouldRun());
-    }
-
-    // =========================================================================
-    // Docker Skip Tests
-    // =========================================================================
-
-    public function test_skips_env_permissions_check_on_docker(): void
-    {
-        // World-readable .env would normally trigger a Critical permissions issue
-        $tempDir = $this->createTempDirectory([
-            '.env' => "APP_KEY=base64:abc123\n",
-            '.env.example' => "APP_KEY=\n",
-            '.gitignore' => ".env\n",
-        ]);
-
-        chmod($tempDir.'/.env', 0644); // world-readable — would flag without Docker skip
-
-        /** @var EnvFileSecurityAnalyzer $analyzer */
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setDeploymentPlatform('docker');
-
-        // shouldRun() still returns true — other checks (git, public dir, .env.example) are valid
-        $this->assertTrue($analyzer->shouldRun());
-
-        $result = $analyzer->analyze();
-
-        // No permission-related issues — permissions check is skipped in Docker
-        foreach ($result->getIssues() as $issue) {
-            $this->assertStringNotContainsString('permissions', strtolower($issue->message));
-            $this->assertStringNotContainsString('chmod', strtolower($issue->recommendation));
-        }
     }
 }

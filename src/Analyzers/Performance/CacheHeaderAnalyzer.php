@@ -208,12 +208,26 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
 
         // Check if we hit the threshold (early bailout)
         $hitThreshold = $this->uncachedAssets->count() >= $this->maxUncachedAssets;
+        $isCloud = $this->isLaravelCloud();
+
+        // On Cloud, assets always receive Cache-Control headers (default: max-age=7200).
+        // The issue is a short-lived cache, not a missing one. Use accurate language.
         $thresholdNote = $hitThreshold
-            ? ' Note: Analysis stopped after finding '.$this->maxUncachedAssets.' uncached assets to prevent excessive HTTP requests. Additional assets may also be missing headers.'
+            ? ($isCloud
+                ? ' Note: Analysis stopped after finding '.$this->maxUncachedAssets.' assets with short-lived cache headers. Additional assets may also need updating.'
+                : ' Note: Analysis stopped after finding '.$this->maxUncachedAssets.' uncached assets to prevent excessive HTTP requests. Additional assets may also be missing headers.')
             : '';
 
+        $message = $isCloud
+            ? 'Compiled assets have short-lived cache headers (Laravel Cloud default: ~2h). Versioned assets should use long-lived caching.'
+            : 'Compiled assets are missing Cache-Control headers or use non-cacheable directives';
+
+        $summary = $isCloud
+            ? sprintf('Found %d asset(s) with short-lived cache headers', $this->uncachedAssets->count())
+            : sprintf('Found %d asset(s) without proper cache headers', $this->uncachedAssets->count());
+
         $issues = [$this->createIssueWithSnippet(
-            message: 'Compiled assets are missing Cache-Control headers or use non-cacheable directives',
+            message: $message,
             filePath: $this->buildPath($issueLocation),
             lineNumber: null,
             severity: Severity::High,
@@ -226,10 +240,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             ]
         )];
 
-        return $this->resultBySeverity(
-            sprintf('Found %d asset(s) without proper cache headers', $this->uncachedAssets->count()),
-            $issues
-        );
+        return $this->resultBySeverity($summary, $issues);
     }
 
     /**

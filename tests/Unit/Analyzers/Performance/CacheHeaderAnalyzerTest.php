@@ -1289,6 +1289,33 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $this->assertStringNotContainsString('.htaccess', $recommendation);
     }
 
+    public function test_message_describes_short_lived_headers_on_laravel_cloud(): void
+    {
+        // On Cloud, assets always get Cache-Control headers (default ~2h).
+        // The issue message should say "short-lived", not "missing".
+        $manifest = json_encode([
+            '/css/app.css' => '/css/app.css?id=abc123',
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => $manifest,
+        ]);
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer([new Response(200)]);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $analyzer->setDeploymentPlatform('laravel-cloud');
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issue = $result->getIssues()[0];
+
+        $this->assertStringContainsString('short-lived', $issue->message);
+        $this->assertStringNotContainsString('missing', $issue->message);
+        $this->assertStringContainsString('short-lived', $result->getMessage());
+        $this->assertStringNotContainsString('without proper cache headers', $result->getMessage());
+    }
+
     public function test_recommendation_mentions_web_server_config_on_traditional_servers(): void
     {
         $manifest = json_encode([

@@ -5,7 +5,7 @@
 ### Fixed
 - `OpcacheAnalyzer` and `PHPIniAnalyzer` no longer false-positive on Laravel Cloud — Cloud only documents `memory_limit` as configurable via `ini_set()`; all OPcache sub-checks are suppressed on Cloud, and `PHPIniAnalyzer` now also suppresses its `PHP_INI_ALL` checks (`display_errors`, `log_errors`, etc.) on Cloud rather than checking them; on Docker both analyzers continue to suppress only `PHP_INI_SYSTEM` directives (controlled by the base image) while keeping `PHP_INI_ALL` checks active (#182)
 - `CacheHeaderAnalyzer` no longer reports "missing Cache-Control headers" on Laravel Cloud — Cloud always applies a default `Cache-Control` header to asset responses, so the message now correctly reads "short-lived cache headers"; the finding and middleware recommendation are unchanged since long-lived caching of versioned assets is fully supported and safe given Cloud's deployment-triggered CDN purge (#182)
-- Four PHPStan Level 9 errors fixed in `AnalyzeCommand`, `Reporter`, and `DirectoryWritePermissionsAnalyzerTest` — redundant `??` and `isset()` guards removed from non-nullable properties (`$issue->recommendation`, `$issue->severity`, `$issue->metadata`) (#182)
+
 
 ## v1.7.4
 

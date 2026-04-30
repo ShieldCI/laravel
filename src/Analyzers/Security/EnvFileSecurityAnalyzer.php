@@ -29,14 +29,6 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 
     public static bool $runInCI = false;
 
-    private const WORLD_READABLE = 0x0004;
-
-    private const WORLD_WRITABLE = 0x0002;
-
-    private const GROUP_READABLE = 0x0020;
-
-    private const GROUP_WRITABLE = 0x0040;
-
     private array $sensitiveKeys = [
         'APP_KEY',
         'DB_PASSWORD',
@@ -135,11 +127,6 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 
         // Check if .env is in .gitignore
         $this->checkGitignore($issues);
-
-        // Check .env file permissions (skipped in Docker — permissions are host/image-controlled)
-        if (! $this->isDocker()) {
-            $this->checkEnvPermissions($issues);
-        }
 
         $summary = empty($issues)
             ? 'Environment files are properly secured'
@@ -344,59 +331,6 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
                     'file' => '.env',
                     'git_tracked' => true,
                     'code' => 'git-tracked',
-                ]
-            );
-        }
-    }
-
-    /**
-     * Check .env file permissions.
-     */
-    private function checkEnvPermissions(array &$issues): void
-    {
-        $envPath = $this->buildPath('.env');
-
-        if (! file_exists($envPath)) {
-            return;
-        }
-
-        $perms = @fileperms($envPath);
-        if ($perms === false) {
-            return;
-        }
-
-        $octal = substr(sprintf('%o', $perms), -3);
-
-        // Check if file is world-readable or world-writable (Critical)
-        if (($perms & self::WORLD_READABLE) || ($perms & self::WORLD_WRITABLE)) {
-            $issues[] = $this->createIssue(
-                message: sprintf('.env file has insecure permissions (%s)', $octal),
-                location: new Location($this->getRelativePath($envPath)),
-                severity: Severity::Critical,
-                recommendation: 'Restrict .env permissions: chmod 600 .env',
-                metadata: [
-                    'permissions' => $octal,
-                    'world_readable' => (bool) ($perms & self::WORLD_READABLE),
-                    'world_writable' => (bool) ($perms & self::WORLD_WRITABLE),
-                    'code' => 'permissions',
-                ]
-            );
-
-            return; // Don't check for less severe issues if Critical issue exists
-        }
-
-        // Check if file is group-readable or group-writable (Medium)
-        if (($perms & self::GROUP_READABLE) || ($perms & self::GROUP_WRITABLE)) {
-            $issues[] = $this->createIssue(
-                message: sprintf('.env file has overly permissive permissions (%s)', $octal),
-                location: new Location($this->getRelativePath($envPath)),
-                severity: Severity::Medium,
-                recommendation: 'Consider restricting .env permissions: chmod 600 .env (readable only by owner)',
-                metadata: [
-                    'permissions' => $octal,
-                    'group_readable' => (bool) ($perms & self::GROUP_READABLE),
-                    'group_writable' => (bool) ($perms & self::GROUP_WRITABLE),
-                    'code' => 'permissions',
                 ]
             );
         }

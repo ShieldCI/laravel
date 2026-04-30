@@ -248,6 +248,30 @@ class OpcacheAnalyzer extends AbstractAnalyzer
     }
 
     /**
+     * Check if the deployment platform is Laravel Cloud.
+     */
+    private function isLaravelCloud(): bool
+    {
+        if ($this->deploymentPlatformOverride !== null) {
+            return $this->deploymentPlatformOverride === 'laravel-cloud';
+        }
+
+        return PlatformDetector::isLaravelCloud();
+    }
+
+    /**
+     * Check if running inside a Docker container.
+     */
+    private function isDocker(): bool
+    {
+        if ($this->deploymentPlatformOverride !== null) {
+            return $this->deploymentPlatformOverride === 'docker';
+        }
+
+        return PlatformDetector::isDocker();
+    }
+
+    /**
      * Check if the deployment platform is Laravel Vapor or another serverless environment.
      */
     private function isVaporOrServerless(): bool
@@ -295,20 +319,30 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         /** @var array<string, mixed> $directives */
         $directives = $config['directives'];
 
-        // Check opcache.validate_timestamps (should be 0 in production)
-        $this->checkValidateTimestamps($directives, $issues, $phpIniPath);
+        $isCloud = $this->isLaravelCloud();
+        $isCloudOrDocker = $isCloud || $this->isDocker();
 
-        // Check opcache.memory_consumption (recommended: 128MB+)
-        $this->checkMemoryConsumption($directives, $issues, $phpIniPath);
+        // PHP_INI_SYSTEM — base image controls these on Cloud and Docker; cannot be changed by the app
+        if (! $isCloudOrDocker) {
+            // Check opcache.memory_consumption (recommended: 128MB+)
+            $this->checkMemoryConsumption($directives, $issues, $phpIniPath);
 
-        // Check opcache.interned_strings_buffer (recommended: 16MB+)
-        $this->checkInternedStringsBuffer($directives, $issues, $phpIniPath);
+            // Check opcache.interned_strings_buffer (recommended: 16MB+)
+            $this->checkInternedStringsBuffer($directives, $issues, $phpIniPath);
 
-        // Check opcache.max_accelerated_files (recommended: 10000+)
-        $this->checkMaxAcceleratedFiles($directives, $issues, $phpIniPath);
+            // Check opcache.max_accelerated_files (recommended: 10000+)
+            $this->checkMaxAcceleratedFiles($directives, $issues, $phpIniPath);
+        }
 
-        // Check opcache.revalidate_freq (should be 0 in production when validate_timestamps=0)
-        $this->checkRevalidateFreq($directives, $issues, $phpIniPath);
+        // PHP_INI_ALL — actionable on Docker (user controls container build) and traditional servers,
+        // but no documented fix path on Laravel Cloud (only memory_limit is documented as configurable)
+        if (! $isCloud) {
+            // Check opcache.validate_timestamps (should be 0 in production)
+            $this->checkValidateTimestamps($directives, $issues, $phpIniPath);
+
+            // Check opcache.revalidate_freq (should be 0 in production when validate_timestamps=0)
+            $this->checkRevalidateFreq($directives, $issues, $phpIniPath);
+        }
     }
 
     /**

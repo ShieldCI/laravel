@@ -1003,7 +1003,7 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 
         // No symlink issues — only directory issues
         foreach ($result->getIssues() as $issue) {
-            $this->assertArrayNotHasKey('broken_symlinks', $issue->metadata ?? []);
+            $this->assertArrayNotHasKey('broken_symlinks', $issue->metadata);
         }
     }
 

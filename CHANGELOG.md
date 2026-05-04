@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.7
+
+### Fixed
+- `CacheHeaderAnalyzer` no longer runs on Laravel Cloud — Cloud manages asset cache headers at the CDN level with no configuration mechanism available to the application, making any finding unactionable; the analyzer now skips with a clear reason rather than reporting a false positive (#185)
+
 ## v1.7.6
 
 ### Fixed

@@ -1264,56 +1264,18 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $this->assertFalse($issues[0]->metadata['hit_threshold']);
     }
 
-    public function test_recommendation_mentions_middleware_on_laravel_cloud(): void
+    public function test_skips_on_laravel_cloud(): void
     {
-        $manifest = json_encode([
-            '/css/app.css' => '/css/app.css?id=abc123',
-        ]);
-
-        $tempDir = $this->createTempDirectory([
-            'public/mix-manifest.json' => $manifest,
-        ]);
+        $manifest = json_encode(['resources/js/app.js' => ['file' => 'assets/app.abc123.js']]);
+        $tempDir = $this->createTempDirectory(['public/build/manifest.json' => $manifest]);
 
         /** @var CacheHeaderAnalyzer $analyzer */
-        $analyzer = $this->createAnalyzer([new Response(200)]);
+        $analyzer = $this->createAnalyzer();
         $analyzer->setPublicPath($tempDir.'/public');
         $analyzer->setDeploymentPlatform('laravel-cloud');
-        $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $recommendation = $result->getIssues()[0]->recommendation;
-
-        $this->assertStringContainsString('middleware', $recommendation);
-        $this->assertStringContainsString('bootstrap/app.php', $recommendation);
-        $this->assertStringContainsString('max-age=31536000, immutable', $recommendation);
-        $this->assertStringNotContainsString('.htaccess', $recommendation);
-    }
-
-    public function test_message_describes_short_lived_headers_on_laravel_cloud(): void
-    {
-        // On Cloud, assets always get Cache-Control headers (default ~2h).
-        // The issue message should say "short-lived", not "missing".
-        $manifest = json_encode([
-            '/css/app.css' => '/css/app.css?id=abc123',
-        ]);
-
-        $tempDir = $this->createTempDirectory([
-            'public/mix-manifest.json' => $manifest,
-        ]);
-
-        /** @var CacheHeaderAnalyzer $analyzer */
-        $analyzer = $this->createAnalyzer([new Response(200)]);
-        $analyzer->setPublicPath($tempDir.'/public');
-        $analyzer->setDeploymentPlatform('laravel-cloud');
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $issue = $result->getIssues()[0];
-
-        $this->assertStringContainsString('short-lived', $issue->message);
-        $this->assertStringNotContainsString('missing', $issue->message);
-        $this->assertStringContainsString('short-lived', $result->getMessage());
-        $this->assertStringNotContainsString('without proper cache headers', $result->getMessage());
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertStringContainsString('Laravel Cloud manages asset cache headers', $analyzer->getSkipReason());
     }
 
     public function test_recommendation_mentions_web_server_config_on_traditional_servers(): void

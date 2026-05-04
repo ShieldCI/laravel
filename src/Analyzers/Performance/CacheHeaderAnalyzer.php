@@ -158,6 +158,12 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             return false;
         }
 
+        // On Laravel Cloud, asset cache headers are managed by the platform and
+        // cannot be altered. No actionable fix exists, so suppress this check.
+        if ($this->isLaravelCloud()) {
+            return false;
+        }
+
         // Only run if an asset build system is present
         return $this->hasMixManifest() || $this->hasViteManifest();
     }
@@ -169,6 +175,10 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             $relevantEnvs = implode(', ', $this->relevantEnvironments ?? []);
 
             return "Not relevant in '{$currentEnv}' environment (only relevant in: {$relevantEnvs})";
+        }
+
+        if ($this->isLaravelCloud()) {
+            return 'Laravel Cloud manages asset cache headers. No configuration is possible.';
         }
 
         return 'No asset build system detected (Laravel Mix or Vite)';
@@ -208,23 +218,13 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
 
         // Check if we hit the threshold (early bailout)
         $hitThreshold = $this->uncachedAssets->count() >= $this->maxUncachedAssets;
-        $isCloud = $this->isLaravelCloud();
 
-        // On Cloud, assets always receive Cache-Control headers (default: max-age=7200).
-        // The issue is a short-lived cache, not a missing one. Use accurate language.
         $thresholdNote = $hitThreshold
-            ? ($isCloud
-                ? ' Note: Analysis stopped after finding '.$this->maxUncachedAssets.' assets with short-lived cache headers. Additional assets may also need updating.'
-                : ' Note: Analysis stopped after finding '.$this->maxUncachedAssets.' uncached assets to prevent excessive HTTP requests. Additional assets may also be missing headers.')
+            ? ' Note: Analysis stopped after finding '.$this->maxUncachedAssets.' uncached assets to prevent excessive HTTP requests. Additional assets may also be missing headers.'
             : '';
 
-        $message = $isCloud
-            ? 'Compiled assets have short-lived cache headers (Laravel Cloud default: ~2h). Versioned assets should use long-lived caching.'
-            : 'Compiled assets are missing Cache-Control headers or use non-cacheable directives';
-
-        $summary = $isCloud
-            ? sprintf('Found %d asset(s) with short-lived cache headers', $this->uncachedAssets->count())
-            : sprintf('Found %d asset(s) without proper cache headers', $this->uncachedAssets->count());
+        $message = 'Compiled assets are missing Cache-Control headers or use non-cacheable directives';
+        $summary = sprintf('Found %d asset(s) without proper cache headers', $this->uncachedAssets->count());
 
         $issues = [$this->createIssueWithSnippet(
             message: $message,
@@ -479,16 +479,6 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     private function buildRecommendation(string $thresholdNote): string
     {
         $assets = $this->formatUncachedAssets();
-
-        if ($this->isLaravelCloud()) {
-            return sprintf(
-                'Compiled assets are missing long-lived cache headers. Uncached assets: %s. '.
-                'Add a middleware that sets "Cache-Control: public, max-age=31536000, immutable" for /build/* '.
-                'requests and register it in bootstrap/app.php.%s',
-                $assets,
-                $thresholdNote
-            );
-        }
 
         return sprintf(
             'Compiled assets are missing long-lived cache headers. Uncached assets: %s. '.

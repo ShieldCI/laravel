@@ -77,7 +77,12 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $visitor = new TransactionVisitor($this->threshold);
+                $scanner = new TransactionDelegatedMethodScanner;
+                $preScanTraverser = new NodeTraverser;
+                $preScanTraverser->addVisitor($scanner);
+                $preScanTraverser->traverse($ast);
+
+                $visitor = new TransactionVisitor($this->threshold, $scanner->getDelegatedMethods());
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
@@ -184,8 +189,10 @@ class TransactionVisitor extends NodeVisitorAbstract
      */
     private array $ifElseBranchStack = [];
 
+    /** @param array<string, true> $transactionDelegatedMethods */
     public function __construct(
-        private int $threshold
+        private int $threshold,
+        private array $transactionDelegatedMethods = [],
     ) {}
 
     public function enterNode(Node $node): ?Node
@@ -202,7 +209,9 @@ class TransactionVisitor extends NodeVisitorAbstract
             $this->writeOperations = 0;
             $this->writeOperationsInTransaction = 0;
             $this->unprotectedWriteLines = [];
-            $this->transactionDepth = 0;
+            // Start inside a virtual transaction if this method is exclusively called
+            // from within DB::transaction() closures (determined by the pre-scan).
+            $this->transactionDepth = isset($this->transactionDelegatedMethods[$this->currentMethodName]) ? 1 : 0;
             $this->manualTransactionDepth = 0;
             $this->isolatedWrites = 0;
             $this->earlyExitIfDepth = 0;
@@ -640,5 +649,88 @@ class TransactionVisitor extends NodeVisitorAbstract
         }
 
         return $last instanceof Node\Stmt\Return_ || $last instanceof Node\Expr\Throw_;
+    }
+}
+
+/**
+ * Pre-scan visitor that identifies private/protected methods exclusively called
+ * from within DB::transaction() closures in the same class.
+ *
+ * These "transaction-delegated" methods should not be flagged for missing
+ * transaction protection because every execution path runs inside a transaction.
+ */
+class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
+{
+    /** @var array<int, true> File positions of closures passed directly to DB::transaction(). */
+    private array $transactionClosurePositions = [];
+
+    private int $transactionDepth = 0;
+
+    /** @var array<string, true> Method names called from within a transaction closure. */
+    private array $calledInsideTransaction = [];
+
+    /** @var array<string, true> Method names called outside any transaction closure. */
+    private array $calledOutsideTransaction = [];
+
+    public function enterNode(Node $node): ?Node
+    {
+        // Record closures passed directly to DB::transaction().
+        if ($node instanceof Node\Expr\StaticCall
+            && $node->class instanceof Node\Name
+            && $node->class->toString() === 'DB'
+            && $node->name instanceof Node\Identifier
+            && $node->name->toString() === 'transaction'
+            && ! empty($node->args)
+        ) {
+            $firstArg = $node->args[0]->value;
+            if ($firstArg instanceof Node\Expr\Closure || $firstArg instanceof Node\Expr\ArrowFunction) {
+                $this->transactionClosurePositions[$firstArg->getStartFilePos()] = true;
+            }
+        }
+
+        // Track entering a recorded transaction closure.
+        if ($node instanceof Node\Expr\Closure || $node instanceof Node\Expr\ArrowFunction) {
+            if (isset($this->transactionClosurePositions[$node->getStartFilePos()])) {
+                $this->transactionDepth++;
+            }
+        }
+
+        // Collect $this->method() calls and partition by transaction context.
+        if (
+            $node instanceof Node\Expr\MethodCall
+            && $node->var instanceof Node\Expr\Variable
+            && $node->var->name === 'this'
+            && $node->name instanceof Node\Identifier
+        ) {
+            $methodName = $node->name->toString();
+            if ($this->transactionDepth > 0) {
+                $this->calledInsideTransaction[$methodName] = true;
+            } else {
+                $this->calledOutsideTransaction[$methodName] = true;
+            }
+        }
+
+        return null;
+    }
+
+    public function leaveNode(Node $node): ?Node
+    {
+        if ($node instanceof Node\Expr\Closure || $node instanceof Node\Expr\ArrowFunction) {
+            if (isset($this->transactionClosurePositions[$node->getStartFilePos()]) && $this->transactionDepth > 0) {
+                $this->transactionDepth--;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Returns method names that are called exclusively from within DB::transaction() closures.
+     *
+     * @return array<string, true>
+     */
+    public function getDelegatedMethods(): array
+    {
+        return array_diff_key($this->calledInsideTransaction, $this->calledOutsideTransaction);
     }
 }

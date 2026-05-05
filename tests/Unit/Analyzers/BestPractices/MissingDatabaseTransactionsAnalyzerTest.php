@@ -1908,4 +1908,149 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    public function test_passes_when_writes_in_private_method_called_from_transaction_closure(): void
+    {
+        // Mirrors the UserDeletionService pattern: the orchestrator wraps all
+        // writes in DB::transaction() by delegating to private helper methods.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class UserDeletionService
+{
+    public function delete(User $user): void
+    {
+        DB::transaction(function () use ($user): void {
+            $this->revokeTokens($user);
+            $this->dissolveOwnedTeams($user);
+            $user->delete();
+        });
+    }
+
+    private function revokeTokens(User $user): void
+    {
+        $user->tokens()->delete();
+    }
+
+    private function dissolveOwnedTeams(User $user): void
+    {
+        DB::table('team_members')->whereIn('team_id', [1])->delete();
+        $user->ownedTeams()->delete();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserDeletionService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_private_method_with_writes_called_outside_transaction(): void
+    {
+        // When the same helper is called both inside AND outside a transaction,
+        // the analyzer must still flag it — the outside call path is unprotected.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class UserService
+{
+    public function withTransaction(User $user): void
+    {
+        DB::transaction(function () use ($user): void {
+            $this->doWrites($user);
+        });
+    }
+
+    public function withoutTransaction(User $user): void
+    {
+        $this->doWrites($user);
+    }
+
+    private function doWrites(User $user): void
+    {
+        $user->save();
+        $user->tokens()->delete();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('database write operation(s) outside transaction protection', $result);
+    }
+
+    public function test_passes_when_multiple_private_helpers_all_delegated(): void
+    {
+        // All private helpers are exclusively called from within the transaction closure.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class UserDeletionService
+{
+    public function delete(User $user): void
+    {
+        DB::transaction(function () use ($user): void {
+            $this->revokeTokens($user);
+            $this->dissolveOwnedTeams($user);
+            $this->anonymizePii($user);
+            $user->delete();
+        });
+    }
+
+    private function revokeTokens(User $user): void
+    {
+        $user->tokens()->delete();
+    }
+
+    private function dissolveOwnedTeams(User $user): void
+    {
+        DB::table('team_members')->whereIn('team_id', [1])->delete();
+        $user->ownedTeams()->delete();
+    }
+
+    private function anonymizePii(User $user): void
+    {
+        $user->update(['name' => 'Deleted', 'email' => 'deleted@invalid']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserDeletionService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

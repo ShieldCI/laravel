@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.8
+
+### Fixed
+- `MissingDatabaseTransactionsAnalyzer` no longer false-positives on private methods exclusively called from within a `DB::transaction()` closure — the analyzer now runs a pre-scan pass over each file to identify which `$this->method()` calls occur inside transaction closures versus outside them; methods called only from within a transaction closure are treated as already protected when their writes are counted, so the "delegate pattern" (an orchestrating method that wraps all work in `DB::transaction()` by calling private helpers) no longer produces spurious findings; methods called from both inside and outside a transaction continue to be flagged as before (#186)
+
 ## v1.7.7
 
 ### Fixed

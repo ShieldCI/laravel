@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.9
+
+### Fixed
+- `HSTSHeaderAnalyzer` no longer false-negatives when a middleware file contains a comment referencing HSTS (e.g. `// HSTS configuration`) without actually setting the header — only the presence of `Strict-Transport-Security` in file content is treated as evidence the header is set; previously any mention of the string `HSTS` suppressed the missing-header finding
+- `HSTSHeaderAnalyzer` no longer false-negatives when a security package such as `bepsvpt/secure-headers` appears only in `require-dev` — `composer.json` is now decoded and only the `require` section is checked; a dev-only package provides no HSTS protection in production
+
 ## v1.7.8
 
 ### Fixed

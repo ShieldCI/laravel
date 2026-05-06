@@ -51,14 +51,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        // Check if app is configured for HTTPS
-        $isHttpsOnly = $this->isHttpsOnlyApp();
-
-        if (! $isHttpsOnly) {
-            return false;
-        }
-
-        return true;
+        return $this->isHttpsOnlyApp();
     }
 
     public function getSkipReason(): string
@@ -230,8 +223,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
                 }
 
                 // Check for HSTS header configuration
-                if (str_contains($content, 'Strict-Transport-Security') ||
-                    str_contains($content, 'HSTS')) {
+                if (str_contains($content, 'Strict-Transport-Security')) {
                     $hasHSTSMiddleware = true;
 
                     // Validate HSTS configuration
@@ -390,7 +382,13 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        // Check for packages that handle security headers
+        $composerData = json_decode($content, true);
+
+        if (! is_array($composerData) || ! isset($composerData['require']) || ! is_array($composerData['require'])) {
+            return false;
+        }
+
+        // Check for packages that handle security headers (production dependencies only)
         $securityPackages = [
             'bepsvpt/secure-headers',
             'spatie/laravel-csp',
@@ -398,7 +396,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
         ];
 
         foreach ($securityPackages as $package) {
-            if (str_contains($content, $package)) {
+            if (array_key_exists($package, $composerData['require'])) {
                 return true;
             }
         }

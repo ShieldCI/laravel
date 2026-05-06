@@ -336,7 +336,7 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_detects_hsts_from_hsts_keyword(): void
+    public function test_hsts_comment_does_not_suppress_missing_hsts_issue(): void
     {
         $sessionConfig = <<<'PHP'
 <?php
@@ -372,9 +372,10 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass because HSTS keyword is found (even though not properly configured)
-        // The validation tests below check for proper configuration
-        $this->assertPassed($result);
+        // A comment mentioning HSTS does not mean the header is actually set —
+        // the analyzer must still report missing HSTS.
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('missing HSTS', $result);
     }
 
     public function test_fails_when_https_app_missing_hsts(): void
@@ -952,6 +953,40 @@ JSON;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    public function test_security_package_in_require_dev_does_not_suppress_missing_hsts(): void
+    {
+        $sessionConfig = <<<'PHP'
+<?php
+
+return [
+    'secure' => true,
+];
+PHP;
+
+        $composerJson = <<<'JSON'
+{
+    "require": {},
+    "require-dev": {
+        "bepsvpt/secure-headers": "^7.0"
+    }
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            'config/session.php' => $sessionConfig,
+            'composer.json' => $composerJson,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // A dev-only security package provides no HSTS in production.
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('missing HSTS', $result);
     }
 
     public function test_fails_with_security_package_but_has_issues(): void

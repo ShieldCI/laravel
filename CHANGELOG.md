@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.10
+
+### Fixed
+- `FrontendVulnerableDependencyAnalyzer` now correctly reports vulnerability titles when running against projects using npm v7+ — npm audit v2 format stores advisory details (`title`, `url`, `severity`, `range`, `cves`) inside each vulnerability's `via` array as objects rather than at the top level; the analyzer was passing the raw vulnerability object to `createFrontendVulnerabilityIssue()` which found no `title` key and fell back to "Known security vulnerability"; `parseNpmAuditResults()` now iterates `via` entries and merges each advisory object with the parent vulnerability before creating the issue, so titles such as "ip-address has XSS in Address6 HTML-emitting methods" are correctly surfaced; `via` entries that are strings (transitive dependencies — packages affected only because they depend on a vulnerable package) are no longer reported as separate issues, eliminating the duplicate "Known security vulnerability" entries for packages like `express-rate-limit` that carry no direct advisory
+- `Reporter::streamResult()` now shows the individual issue message for single issues at file-only locations (no line number) — previously, issue messages were only rendered below the location line when multiple issues shared the same location; for lock files such as `package-lock.json` and `yarn.lock` the location alone ("At package-lock.json") carries no meaningful context, and the message is the only identifier of which package is affected; the condition is now `count > 1 || location->line === null`, so file:line locations (e.g. `app/Http/Controllers/Foo.php:42`) continue to display without a redundant message indent for single issues, while file-only locations always show the `→ message` line
+
 ## v1.7.9
 
 ### Fixed

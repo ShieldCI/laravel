@@ -753,6 +753,178 @@ TEXT;
         $this->assertNotEmpty($result->getMessage());
     }
 
+    // ==================== npm v7+ Parsing Tests ====================
+
+    public function test_npm_v7_extracts_title_from_via_advisory_object(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('parseNpmAuditResults');
+        $method->setAccessible(true);
+
+        $issues = [];
+
+        $results = [
+            'vulnerabilities' => [
+                'ip-address' => [
+                    'name' => 'ip-address',
+                    'severity' => 'moderate',
+                    'isDirect' => false,
+                    'via' => [
+                        [
+                            'source' => 1117683,
+                            'name' => 'ip-address',
+                            'dependency' => 'ip-address',
+                            'title' => 'ip-address has XSS in Address6 HTML-emitting methods',
+                            'url' => 'https://github.com/advisories/GHSA-v2v4-37r5-5v8g',
+                            'severity' => 'moderate',
+                            'range' => '<=10.1.0',
+                        ],
+                    ],
+                    'range' => '<=10.1.0',
+                    'fixAvailable' => true,
+                ],
+            ],
+        ];
+
+        $method->invokeArgs($analyzer, [$results, &$issues, 'package-lock.json']);
+
+        $this->assertCount(1, $issues);
+        $issue = reset($issues);
+        $this->assertNotFalse($issue);
+        $this->assertStringContainsString('ip-address has XSS in Address6 HTML-emitting methods', $issue->message);
+    }
+
+    public function test_npm_v7_skips_transitive_only_vulnerabilities(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('parseNpmAuditResults');
+        $method->setAccessible(true);
+
+        $issues = [];
+
+        $results = [
+            'vulnerabilities' => [
+                'express-rate-limit' => [
+                    'name' => 'express-rate-limit',
+                    'severity' => 'moderate',
+                    'isDirect' => false,
+                    'via' => ['ip-address'], // strings only — transitive effect
+                    'range' => '8.0.1 - 8.5.0',
+                    'fixAvailable' => true,
+                ],
+            ],
+        ];
+
+        $method->invokeArgs($analyzer, [$results, &$issues, 'package-lock.json']);
+
+        $this->assertCount(0, $issues);
+    }
+
+    public function test_npm_v7_multiple_via_advisories_create_multiple_issues(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('parseNpmAuditResults');
+        $method->setAccessible(true);
+
+        $issues = [];
+
+        $results = [
+            'vulnerabilities' => [
+                'some-package' => [
+                    'name' => 'some-package',
+                    'severity' => 'high',
+                    'via' => [
+                        [
+                            'source' => 1001,
+                            'title' => 'First vulnerability',
+                            'severity' => 'high',
+                        ],
+                        [
+                            'source' => 1002,
+                            'title' => 'Second vulnerability',
+                            'severity' => 'moderate',
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        $method->invokeArgs($analyzer, [$results, &$issues, 'package-lock.json']);
+
+        $this->assertCount(2, $issues);
+    }
+
+    public function test_npm_v7_falls_back_when_no_via(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('parseNpmAuditResults');
+        $method->setAccessible(true);
+
+        $issues = [];
+
+        $results = [
+            'vulnerabilities' => [
+                'old-package' => [
+                    'name' => 'old-package',
+                    'severity' => 'high',
+                    'title' => 'Old format title',
+                    // no 'via' key
+                ],
+            ],
+        ];
+
+        $method->invokeArgs($analyzer, [$results, &$issues, 'package-lock.json']);
+
+        $this->assertCount(1, $issues);
+        $issue = reset($issues);
+        $this->assertNotFalse($issue);
+        $this->assertStringContainsString('Old format title', $issue->message);
+    }
+
+    public function test_npm_v7_advisory_url_included_in_metadata(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('parseNpmAuditResults');
+        $method->setAccessible(true);
+
+        $issues = [];
+
+        $results = [
+            'vulnerabilities' => [
+                'ip-address' => [
+                    'name' => 'ip-address',
+                    'severity' => 'moderate',
+                    'via' => [
+                        [
+                            'source' => 1117683,
+                            'title' => 'ip-address has XSS in Address6 HTML-emitting methods',
+                            'url' => 'https://github.com/advisories/GHSA-v2v4-37r5-5v8g',
+                            'severity' => 'moderate',
+                        ],
+                    ],
+                ],
+            ],
+        ];
+
+        $method->invokeArgs($analyzer, [$results, &$issues, 'package-lock.json']);
+
+        $this->assertCount(1, $issues);
+        $issue = reset($issues);
+        $this->assertNotFalse($issue);
+        $this->assertArrayHasKey('advisory_url', $issue->metadata);
+        $this->assertStringContainsString('GHSA-v2v4-37r5-5v8g', $issue->metadata['advisory_url']);
+    }
+
     // ==================== Helper Methods ====================
 
     /**

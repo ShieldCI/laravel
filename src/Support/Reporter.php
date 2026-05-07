@@ -828,8 +828,11 @@ class Reporter implements ReporterInterface
                         $output[] = $this->color($locationText, 'magenta');
                     }
 
-                    // If multiple issues at same location, show their messages indented
-                    if (count($locationIssues) > 1 && $firstIssue->location !== null) {
+                    // Show individual messages when grouped (multiple at same location) or
+                    // when the location has no line number (e.g. package-lock.json) and
+                    // the message carries the only meaningful detail
+                    if ($firstIssue->location !== null &&
+                        (count($locationIssues) > 1 || $firstIssue->location->line === null)) {
                         foreach ($locationIssues as $issue) {
                             $output[] = $this->color("  → {$issue->message}", 'gray');
                         }

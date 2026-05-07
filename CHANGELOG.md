@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.11
+
+### Fixed
+- `CsrfAnalyzer`, `XssAnalyzer`, `FilePermissionsAnalyzer`, and `FillableForeignKeyAnalyzer` no longer embed severity as a text prefix in issue message strings (e.g. `"Critical: All routes excluded..."` → `"All routes excluded..."`) — severity is already expressed via the typed `Severity` enum on each issue and rendered separately by the output layer; embedding it again as a prefix created redundancy and risked the text label drifting out of sync with the enum value; 22 prefixes removed; `FilePermissionsAnalyzer` also renames `"Critical file"` to `"Sensitive file"` where the word described the file sensitivity tier rather than the finding's severity level — that check carries `Severity::Medium`, making `"Critical file"` a misleading mismatch (#190)
+- `MissingDatabaseTransactionsAnalyzer` no longer false-positives on third-party static `::create()` calls — non-Eloquent classes that expose a factory method of the same name were incorrectly counted as database write operations; static write-method calls are now validated against Eloquent model ancestry via PHP reflection (full inheritance chain including vendor parents), an AST parent-chain registry built from project files (up to 3 levels), and namespace heuristics as a fallback (#191)
+
 ## v1.7.10
 
 ### Fixed

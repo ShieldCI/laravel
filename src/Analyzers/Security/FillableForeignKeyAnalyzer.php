@@ -260,7 +260,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                 // guarded = []
                 $issues[] = $this->createIssueWithSnippet(
                     message: sprintf(
-                        'Critical: Model "%s" uses $guarded = [] which allows unrestricted mass assignment',
+                        'Model "%s" uses $guarded = [] which allows unrestricted mass assignment',
                         $modelName
                     ),
                     filePath: $file,
@@ -289,7 +289,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 
             $issues[] = $this->createIssueWithSnippet(
                 message: sprintf(
-                    'Critical: "%s" (%s) is fillable in model "%s" - this allows users to impersonate others',
+                    '"%s" (%s) is fillable in model "%s" - this allows users to impersonate others',
                     $fieldName,
                     $relationship,
                     $modelName

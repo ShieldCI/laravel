@@ -389,7 +389,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 foreach ($exceptions as $exception) {
                     if ($exception === '*' || $exception === '/*') {
                         $issues[] = $this->createIssueWithSnippet(
-                            message: 'Critical: All routes excluded from CSRF protection with wildcard',
+                            message: 'All routes excluded from CSRF protection with wildcard',
                             filePath: $middlewarePath,
                             lineNumber: $lineNumber + 1,
                             severity: Severity::Critical,
@@ -595,7 +595,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 // If use() method was found but ValidateCsrfToken wasn't in it
                 if (! $hasValidateCsrfTokenInUse) {
                     $issues[] = $this->createIssueWithSnippet(
-                        message: 'Critical: ValidateCsrfToken missing from global middleware stack',
+                        message: 'ValidateCsrfToken missing from global middleware stack',
                         filePath: $file,
                         lineNumber: $useMethodStartLine + 1,
                         severity: Severity::Critical,
@@ -622,7 +622,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
                     if (preg_match('/ValidateCsrfToken/', $lines[$i])) {
                         $issues[] = $this->createIssueWithSnippet(
-                            message: 'Critical: ValidateCsrfToken removed from web middleware group',
+                            message: 'ValidateCsrfToken removed from web middleware group',
                             filePath: $file,
                             lineNumber: $lineNumber + 1,
                             severity: Severity::Critical,
@@ -648,7 +648,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             // - validateCsrfTokens(except: ['*'])
             if (preg_match('/validateCsrfTokens\s*\(\s*except\s*:\s*\[\s*[\'\"]\*[\'\"]\s*\]/', $line)) {
                 $issues[] = $this->createIssueWithSnippet(
-                    message: 'Critical: All routes excluded from CSRF protection in bootstrap/app.php',
+                    message: 'All routes excluded from CSRF protection in bootstrap/app.php',
                     filePath: $file,
                     lineNumber: $lineNumber + 1,
                     severity: Severity::Critical,
@@ -665,7 +665,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             // Check for $middleware->remove(ValidateCsrfToken::class) - older approach
             if (preg_match('/\$middleware\s*->\s*remove\s*\(\s*.*ValidateCsrfToken/', $line)) {
                 $issues[] = $this->createIssueWithSnippet(
-                    message: 'Critical: ValidateCsrfToken middleware has been removed',
+                    message: 'ValidateCsrfToken middleware has been removed',
                     filePath: $file,
                     lineNumber: $lineNumber + 1,
                     severity: Severity::Critical,

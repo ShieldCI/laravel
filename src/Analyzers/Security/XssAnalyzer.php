@@ -228,7 +228,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
                     $rawBladeMatched = true;
 
                     $issues[] = $this->createIssueWithSnippet(
-                        message: 'Critical XSS: Unescaped blade output with possible user input',
+                        message: 'Unescaped blade output with possible user input',
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
                         severity: Severity::Critical,
@@ -239,7 +239,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
                 // Check for echo with superglobals
                 if (preg_match('/echo\s+\$_(GET|POST|REQUEST|COOKIE)/', $line)) {
                     $issues[] = $this->createIssueWithSnippet(
-                        message: 'Critical XSS: Direct echo of superglobal without escaping',
+                        message: 'Direct echo of superglobal without escaping',
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
                         severity: Severity::Critical,
@@ -299,7 +299,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
                         : Severity::High;
 
                     $issues[] = $this->createIssueWithSnippet(
-                        message: $isJsString ? 'Critical XSS: User input injected into JavaScript string context' : 'Potential XSS: User data injected into JavaScript without proper encoding',
+                        message: $isJsString ? 'User input injected into JavaScript string context' : 'Potential XSS: User data injected into JavaScript without proper encoding',
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
                         severity: $severity,
@@ -352,7 +352,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
 
                 if ($this->containsSuperglobalAst($expr, $nodeFinder)) {
                     $issues[] = $this->createIssueWithSnippet(
-                        message: 'Critical XSS: Direct echo of superglobal without escaping',
+                        message: 'Direct echo of superglobal without escaping',
                         filePath: $file,
                         lineNumber: $echoNode->getStartLine(),
                         severity: Severity::Critical,
@@ -691,8 +691,8 @@ class XssAnalyzer extends AbstractFileAnalyzer
                 $hasUserInput = $this->mightContainUserInput($line);
                 $issues[] = $this->createIssueWithSnippet(
                     message: $hasUserInput
-                        ? 'Critical XSS: javascript: protocol with user input in HTML attribute'
-                        : 'High: javascript: protocol with executable code in HTML attribute',
+                        ? 'javascript: protocol with user input in HTML attribute'
+                        : 'javascript: protocol with executable code in HTML attribute',
                     filePath: $file,
                     lineNumber: $lineNumber + 1,
                     severity: $hasUserInput ? Severity::Critical : Severity::High,
@@ -704,7 +704,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
         // Check for data: protocol with user input (Critical - can execute JavaScript)
         if (preg_match('/(?:href|src)\s*=\s*["\']?\s*data:/i', $line) && $this->mightContainUserInput($line)) {
             $issues[] = $this->createIssueWithSnippet(
-                message: 'Critical XSS: data: protocol with user input in HTML attribute',
+                message: 'data: protocol with user input in HTML attribute',
                 filePath: $file,
                 lineNumber: $lineNumber + 1,
                 severity: Severity::Critical,
@@ -723,7 +723,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
             // Check for event handlers with Blade output or user input
             if (preg_match('/'.$handler.'\s*=\s*["\'][^"\']*(\{\{|\{!!|\$_|request\()/i', $line)) {
                 $issues[] = $this->createIssueWithSnippet(
-                    message: "Critical XSS: User input in {$handler} event handler attribute",
+                    message: "User input in {$handler} event handler attribute",
                     filePath: $file,
                     lineNumber: $lineNumber + 1,
                     severity: Severity::Critical,
@@ -742,7 +742,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
                 // Skip if user input is properly URL-encoded
                 if (! $this->isUrlSafeContext($hrefValue)) {
                     $issues[] = $this->createIssueWithSnippet(
-                        message: 'High: User input in href attribute without URL validation',
+                        message: 'User input in href attribute without URL validation',
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
                         severity: Severity::High,
@@ -761,7 +761,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
                 // Skip if user input is properly URL-encoded
                 if (! $this->isUrlSafeContext($srcValue)) {
                     $issues[] = $this->createIssueWithSnippet(
-                        message: 'High: User input in src attribute without validation',
+                        message: 'User input in src attribute without validation',
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
                         severity: Severity::High,
@@ -774,7 +774,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
         // Check for user input in data-* attributes (Medium - can be exploited in some contexts)
         if (preg_match('/data-[a-z0-9_-]+\s*=\s*["\'][^"\']*(\{!!)/i', $line)) {
             $issues[] = $this->createIssueWithSnippet(
-                message: 'Medium: Unescaped user input in data-* attribute',
+                message: 'Unescaped user input in data-* attribute',
                 filePath: $file,
                 lineNumber: $lineNumber + 1,
                 severity: Severity::Medium,

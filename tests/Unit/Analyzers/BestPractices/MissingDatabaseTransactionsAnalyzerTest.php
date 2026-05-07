@@ -2053,4 +2053,44 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    public function test_passes_with_third_party_static_create_calls(): void
+    {
+        // Spatie\Sitemap\Tags\Url and Spatie\Sitemap\Sitemap are not Eloquent models.
+        // Multiple ::create() calls on them must not trigger the missing-transaction warning.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Marketing;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Http\Response;
+use Spatie\Sitemap\Sitemap;
+use Spatie\Sitemap\Tags\Url;
+
+class SitemapController extends Controller
+{
+    public function __invoke(): Response
+    {
+        $sitemap = Sitemap::create()
+            ->add(Url::create('/')->setPriority(1.0)->setChangeFrequency(Url::CHANGE_FREQUENCY_WEEKLY))
+            ->add(Url::create('/features')->setPriority(0.9)->setChangeFrequency(Url::CHANGE_FREQUENCY_MONTHLY))
+            ->add(Url::create('/pricing')->setPriority(0.9)->setChangeFrequency(Url::CHANGE_FREQUENCY_MONTHLY))
+            ->add(Url::create('/changelog')->setPriority(0.7)->setChangeFrequency(Url::CHANGE_FREQUENCY_WEEKLY));
+
+        return response($sitemap->render(), 200, ['Content-Type' => 'application/xml']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Http/Controllers/Marketing/SitemapController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

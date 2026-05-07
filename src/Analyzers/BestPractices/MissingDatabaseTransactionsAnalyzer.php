@@ -65,6 +65,24 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
 
         $phpFiles = $this->getPhpFiles();
 
+        // Phase 0: Build Eloquent model registry from all project PHP files.
+        $modelScanner = new EloquentModelScanner;
+        foreach ($phpFiles as $file) {
+            try {
+                $ast = $this->parser->parseFile($file);
+                if (empty($ast)) {
+                    continue;
+                }
+                $ast = $this->parser->resolveNames($ast, ['replaceNodes' => false]);
+                $registryTraverser = new NodeTraverser;
+                $registryTraverser->addVisitor($modelScanner);
+                $registryTraverser->traverse($ast);
+            } catch (\Throwable) {
+                continue;
+            }
+        }
+        $classParents = $modelScanner->getParents();
+
         foreach ($phpFiles as $file) {
             // Skip test and development files
             if ($this->isTestFile($file) || $this->isDevelopmentFile($file)) {
@@ -77,12 +95,14 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
+                $ast = $this->parser->resolveNames($ast, ['replaceNodes' => false]);
+
                 $scanner = new TransactionDelegatedMethodScanner;
                 $preScanTraverser = new NodeTraverser;
                 $preScanTraverser->addVisitor($scanner);
                 $preScanTraverser->traverse($ast);
 
-                $visitor = new TransactionVisitor($this->threshold, $scanner->getDelegatedMethods());
+                $visitor = new TransactionVisitor($this->threshold, $scanner->getDelegatedMethods(), $classParents);
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
@@ -189,10 +209,14 @@ class TransactionVisitor extends NodeVisitorAbstract
      */
     private array $ifElseBranchStack = [];
 
-    /** @param array<string, true> $transactionDelegatedMethods */
+    /**
+     * @param  array<string, true>  $transactionDelegatedMethods
+     * @param  array<string, string|null>  $classParents
+     */
     public function __construct(
         private int $threshold,
         private array $transactionDelegatedMethods = [],
+        private array $classParents = [],
     ) {}
 
     public function enterNode(Node $node): ?Node
@@ -591,6 +615,10 @@ class TransactionVisitor extends NodeVisitorAbstract
                     'upsert', 'updateOrInsert', 'updateOrCreate', 'firstOrCreate',
                 ];
                 if (in_array($method, $writeMethods, true)) {
+                    if ($node->class instanceof Node\Name && ! $this->isLikelyDatabaseClass($node->class)) {
+                        return false;
+                    }
+
                     return true;
                 }
             }
@@ -625,6 +653,62 @@ class TransactionVisitor extends NodeVisitorAbstract
         }
 
         return false;
+    }
+
+    /**
+     * Returns true if the class Name likely descends from Illuminate\Database\Eloquent\Model.
+     *
+     * Three-tier strategy:
+     * 1. Reflection (class_exists + is_a) — accurate when the Laravel autoloader is active.
+     * 2. AST parent registry — follows up to 3 levels for project-file classes.
+     * 3. Namespace heuristics — fallback for test contexts where model files are not
+     *    present in the scanned directory and the autoloader cannot resolve them.
+     */
+    private function isLikelyDatabaseClass(Node\Name $name): bool
+    {
+        $resolvedName = $name->getAttribute('resolvedName');
+
+        if (! ($resolvedName instanceof Node\Name\FullyQualified)) {
+            return true; // Cannot resolve FQN — assume may be a model (conservative)
+        }
+
+        $fqn = ltrim($resolvedName->toString(), '\\');
+
+        if (! str_contains($fqn, '\\')) {
+            return true; // Unnamespaced class — conservative
+        }
+
+        $eloquentBase = 'Illuminate\\Database\\Eloquent\\Model';
+
+        // Tier 1: reflection covers the full hierarchy in one call (project + vendor)
+        if (class_exists($fqn, false) || class_exists($fqn)) {
+            return is_a($fqn, $eloquentBase, true);
+        }
+
+        // Tier 2: AST registry — follow parent chain up to 3 levels
+        $current = $fqn;
+        for ($depth = 0; $depth < 3; $depth++) {
+            if ($current === $eloquentBase) {
+                return true;
+            }
+
+            if (! array_key_exists($current, $this->classParents)) {
+                break; // Not in registry — fall through to heuristics
+            }
+
+            $parent = $this->classParents[$current];
+            if ($parent === null) {
+                break;
+            }
+
+            $current = $parent;
+        }
+
+        // Tier 3: namespace heuristics — catches App\Models\* and *\Models\* patterns
+        // (handles test contexts where models are not in the scanned temp directory)
+        return str_starts_with($fqn, 'App\\Models\\')
+            || str_starts_with($fqn, 'App\\Model\\')
+            || str_contains($fqn, '\\Models\\');
     }
 
     /**
@@ -732,5 +816,52 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
     public function getDelegatedMethods(): array
     {
         return array_diff_key($this->calledInsideTransaction, $this->calledOutsideTransaction);
+    }
+}
+
+/**
+ * Pre-scan that records every class's direct parent FQN from AST.
+ *
+ * Requires NameResolver to have run first so that resolvedName attributes
+ * and namespacedName are populated on class and name nodes.
+ */
+class EloquentModelScanner extends NodeVisitorAbstract
+{
+    /** @var array<string, string|null> class FQN → parent FQN (null if no parent) */
+    private array $parents = [];
+
+    public function enterNode(Node $node): ?Node
+    {
+        if (! ($node instanceof Node\Stmt\Class_)) {
+            return null;
+        }
+
+        // NameResolver sets namespacedName on class definitions
+        $namespacedName = $node->getAttribute('namespacedName');
+        $className = $namespacedName instanceof Node\Name
+            ? $namespacedName->toString()
+            : $node->name?->toString();
+
+        if ($className === null) {
+            return null;
+        }
+
+        $parentFqn = null;
+        if ($node->extends !== null) {
+            $resolved = $node->extends->getAttribute('resolvedName');
+            $parentFqn = $resolved instanceof Node\Name\FullyQualified
+                ? ltrim($resolved->toString(), '\\')
+                : ltrim($node->extends->toString(), '\\');
+        }
+
+        $this->parents[$className] = $parentFqn;
+
+        return null;
+    }
+
+    /** @return array<string, string|null> */
+    public function getParents(): array
+    {
+        return $this->parents;
     }
 }

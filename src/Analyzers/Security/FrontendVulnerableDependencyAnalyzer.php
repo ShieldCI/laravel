@@ -345,8 +345,33 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         // Check for vulnerabilities in the result (npm v7+)
         if (isset($results['vulnerabilities']) && is_array($results['vulnerabilities'])) {
             foreach ($results['vulnerabilities'] as $package => $vulnerability) {
-                if (is_string($package) && is_array($vulnerability)) {
+                if (! is_string($package) || ! is_array($vulnerability)) {
+                    continue;
+                }
+
+                $via = isset($vulnerability['via']) && is_array($vulnerability['via'])
+                    ? $vulnerability['via']
+                    : [];
+
+                $createdAny = false;
+
+                foreach ($via as $viaItem) {
+                    if (is_array($viaItem)) {
+                        // npm v7+: advisory details (title, url, severity, range, cves) live inside via entries
+                        $merged = array_merge($vulnerability, $viaItem);
+                        $this->createFrontendVulnerabilityIssue($package, $merged, $issues, $packageLock);
+                        $createdAny = true;
+                    }
+                    // string entries mean a transitive dependency — skip, the root package is reported separately
+                }
+
+                // Fallback for old / non-standard format with no via key at all
+                if (! $createdAny && $via === []) {
                     $this->createFrontendVulnerabilityIssue($package, $vulnerability, $issues, $packageLock);
+                    $createdAny = true;
+                }
+
+                if ($createdAny) {
                     $detailedIssuesCreated = true;
                 }
             }

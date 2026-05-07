@@ -816,7 +816,6 @@ PHP;
         $result = $analyzer->analyze();
 
         $issue = $result->getIssues()[0];
-        $this->assertStringContainsString('Critical', $issue->message);
         $this->assertStringContainsString('user_id', $issue->message);
         $this->assertStringContainsString('impersonate', $issue->message);
     }

@@ -210,7 +210,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
         // Check 2: World-readable on critical files (CRITICAL - for sensitive files)
         if ($isCritical && $this->isWorldReadable($permissions['raw'])) {
             $issues[] = $this->createIssue(
-                message: sprintf('Critical file "%s" is world-readable (permissions: %s)', $relativePath, $permissions['octal']),
+                message: sprintf('Sensitive file "%s" is world-readable (permissions: %s)', $relativePath, $permissions['octal']),
                 location: new Location($relativePath),
                 severity: Severity::Critical,
                 recommendation: sprintf(
@@ -272,7 +272,7 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
         // Check 4: Group-writable on critical files (Medium severity)
         if ($isCritical && $this->isGroupWritable($permissions['raw'])) {
             $issues[] = $this->createIssue(
-                message: sprintf('Critical file "%s" is group-writable (permissions: %s)', $relativePath, $permissions['octal']),
+                message: sprintf('Sensitive file "%s" is group-writable (permissions: %s)', $relativePath, $permissions['octal']),
                 location: new Location($relativePath),
                 severity: Severity::Medium,
                 recommendation: sprintf(

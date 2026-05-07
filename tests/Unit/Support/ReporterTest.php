@@ -538,6 +538,59 @@ class ReporterTest extends TestCase
     }
 
     #[Test]
+    public function stream_result_shows_message_for_single_issue_without_line_number(): void
+    {
+        // File-only locations (e.g. package-lock.json) are not self-descriptive —
+        // the message must be shown so the user knows which package is affected
+        $result = new AnalysisResult(
+            analyzerId: 'test-analyzer',
+            status: Status::Failed,
+            message: 'Found 1 frontend dependency security issue',
+            issues: [
+                new Issue(
+                    message: 'Frontend package "ip-address" has a known vulnerability: ip-address has XSS in Address6 HTML-emitting methods',
+                    location: new Location('package-lock.json'),
+                    severity: Severity::Medium,
+                    recommendation: 'Update package "ip-address" to a patched version',
+                ),
+            ],
+            executionTime: 0.1,
+            metadata: ['name' => 'Frontend Vulnerable Dependencies Analyzer'],
+        );
+
+        $output = $this->reporter->streamResult($result, 1, 1, 'Security');
+
+        $this->assertStringContainsString('ip-address has XSS in Address6 HTML-emitting methods', $output);
+        $this->assertStringContainsString('Update package "ip-address" to a patched version', $output);
+    }
+
+    #[Test]
+    public function stream_result_does_not_show_message_for_single_issue_with_line_number(): void
+    {
+        // File:line locations are already specific — no need to repeat the message for a single issue
+        $result = new AnalysisResult(
+            analyzerId: 'test-analyzer',
+            status: Status::Failed,
+            message: 'Found 1 silent failure',
+            issues: [
+                new Issue(
+                    message: 'Catching Exception is overly broad',
+                    location: new Location('app/Http/Controllers/UserController.php', 42),
+                    severity: Severity::Medium,
+                    recommendation: 'Catch specific exception types',
+                ),
+            ],
+            executionTime: 0.1,
+            metadata: ['name' => 'Silent Failure Analyzer'],
+        );
+
+        $output = $this->reporter->streamResult($result, 1, 1, 'Security');
+
+        $this->assertStringContainsString('app/Http/Controllers/UserController.php', $output);
+        $this->assertStringNotContainsString('→ Catching Exception is overly broad', $output);
+    }
+
+    #[Test]
     public function stream_result_groups_issues_at_same_location(): void
     {
         $result = new AnalysisResult(

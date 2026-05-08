@@ -138,17 +138,19 @@ class XssAnalyzer extends AbstractFileAnalyzer
         $staticIssues = $this->analyzeCodePatterns();
         $issues = array_merge($issues, $staticIssues);
 
-        // PART 2: HTTP Header Analysis (production only)
-        if (! $this->skipHttpChecks) {
+        // PART 2: HTTP Header Analysis (production/staging only, non-CI)
+        $headersVerified = false;
+        if (! $this->skipHttpChecks && $this->isHttpCheckEnvironment() && ! $this->isApiOnlyApp()) {
             $headerIssues = $this->analyzeHttpHeaders();
             $issues = array_merge($issues, $headerIssues);
+            $headersVerified = true;
         }
 
         if (empty($issues)) {
             return $this->passed(
-                $this->skipHttpChecks
-                    ? 'No XSS vulnerabilities detected in code'
-                    : 'No XSS vulnerabilities detected (code and headers verified)'
+                $headersVerified
+                    ? 'No XSS vulnerabilities detected (code and headers verified)'
+                    : 'No XSS vulnerabilities detected in code'
             );
         }
 
@@ -803,6 +805,10 @@ class XssAnalyzer extends AbstractFileAnalyzer
             return [];
         }
 
+        if (! $this->isHttpCheckEnvironment()) {
+            return [];
+        }
+
         $issues = [];
 
         // Try to find a guest URL to check
@@ -887,6 +893,21 @@ class XssAnalyzer extends AbstractFileAnalyzer
         } catch (Throwable) {
             return false; // Can't inspect → assume web app to avoid missing real issues
         }
+    }
+
+    /**
+     * Check if the current environment warrants live HTTP header checks.
+     *
+     * HTTP header checks (CSP validation) are only meaningful in environments
+     * where the full infrastructure stack is deployed. Uses the inherited
+     * getEnvironment() so shieldci.environment_mapping is applied transparently.
+     */
+    private function isHttpCheckEnvironment(): bool
+    {
+        $current = $this->getEnvironment();
+
+        return strcasecmp($current, 'production') === 0
+            || strcasecmp($current, 'staging') === 0;
     }
 
     /**

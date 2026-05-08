@@ -42,6 +42,12 @@ class XssAnalyzerTest extends AnalyzerTestCase
      */
     protected function createAnalyzerWithHttpMock(array $responses): XssAnalyzer
     {
+        // HTTP checks only run in production/staging — default to production for HTTP header tests.
+        // Individual tests can override app.env after calling this helper if needed.
+        if (config('app.env') === 'testing') {
+            config(['app.env' => 'production']);
+        }
+
         $appUrl = config('app.url');
         if ($appUrl && is_string($appUrl)) {
             /** @phpstan-ignore-next-line */
@@ -520,6 +526,7 @@ BLADE;
     public function test_skips_csp_check_for_api_only_app(): void
     {
         config(['app.url' => 'https://api.example.com']);
+        config(['app.env' => 'production']); // Ensure env gate is not the reason for skipping
         config(['shieldci.ci_mode' => false]);
 
         $tempDir = $this->createTempDirectory(['test.blade.php' => '<div>{{ $safe }}</div>']);
@@ -572,6 +579,7 @@ BLADE;
     {
         config(['app.url' => 'http://localhost']);
         config(['shieldci.guest_url' => '/']);
+        config(['app.env' => 'production']); // Ensure env gate is not the reason for skipping
         config(['shieldci.ci_mode' => false]);
 
         $tempDir = $this->createTempDirectory(['test.blade.php' => '<div>{{ $safe }}</div>']);
@@ -606,6 +614,91 @@ BLADE;
 
         // Should not fail due to network error
         $this->assertPassed($result);
+    }
+
+    // ==========================================
+    // Environment Gate Tests
+    // ==========================================
+
+    public function test_skips_http_check_in_local_environment(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['app.env' => 'local']);
+        config(['shieldci.ci_mode' => false]);
+
+        $tempDir = $this->createTempDirectory(['test.blade.php' => '<div>{{ $safe }}</div>']);
+
+        /** @var XssAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false); // Web app, but env gate should still skip
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString('in code', $result->getMessage());
+    }
+
+    public function test_skips_http_check_in_testing_environment(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['app.env' => 'testing']);
+        config(['shieldci.ci_mode' => false]);
+
+        $tempDir = $this->createTempDirectory(['test.blade.php' => '<div>{{ $safe }}</div>']);
+
+        /** @var XssAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString('in code', $result->getMessage());
+    }
+
+    public function test_runs_http_check_in_staging_environment(): void
+    {
+        config(['app.url' => 'https://staging.example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        $responses = [
+            new Response(200, [], '<html></html>'), // No CSP header
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        config(['app.env' => 'staging']); // Override after helper sets 'production'
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Content-Security-Policy header not set', $result);
+    }
+
+    public function test_runs_http_check_for_custom_environment_mapped_to_production(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+        config(['shieldci.environment_mapping' => ['production-us' => 'production']]);
+
+        $responses = [
+            new Response(200, [], '<html></html>'), // No CSP header
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        config(['app.env' => 'production-us']); // Maps to 'production' via environment_mapping
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Content-Security-Policy header not set', $result);
     }
 
     // ==========================================

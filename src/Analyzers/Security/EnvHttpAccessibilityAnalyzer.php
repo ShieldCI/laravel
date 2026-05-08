@@ -83,6 +83,11 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
 
     public function shouldRun(): bool
     {
+        // HTTP accessibility checks only apply in deployed environments
+        if (! $this->isHttpCheckEnvironment()) {
+            return false;
+        }
+
         // Only run if we can find a guest route to test from
         $url = $this->findLoginRoute();
 
@@ -100,14 +105,25 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
 
     public function getSkipReason(): string
     {
+        if (! $this->isHttpCheckEnvironment()) {
+            return sprintf('HTTP accessibility checks only run in production/staging (current: %s)', $this->getEnvironment());
+        }
+
         $url = $this->findLoginRoute();
 
         if ($url === null) {
             return 'No guest URL found for HTTP accessibility check';
         }
 
-        // Otherwise, provide specific reason about localhost URLs
         return 'Skipped for localhost URLs (local development environment)';
+    }
+
+    private function isHttpCheckEnvironment(): bool
+    {
+        $current = $this->getEnvironment();
+
+        return strcasecmp($current, 'production') === 0
+            || strcasecmp($current, 'staging') === 0;
     }
 
     protected function runAnalysis(): ResultInterface

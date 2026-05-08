@@ -25,6 +25,12 @@ class EnvHttpAccessibilityAnalyzerTest extends AnalyzerTestCase
      */
     protected function createAnalyzer(array $responses = []): EnvHttpAccessibilityAnalyzer
     {
+        // HTTP checks only run in production/staging — default to production for these tests.
+        // Individual tests can override app.env after calling this helper if needed.
+        if (config('app.env') === 'testing') {
+            config(['app.env' => 'production']);
+        }
+
         // Force URL root to respect app.url config in tests
         // This is needed because Orchestra Testbench doesn't automatically
         // configure the URL generator from app.url
@@ -836,7 +842,7 @@ ENV;
 
         $this->assertFalse($analyzer->shouldRun());
         $reason = $analyzer->getSkipReason();
-        // When no URL is configured, findLoginRoute() falls back to url('/') which is localhost
+        // With production env set, the env gate passes; findLoginRoute() falls back to url('/') which is localhost
         $this->assertStringContainsString('localhost', $reason);
     }
 
@@ -849,5 +855,34 @@ ENV;
         $reason = $analyzer->getSkipReason();
         $this->assertStringContainsString('localhost', $reason);
         $this->assertStringContainsString('local development', $reason);
+    }
+
+    public function test_skips_when_environment_is_local(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        $analyzer = $this->createAnalyzer();
+        config(['app.env' => 'local']); // Override after helper sets 'production'
+
+        $this->assertFalse($analyzer->shouldRun());
+    }
+
+    public function test_skips_when_environment_is_testing(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        $analyzer = $this->createAnalyzer();
+        config(['app.env' => 'testing']); // Override after helper sets 'production'
+
+        $this->assertFalse($analyzer->shouldRun());
+    }
+
+    public function test_get_skip_reason_for_non_production_environment(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        $analyzer = $this->createAnalyzer();
+        config(['app.env' => 'local']); // Override after helper sets 'production'
+
+        $reason = $analyzer->getSkipReason();
+        $this->assertStringContainsString('production/staging', $reason);
+        $this->assertStringContainsString('local', $reason);
     }
 }

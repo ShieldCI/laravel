@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.12
+
+### Fixed
+- `SilentFailureAnalyzer` no longer false-positives on empty catch blocks that contain an explanatory comment — previously the comment text had to match a hardcoded keyword list; `isIntentionalIgnoreComment()` is removed and `hasExplanatoryComment()` now passes on any comment with non-empty content, treating its presence as sufficient evidence of a deliberate choice; bare `//` markers with no text continue to be flagged
+
 ## v1.7.11
 
 ### Fixed

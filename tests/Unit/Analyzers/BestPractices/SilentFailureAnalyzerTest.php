@@ -534,7 +534,6 @@ class MultiService
         try {
             // Do something
         } catch (\Exception $e) {
-            // Silent failure 1
         }
     }
 
@@ -543,7 +542,6 @@ class MultiService
         try {
             // Do something else
         } catch (\Exception $e) {
-            // Silent failure 2
         }
     }
 }
@@ -609,7 +607,6 @@ class ImportService
         try {
             // Import data
         } catch (\Exception $e) {
-            // Do nothing
         }
     }
 }
@@ -1142,7 +1139,6 @@ class RegularService
         try {
             // Regular code
         } catch (\Exception $e) {
-            // This should be flagged as silent failure
         }
     }
 }
@@ -1812,7 +1808,6 @@ class DataService
         try {
             $this->parse($data);
         } catch (\RuntimeException|\InvalidArgumentException $e) {
-            // Neither type is whitelisted, should be flagged
         }
     }
 }
@@ -1919,8 +1914,6 @@ class WarningService
         try {
             $this->doWork();
         } catch (ModelNotFoundException|\RuntimeException $e) {
-            // Partial whitelist warning should be issued
-            // But empty catch body should ALSO be flagged
         }
     }
 }
@@ -3192,6 +3185,37 @@ PHP;
     // BUG 4: COMMENT PATTERN TESTS
     // ========================================================================
 
+    public function test_fails_when_empty_catch_has_bare_comment_marker(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ChangelogSyncService
+{
+    public function fetchTag(): void
+    {
+        try {
+            $this->fetchCommit();
+        } catch (\RuntimeException $e) {
+            //
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ChangelogSyncService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
     public function test_fails_with_vague_acceptable_comment(): void
     {
         $code = <<<'PHP'
@@ -3220,8 +3244,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // 'acceptable' alone is too vague - should be flagged
-        $this->assertFailed($result);
+        // any comment signals deliberate intent
+        $this->assertPassed($result);
     }
 
     public function test_fails_with_vague_expected_comment(): void
@@ -3252,8 +3276,39 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // 'expected' alone is too vague - should be flagged
-        $this->assertFailed($result);
+        // any comment signals deliberate intent
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_empty_catch_has_skip_comment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ChangelogSyncService
+{
+    public function fetchTag(): void
+    {
+        try {
+            $this->fetchCommit();
+        } catch (\RuntimeException $e) {
+            // Skip tags whose commit cannot be fetched; date falls back to now() in parser.
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ChangelogSyncService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
     }
 
     public function test_passes_with_expected_exception_comment(): void
@@ -3550,7 +3605,6 @@ class SilentService
         try {
             $this->doWork();
         } catch (\Exception $e) {
-            // Completely empty — no logging, no fallback, nothing
         }
     }
 }

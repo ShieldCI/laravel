@@ -406,31 +406,24 @@ class SilentFailureVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Check if the catch block has an explanatory comment indicating intentional empty catch.
-     * Only considers comments that appear to explicitly justify the empty catch block.
+     * Check if the catch block has a non-empty comment — evidence the developer made a deliberate choice.
      */
     private function hasExplanatoryComment(Node\Stmt\Catch_ $catch): bool
     {
-        $allComments = [];
+        $allComments = $catch->getComments();
 
-        // Collect comments attached to the catch node
-        $allComments = array_merge($allComments, $catch->getComments());
-
-        // Collect comments inside the catch block (attached to Nop statements)
         foreach ($catch->stmts as $stmt) {
             if ($stmt instanceof Node\Stmt\Nop) {
                 $allComments = array_merge($allComments, $stmt->getComments());
             }
         }
 
-        // Collect comments from attributes
         /** @var array<Comment> $attributes */
         $attributes = $catch->getAttribute('comments', []);
         $allComments = array_merge($allComments, $attributes);
 
-        // Check if any comment indicates intentional ignoring
         foreach ($allComments as $comment) {
-            if ($this->isIntentionalIgnoreComment($comment->getText())) {
+            if ($this->commentHasContent($comment->getText())) {
                 return true;
             }
         }
@@ -438,56 +431,20 @@ class SilentFailureVisitor extends NodeVisitorAbstract
         return false;
     }
 
-    /**
-     * Check if a comment text indicates intentional exception ignoring.
-     */
-    private function isIntentionalIgnoreComment(string $commentText): bool
+    private function commentHasContent(string $text): bool
     {
-        $lowerText = strtolower($commentText);
-
-        // Bug 4: Tightened patterns - removed vague 'expected' and 'acceptable'
-        // Added more specific patterns instead
-        $intentionalPatterns = [
-            'intentional',
-            'intentionally',
-            'deliberately',
-            'on purpose',
-            'expected to fail',      // More specific than 'expected'
-            'expected exception',    // More specific than 'expected'
-            'safe to ignore',
-            'safely ignore',
-            'safely ignored',
-            'can be ignored',
-            'may be ignored',
-            'optional',
-            'not critical',
-            'non-critical',
-            'best effort',
-            'best-effort',
-            'fire and forget',
-            'fire-and-forget',
-            'no action needed',
-            'no action required',
-            'nothing to do',
-            'noop',
-            'no-op',
-            '@suppress',
-            '@ignore',
-            'phpstan-ignore',
-            'psalm-suppress',
-            'swallow',
-            'don\'t care',
-            'doesn\'t matter',
-            'not important',
-        ];
-
-        foreach ($intentionalPatterns as $pattern) {
-            if (str_contains($lowerText, $pattern)) {
-                return true;
-            }
+        if (str_starts_with($text, '//')) {
+            return trim(substr($text, 2)) !== '';
         }
 
-        return false;
+        if (str_starts_with($text, '#')) {
+            return trim(substr($text, 1)) !== '';
+        }
+
+        // Block comments: strip /* ... */ markers
+        $inner = preg_replace('/^\/\*+|\*+\/$/', '', $text);
+
+        return trim($inner ?? '') !== '';
     }
 
     /**

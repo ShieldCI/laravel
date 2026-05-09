@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.7.13
+
+### Fixed
+- `XssAnalyzer` HTTP header checks (live CSP verification) now only run in production/staging — previously ran in all non-CI environments, causing false positives for developers using Docker, Valet `.test` domains, or ngrok tunnels; `analyzeHttpHeaders()` now gates on `isHttpCheckEnvironment()` consistent with `shieldci.environment_mapping` (#193)
+- `EnvHttpAccessibilityAnalyzer` HTTP accessibility checks now only run in production/staging — previously ran in all non-CI environments, causing spurious Critical alerts when a local web server (Docker, Valet) serves `.env` files at a dev URL; `shouldRun()` now gates on `isHttpCheckEnvironment()` (#194)
+- `HSTSHeaderAnalyzer` no longer false-positives when `URL::forceHttps(false)` is called — any `forceHttps()` call was treated as HTTPS enforcement regardless of its argument; the fix inspects the first argument and skips calls where it is a literal `false`; no-argument and variable-argument calls continue to be treated as HTTPS-only (#195)
+
 ## v1.7.12
 
 ### Fixed

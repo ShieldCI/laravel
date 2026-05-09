@@ -293,6 +293,99 @@ PHP;
         $this->assertHasIssueContaining('HSTS', $result);
     }
 
+    public function test_force_https_with_false_argument_is_not_detected_as_https_only(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\URL;
+
+class AppServiceProvider
+{
+    public function boot(): void
+    {
+        URL::forceHttps(false);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $provider,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertSkipped($result);
+    }
+
+    public function test_force_https_with_true_argument_is_detected_as_https_only(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\URL;
+
+class AppServiceProvider
+{
+    public function boot(): void
+    {
+        URL::forceHttps(true);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $provider,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('HSTS', $result);
+    }
+
+    public function test_force_https_with_variable_argument_is_detected_as_https_only(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\URL;
+
+class AppServiceProvider
+{
+    public function boot(): void
+    {
+        $shouldForce = app()->isProduction() || app()->environment('staging');
+        URL::forceHttps($shouldForce);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/AppServiceProvider.php' => $provider,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('HSTS', $result);
+    }
+
     // ============================================
     // HSTS Middleware Detection Tests
     // ============================================

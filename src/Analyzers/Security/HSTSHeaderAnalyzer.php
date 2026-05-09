@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
+use PhpParser\Node\Expr\ConstFetch;
 use PhpParser\Node\Expr\StaticCall;
 use PhpParser\Node\Scalar\String_;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
@@ -166,10 +167,26 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        // Check for URL::forceHttps()
+        // Check for URL::forceHttps() — inspect the $force argument to avoid false positives
+        // when forceHttps(false) is used to explicitly disable HTTPS enforcement.
         $forceHttpsCallNodes = $astParser->findStaticCalls($ast, 'URL', 'forceHttps');
 
-        if ($forceHttpsCallNodes !== []) {
+        foreach ($forceHttpsCallNodes as $call) {
+            /** @var StaticCall $call */
+
+            // No argument → default $force = true → HTTPS is forced
+            if (empty($call->args)) {
+                return true;
+            }
+
+            $firstArg = $call->args[0]->value;
+
+            // Explicit false → HTTPS is NOT forced; skip this call
+            if ($firstArg instanceof ConstFetch && strtolower((string) $firstArg->name) === 'false') {
+                continue;
+            }
+
+            // Explicit true, variable, or expression → HTTPS is (conditionally) forced
             return true;
         }
 

@@ -305,9 +305,12 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         // Filter categories
         $activeCategories = array_values(array_diff($enabledCategories, $disabledCategories));
 
+        $timeoutConfig = $this->config->get('shieldci.timeout', 300);
+        $timeout = is_int($timeoutConfig) ? $timeoutConfig : 300;
+
         try {
             // Run PHPStan once on all paths
-            $runner->analyze($paths, $level);
+            $runner->analyze($paths, $level, $timeout);
 
             // Categorize all issues
             $categorizedIssues = $this->categorizeIssues($runner, $activeCategories);

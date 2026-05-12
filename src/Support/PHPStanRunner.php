@@ -6,6 +6,7 @@ namespace ShieldCI\Support;
 
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
+use ShieldCI\AnalyzersCore\Support\PlatformDetector;
 use Symfony\Component\Process\Process;
 
 /**
@@ -59,7 +60,7 @@ class PHPStanRunner
      * @param  string|array<string>  $paths
      * @return $this
      */
-    public function analyze(string|array $paths, int $level = 5): self
+    public function analyze(string|array $paths, int $level = 5, int $timeout = 300): self
     {
         $paths = is_array($paths) ? $paths : [$paths];
 
@@ -85,7 +86,7 @@ class PHPStanRunner
 
             // Run PHPStan
             $process = new Process($command, $this->basePath);
-            $process->setTimeout(300); // 5 minutes timeout
+            $process->setTimeout($timeout);
             $process->run();
 
             // Parse JSON output
@@ -161,6 +162,11 @@ class PHPStanRunner
     /**
      * Build NEON config string from includes and parameters.
      *
+     * In serverless environments (Lambda, Cloud Functions), PHPStan's parallel
+     * worker processes are constrained to 1 to avoid memory exhaustion and
+     * cold-start I/O bottlenecks from spawning multiple PHP processes on
+     * ephemeral container filesystems.
+     *
      * @param  array<string>  $includes
      */
     private function buildNeonConfig(array $includes, int $level): string
@@ -177,6 +183,12 @@ class PHPStanRunner
 
         $lines[] = 'parameters:';
         $lines[] = '    level: '.$level;
+        $lines[] = '    tmpDir: '.sys_get_temp_dir().'/phpstan';
+
+        if (PlatformDetector::isServerless()) {
+            $lines[] = '    parallel:';
+            $lines[] = '        maximumNumberOfProcesses: 1';
+        }
 
         return implode("\n", $lines);
     }

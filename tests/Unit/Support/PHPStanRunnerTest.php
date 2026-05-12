@@ -7,6 +7,7 @@ namespace ShieldCI\Tests\Unit\Support;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use ShieldCI\Support\PHPStanRunner;
+use Symfony\Component\Process\Exception\ProcessTimedOutException;
 
 class PHPStanRunnerTest extends TestCase
 {
@@ -600,6 +601,71 @@ BASH;
         $firstIssue = $issues->first();
         $this->assertNotNull($firstIssue);
         $this->assertEquals('Real issue', $firstIssue['message']);
+    }
+
+    public function test_config_always_includes_tmpdir(): void
+    {
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $capturedConfig = $this->getCapturedConfig();
+
+        $this->assertStringContainsString('tmpDir:', $capturedConfig);
+    }
+
+    public function test_config_includes_parallel_limit_when_running_in_serverless(): void
+    {
+        $this->createMockPHPStanWithConfigCapture();
+
+        putenv('AWS_LAMBDA_FUNCTION_NAME=test-function');
+        try {
+            $runner = new PHPStanRunner($this->tempDir);
+            $runner->analyze(['app']);
+        } finally {
+            putenv('AWS_LAMBDA_FUNCTION_NAME');
+        }
+
+        $capturedConfig = $this->getCapturedConfig();
+
+        $this->assertStringContainsString('maximumNumberOfProcesses: 1', $capturedConfig);
+    }
+
+    public function test_config_does_not_include_parallel_limit_outside_serverless(): void
+    {
+        $saved = getenv('AWS_LAMBDA_FUNCTION_NAME');
+        putenv('AWS_LAMBDA_FUNCTION_NAME');
+
+        $this->createMockPHPStanWithConfigCapture();
+
+        try {
+            $runner = new PHPStanRunner($this->tempDir);
+            $runner->analyze(['app']);
+        } finally {
+            if ($saved !== false) {
+                putenv("AWS_LAMBDA_FUNCTION_NAME={$saved}");
+            }
+        }
+
+        $capturedConfig = $this->getCapturedConfig();
+
+        $this->assertStringNotContainsString('maximumNumberOfProcesses', $capturedConfig);
+    }
+
+    public function test_analyze_respects_custom_timeout(): void
+    {
+        $vendorBinDir = $this->tempDir.'/vendor/bin';
+        mkdir($vendorBinDir, 0755, true);
+
+        // Mock that sleeps 3 seconds — longer than our 1s timeout
+        file_put_contents($vendorBinDir.'/phpstan', "#!/bin/bash\nsleep 3\n");
+        chmod($vendorBinDir.'/phpstan', 0755);
+
+        $this->expectException(ProcessTimedOutException::class);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app'], 5, 1); // 1-second timeout
     }
 
     /**

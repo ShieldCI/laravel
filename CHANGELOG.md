@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.14
+
+### Fixed
+- `PHPStanAnalyzer` no longer times out on Laravel Vapor / AWS Lambda — `PHPStanRunner` now emits `parallel.maximumNumberOfProcesses: 1` in the generated NEON config when `PlatformDetector::isServerless()` is true; PHPStan 2.x spawns up to 32 worker processes by default and each one cold-loads PHPStan + Larastan from Lambda's read-only filesystem, exhausting memory and I/O before analysis completes; `tmpDir` is now always written to `sys_get_temp_dir() . '/phpstan'` so PHPStan's result cache does not attempt writes to the read-only `/var/task` tree; the PHPStan subprocess timeout now reads from `shieldci.timeout` (default 300 s) so it can be set below Vapor's `cli-timeout`, giving the catch block time to return a clean error result before Lambda terminates the container
+
 ## v1.7.13
 
 ### Fixed

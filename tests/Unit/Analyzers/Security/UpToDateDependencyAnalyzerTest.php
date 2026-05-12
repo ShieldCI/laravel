@@ -764,6 +764,145 @@ OUTPUT;
         $this->assertStringNotContainsString('development', strtolower($issues[0]->message));
     }
 
+    public function test_passes_on_vapor_with_up_to_date_dependencies(): void
+    {
+        /** @var UpToDateDependencyAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: "Nothing to install or update\n",
+        );
+        $analyzer->setDeploymentPlatform('vapor');
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString('up-to-date', $result->getMessage());
+    }
+
+    public function test_passes_on_serverless_with_up_to_date_dependencies(): void
+    {
+        /** @var UpToDateDependencyAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: "Nothing to install or update\n",
+        );
+        $analyzer->setDeploymentPlatform('serverless');
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString('up-to-date', $result->getMessage());
+    }
+
+    public function test_passes_on_laravel_cloud_with_up_to_date_dependencies(): void
+    {
+        /** @var UpToDateDependencyAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: "Nothing to install or update\n",
+        );
+        $analyzer->setDeploymentPlatform('laravel-cloud');
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString('up-to-date', $result->getMessage());
+    }
+
+    public function test_passes_ignore_platform_reqs_to_dry_run_on_laravel_cloud(): void
+    {
+        /** @var Composer&MockInterface $composer */
+        $composer = Mockery::mock(Composer::class);
+
+        $composer->shouldReceive('getLockFile')->andReturn('/path/to/composer.lock');
+        $composer->shouldReceive('getJsonFile')->andReturn('/path/to/composer.json');
+        $composer->shouldReceive('areDevPackagesInstalled')->andReturn(true);
+
+        /** @phpstan-ignore-next-line Mockery expectation chaining */
+        $composer->shouldReceive('installDryRun')
+            ->with(['--ignore-platform-reqs'])
+            ->once()
+            ->andReturn("Nothing to install or update\n");
+
+        $analyzer = new UpToDateDependencyAnalyzer($composer);
+        $analyzer->setDeploymentPlatform('laravel-cloud');
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_ignore_platform_reqs_to_dry_run_on_vapor(): void
+    {
+        /** @var Composer&MockInterface $composer */
+        $composer = Mockery::mock(Composer::class);
+
+        $composer->shouldReceive('getLockFile')->andReturn('/path/to/composer.lock');
+        $composer->shouldReceive('getJsonFile')->andReturn('/path/to/composer.json');
+        $composer->shouldReceive('areDevPackagesInstalled')->andReturn(true);
+
+        // Verify that --ignore-platform-reqs is passed when running in Vapor
+        /** @phpstan-ignore-next-line Mockery expectation chaining */
+        $composer->shouldReceive('installDryRun')
+            ->with(['--ignore-platform-reqs'])
+            ->once()
+            ->andReturn("Nothing to install or update\n");
+
+        $analyzer = new UpToDateDependencyAnalyzer($composer);
+        $analyzer->setDeploymentPlatform('vapor');
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_ignore_platform_reqs_alongside_no_dev_on_vapor(): void
+    {
+        /** @var Composer&MockInterface $composer */
+        $composer = Mockery::mock(Composer::class);
+
+        $composer->shouldReceive('getLockFile')->andReturn('/path/to/composer.lock');
+        $composer->shouldReceive('getJsonFile')->andReturn('/path/to/composer.json');
+        $composer->shouldReceive('areDevPackagesInstalled')->andReturn(false);
+
+        // When --no-dev mode is active, --ignore-platform-reqs is appended after it
+        /** @phpstan-ignore-next-line Mockery expectation chaining */
+        $composer->shouldReceive('installDryRun')
+            ->with(['--no-dev', '--ignore-platform-reqs'])
+            ->once()
+            ->andReturn("Nothing to install or update\n");
+
+        $analyzer = new UpToDateDependencyAnalyzer($composer);
+        $analyzer->setDeploymentPlatform('vapor');
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_detects_real_outdated_deps_on_vapor(): void
+    {
+        $allDepsOutput = <<<'OUTPUT'
+Loading composer repositories with package information
+Installing dependencies from lock file
+Package operations: 0 installs, 1 update, 0 removals
+  - Updating vendor/prod-package (v1.0.0 => v1.0.1)
+OUTPUT;
+
+        /** @var UpToDateDependencyAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer(
+            composerLockPath: '/path/to/composer.lock',
+            allDepsOutput: $allDepsOutput,
+        );
+        $analyzer->setDeploymentPlatform('vapor');
+
+        $result = $analyzer->analyze();
+
+        // Real version updates must still be reported even in Vapor environments
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('dependencies are not up-to-date', $result);
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();

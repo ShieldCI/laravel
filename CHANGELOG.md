@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.15
+
+### Fixed
+- `UpToDateDependencyAnalyzer` no longer false-positives on Laravel Vapor, serverless, and Laravel Cloud — `composer.lock` is generated on the developer's machine but the dry-run executes on a different OS with different PHP extensions, causing Composer to report platform-specific packages as needing updates; `--ignore-platform-reqs` is now passed to the dry-run on these platforms so only version-constraint differences are evaluated; real outdated dependencies continue to be detected correctly
+
 ## v1.7.14
 
 ### Fixed

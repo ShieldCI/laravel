@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\DetectsDeploymentPlatform;
 use ShieldCI\Support\Composer;
 
 /**
@@ -26,6 +27,8 @@ use ShieldCI\Support\Composer;
  */
 class UpToDateDependencyAnalyzer extends AbstractAnalyzer
 {
+    use DetectsDeploymentPlatform;
+
     /**
      * Patterns indicating Composer is performing operations (updates available).
      * These are more reliable than looking for "nothing to" messages because:
@@ -114,6 +117,17 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
             // OPTIMIZATION: Run composer install --dry-run only ONCE.
             // Scope matches whatever was installed: full deps or production-only.
             $dryRunOptions = $devPackagesInstalled ? [] : ['--no-dev'];
+
+            // On managed cloud platforms (Vapor, Laravel Cloud), the composer.lock is generated
+            // on the developer's machine (e.g., macOS) but the dry-run executes on a different
+            // OS (Amazon Linux, managed Linux containers) with different PHP extensions and
+            // platform requirements. Without this flag, Composer reports platform-specific
+            // packages as needing updates even when version constraints are fully satisfied —
+            // a false positive unique to cross-platform deployments.
+            if ($this->isVaporOrServerless() || $this->isLaravelCloud()) {
+                $dryRunOptions[] = '--ignore-platform-reqs';
+            }
+
             $allDepsOutput = $this->composer->installDryRun($dryRunOptions);
 
             // EARLY EXIT: If everything is up-to-date, no need for further parsing

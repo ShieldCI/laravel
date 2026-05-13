@@ -8,6 +8,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\PlatformDetector;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\DetectsDeploymentPlatform;
@@ -77,6 +78,14 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
 
     public function shouldRun(): bool
     {
+        // On live serverless runtimes (Lambda, Cloud Functions, Azure Functions) Composer is
+        // not installed and the deployed package is frozen. Running install --dry-run fails
+        // immediately and produces a false positive via the conservative fallback in isUpToDate().
+        // This check only makes sense at development/CI time, not at runtime.
+        if ($this->isServerlessRuntime()) {
+            return false;
+        }
+
         // Run if composer.json exists (even if composer.lock is missing)
         // We want to warn about missing composer.lock
         return $this->composer->getJsonFile() !== null;
@@ -84,7 +93,23 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
 
     public function getSkipReason(): string
     {
+        if ($this->isServerlessRuntime()) {
+            return 'Dependency update checks are not applicable on serverless runtimes';
+        }
+
         return 'No composer.json file found';
+    }
+
+    // Distinct from isVaporOrServerless(): that also triggers on local Vapor projects via
+    // vapor.yml so they still get the --ignore-platform-reqs run. This method gates only
+    // on the actual Lambda runtime where Composer is absent and the check is meaningless.
+    private function isServerlessRuntime(): bool
+    {
+        if ($this->deploymentPlatformOverride !== null) {
+            return $this->deploymentPlatformOverride === 'serverless';
+        }
+
+        return PlatformDetector::isServerless();
     }
 
     protected function runAnalysis(): ResultInterface
@@ -139,7 +164,10 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
             // Extract which packages are being updated from Composer output
             $updatedPackages = $this->extractUpdatedPackages($allDepsOutput);
 
-            $dryRunFlag = $devPackagesInstalled ? 'install --dry-run' : 'install --dry-run --no-dev';
+            // Reflect the actual options used so the reported command is not misleading
+            // (previously this was computed independently and never included --ignore-platform-reqs).
+            $optionsString = implode(' ', $dryRunOptions);
+            $dryRunFlag = 'install --dry-run'.($optionsString !== '' ? ' '.$optionsString : '');
 
             // If we can't extract packages (unexpected output format), report general update needed
             if (empty($updatedPackages)) {

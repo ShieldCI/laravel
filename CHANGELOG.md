@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.16
+
+### Fixed
+- `UpToDateDependencyAnalyzer` no longer false-positives on live Vapor Lambda deployments — Composer is not installed in Lambda containers; `shouldRun()` now returns `false` on serverless runtimes so the check is skipped entirely
+- `UpToDateDependencyAnalyzer` metadata `composer_version_check` now reflects `--ignore-platform-reqs` when it is passed to the dry-run
+
 ## v1.7.15
 
 ### Fixed

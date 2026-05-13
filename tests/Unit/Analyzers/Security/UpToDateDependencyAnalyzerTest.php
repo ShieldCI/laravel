@@ -779,19 +779,21 @@ OUTPUT;
         $this->assertStringContainsString('up-to-date', $result->getMessage());
     }
 
-    public function test_passes_on_serverless_with_up_to_date_dependencies(): void
+    public function test_skips_on_serverless_runtime_via_analyze(): void
     {
+        // On a live Lambda container the analyzer must not run at all — shouldRun() returns
+        // false for 'serverless' so analyze() returns a Skipped result immediately.
+        // No allDepsOutput passed so no installDryRun expectation is registered (it won't be called).
         /** @var UpToDateDependencyAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
-            allDepsOutput: "Nothing to install or update\n",
         );
         $analyzer->setDeploymentPlatform('serverless');
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
-        $this->assertStringContainsString('up-to-date', $result->getMessage());
+        $this->assertSkipped($result);
+        $this->assertStringContainsString('serverless', $result->getMessage());
     }
 
     public function test_passes_on_laravel_cloud_with_up_to_date_dependencies(): void
@@ -901,6 +903,52 @@ OUTPUT;
         // Real version updates must still be reported even in Vapor environments
         $this->assertWarning($result);
         $this->assertHasIssueContaining('dependencies are not up-to-date', $result);
+    }
+
+    public function test_skips_on_serverless_runtime(): void
+    {
+        // On a live Lambda container Composer is not installed, so installDryRun() exits
+        // immediately with an error. That empty/unrecognised output falls through to the
+        // conservative fallback in isUpToDate() and produces a false positive. shouldRun()
+        // must return false for serverless runtimes to prevent the analyzer from running at all.
+        /** @var UpToDateDependencyAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setDeploymentPlatform('serverless');
+
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertStringContainsString('serverless', $analyzer->getSkipReason());
+    }
+
+    public function test_dry_run_flag_in_metadata_reflects_ignore_platform_reqs(): void
+    {
+        // composer_version_check in issue metadata must match the actual options passed to
+        // installDryRun() — previously the string was built independently of $dryRunOptions
+        // and never included --ignore-platform-reqs even when it was used.
+        /** @var Composer&MockInterface $composer */
+        $composer = Mockery::mock(Composer::class);
+
+        $composer->shouldReceive('getLockFile')->andReturn('/path/to/composer.lock');
+        $composer->shouldReceive('getJsonFile')->andReturn('/path/to/composer.json');
+        $composer->shouldReceive('areDevPackagesInstalled')->andReturn(true);
+
+        // Output with a Lock file operations line but no parseable "- Verb Package" lines
+        // so we reach the scope='unknown' branch where $dryRunFlag is recorded.
+        /** @phpstan-ignore-next-line Mockery expectation chaining */
+        $composer->shouldReceive('installDryRun')
+            ->with(['--ignore-platform-reqs'])
+            ->once()
+            ->andReturn('Lock file operations: 0 installs, 1 update, 0 removals');
+
+        $analyzer = new UpToDateDependencyAnalyzer($composer);
+        $analyzer->setDeploymentPlatform('vapor');
+
+        $result = $analyzer->analyze();
+        $issues = $result->getIssues();
+
+        $this->assertNotEmpty($issues);
+        $versionCheck = $issues[0]->metadata['composer_version_check'] ?? '';
+        $this->assertIsString($versionCheck);
+        $this->assertStringContainsString('--ignore-platform-reqs', $versionCheck);
     }
 
     protected function tearDown(): void

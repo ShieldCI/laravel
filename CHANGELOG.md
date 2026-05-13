@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.17
+
+### Fixed
+- `PHPStanAnalyzer` and `AnalyzeCommand` now honour `SHIELDCI_TIMEOUT` when set as an environment variable — `env()` returns strings, so `is_int('600')` was silently falling back to the hardcoded `300`; both callsites now apply the same `is_numeric()` cast already used in `Reporter`
+
 ## v1.7.16
 
 ### Fixed

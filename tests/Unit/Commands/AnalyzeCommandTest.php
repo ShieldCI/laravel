@@ -407,6 +407,18 @@ class AnalyzeCommandTest extends TestCase
     }
 
     #[Test]
+    public function it_applies_string_timeout_from_config(): void
+    {
+        // env() always returns strings, so SHIELDCI_TIMEOUT=600 arrives as '600'.
+        // is_int('600') = false — without the is_numeric fix set_time_limit() is skipped.
+        config(['shieldci.timeout' => '300']);
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful();
+    }
+
+    #[Test]
     public function it_saves_report_using_config_output_file(): void
     {
         $this->registerTestAnalyzers();

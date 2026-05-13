@@ -103,8 +103,8 @@ class AnalyzeCommand extends Command
 
         // Set timeout
         $timeout = config('shieldci.timeout');
-        if ($timeout !== null && is_int($timeout)) {
-            set_time_limit($timeout);
+        if ($timeout !== null && (is_int($timeout) || is_numeric($timeout))) {
+            set_time_limit((int) $timeout);
         }
 
         // Check if enabled

@@ -306,7 +306,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         $activeCategories = array_values(array_diff($enabledCategories, $disabledCategories));
 
         $timeoutConfig = $this->config->get('shieldci.timeout', 300);
-        $timeout = is_int($timeoutConfig) ? $timeoutConfig : 300;
+        $timeout = is_int($timeoutConfig) ? $timeoutConfig : (is_numeric($timeoutConfig) ? (int) $timeoutConfig : 300);
 
         try {
             // Run PHPStan once on all paths

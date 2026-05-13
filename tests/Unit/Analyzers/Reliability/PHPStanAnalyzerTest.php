@@ -550,6 +550,41 @@ PHP;
         $this->assertStringContainsString('static analysis', $metadata->description);
     }
 
+    public function test_honours_string_timeout_from_config(): void
+    {
+        $tempDir = $this->createTempDirectory(['app/Services/ValidService.php' => "<?php\nclass ValidService {}"]);
+
+        @mkdir($tempDir.'/vendor/bin', 0755, true);
+        // Sleeps 2s — exceeds the 1s timeout so the process is killed on time.
+        // If string '1' fell back to the hardcoded 300 (the bug), the mock would
+        // complete before the timeout and the result would be passed, not error.
+        file_put_contents(
+            $tempDir.'/vendor/bin/phpstan',
+            "#!/bin/bash\nsleep 2\necho '{}'"
+        );
+        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+
+        // env() returns strings, so SHIELDCI_TIMEOUT=600 arrives as '1' here.
+        // is_int('1') = false → without the is_numeric fix it falls back to 300.
+        $configRepo = new Repository([
+            'shieldci' => [
+                'timeout' => '1',
+                'analyzers' => ['reliability' => ['enabled' => true, 'phpstan' => [
+                    'level' => 5, 'paths' => ['app'], 'categories' => ['undefined-variable'], 'disabled_categories' => [],
+                ]]],
+            ],
+        ]);
+
+        $analyzer = new PHPStanAnalyzer($configRepo);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertError($result);
+        $this->assertStringContainsString('exceeded the timeout of 1', $result->getMessage());
+    }
+
     /**
      * Create a mock PHPStan script that returns predefined issues.
      *

@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.18
+
+### Fixed
+- `ChunkMissingAnalyzer` no longer false-positives on `DB::query()->fromSub(...)` derived-table queries — `fromSub`, `joinSub`, `leftJoinSub`, and `rightJoinSub` in the method chain now exempt the call; result bounds are encoded in the subquery structure, not a terminal method like `limit()`; plain `DB::table()->get()` continues to be flagged
+- `ChunkMissingAnalyzer` no longer false-positives on queries that pass `DB::raw()` inside `select([...])` — a correlated subquery in the select list signals explicit, bounded SQL that does not need chunking
+
 ## v1.7.17
 
 ### Fixed

@@ -848,6 +848,147 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_passes_for_db_query_with_from_sub(): void
+    {
+        // Reproduces the false positive from ProjectController::computeProjectScoreDeltas().
+        // DB::query()->fromSub(...)->where('rn', '<=', 2)->get() is bounded by the window-
+        // function subquery and uses a derived table (fromSub) — explicit SQL engineering
+        // where result set size is encoded in the subquery structure, not a terminal method.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\DB;
+use App\Models\Report;
+
+class ProjectController
+{
+    public function computeProjectScoreDeltas(array $projectIds): array
+    {
+        $ranked = Report::query()
+            ->select(['project_id', 'score', DB::raw('ROW_NUMBER() OVER (PARTITION BY project_id ORDER BY analyzed_at DESC) AS rn')])
+            ->whereIn('project_id', $projectIds)
+            ->whereIn('environment', ['production', 'staging']);
+
+        $reports = DB::query()
+            ->fromSub($ranked, 'ranked')
+            ->select(['project_id', 'score', 'rn'])
+            ->where('rn', '<=', 2)
+            ->orderBy('project_id')
+            ->orderByDesc('rn')
+            ->get();
+
+        $deltas = [];
+        $previousScores = [];
+
+        foreach ($reports as $report) {
+            $deltas[$report->project_id] = isset($previousScores[$report->project_id])
+                ? $report->score - $previousScores[$report->project_id]
+                : null;
+            $previousScores[$report->project_id] = $report->score;
+        }
+
+        return $deltas;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Controllers/ProjectController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_flags_db_table_without_limit(): void
+    {
+        // DB::table()->get() without a limit or subquery composition still risks
+        // loading an unbounded result set and must remain flagged.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\DB;
+
+class ReportService
+{
+    public function processAll(): void
+    {
+        $rows = DB::table('users')->where('active', true)->get();
+        foreach ($rows as $row) {
+            // process
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ReportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
+    public function test_passes_for_select_with_db_raw_correlated_subquery(): void
+    {
+        // Reproduces the false positive from ActivityController::computeScoreDeltas().
+        // The DB::raw() correlated subquery inside select() signals deliberate, expert-level
+        // SQL — the result set is bounded by the whereIn on page-scoped $reportIds.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Report;
+use Illuminate\Support\Facades\DB;
+
+class ActivityController
+{
+    private function computeScoreDeltas(array $reportIds): array
+    {
+        $rows = Report::query()
+            ->select([
+                'id',
+                'score',
+                DB::raw('(SELECT p.score FROM reports p WHERE p.project_id = reports.project_id AND p.analyzed_at < reports.analyzed_at ORDER BY p.analyzed_at DESC LIMIT 1) AS prev_score'),
+            ])
+            ->whereIn('id', $reportIds)
+            ->get();
+
+        $deltas = [];
+
+        foreach ($rows as $row) {
+            $deltas[$row->id] = $row->prev_score !== null
+                ? $row->score - (int) $row->prev_score
+                : null;
+        }
+
+        return $deltas;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Controllers/ActivityController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_grammar_singular_vs_plural(): void
     {
         // Test singular

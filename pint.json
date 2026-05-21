@@ -1,6 +1,7 @@
 {
     "preset": "laravel",
     "notPath": [
-        "tests/Fixtures/inspects-code/syntax_error.php"
+        "tests/Fixtures/inspects-code/syntax_error.php",
+        "tests/Fixtures/inspects-code-config/syntax_error.php"
     ]
 }

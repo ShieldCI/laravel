@@ -195,7 +195,71 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
             return false;
         }
 
+        // Subquery composition methods signal explicit, developer-controlled SQL structure
+        // (derived tables, subquery joins). Result bounds are encoded in the subquery design
+        // itself — not expressible via terminal Eloquent methods like limit() or take().
+        $subqueryCompositionMethods = ['fromSub', 'joinSub', 'leftJoinSub', 'rightJoinSub'];
+        if (! empty(array_intersect($methods, $subqueryCompositionMethods))) {
+            return false;
+        }
+
+        // A DB::raw() call inside select() args signals a correlated subquery — explicit,
+        // developer-authored SQL that embeds per-row constraints inline.
+        if ($this->hasDbRawInSelectArgs($expr)) {
+            return false;
+        }
+
         return ! $hasChunking && ! $hasSmallDatasetModifier;
+    }
+
+    /**
+     * Walk the method call chain and check whether any select() call's argument array
+     * contains a DB::raw() expression. This catches correlated-subquery enrichment
+     * patterns like ->select(['id', DB::raw('(SELECT ...)')]) ->get().
+     */
+    private function hasDbRawInSelectArgs(Node\Expr $expr): bool
+    {
+        $current = $expr;
+
+        while ($current instanceof Node\Expr\MethodCall) {
+            if ($current->name instanceof Node\Identifier
+                && $current->name->toString() === 'select') {
+                foreach ($current->args as $arg) {
+                    if ($this->containsDbRaw($arg->value)) {
+                        return true;
+                    }
+                }
+            }
+
+            $current = $current->var;
+        }
+
+        return false;
+    }
+
+    /**
+     * Recursively check whether an expression node is or contains a DB::raw() call.
+     * Descends into array literals so that select([..., DB::raw(...)]) is detected.
+     */
+    private function containsDbRaw(Node\Expr $node): bool
+    {
+        if ($node instanceof Node\Expr\StaticCall
+            && $node->class instanceof Node\Name
+            && $node->class->getLast() === 'DB'
+            && $node->name instanceof Node\Identifier
+            && $node->name->toString() === 'raw') {
+            return true;
+        }
+
+        if ($node instanceof Node\Expr\Array_) {
+            foreach ($node->items as $item) {
+                if ($item !== null && $this->containsDbRaw($item->value)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -43,6 +43,13 @@ Publish the configuration file:
 php artisan vendor:publish --tag=shieldci-config
 ```
 
+Add your ShieldCI credentials to `.env` (your API token is displayed when you create a project in the [ShieldCI dashboard](https://shieldci.com/dashboard)):
+
+```env
+SHIELDCI_TOKEN=your-api-token
+SHIELDCI_PROJECT_ID=your-project-id
+```
+
 ## Usage
 
 Run the analysis:
@@ -71,6 +78,25 @@ php artisan shield:analyze --format=json
 Save report to file:
 ```bash
 php artisan shield:analyze --output=report.json
+```
+
+Send results to ShieldCI platform:
+```bash
+php artisan shield:analyze --report
+```
+
+Schedule analysis with trigger tracking:
+```php
+// Laravel 11+ (routes/console.php)
+Schedule::command('shield:analyze --triggered-by=scheduled --report')->daily();
+
+// Laravel 11+ (bootstrap/app.php)
+->withSchedule(function (Schedule $schedule) {
+    $schedule->command('shield:analyze --triggered-by=scheduled --report')->daily();
+})
+
+// Laravel 9-10 (app/Console/Kernel.php)
+$schedule->command('shield:analyze --triggered-by=scheduled --report')->daily();
 ```
 
 ### Advanced Features
@@ -164,6 +190,25 @@ ShieldCI includes **73 comprehensive analyzers** across five categories:
 | Best Practices | 15 | Laravel-specific patterns |
 
 → [Full Analyzer Reference](https://docs.shieldci.com/analyzers/) — all 73 analyzers with examples and fix guidance
+
+### ShieldCI Pro
+
+[ShieldCI Pro](https://shieldci.com) adds **82 advanced analyzers** on top of the free package:
+
+| Category | Count | Coverage |
+|---|---|---|
+| Security | 45 | Enterprise-grade vulnerability detection |
+| Performance | 15 | Advanced performance optimization |
+| Reliability | 15 | Production-grade resilience checks |
+| Best Practices | 4 | Laravel architecture and conventions |
+| Code Quality | 3 | Test coverage and quality analysis |
+
+Highlights:
+- **Security** — command injection, SSRF, XXE, object injection, GDPR compliance, hard-coded credentials, cryptographic weaknesses; framework-specific checks for Sanctum, Horizon, Telescope, Nova, Livewire, Inertia, and FilamentPHP
+- **Performance** — Redis rate limiting, CDN/HTTP2/compression header analysis, lazy collection opportunities, FilamentPHP table optimization
+- **Reliability** — health check and alerting config, job queue config, Horizon status and provisioning, Redis eviction policy, Laravel Vapor config
+
+→ [Upgrade to Pro](https://shieldci.com)
 
 ## Configuration Options
 

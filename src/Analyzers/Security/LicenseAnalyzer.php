@@ -23,6 +23,10 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class LicenseAnalyzer extends AbstractFileAnalyzer
 {
+    private array $excludedPackages = [
+        'shieldci/*',
+    ];
+
     /**
      * Default whitelisted licenses for commercial/proprietary use.
      */
@@ -169,6 +173,10 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
                 ? $package['name']
                 : 'Unknown';
 
+            if ($this->isPackageExcluded($packageName)) {
+                continue;
+            }
+
             // Normalize license to array and detect if it's conjunctive (AND) or disjunctive (OR)
             $licenseData = $this->parseLicenseField($package);
             $licenses = $licenseData['licenses'];
@@ -290,6 +298,17 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
                 }
             }
         }
+    }
+
+    private function isPackageExcluded(string $packageName): bool
+    {
+        foreach ($this->excludedPackages as $pattern) {
+            if (fnmatch($pattern, $packageName)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

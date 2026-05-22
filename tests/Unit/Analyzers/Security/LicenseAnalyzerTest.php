@@ -799,4 +799,42 @@ class LicenseAnalyzerTest extends AnalyzerTestCase
         // Should pass because MIT is available (disjunctive)
         $this->assertPassed($result);
     }
+
+    public function test_shieldci_packages_are_excluded_from_license_checks(): void
+    {
+        $composerLock = json_encode([
+            'packages' => [
+                [
+                    'name' => 'shieldci/laravel',
+                    'version' => '1.0.0',
+                    'license' => ['GPL-3.0'],  // Would be Critical if not excluded
+                ],
+                [
+                    'name' => 'shieldci/analyzers-core',
+                    'version' => '1.0.0',
+                    // No license field — would be Medium if not excluded
+                ],
+                [
+                    'name' => 'vendor/gpl-package',
+                    'version' => '1.0.0',
+                    'license' => ['GPL-3.0'],  // Non-shieldci: must still fail
+                ],
+            ],
+        ]);
+
+        $tempDir = $this->createTempDirectory([
+            'composer.lock' => $composerLock,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Only vendor/gpl-package should produce an issue
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('vendor/gpl-package', $result);
+    }
 }

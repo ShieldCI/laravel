@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.19
+
+### Fixed
+- `LicenseAnalyzer` no longer flags `shieldci/*` packages — the tool's own packages ship without a public SPDX license declaration, causing the analyzer to emit missing-license or non-standard-license findings against itself
+
 ## v1.7.18
 
 ### Fixed

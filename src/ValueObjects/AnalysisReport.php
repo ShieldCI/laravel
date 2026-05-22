@@ -33,6 +33,7 @@ final class AnalysisReport
         public readonly array $metadata = [],
         public readonly array $suppressedIssues = [],
         public readonly array $configuration = [],
+        public readonly ?string $proPackageVersion = null,
     ) {}
 
     public function score(): int
@@ -165,6 +166,7 @@ final class AnalysisReport
             'project_id' => $this->projectId,
             'laravel_version' => $this->laravelVersion,
             'package_version' => $this->packageVersion,
+            'pro_package_version' => $this->proPackageVersion,
             'triggered_by' => $this->triggeredBy->value,
             'analyzed_at' => $this->analyzedAt->format('c'),
             'total_execution_time' => $this->totalExecutionTime,

@@ -38,6 +38,7 @@ class Reporter implements ReporterInterface
             triggeredBy: $triggeredBy,
             metadata: $this->buildMetadata($gitContext),
             configuration: $this->buildConfiguration(),
+            proPackageVersion: $this->getProPackageVersion(),
         );
     }
 
@@ -571,6 +572,15 @@ class Reporter implements ReporterInterface
         }
 
         return 'dev';
+    }
+
+    protected function getProPackageVersion(): ?string
+    {
+        if (class_exists(InstalledVersions::class) && InstalledVersions::isInstalled('shieldci/laravel-pro')) {
+            return InstalledVersions::getPrettyVersion('shieldci/laravel-pro');
+        }
+
+        return null;
     }
 
     /**

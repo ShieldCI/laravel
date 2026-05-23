@@ -113,6 +113,9 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
         'two_factor_recovery_codes',
     ];
 
+    /** @var array<string, string>|null */
+    private ?array $composerClassMap = null;
+
     public function __construct(
         private ParserInterface $parser
     ) {}
@@ -256,8 +259,8 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
         $modelName = $class->name ? $class->name->toString() : 'Unknown';
 
-        // Issue if neither fillable nor guarded is set
-        if (! $hasFillable && ! $hasGuarded) {
+        // Issue if neither fillable nor guarded is set (and no ancestor provides either)
+        if (! $hasFillable && ! $hasGuarded && ! $this->parentClassHasProtection($file, $class)) {
             $issues[] = $this->createIssueWithSnippet(
                 message: "Model '{$modelName}' lacks mass assignment protection (\$fillable or \$guarded)",
                 filePath: $file,
@@ -1310,5 +1313,153 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
         }
 
         return false;
+    }
+
+    /**
+     * Check whether any ancestor class declares $fillable or $guarded, preventing
+     * false positives on models that inherit mass assignment protection from a parent
+     * (e.g. PersonalAccessToken extending Laravel\Sanctum\PersonalAccessToken).
+     */
+    private function parentClassHasProtection(
+        string $file,
+        Node\Stmt\Class_ $class,
+        int $depth = 0
+    ): bool {
+        if ($depth > 3 || $class->extends === null) {
+            return false;
+        }
+
+        $parentName = $class->extends->toString();
+
+        // Direct Eloquent Model base — no ancestor provides inherited protection
+        if ($parentName === 'Model' || str_ends_with($parentName, '\\Model')) {
+            return false;
+        }
+
+        $fqn = $this->resolveParentClassFqn($parentName, $file);
+        $parentFile = $this->findClassFileByFqn($fqn);
+        if ($parentFile === null) {
+            return false;
+        }
+
+        $ast = $this->parser->parseFile($parentFile);
+        if (empty($ast)) {
+            return false;
+        }
+
+        foreach ($this->parser->findClasses($ast) as $parentClass) {
+            foreach ($parentClass->stmts as $stmt) {
+                if (! $stmt instanceof Node\Stmt\Property) {
+                    continue;
+                }
+
+                foreach ($stmt->props as $prop) {
+                    $name = $prop->name->toString();
+                    if ($name === 'fillable' || $name === 'guarded') {
+                        return true;
+                    }
+                }
+            }
+
+            if ($this->parentClassHasProtection($parentFile, $parentClass, $depth + 1)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Resolve a short or aliased parent class name to its fully-qualified name.
+     *
+     * Uses FileParser::extractUseStatements() which returns the raw body of each
+     * `use ...;` statement (e.g. "Laravel\Sanctum\PersonalAccessToken as SanctumPAT"),
+     * then falls back to the file's own namespace for same-namespace parents.
+     */
+    private function resolveParentClassFqn(string $shortName, string $file): string
+    {
+        if (str_starts_with($shortName, '\\')) {
+            return ltrim($shortName, '\\');
+        }
+
+        $q = preg_quote($shortName, '/');
+
+        foreach (FileParser::extractUseStatements($file) as $raw) {
+            $stmt = trim($raw);
+
+            // use Foo\Bar\Baz as ShortName
+            if (preg_match('/^([\w\\\\]+)\s+as\s+'.$q.'$/', $stmt, $m)) {
+                return $m[1];
+            }
+
+            // use Foo\Bar\ShortName  (last segment matches exactly)
+            if (str_ends_with($stmt, '\\'.$shortName)) {
+                return $stmt;
+            }
+        }
+
+        // Same-namespace parent
+        $ns = FileParser::extractNamespace($file);
+        if ($ns !== null && $ns !== '') {
+            return $ns.'\\'.$shortName;
+        }
+
+        return $shortName;
+    }
+
+    /**
+     * Look up a PHP file path for the given fully-qualified class name.
+     *
+     * Checks Composer's autoload_classmap.php first (covers vendor classes),
+     * then falls back to a PSR-4-style App\ path resolution (covers test fixtures
+     * that have no real vendor directory).
+     */
+    private function findClassFileByFqn(string $fqn): ?string
+    {
+        $map = $this->getComposerClassMap();
+        if (isset($map[$fqn])) {
+            return $map[$fqn];
+        }
+
+        if (str_starts_with($fqn, 'App\\')) {
+            $rel = str_replace('\\', DIRECTORY_SEPARATOR, substr($fqn, 4)).'.php';
+            $path = $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.$rel;
+            if (file_exists($path)) {
+                return $path;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Load and cache Composer's autoload classmap (FQN → absolute file path).
+     *
+     * @return array<string, string>
+     */
+    private function getComposerClassMap(): array
+    {
+        if ($this->composerClassMap !== null) {
+            return $this->composerClassMap;
+        }
+
+        $classMapFile = $this->getBasePath()
+            .DIRECTORY_SEPARATOR.'vendor'
+            .DIRECTORY_SEPARATOR.'composer'
+            .DIRECTORY_SEPARATOR.'autoload_classmap.php';
+
+        if (! file_exists($classMapFile)) {
+            return $this->composerClassMap = [];
+        }
+
+        /** @var mixed $result */
+        $result = @include $classMapFile;
+
+        if (! is_array($result)) {
+            return $this->composerClassMap = [];
+        }
+
+        /** @var array<string, string> $result */
+        return $this->composerClassMap = $result;
     }
 }

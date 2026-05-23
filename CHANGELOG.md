@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.20
+
+### Fixed
+- `MassAssignmentAnalyzer` no longer false-positives on models that inherit mass assignment protection from a parent class — subclasses of vendor models (e.g. `PersonalAccessToken extends Laravel\Sanctum\PersonalAccessToken`) were flagged as missing `$fillable`/`$guarded` because only the current class's own properties were checked; the analyzer now walks the parent class file via Composer's classmap before emitting the finding
+
 ## v1.7.19
 
 ### Fixed

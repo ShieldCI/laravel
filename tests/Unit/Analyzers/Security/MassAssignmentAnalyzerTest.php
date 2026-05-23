@@ -2786,4 +2786,172 @@ PHP;
         $this->assertNotNull($relationshipIssue, 'Expected a relationship mass assignment issue');
         $this->assertStringContainsString('FormRequest', $relationshipIssue->recommendation);
     }
+
+    // -------------------------------------------------------------------------
+    // Inherited protection (parent/vendor class already defines $fillable)
+    // -------------------------------------------------------------------------
+
+    public function test_passes_when_vendor_parent_has_fillable(): void
+    {
+        // Simulates PersonalAccessToken extends SanctumPersonalAccessToken where
+        // the Sanctum class already declares $fillable.
+        $parentCode = <<<'PHP'
+<?php
+
+namespace FakeVendor;
+
+use Illuminate\Database\Eloquent\Model;
+
+class BaseToken extends Model
+{
+    protected $fillable = ['name', 'token', 'abilities'];
+}
+PHP;
+
+        $childCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use FakeVendor\BaseToken as SanctumPAT;
+
+class PersonalAccessToken extends SanctumPAT
+{
+    // inherits $fillable from SanctumPAT
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'vendor/fakevendor/BaseToken.php' => $parentCode,
+            'app/Models/PersonalAccessToken.php' => $childCode,
+        ]);
+
+        // Write a classmap that maps the vendor FQN to its file using __DIR__-relative paths.
+        $classMapCode = <<<'PHP'
+<?php
+$vendorDir = dirname(__DIR__);
+return [
+    'FakeVendor\\BaseToken' => $vendorDir . '/fakevendor/BaseToken.php',
+];
+PHP;
+        mkdir($tempDir.'/vendor/composer', 0777, true);
+        file_put_contents($tempDir.'/vendor/composer/autoload_classmap.php', $classMapCode);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // No missing-protection issue — inherited $fillable satisfies the check.
+        $protectionIssues = array_filter(
+            $result->getIssues(),
+            fn ($i) => isset($i->metadata['issue_type']) && $i->metadata['issue_type'] === 'missing_model_protection'
+        );
+        $this->assertEmpty($protectionIssues, 'Should not flag model that inherits $fillable from a vendor parent');
+    }
+
+    public function test_passes_when_app_parent_has_fillable_via_psr4_fallback(): void
+    {
+        // Two-level App\ inheritance — no classmap, uses the PSR-4 App\ path fallback.
+        $baseCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class BaseModel extends Model
+{
+    protected $fillable = ['id', 'created_at', 'updated_at'];
+}
+PHP;
+
+        $childCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class User extends BaseModel
+{
+    // inherits $fillable from BaseModel
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/BaseModel.php' => $baseCode,
+            'app/Models/User.php' => $childCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $protectionIssues = array_filter(
+            $result->getIssues(),
+            fn ($i) => isset($i->metadata['issue_type']) && $i->metadata['issue_type'] === 'missing_model_protection'
+        );
+        $this->assertEmpty($protectionIssues, 'Should not flag model that inherits $fillable from an App\ parent');
+    }
+
+    public function test_still_flags_when_entire_inheritance_chain_lacks_protection(): void
+    {
+        // Vendor parent also has no $fillable or $guarded — child must still be flagged.
+        $parentCode = <<<'PHP'
+<?php
+
+namespace FakeVendor;
+
+use Illuminate\Database\Eloquent\Model;
+
+class UnprotectedBase extends Model
+{
+    // deliberately no $fillable or $guarded
+}
+PHP;
+
+        $childCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use FakeVendor\UnprotectedBase;
+
+class Dangerous extends UnprotectedBase
+{
+    // also no $fillable or $guarded
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'vendor/fakevendor/UnprotectedBase.php' => $parentCode,
+            'app/Models/Dangerous.php' => $childCode,
+        ]);
+
+        $classMapCode = <<<'PHP'
+<?php
+$vendorDir = dirname(__DIR__);
+return [
+    'FakeVendor\\UnprotectedBase' => $vendorDir . '/fakevendor/UnprotectedBase.php',
+];
+PHP;
+        mkdir($tempDir.'/vendor/composer', 0777, true);
+        file_put_contents($tempDir.'/vendor/composer/autoload_classmap.php', $classMapCode);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $protectionIssues = array_filter(
+            $result->getIssues(),
+            fn ($i) => isset($i->metadata['issue_type']) && $i->metadata['issue_type'] === 'missing_model_protection'
+        );
+        $this->assertNotEmpty($protectionIssues, 'Should still flag model when whole chain lacks protection');
+    }
 }

@@ -533,6 +533,145 @@ class AnalyzerManagerTest extends TestCase
         $this->assertCount(0, $skipped);
     }
 
+    #[Test]
+    public function it_instantiates_each_analyzer_class_exactly_once_across_get_analyzers_and_get_skipped(): void
+    {
+        $container = Mockery::mock(Container::class);
+        // With 2 classes, container->make() must be called exactly 2 times total,
+        // even though both getAnalyzers() and getSkippedAnalyzers() are invoked.
+        $container->shouldReceive('make')
+            ->times(2)
+            ->andReturnUsing(fn (string $class) => new $class);
+
+        $config = Mockery::mock(Config::class);
+        $config->shouldReceive('get')
+            ->andReturnUsing(function (string $key, $default = null) {
+                $values = [
+                    'disabled_analyzers' => [],
+                    'analyzers' => [],
+                    'ci_mode' => false,
+                    'ci_mode_analyzers' => [],
+                    'ci_mode_exclude_analyzers' => [],
+                    'paths.analyze' => [],
+                    'excluded_paths' => [],
+                ];
+
+                return $values[str_replace('shieldci.', '', $key)] ?? $default;
+            });
+
+        $manager = new AnalyzerManager($config, [TestAnalyzer::class, DisabledTestAnalyzer::class], $container);
+
+        $manager->getAnalyzers();
+        $manager->getSkippedAnalyzers();
+        // Third call — must still hit cache, no new make() calls.
+        $manager->getAnalyzers();
+
+        // Mockery's times(2) expectation in tearDown() is the primary assertion.
+        // This explicit one prevents the "risky test" warning from PHPUnit.
+        $this->addToAssertionCount(1);
+    }
+
+    #[Test]
+    public function it_reads_config_keys_exactly_once_regardless_of_call_count(): void
+    {
+        $container = Mockery::mock(Container::class);
+        $container->shouldReceive('make')->andReturnUsing(fn (string $class) => new $class);
+
+        $config = Mockery::mock(Config::class);
+        // 8 config keys read once each in initConfigCache().
+        // initConfigCache() reads exactly 7 config keys, once, on the first invocation.
+        $config->shouldReceive('get')
+            ->times(7)
+            ->andReturnUsing(function (string $key, $default = null) {
+                $values = [
+                    'disabled_analyzers' => [],
+                    'analyzers' => [],
+                    'ci_mode' => false,
+                    'ci_mode_analyzers' => [],
+                    'ci_mode_exclude_analyzers' => [],
+                    'paths.analyze' => [],
+                    'excluded_paths' => [],
+                ];
+
+                return $values[str_replace('shieldci.', '', $key)] ?? $default;
+            });
+
+        $manager = new AnalyzerManager($config, [TestAnalyzer::class], $container);
+
+        // Multiple calls — config must only be read on the first.
+        $manager->getAnalyzers();
+        $manager->getAnalyzers();
+        $manager->getSkippedAnalyzers();
+        $manager->getSkippedAnalyzers();
+
+        $this->addToAssertionCount(1);
+    }
+
+    #[Test]
+    public function it_returns_same_collection_instance_on_repeated_calls_to_get_analyzers(): void
+    {
+        $manager = $this->createManagerWithConfig([TestAnalyzer::class], []);
+
+        $first = $manager->getAnalyzers();
+        $second = $manager->getAnalyzers();
+
+        $this->assertSame($first, $second);
+    }
+
+    #[Test]
+    public function it_returns_same_collection_instance_on_repeated_calls_to_get_skipped_analyzers(): void
+    {
+        $manager = $this->createManagerWithConfig([TestAnalyzer::class, DisabledTestAnalyzer::class], []);
+
+        $first = $manager->getSkippedAnalyzers();
+        $second = $manager->getSkippedAnalyzers();
+
+        $this->assertSame($first, $second);
+    }
+
+    #[Test]
+    public function it_re_instantiates_analyzers_after_invalidate_cache(): void
+    {
+        $callCount = 0;
+
+        $container = Mockery::mock(Container::class);
+        $container->shouldReceive('make')
+            ->andReturnUsing(function (string $class) use (&$callCount) {
+                $callCount++;
+
+                return new $class;
+            });
+
+        $config = Mockery::mock(Config::class);
+        $config->shouldReceive('get')
+            ->andReturnUsing(function (string $key, $default = null) {
+                $values = [
+                    'disabled_analyzers' => [],
+                    'analyzers' => [],
+                    'ci_mode' => false,
+                    'ci_mode_analyzers' => [],
+                    'ci_mode_exclude_analyzers' => [],
+                    'paths.analyze' => [],
+                    'excluded_paths' => [],
+                ];
+
+                return $values[str_replace('shieldci.', '', $key)] ?? $default;
+            });
+
+        $manager = new AnalyzerManager($config, [TestAnalyzer::class], $container);
+
+        $manager->getAnalyzers();
+        $this->assertEquals(1, $callCount, 'First getAnalyzers() should call make() once');
+
+        $manager->getAnalyzers();
+        $this->assertEquals(1, $callCount, 'Second getAnalyzers() should hit cache — no new make() calls');
+
+        $manager->invalidateCache();
+
+        $manager->getAnalyzers();
+        $this->assertEquals(2, $callCount, 'After invalidateCache(), make() should be called again');
+    }
+
     protected function createManager(array $analyzerClasses): AnalyzerManager
     {
         $config = Mockery::mock(Config::class);

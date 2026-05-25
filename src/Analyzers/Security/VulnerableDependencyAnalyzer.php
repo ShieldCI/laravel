@@ -26,6 +26,8 @@ use Throwable;
  */
 class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 {
+    public static bool $runInCI = false;
+
     public function __construct(
         private AdvisoryFetcherInterface $advisoryFetcher,
         private AdvisoryAnalyzerInterface $advisoryAnalyzer,

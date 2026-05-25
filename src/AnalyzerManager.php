@@ -25,6 +25,136 @@ class AnalyzerManager
         protected Container $container,
     ) {}
 
+    /** @var Collection<int, AnalyzerInterface>|null */
+    private ?Collection $cachedAllInstances = null;
+
+    /** @var Collection<int, AnalyzerInterface>|null */
+    private ?Collection $cachedAnalyzers = null;
+
+    /** @var Collection<int, ResultInterface>|null */
+    private ?Collection $cachedSkippedAnalyzers = null;
+
+    private bool $configCacheInitialized = false;
+
+    /** @var array<string> */
+    private array $cachedDisabledAnalyzers = [];
+
+    /** @var array<string, array<string, mixed>> */
+    private array $cachedAnalyzersConfig = [];
+
+    /** @var array<string> */
+    private array $cachedEnabledCategories = [];
+
+    private bool $cachedIsCiMode = false;
+
+    /** @var array<string> */
+    private array $cachedCiAnalyzers = [];
+
+    /** @var array<string> */
+    private array $cachedCiExcludeAnalyzers = [];
+
+    /** @var array<string> */
+    private array $cachedPathsToAnalyze = [];
+
+    /** @var array<string> */
+    private array $cachedExcludedPaths = [];
+
+    public function invalidateCache(): void
+    {
+        $this->cachedAllInstances = null;
+        $this->cachedAnalyzers = null;
+        $this->cachedSkippedAnalyzers = null;
+        $this->configCacheInitialized = false;
+    }
+
+    private function initConfigCache(): void
+    {
+        if ($this->configCacheInitialized) {
+            return;
+        }
+
+        $disabledAnalyzersConfig = $this->config->get('shieldci.disabled_analyzers', []);
+        /** @var array<string> $disabledAnalyzers */
+        $disabledAnalyzers = is_array($disabledAnalyzersConfig) ? $disabledAnalyzersConfig : [];
+        $this->cachedDisabledAnalyzers = $disabledAnalyzers;
+
+        $analyzersConfigRaw = $this->config->get('shieldci.analyzers', []);
+        /** @var array<string, array<string, mixed>> $analyzersConfig */
+        $analyzersConfig = is_array($analyzersConfigRaw) ? $analyzersConfigRaw : [];
+        $this->cachedAnalyzersConfig = $analyzersConfig;
+        $this->cachedEnabledCategories = $this->getEnabledCategories($this->cachedAnalyzersConfig);
+
+        $this->cachedIsCiMode = (bool) $this->config->get('shieldci.ci_mode', false);
+
+        $ciAnalyzersConfig = $this->config->get('shieldci.ci_mode_analyzers', []);
+        /** @var array<string> $ciAnalyzers */
+        $ciAnalyzers = is_array($ciAnalyzersConfig) ? $ciAnalyzersConfig : [];
+        $this->cachedCiAnalyzers = $ciAnalyzers;
+
+        $ciExcludeAnalyzersConfig = $this->config->get('shieldci.ci_mode_exclude_analyzers', []);
+        /** @var array<string> $ciExcludeAnalyzers */
+        $ciExcludeAnalyzers = is_array($ciExcludeAnalyzersConfig) ? $ciExcludeAnalyzersConfig : [];
+        $this->cachedCiExcludeAnalyzers = $ciExcludeAnalyzers;
+
+        $pathsConfig = $this->config->get('shieldci.paths.analyze', []);
+        /** @var array<string> $pathsToAnalyze */
+        $pathsToAnalyze = is_array($pathsConfig) && ! empty($pathsConfig) ? $pathsConfig : [];
+        $this->cachedPathsToAnalyze = $pathsToAnalyze;
+
+        $excludedPathsConfig = $this->config->get('shieldci.excluded_paths', []);
+        /** @var array<string> $excludedPaths */
+        $excludedPaths = is_array($excludedPathsConfig) ? $excludedPathsConfig : [];
+        $this->cachedExcludedPaths = $excludedPaths;
+
+        $this->configCacheInitialized = true;
+    }
+
+    /**
+     * Instantiate all analyzer classes exactly once, applying base-path and config.
+     * Both getAnalyzers() and getSkippedAnalyzers() filter from this shared pool.
+     *
+     * @return Collection<int, AnalyzerInterface>
+     */
+    private function getAllInstances(): Collection
+    {
+        if ($this->cachedAllInstances !== null) {
+            return $this->cachedAllInstances;
+        }
+
+        $this->initConfigCache();
+
+        /** @var Collection<int, AnalyzerInterface> $instances */
+        $instances = collect($this->analyzerClasses)
+            ->map(function (string $class): ?AnalyzerInterface {
+                try {
+                    /** @var AnalyzerInterface $analyzer */
+                    $analyzer = $this->container->make($class);
+
+                    if (method_exists($analyzer, 'setBasePath')) {
+                        $analyzer->setBasePath(base_path());
+                    }
+
+                    if (method_exists($analyzer, 'setPaths') && ! empty($this->cachedPathsToAnalyze)) {
+                        $analyzer->setPaths($this->cachedPathsToAnalyze);
+                    }
+
+                    if (method_exists($analyzer, 'setExcludePatterns')) {
+                        $analyzer->setExcludePatterns($this->cachedExcludedPaths);
+                    }
+
+                    return $analyzer;
+                } catch (\Throwable $e) {
+                    return null;
+                }
+            })
+            ->filter()
+            ->values();
+
+        $this->cachedAllInstances = $instances;
+
+        return $this->cachedAllInstances;
+    }
+
     /**
      * Get all registered analyzers.
      *
@@ -32,80 +162,23 @@ class AnalyzerManager
      */
     public function getAnalyzers(): Collection
     {
-        $disabledAnalyzersConfig = $this->config->get('shieldci.disabled_analyzers', []);
-        /** @var array<string> $disabledAnalyzers */
-        $disabledAnalyzers = is_array($disabledAnalyzersConfig) ? $disabledAnalyzersConfig : [];
+        if ($this->cachedAnalyzers !== null) {
+            return $this->cachedAnalyzers;
+        }
 
-        $analyzersConfigRaw = $this->config->get('shieldci.analyzers', []);
-        /** @var array<string, array<string, mixed>> $analyzersConfig */
-        $analyzersConfig = is_array($analyzersConfigRaw) ? $analyzersConfigRaw : [];
-        $enabledCategories = $this->getEnabledCategories($analyzersConfig);
+        $this->initConfigCache();
 
-        // CI mode configuration
-        $isCiMode = $this->config->get('shieldci.ci_mode', false);
-
-        // Tier 1: Whitelist (if specified, ONLY these run)
-        $ciAnalyzersConfig = $this->config->get('shieldci.ci_mode_analyzers', []);
-        /** @var array<string> $ciAnalyzers */
-        $ciAnalyzers = is_array($ciAnalyzersConfig) ? $ciAnalyzersConfig : [];
-
-        // Tier 2: Blacklist (additionally exclude these)
-        $ciExcludeAnalyzersConfig = $this->config->get('shieldci.ci_mode_exclude_analyzers', []);
-        /** @var array<string> $ciExcludeAnalyzers */
-        $ciExcludeAnalyzers = is_array($ciExcludeAnalyzersConfig) ? $ciExcludeAnalyzersConfig : [];
-
-        return collect($this->analyzerClasses)
-            ->map(function (string $class): ?AnalyzerInterface {
-                try {
-                    /** @var AnalyzerInterface $analyzer */
-                    $analyzer = $this->container->make($class);
-
-                    // Set base path for file analyzers
-                    if (method_exists($analyzer, 'setBasePath')) {
-                        $analyzer->setBasePath(base_path());
-                    }
-
-                    // Set paths to analyze (from config)
-                    if (method_exists($analyzer, 'setPaths')) {
-                        $paths = $this->config->get('shieldci.paths.analyze', []);
-                        if (is_array($paths) && ! empty($paths)) {
-                            $analyzer->setPaths($paths);
-                        }
-                    }
-
-                    // Set excluded patterns (from config)
-                    if (method_exists($analyzer, 'setExcludePatterns')) {
-                        $excludedPaths = $this->config->get('shieldci.excluded_paths', []);
-                        if (is_array($excludedPaths)) {
-                            $analyzer->setExcludePatterns($excludedPaths);
-                        }
-                    }
-
-                    return $analyzer;
-                } catch (\Throwable $e) {
-                    // If analyzer fails to instantiate, return null (will be filtered out)
-                    // It will be handled in getSkippedAnalyzers()
-                    return null;
-                }
-            })
-            ->filter(function (?AnalyzerInterface $analyzer): bool {
-                return $analyzer !== null;
-            })
-            ->map(function (?AnalyzerInterface $analyzer): AnalyzerInterface {
-                /** @var AnalyzerInterface $analyzer */
-                return $analyzer;
-            })
-            ->filter(function (AnalyzerInterface $analyzer) use ($disabledAnalyzers, $enabledCategories, $isCiMode, $ciAnalyzers, $ciExcludeAnalyzers, $analyzersConfig): bool {
-                // Filter by disabled analyzers
-                if (in_array($analyzer->getId(), $disabledAnalyzers, true)) {
+        $this->cachedAnalyzers = $this->getAllInstances()
+            ->filter(function (AnalyzerInterface $analyzer): bool {
+                if (in_array($analyzer->getId(), $this->cachedDisabledAnalyzers, true)) {
                     return false;
                 }
 
                 // CI Mode: 3-tier filtering
-                if ($isCiMode) {
+                if ($this->cachedIsCiMode) {
                     // Priority 1: If whitelist exists, ONLY run those
-                    if (! empty($ciAnalyzers)) {
-                        if (! in_array($analyzer->getId(), $ciAnalyzers, true)) {
+                    if (! empty($this->cachedCiAnalyzers)) {
+                        if (! in_array($analyzer->getId(), $this->cachedCiAnalyzers, true)) {
                             return false;
                         }
                     } else {
@@ -116,21 +189,19 @@ class AnalyzerManager
                         }
 
                         // Priority 3: Check blacklist (overrides $runInCI)
-                        if (in_array($analyzer->getId(), $ciExcludeAnalyzers, true)) {
+                        if (in_array($analyzer->getId(), $this->cachedCiExcludeAnalyzers, true)) {
                             return false;
                         }
                     }
                 }
 
                 // Filter by enabled categories
-                if (! empty($analyzersConfig)) {
+                if (! empty($this->cachedAnalyzersConfig)) {
                     $category = $analyzer->getMetadata()->category->value;
-                    // If no categories are enabled, filter out all analyzers
-                    if (empty($enabledCategories)) {
+                    if (empty($this->cachedEnabledCategories)) {
                         return false;
                     }
-                    // Only allow analyzers from enabled categories
-                    if (! in_array($category, $enabledCategories, true)) {
+                    if (! in_array($category, $this->cachedEnabledCategories, true)) {
                         return false;
                     }
                 }
@@ -138,6 +209,8 @@ class AnalyzerManager
                 return $analyzer->shouldRun();
             })
             ->values();
+
+        return $this->cachedAnalyzers;
     }
 
     /**
@@ -213,85 +286,34 @@ class AnalyzerManager
      */
     public function getSkippedAnalyzers(): Collection
     {
-        // Get IDs of analyzers that are actually running (to exclude from skipped list)
+        if ($this->cachedSkippedAnalyzers !== null) {
+            return $this->cachedSkippedAnalyzers;
+        }
+
+        $this->initConfigCache();
+
         $runningAnalyzerIds = $this->getAnalyzers()
             ->map(fn (AnalyzerInterface $analyzer) => $analyzer->getId())
             ->toArray();
 
-        $disabledAnalyzersConfig = $this->config->get('shieldci.disabled_analyzers', []);
-        /** @var array<string> $disabledAnalyzers */
-        $disabledAnalyzers = is_array($disabledAnalyzersConfig) ? $disabledAnalyzersConfig : [];
-
-        $analyzersConfigRaw = $this->config->get('shieldci.analyzers', []);
-        /** @var array<string, array<string, mixed>> $analyzersConfig */
-        $analyzersConfig = is_array($analyzersConfigRaw) ? $analyzersConfigRaw : [];
-        $enabledCategories = $this->getEnabledCategories($analyzersConfig);
-
-        // CI mode configuration
-        $isCiMode = $this->config->get('shieldci.ci_mode', false);
-
-        // Tier 1: Whitelist (if specified, ONLY these run)
-        $ciAnalyzersConfig = $this->config->get('shieldci.ci_mode_analyzers', []);
-        /** @var array<string> $ciAnalyzers */
-        $ciAnalyzers = is_array($ciAnalyzersConfig) ? $ciAnalyzersConfig : [];
-
-        // Tier 2: Blacklist (additionally exclude these)
-        $ciExcludeAnalyzersConfig = $this->config->get('shieldci.ci_mode_exclude_analyzers', []);
-        /** @var array<string> $ciExcludeAnalyzers */
-        $ciExcludeAnalyzers = is_array($ciExcludeAnalyzersConfig) ? $ciExcludeAnalyzersConfig : [];
-
-        $skipped = collect($this->analyzerClasses)
-            ->map(function (string $class): ?AnalyzerInterface {
-                try {
-                    /** @var AnalyzerInterface $analyzer */
-                    $analyzer = $this->container->make($class);
-
-                    // Set base path for file analyzers
-                    if (method_exists($analyzer, 'setBasePath')) {
-                        $analyzer->setBasePath(base_path());
-                    }
-
-                    // Set paths to analyze (from config)
-                    if (method_exists($analyzer, 'setPaths')) {
-                        $paths = $this->config->get('shieldci.paths.analyze', []);
-                        if (is_array($paths) && ! empty($paths)) {
-                            $analyzer->setPaths($paths);
-                        }
-                    }
-
-                    // Set excluded patterns (from config)
-                    if (method_exists($analyzer, 'setExcludePatterns')) {
-                        $excludedPaths = $this->config->get('shieldci.excluded_paths', []);
-                        if (is_array($excludedPaths)) {
-                            $analyzer->setExcludePatterns($excludedPaths);
-                        }
-                    }
-
-                    return $analyzer;
-                } catch (\Throwable $e) {
-                    return null;
-                }
-            })
-            ->filter(function (?AnalyzerInterface $analyzer) use ($runningAnalyzerIds, $disabledAnalyzers, $enabledCategories, $isCiMode, $ciAnalyzers, $ciExcludeAnalyzers): bool {
-                if ($analyzer === null) {
+        /** @var Collection<int, ResultInterface> $skipped */
+        $skipped = $this->getAllInstances()
+            ->filter(function (AnalyzerInterface $analyzer) use ($runningAnalyzerIds): bool {
+                // Exclude analyzers that are already running
+                if (in_array($analyzer->getId(), $runningAnalyzerIds, true)) {
                     return false;
                 }
 
-                // Exclude analyzers that are already running
-                if (in_array($analyzer->getId(), $runningAnalyzerIds, true)) {
-                    return false; // This analyzer is running, not skipped
-                }
-
                 // Filter by disabled analyzers
-                if (in_array($analyzer->getId(), $disabledAnalyzers, true)) {
+                if (in_array($analyzer->getId(), $this->cachedDisabledAnalyzers, true)) {
                     return true; // This analyzer was skipped
                 }
 
                 // CI Mode: 3-tier filtering
-                if ($isCiMode) {
+                if ($this->cachedIsCiMode) {
                     // Priority 1: If whitelist exists, ONLY run those
-                    if (! empty($ciAnalyzers)) {
-                        if (! in_array($analyzer->getId(), $ciAnalyzers, true)) {
+                    if (! empty($this->cachedCiAnalyzers)) {
+                        if (! in_array($analyzer->getId(), $this->cachedCiAnalyzers, true)) {
                             return true; // This analyzer was skipped
                         }
                     } else {
@@ -302,7 +324,7 @@ class AnalyzerManager
                         }
 
                         // Priority 3: Check blacklist (overrides $runInCI)
-                        if (in_array($analyzer->getId(), $ciExcludeAnalyzers, true)) {
+                        if (in_array($analyzer->getId(), $this->cachedCiExcludeAnalyzers, true)) {
                             return true; // This analyzer was skipped
                         }
                     }
@@ -310,7 +332,7 @@ class AnalyzerManager
 
                 // Filter by enabled categories
                 $category = $analyzer->getMetadata()->category->value;
-                if (! empty($enabledCategories) && ! in_array($category, $enabledCategories, true)) {
+                if (! empty($this->cachedEnabledCategories) && ! in_array($category, $this->cachedEnabledCategories, true)) {
                     return true; // This analyzer was skipped
                 }
 
@@ -321,13 +343,8 @@ class AnalyzerManager
 
                 return false; // This analyzer was not skipped
             })
-            ->map(function (?AnalyzerInterface $analyzer): ?ResultInterface {
-                if ($analyzer === null) {
-                    return null;
-                }
+            ->map(function (AnalyzerInterface $analyzer): ResultInterface {
                 $metadata = $analyzer->getMetadata();
-
-                // Determine skip reason
                 $skipReason = $this->getSkipReason($analyzer);
 
                 return AnalysisResult::skipped(
@@ -346,11 +363,11 @@ class AnalyzerManager
                     ],
                 );
             })
-            ->filter()
             ->values();
 
-        /** @var Collection<int, ResultInterface> $skipped */
-        return $skipped;
+        $this->cachedSkippedAnalyzers = $skipped;
+
+        return $this->cachedSkippedAnalyzers;
     }
 
     /**
@@ -358,32 +375,15 @@ class AnalyzerManager
      */
     private function getSkipReason(AnalyzerInterface $analyzer): string
     {
-        $disabledAnalyzersConfig = $this->config->get('shieldci.disabled_analyzers', []);
-        /** @var array<string> $disabledAnalyzers */
-        $disabledAnalyzers = is_array($disabledAnalyzersConfig) ? $disabledAnalyzersConfig : [];
+        $this->initConfigCache();
 
-        $analyzersConfigRaw = $this->config->get('shieldci.analyzers', []);
-        /** @var array<string, array<string, mixed>> $analyzersConfig */
-        $analyzersConfig = is_array($analyzersConfigRaw) ? $analyzersConfigRaw : [];
-        $enabledCategories = $this->getEnabledCategories($analyzersConfig);
-
-        $isCiMode = $this->config->get('shieldci.ci_mode', false);
-        $ciAnalyzersConfig = $this->config->get('shieldci.ci_mode_analyzers', []);
-        /** @var array<string> $ciAnalyzers */
-        $ciAnalyzers = is_array($ciAnalyzersConfig) ? $ciAnalyzersConfig : [];
-        $ciExcludeAnalyzersConfig = $this->config->get('shieldci.ci_mode_exclude_analyzers', []);
-        /** @var array<string> $ciExcludeAnalyzers */
-        $ciExcludeAnalyzers = is_array($ciExcludeAnalyzersConfig) ? $ciExcludeAnalyzersConfig : [];
-
-        // Check disabled analyzers
-        if (in_array($analyzer->getId(), $disabledAnalyzers, true)) {
+        if (in_array($analyzer->getId(), $this->cachedDisabledAnalyzers, true)) {
             return 'Disabled in configuration';
         }
 
-        // Check CI mode
-        if ($isCiMode) {
-            if (! empty($ciAnalyzers)) {
-                if (! in_array($analyzer->getId(), $ciAnalyzers, true)) {
+        if ($this->cachedIsCiMode) {
+            if (! empty($this->cachedCiAnalyzers)) {
+                if (! in_array($analyzer->getId(), $this->cachedCiAnalyzers, true)) {
                     return 'Not in CI mode whitelist';
                 }
             } else {
@@ -391,19 +391,17 @@ class AnalyzerManager
                 if (property_exists($analyzerClass, 'runInCI') && ! $analyzerClass::$runInCI) {
                     return 'Not applicable in CI environment';
                 }
-                if (in_array($analyzer->getId(), $ciExcludeAnalyzers, true)) {
+                if (in_array($analyzer->getId(), $this->cachedCiExcludeAnalyzers, true)) {
                     return 'Excluded from CI mode';
                 }
             }
         }
 
-        // Check enabled categories
         $category = $analyzer->getMetadata()->category->value;
-        if (! empty($enabledCategories) && ! in_array($category, $enabledCategories, true)) {
+        if (! empty($this->cachedEnabledCategories) && ! in_array($category, $this->cachedEnabledCategories, true)) {
             return 'Category not enabled';
         }
 
-        // Check shouldRun - use analyzer's custom skip reason
         if (! $analyzer->shouldRun()) {
             return $analyzer->getSkipReason();
         }

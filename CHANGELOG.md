@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.7.21
+
+### Changed
+- `AnalyzerManager` now instantiates each analyzer class exactly once per run — `getAnalyzers()` and `getSkippedAnalyzers()` share a cached instance pool instead of independently resolving all 73 classes; all seven `shieldci.*` config keys are read once and reused; repeated calls to either method within the same invocation return immediately from memory
+- `AnalyzeCommand` now emits a warning instead of calling `set_time_limit()` on Lambda/Vapor — `set_time_limit()` is a no-op on AWS Lambda and the call was silently ignored; the warning directs users to configure the Lambda function timeout directly or use `--ci` to reduce analyzer scope
+- `VulnerableDependencyAnalyzer` and `FrontendVulnerableDependencyAnalyzer` now set `$runInCI = false` — these analyzers make an external HTTP call (`api.osv.dev`) and spawn a subprocess (`npm audit`) respectively; both are excluded from `--ci` runs where dedicated pipeline steps already handle dependency scanning
+
 ## v1.7.20
 
 ### Fixed

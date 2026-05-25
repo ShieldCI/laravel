@@ -101,10 +101,14 @@ class AnalyzeCommand extends Command
             ini_set('memory_limit', $memoryLimit);
         }
 
-        // Set timeout
-        $timeout = config('shieldci.timeout');
-        if ($timeout !== null && (is_int($timeout) || is_numeric($timeout))) {
-            set_time_limit((int) $timeout);
+        // Set timeout (no-op on Lambda — warn instead)
+        if (getenv('AWS_LAMBDA_FUNCTION_NAME') !== false || getenv('VAPOR_SSM_PATH') !== false) {
+            $this->warn('Running on Lambda/Vapor: set_time_limit() has no effect. Configure the Lambda function timeout directly, or use --ci to limit analyzer scope.');
+        } else {
+            $timeout = config('shieldci.timeout');
+            if ($timeout !== null && (is_int($timeout) || is_numeric($timeout))) {
+                set_time_limit((int) $timeout);
+            }
         }
 
         // Check if enabled

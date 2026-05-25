@@ -25,6 +25,8 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 {
     use DetectsDeploymentPlatform;
 
+    public static bool $runInCI = false;
+
     /**
      * @var array<string>
      */

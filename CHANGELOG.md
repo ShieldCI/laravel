@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.22
+
+### Fixed
+- `shield:analyze` no longer exhausts the PHP memory limit on large projects — `AstParser` is a singleton whose internal file cache accumulated parsed AST trees across all 73 analyzers without being cleared; `AnalyzerManager` now calls `clearParserCache()` after each `analyze()` invocation, which also eliminates false positives in `SilentFailureAnalyzer` and `MissingDatabaseTransactionsAnalyzer` caused by `resolveNames()` mutating cached `Node` objects in-place between analyzers
+
 ## v1.7.21
 
 ### Changed

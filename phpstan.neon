@@ -81,6 +81,7 @@ parameters:
         - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage::with\(\)#'
         - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage::andThrow\(\)#'
         - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage::andReturnSelf\(\)#'
+        - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage::times\(\)#'
         - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage\|Mockery\\MockInterface::with\(\)#'
 
         # Test files: PHPUnit assertions on already-narrowed types are intentional defensive checks

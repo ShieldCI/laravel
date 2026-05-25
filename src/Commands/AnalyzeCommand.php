@@ -273,6 +273,7 @@ class AnalyzeCommand extends Command
 
                 // Run analyzer
                 $result = $analyzer->analyze();
+                $manager->clearParserCache();
                 $metadata = $analyzer->getMetadata();
 
                 // Enrich result with metadata
@@ -409,6 +410,7 @@ class AnalyzeCommand extends Command
 
                 // Run analyzer
                 $result = $analyzer->analyze();
+                $manager->clearParserCache();
                 $metadata = $analyzer->getMetadata();
 
                 // Enrich result with metadata
@@ -648,6 +650,7 @@ class AnalyzeCommand extends Command
                 $progressBar->setMessage($metadata->name);
             }
             $result = $analyzer->analyze();
+            $manager->clearParserCache();
             if ($progressBar !== null) {
                 $progressBar->advance();
             }

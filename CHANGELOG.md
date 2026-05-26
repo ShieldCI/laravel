@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.7.23
+
+### Changed
+- All recommendation strings across all 73 analyzers are now pure prose — PHP function calls (e.g. `Hash::make()`, `bcrypt()`), method chains (`->method()`), static access (`Class::method()`), PHP variable syntax (`$var`), array key-value literals (`'key' => value`), and inline code blocks have been removed; every recommendation now states the why and the what to do in plain language without embedding PHP syntax
+- `DetectsLaravelVersion` trait extracted to `src/Concerns/DetectsLaravelVersion.php` — replaces duplicated `class_exists(Illuminate\Foundation\Configuration\Middleware::class)` inline checks across `AuthenticationAnalyzer`, `LoginThrottlingAnalyzer`, and `UnusedGlobalMiddlewareAnalyzer` with `version_compare(app()->version(), '11.0.0', '>=')`, which is authoritative across all environments and requires no PHPStan suppression annotations
+- `AuthenticationAnalyzer` and `LoginThrottlingAnalyzer` now emit version-aware recommendations via the trait — Laravel 11+ users see guidance referencing `bootstrap/app.php`; Laravel 9/10 users see guidance referencing `app/Http/Kernel.php`
+
 ## v1.7.22
 
 ### Fixed

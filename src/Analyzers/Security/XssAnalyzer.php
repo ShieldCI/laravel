@@ -245,7 +245,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
                         severity: Severity::Critical,
-                        recommendation: 'Always escape output: echo htmlspecialchars($_GET["var"], ENT_QUOTES, "UTF-8")'
+                        recommendation: 'Always escape user-supplied values before output. Use htmlspecialchars() with ENT_QUOTES to encode characters that could be interpreted as HTML.'
                     );
                 }
 
@@ -305,7 +305,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
                         severity: $severity,
-                        recommendation: 'Use @json() directive for variables, Js::from(), or json_encode() with JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP flags'
+                        recommendation: 'Use the @json() Blade directive or Js::from() for safe JSON output in templates. If using json_encode() directly, pass all four XSS-safe encoding flags (JSON_HEX_TAG, JSON_HEX_APOS, JSON_HEX_QUOT, JSON_HEX_AMP).'
                     );
                 }
 
@@ -358,7 +358,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $echoNode->getStartLine(),
                         severity: Severity::Critical,
-                        recommendation: 'Always escape output: echo htmlspecialchars($_GET["var"], ENT_QUOTES, "UTF-8")'
+                        recommendation: 'Always escape user-supplied values before output. Use htmlspecialchars() with ENT_QUOTES to encode characters that could be interpreted as HTML.'
                     );
                 } elseif ($this->containsRequestCallAst($expr, $nodeFinder)) {
                     $issues[] = $this->createIssueWithSnippet(
@@ -843,7 +843,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
                     message: 'HTTP XSS: Content-Security-Policy header not set',
                     location: new Location('HTTP Headers'),
                     severity: Severity::High,
-                    recommendation: 'Set Content-Security-Policy header with script-src or default-src directive without unsafe-eval or unsafe-inline. Example: "default-src \'self\'; script-src \'self\'"'
+                    recommendation: 'Set a Content-Security-Policy header with a script-src or default-src directive that excludes unsafe-eval and unsafe-inline to prevent script injection.'
                 );
 
                 return $issues;

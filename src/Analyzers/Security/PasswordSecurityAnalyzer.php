@@ -1094,7 +1094,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 message: 'No Password::defaults() configured in service providers',
                 location: new Location('app/Providers/AppServiceProvider.php'),
                 severity: Severity::Medium,
-                recommendation: 'Define password validation defaults in a service provider boot() method or bootstrap/app.php: Password::defaults(function () { return Password::min(8)->letters()->mixedCase()->numbers()->symbols()->uncompromised(); });',
+                recommendation: 'Define password validation defaults in a service provider boot() method or in bootstrap/app.php. Defaults should enforce minimum length, mixed case, numbers, symbols, and rejection of known-breached passwords.',
                 metadata: ['issue_type' => 'missing_password_defaults']
             );
 
@@ -1126,7 +1126,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 message: 'Password::defaults() does not enforce minimum 8 character length',
                 location: new Location('app/Providers/AppServiceProvider.php'),
                 severity: Severity::Medium,
-                recommendation: 'Set minimum password length: Password::min(8)',
+                recommendation: 'Set a minimum password length of at least 8 characters in your Password defaults configuration.',
                 metadata: ['issue_type' => 'weak_password_min_length']
             );
         }
@@ -1136,7 +1136,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 message: 'Password::defaults() does not require mixed case characters',
                 location: new Location('app/Providers/AppServiceProvider.php'),
                 severity: Severity::Low,
-                recommendation: 'Add mixed case requirement: Password::min(8)->mixedCase()',
+                recommendation: 'Add a mixed case requirement to your Password defaults to enforce both uppercase and lowercase characters.',
                 metadata: ['issue_type' => 'no_mixed_case_requirement']
             );
         }
@@ -1146,7 +1146,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 message: 'Password::defaults() does not check against breached password databases',
                 location: new Location('app/Providers/AppServiceProvider.php'),
                 severity: Severity::Low,
-                recommendation: 'Add breached password check: Password::min(8)->uncompromised()',
+                recommendation: 'Add the uncompromised check to your Password defaults to reject passwords that have appeared in known data breaches.',
                 metadata: ['issue_type' => 'no_breached_password_check']
             );
         }
@@ -1229,7 +1229,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $item->getStartLine(),
                         severity: Severity::Medium,
-                        recommendation: 'Set minimum password length to at least 8 characters: \'password\' => [\'required\', Password::min(8)]',
+                        recommendation: 'Set a minimum password length of at least 8 characters in your validation rules using the Password rule object.',
                         metadata: ['min_length' => $minLength, 'issue_type' => 'weak_validation_min_length']
                     );
                 }

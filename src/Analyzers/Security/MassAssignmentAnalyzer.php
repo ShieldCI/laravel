@@ -706,7 +706,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     filePath: $file,
                     lineNumber: $call->getLine(),
                     severity: Severity::High,
-                    recommendation: 'Use request()->only([...]) instead of except(), or use a FormRequest with $request->validated(). Whitelist filtering is safer than blacklist as new fields are excluded by default',
+                    recommendation: 'Use whitelist filtering to specify only the fields you expect, rather than blacklist filtering with except(). A FormRequest with validated data is the strongest approach as new fields are excluded by default.',
                     metadata: [
                         'method' => $method,
                         'call_type' => $callType,
@@ -732,7 +732,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     filePath: $file,
                     lineNumber: $call->getLine(),
                     severity: Severity::Critical,
-                    recommendation: 'Use request()->only([...]) to specify allowed fields, or use a FormRequest with $request->validated() for full validation',
+                    recommendation: 'Filter the request to only the fields you expect before passing data to Eloquent. A FormRequest validates and whitelists fields in one step, providing the strongest protection.',
                     metadata: [
                         'method' => $method,
                         'call_type' => $callType,
@@ -1211,7 +1211,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                             filePath: $file,
                             lineNumber: $call->getLine(),
                             severity: Severity::High,
-                            recommendation: 'Use request()->only([...]) to filter data, or use a FormRequest with $request->validated(), before passing to relationship methods',
+                            recommendation: 'Filter the request to only the expected fields before passing data to relationship methods. A FormRequest with validated data provides the strongest protection.',
                             metadata: [
                                 'method' => $method,
                                 'issue_type' => 'relationship_mass_assignment',

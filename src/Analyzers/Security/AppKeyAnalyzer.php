@@ -235,7 +235,7 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                         filePath: $appConfig,
                         lineNumber: $lineNumber + 1,
                         severity: Severity::Critical,
-                        recommendation: 'Use env("APP_KEY") to reference the key from .env file',
+                        recommendation: 'Reference the APP_KEY environment variable in config/app.php rather than hardcoding the key directly in the configuration file.',
                         metadata: [
                             'file' => 'app.php',
                             'config_key' => 'key',

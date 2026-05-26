@@ -134,7 +134,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                     filePath: $sessionConfig,
                     lineNumber: $entry['line'],
                     severity: Severity::High,
-                    recommendation: 'Set "secure" => env("SESSION_SECURE_COOKIE", true) for HTTPS-only applications',
+                    recommendation: 'Enable the secure cookie flag in config/session.php so session cookies are only transmitted over HTTPS. Use an environment variable to control this setting per environment.',
                     metadata: [
                         'file' => 'session.php',
                         'config_key' => 'secure',
@@ -211,7 +211,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                 filePath: $kernelFile,
                 lineNumber: null,
                 severity: Severity::Critical,
-                recommendation: 'Add \\App\\Http\\Middleware\\EncryptCookies::class to $middleware array in app/Http/Kernel.php',
+                recommendation: 'Register the EncryptCookies middleware in the global middleware stack in app/Http/Kernel.php to enable cookie encryption.',
                 metadata: [
                     'file' => 'Kernel.php',
                     'middleware' => 'EncryptCookies',
@@ -426,7 +426,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
                 filePath: $file,
                 lineNumber: null,
                 severity: Severity::High,
-                recommendation: 'Add EncryptCookies middleware using ->withMiddleware() in bootstrap/app.php to enable cookie encryption',
+                recommendation: 'Register the EncryptCookies middleware via the middleware configuration in bootstrap/app.php to enable cookie encryption.',
                 metadata: [
                     'file' => 'bootstrap/app.php',
                     'laravel_version' => '11+',

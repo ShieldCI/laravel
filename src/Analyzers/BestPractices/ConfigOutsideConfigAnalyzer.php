@@ -251,7 +251,7 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
                     ),
                     'line' => $node->getLine(),
                     'severity' => Severity::Medium,
-                    'recommendation' => 'Move URLs to config file (e.g., config/services.php). Use config(\'services.api.url\') instead of hardcoding',
+                    'recommendation' => 'Move this URL to a config file such as config/services.php and reference it via the config helper using a dot-notation key.',
                     'code' => null,
                 ];
             }
@@ -262,7 +262,7 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
                     'message' => 'Possible hardcoded API key or secret detected',
                     'line' => $node->getLine(),
                     'severity' => Severity::High,
-                    'recommendation' => 'NEVER hardcode API keys in source code. Use environment variables via config files: config(\'services.api.key\')',
+                    'recommendation' => 'Never hardcode API keys in source code. Store them as environment variables and reference them through a config file using the config helper with a dot-notation key.',
                     'code' => null,
                 ];
             }

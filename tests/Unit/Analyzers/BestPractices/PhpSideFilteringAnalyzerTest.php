@@ -2546,7 +2546,7 @@ PHP;
 
         // Should have pluck-specific recommendation (not "loads all data into memory")
         $recommendation = $issues[0]->recommendation;
-        $this->assertStringContainsString('where() clauses before pluck()', $recommendation);
+        $this->assertStringContainsString('where clauses before pluck', $recommendation);
         $this->assertStringContainsString('only loads one column', $recommendation);
         $this->assertStringNotContainsString('loads all data into memory', $recommendation);
     }
@@ -2581,7 +2581,7 @@ PHP;
 
         // Should have pluck-specific recommendation for reject
         $recommendation = $issues[0]->recommendation;
-        $this->assertStringContainsString('whereNot() or where() clauses before pluck()', $recommendation);
+        $this->assertStringContainsString('whereNot or where clauses before pluck', $recommendation);
         $this->assertStringNotContainsString('loads all data into memory', $recommendation);
     }
 
@@ -2615,7 +2615,7 @@ PHP;
 
         // Should have pluck-specific recommendation for whereIn
         $recommendation = $issues[0]->recommendation;
-        $this->assertStringContainsString('whereIn() to the query before pluck()', $recommendation);
+        $this->assertStringContainsString('whereIn clause to the query before calling pluck', $recommendation);
         $this->assertStringNotContainsString('loads all data into memory', $recommendation);
     }
 
@@ -2649,7 +2649,7 @@ PHP;
 
         // Should have pluck-specific recommendation for whereNotIn
         $recommendation = $issues[0]->recommendation;
-        $this->assertStringContainsString('whereNotIn() to the query before pluck()', $recommendation);
+        $this->assertStringContainsString('whereNotIn clause to the query before calling pluck', $recommendation);
         $this->assertStringNotContainsString('loads all data into memory', $recommendation);
     }
 

@@ -339,7 +339,7 @@ class SilentFailureVisitor extends NodeVisitorAbstract
                             'message' => 'Catch block does not log exception or rethrow',
                             'line' => $catch->getLine(),
                             'severity' => Severity::Medium,
-                            'recommendation' => 'Always log caught exceptions using Log::error(), report(), or rethrow them. Silent failures make debugging extremely difficult',
+                            'recommendation' => 'Always log caught exceptions using the Log facade or the report helper, or rethrow them. Silent catch blocks make debugging extremely difficult.',
                             'code' => null,
                         ];
                     }

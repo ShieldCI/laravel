@@ -266,7 +266,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 filePath: $file,
                 lineNumber: $class->getLine(),
                 severity: Severity::High,
-                recommendation: 'Add protected $fillable = [...] or protected $guarded = ["*"] to the model',
+                recommendation: 'Add a protected fillable property listing only the fields you expect from user input, or a guarded property set to a wildcard to deny all attributes by default.',
                 metadata: [
                     'model' => $modelName,
                     'issue_type' => 'missing_model_protection',
@@ -281,7 +281,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 filePath: $file,
                 lineNumber: $class->getLine(),
                 severity: Severity::Critical,
-                recommendation: 'Either specify fillable attributes or use $guarded = ["*"] to protect all',
+                recommendation: 'Either specify which attributes are fillable, or set guarded to a wildcard to deny all attributes by default.',
                 metadata: [
                     'model' => $modelName,
                     'issue_type' => 'empty_guarded_array',
@@ -706,7 +706,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     filePath: $file,
                     lineNumber: $call->getLine(),
                     severity: Severity::High,
-                    recommendation: 'Use request()->only([...]) instead of except(), or use a FormRequest with $request->validated(). Whitelist filtering is safer than blacklist as new fields are excluded by default',
+                    recommendation: 'Use whitelist filtering to specify only the fields you expect, rather than blacklist filtering with except(). A FormRequest with validated data is the strongest approach as new fields are excluded by default.',
                     metadata: [
                         'method' => $method,
                         'call_type' => $callType,
@@ -732,7 +732,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     filePath: $file,
                     lineNumber: $call->getLine(),
                     severity: Severity::Critical,
-                    recommendation: 'Use request()->only([...]) to specify allowed fields, or use a FormRequest with $request->validated() for full validation',
+                    recommendation: 'Filter the request to only the fields you expect before passing data to Eloquent. A FormRequest validates and whitelists fields in one step, providing the strongest protection.',
                     metadata: [
                         'method' => $method,
                         'call_type' => $callType,
@@ -1135,7 +1135,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     filePath: $file,
                     lineNumber: $class->getLine(),
                     severity: Severity::Medium,
-                    recommendation: 'Add $hidden = [\''.implode("', '", $exposedSensitiveFields).'\'] to protect sensitive fields from JSON serialization',
+                    recommendation: 'Add the following sensitive fields to the hidden property to prevent them from appearing in JSON serialization: '.implode(', ', $exposedSensitiveFields).'.',
                     metadata: [
                         'model' => $modelName,
                         'issue_type' => 'missing_hidden_attributes',
@@ -1160,7 +1160,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $class->getLine(),
                         severity: Severity::Medium,
-                        recommendation: "Add '{$field}' to the \$hidden array to prevent exposure in API responses",
+                        recommendation: "Add the {$field} field to the hidden property to prevent it from appearing in JSON serialization and API responses.",
                         metadata: [
                             'model' => $modelName,
                             'missing_field' => $field,
@@ -1211,7 +1211,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                             filePath: $file,
                             lineNumber: $call->getLine(),
                             severity: Severity::High,
-                            recommendation: 'Use request()->only([...]) to filter data, or use a FormRequest with $request->validated(), before passing to relationship methods',
+                            recommendation: 'Filter the request to only the expected fields before passing data to relationship methods. A FormRequest with validated data provides the strongest protection.',
                             metadata: [
                                 'method' => $method,
                                 'issue_type' => 'relationship_mass_assignment',

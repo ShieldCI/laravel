@@ -582,7 +582,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
                 return $base.'Consider extracting to an injectable class if this closure grows in complexity.';
             }
 
-            return $base.'Use constructor injection instead: public function __construct(private readonly YourService $service) {}';
+            return $base.'Use constructor injection to declare the dependency in the class constructor and let the service container resolve it automatically.';
         }
 
         // Closure-context resolution recommendation

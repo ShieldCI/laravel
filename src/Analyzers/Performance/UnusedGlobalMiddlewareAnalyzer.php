@@ -9,7 +9,6 @@ use Fruitcake\Cors\HandleCors as FruitcakeHandleCors;
 use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Http\Kernel;
-use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Middleware\HandleCors;
 use Illuminate\Http\Middleware\TrustHosts;
 use Illuminate\Http\Middleware\TrustProxies;
@@ -23,6 +22,7 @@ use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Concerns\AnalyzesMiddleware;
+use ShieldCI\Concerns\DetectsLaravelVersion;
 
 /**
  * Detects unused global HTTP middleware in the application.
@@ -37,6 +37,7 @@ use ShieldCI\Concerns\AnalyzesMiddleware;
 class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
 {
     use AnalyzesMiddleware;
+    use DetectsLaravelVersion;
 
     /**
      * @var array<int, array{name: string, class: string, reason: string, recommendation: string}>
@@ -157,7 +158,7 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
                     class_basename($middlewareClass),
                     $middlewareClass,
                     'No proxies are configured',
-                    'Remove TrustProxies middleware from app/Http/Kernel.php $middleware array, as no proxies are configured. This middleware runs on every request unnecessarily. Only add it back if you deploy behind a proxy (like CloudFlare, AWS ALB, nginx).'
+                    'Remove TrustProxies middleware from the global middleware stack in app/Http/Kernel.php, as no proxies are configured. This middleware runs on every request unnecessarily. Only add it back if you deploy behind a proxy such as CloudFlare, AWS ALB, or nginx.'
                 );
             }
         } catch (\Throwable $e) {
@@ -195,7 +196,7 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
                 class_basename(TrustHosts::class),
                 TrustHosts::class,
                 'TrustHosts is useless without TrustProxies',
-                'Remove TrustHosts middleware from app/Http/Kernel.php $middleware array. TrustHosts only works when used together with TrustProxies middleware, as it validates the Host header from trusted proxies.'
+                'Remove TrustHosts middleware from the global middleware stack in app/Http/Kernel.php. TrustHosts only works when used together with TrustProxies middleware, as it validates the Host header from trusted proxies.'
             );
         }
     }
@@ -224,7 +225,7 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
 
             $recommendation = $this->isLaravel11OrNewer()
                 ? 'Remove HandleCors from the withMiddleware() callback in bootstrap/app.php, as no CORS paths are configured. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths in config/cors.php.'
-                : 'Remove HandleCors middleware from app/Http/Kernel.php $middleware array, as no CORS paths are configured. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths that require CORS handling in config/cors.php.';
+                : 'Remove HandleCors middleware from the global middleware stack in app/Http/Kernel.php, as no CORS paths are configured. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths that require CORS handling in config/cors.php.';
 
             $this->addUnusedMiddleware(
                 class_basename($middlewareClass),
@@ -308,19 +309,6 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
         }
 
         return $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Kernel.php';
-    }
-
-    /**
-     * Determine if the application uses Laravel 11+.
-     *
-     * Detected via the presence of Illuminate\Foundation\Configuration\Middleware,
-     * which was introduced in Laravel 11 as part of the new bootstrap/app.php API.
-     * This is more reliable than filesystem checks since the laravel/framework
-     * package is always present and its version reflects the actual Laravel version.
-     */
-    private function isLaravel11OrNewer(): bool
-    {
-        return class_exists(Middleware::class);
     }
 
     /**

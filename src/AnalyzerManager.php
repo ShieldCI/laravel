@@ -8,6 +8,7 @@ use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Contracts\Container\Container;
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Results\AnalysisResult;
 
@@ -65,6 +66,23 @@ class AnalyzerManager
         $this->cachedAnalyzers = null;
         $this->cachedSkippedAnalyzers = null;
         $this->configCacheInitialized = false;
+    }
+
+    /**
+     * Clear the singleton AstParser's file cache to prevent unbounded heap growth
+     * when 73 analyzers each call parseFile() across the same project.
+     * Called after every analyze() invocation in runAll() and run().
+     */
+    public function clearParserCache(): void
+    {
+        try {
+            $parser = $this->container->make(ParserInterface::class);
+            if (method_exists($parser, 'clearCache')) {
+                $parser->clearCache();
+            }
+        } catch (\Throwable) {
+            // Parser not bound or doesn't support clearing — silently skip
+        }
     }
 
     private function initConfigCache(): void
@@ -248,6 +266,7 @@ class AnalyzerManager
         $results = $this->getAnalyzers()
             ->map(function (AnalyzerInterface $analyzer) {
                 $result = $analyzer->analyze();
+                $this->clearParserCache();
                 $metadata = $analyzer->getMetadata();
 
                 // Enrich result with analyzer metadata
@@ -422,6 +441,7 @@ class AnalyzerManager
         }
 
         $result = $analyzer->analyze();
+        $this->clearParserCache();
         $metadata = $analyzer->getMetadata();
 
         // Enrich result with analyzer metadata (same as runAll)

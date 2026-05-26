@@ -1535,6 +1535,10 @@ class AnalyzeCommandTest extends TestCase
             $manager->shouldReceive('runAll')
                 ->andReturn(collect());
 
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('clearParserCache')
+                ->andReturn(null);
+
             return $manager;
         });
 
@@ -2387,6 +2391,10 @@ PHP);
             $manager->shouldReceive('runAll')
                 ->andReturn(collect([$failedAnalyzer->analyze()]));
 
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('clearParserCache')
+                ->andReturn(null);
+
             return $manager;
         });
     }
@@ -2451,6 +2459,10 @@ PHP);
             $manager->shouldReceive('runAll')
                 ->andReturn(collect([$failedAnalyzer->analyze()]));
 
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('clearParserCache')
+                ->andReturn(null);
+
             return $manager;
         });
     }
@@ -2509,6 +2521,10 @@ PHP);
             $manager->shouldReceive('runAll')
                 ->andReturn(collect([$warningAnalyzer->analyze()]));
 
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('clearParserCache')
+                ->andReturn(null);
+
             return $manager;
         });
     }
@@ -2566,6 +2582,10 @@ PHP);
             /** @phpstan-ignore-next-line */
             $manager->shouldReceive('runAll')
                 ->andReturn(collect([$failedAnalyzer->analyze()]));
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('clearParserCache')
+                ->andReturn(null);
 
             return $manager;
         });
@@ -2666,6 +2686,10 @@ PHP);
                     $performanceAnalyzer->analyze(),
                 ]));
 
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('clearParserCache')
+                ->andReturn(null);
+
             return $manager;
         });
     }
@@ -2723,6 +2747,10 @@ PHP);
             /** @phpstan-ignore-next-line */
             $manager->shouldReceive('runAll')
                 ->andReturn(collect([$warningAnalyzer->analyze()]));
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('clearParserCache')
+                ->andReturn(null);
 
             return $manager;
         });
@@ -2802,6 +2830,10 @@ PHP);
             /** @phpstan-ignore-next-line */
             $manager->shouldReceive('runAll')
                 ->andReturn(collect([$passedAnalyzer->analyze()]));
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('clearParserCache')
+                ->andReturn(null);
 
             return $manager;
         });
@@ -2916,6 +2948,10 @@ PHP);
             $manager->shouldReceive('runAll')
                 ->andReturn(collect([$skipped]));
 
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('clearParserCache')
+                ->andReturn(null);
+
             return $manager;
         });
     }
@@ -2978,6 +3014,10 @@ PHP);
             /** @phpstan-ignore-next-line */
             $manager->shouldReceive('runAll')
                 ->andReturn(collect([$passedAnalyzer->analyze()]));
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('clearParserCache')
+                ->andReturn(null);
 
             return $manager;
         });
@@ -3052,6 +3092,10 @@ PHP);
             /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with(Mockery::any())
+                ->andReturn(null);
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
 
             return $manager;
@@ -3194,6 +3238,8 @@ PHP);
             $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
             /** @phpstan-ignore-next-line */
             $manager->shouldReceive('runAll')->andReturn(collect());
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('clearParserCache')->andReturn(null);
 
             return $manager;
         });
@@ -3245,6 +3291,8 @@ PHP);
             $manager->shouldReceive('getByCategory')->with(Mockery::any())->andReturn(collect());
             /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('clearParserCache')->andReturn(null);
 
             return $manager;
         });
@@ -4110,6 +4158,8 @@ PHP);
         $manager->shouldReceive('run')->with('test-performance-analyzer')->andReturn($performanceAnalyzer->analyze());
         /** @phpstan-ignore-next-line */
         $manager->shouldReceive('resolveAnalyzerDisplayName')->andReturn('Test Security Analyzer');
+        /** @phpstan-ignore-next-line */
+        $manager->shouldReceive('clearParserCache')->andReturn(null);
 
         return $manager;
     }

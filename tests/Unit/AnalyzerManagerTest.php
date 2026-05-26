@@ -10,6 +10,7 @@ use Mockery;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\AnalyzerManager;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -672,6 +673,46 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals(2, $callCount, 'After invalidateCache(), make() should be called again');
     }
 
+    #[Test]
+    public function it_calls_clear_cache_on_parser_when_method_exists(): void
+    {
+        $parser = new ParserWithClearCache;
+
+        $config = Mockery::mock(Config::class);
+        $config->shouldReceive('get')->andReturn([]);
+
+        $container = Mockery::mock(Container::class);
+        $container->shouldReceive('make')
+            ->with(ParserInterface::class)
+            ->once()
+            ->andReturn($parser);
+
+        $manager = new AnalyzerManager($config, [], $container);
+        $manager->clearParserCache();
+
+        $this->assertTrue($parser->clearCacheCalled);
+    }
+
+    #[Test]
+    public function it_does_not_throw_when_parser_has_no_clear_cache_method(): void
+    {
+        $parser = new ParserWithoutClearCache;
+
+        $config = Mockery::mock(Config::class);
+        $config->shouldReceive('get')->andReturn([]);
+
+        $container = Mockery::mock(Container::class);
+        $container->shouldReceive('make')
+            ->with(ParserInterface::class)
+            ->once()
+            ->andReturn($parser);
+
+        $manager = new AnalyzerManager($config, [], $container);
+        $manager->clearParserCache();
+
+        $this->addToAssertionCount(1);
+    }
+
     protected function createManager(array $analyzerClasses): AnalyzerManager
     {
         $config = Mockery::mock(Config::class);
@@ -921,5 +962,88 @@ class FileTestAnalyzer implements AnalyzerInterface
     public function getId(): string
     {
         return 'file-test-analyzer';
+    }
+}
+
+class ParserWithClearCache implements ParserInterface
+{
+    public bool $clearCacheCalled = false;
+
+    public function parseFile(string $filePath): array
+    {
+        return [];
+    }
+
+    public function parseCode(string $code): array
+    {
+        return [];
+    }
+
+    public function findNodes(array $ast, string $nodeType): array
+    {
+        return [];
+    }
+
+    public function findMethodCalls(array $ast, string $methodName): array
+    {
+        return [];
+    }
+
+    public function findStaticCalls(array $ast, string $className, string $methodName): array
+    {
+        return [];
+    }
+
+    public function resolveNames(array $ast, array $options = []): array
+    {
+        return [];
+    }
+
+    public function collectStringLines(array $ast): array
+    {
+        return [];
+    }
+
+    public function clearCache(): void
+    {
+        $this->clearCacheCalled = true;
+    }
+}
+
+class ParserWithoutClearCache implements ParserInterface
+{
+    public function parseFile(string $filePath): array
+    {
+        return [];
+    }
+
+    public function parseCode(string $code): array
+    {
+        return [];
+    }
+
+    public function findNodes(array $ast, string $nodeType): array
+    {
+        return [];
+    }
+
+    public function findMethodCalls(array $ast, string $methodName): array
+    {
+        return [];
+    }
+
+    public function findStaticCalls(array $ast, string $className, string $methodName): array
+    {
+        return [];
+    }
+
+    public function resolveNames(array $ast, array $options = []): array
+    {
+        return [];
+    }
+
+    public function collectStringLines(array $ast): array
+    {
+        return [];
     }
 }

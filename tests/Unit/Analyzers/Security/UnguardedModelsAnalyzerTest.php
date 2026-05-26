@@ -1127,8 +1127,8 @@ PHP;
 
         // Should have service provider specific recommendation
         $this->assertStringContainsString('service providers is a documented pattern', $issues[0]->recommendation);
-        $this->assertStringContainsString('environment check', $issues[0]->recommendation);
-        $this->assertStringContainsString('app()->environment("production")', $issues[0]->recommendation);
+        $this->assertStringContainsString('non-production environments', $issues[0]->recommendation);
+        $this->assertStringNotContainsString('app()->environment(', $issues[0]->recommendation);
     }
 
     public function test_non_provider_unguard_has_standard_recommendation(): void
@@ -1161,7 +1161,8 @@ PHP;
         $this->assertCount(1, $issues);
 
         // Should have standard recommendation (not service provider specific)
-        $this->assertStringContainsString('Call Model::reguard()', $issues[0]->recommendation);
+        $this->assertStringContainsString('scoped Model::unguarded() method', $issues[0]->recommendation);
+        $this->assertStringNotContainsString('function()', $issues[0]->recommendation);
         $this->assertStringNotContainsString('service providers', $issues[0]->recommendation);
     }
 

@@ -222,7 +222,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                         filePath: $appConfig,
                         lineNumber: $lineNumber + 1,
                         severity: Severity::Critical,
-                        recommendation: 'Use env("APP_DEBUG", false) instead of hardcoded true',
+                        recommendation: 'Reference the APP_DEBUG environment variable in config/app.php instead of hardcoding the debug flag. Default it to false so production deployments are safe without explicit configuration.',
                         metadata: [
                             'file' => 'app.php',
                             'config_key' => 'debug',
@@ -325,7 +325,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                     filePath: $file,
                     lineNumber: $exitNode->getStartLine(),
                     severity: Severity::Medium,
-                    recommendation: 'Use abort() for web requests or return early. For CLI commands, use proper exit codes via Command::FAILURE/Command::SUCCESS.',
+                    recommendation: 'Use abort() for web requests or return early instead of calling exit(). For CLI commands, return the appropriate exit code constant from the handle() method rather than calling exit() directly.',
                     metadata: [
                         'function' => $functionName,
                         'file' => basename($file),

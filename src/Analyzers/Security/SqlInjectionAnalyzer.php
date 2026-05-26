@@ -42,7 +42,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             'checkInstance' => false,
             'strictConcatenation' => true,
             'severity' => Severity::Critical,  // Full query construction
-            'recommendation' => 'Use parameter binding instead of string concatenation. Example: DB::raw("SELECT * FROM users WHERE id = ?", [$id])',
+            'recommendation' => 'Use parameter binding instead of string concatenation. Pass values as a separate binding array to the raw method rather than interpolating them into the SQL string.',
         ],
         'unprepared' => [
             'alwaysFlag' => true,
@@ -50,7 +50,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             'checkInstance' => false,
             'strictConcatenation' => true,
             'severity' => Severity::Critical,  // Inherently unsafe
-            'recommendation' => 'Avoid DB::unprepared() - use prepared statements with DB::select(), DB::insert(), etc. with parameter binding',
+            'recommendation' => 'Avoid the unprepared method which executes raw SQL without parameter binding. Use the prepared statement query methods with a binding array instead.',
         ],
         'whereRaw' => [
             'alwaysFlag' => false,
@@ -58,7 +58,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             'checkInstance' => true,
             'strictConcatenation' => false,
             'severity' => Severity::High,  // Query fragment only
-            'recommendation' => 'Use parameter binding: ->whereRaw(\'column = ?\', [$value]) instead of concatenation',
+            'recommendation' => 'Pass values as a binding array to whereRaw rather than concatenating them into the SQL string.',
         ],
         'havingRaw' => [
             'alwaysFlag' => false,
@@ -66,7 +66,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             'checkInstance' => true,
             'strictConcatenation' => false,
             'severity' => Severity::High,  // Query fragment only
-            'recommendation' => 'Use parameter binding: ->havingRaw(\'column = ?\', [$value]) instead of concatenation',
+            'recommendation' => 'Pass values as a binding array to havingRaw rather than concatenating them into the SQL string.',
         ],
         'orderByRaw' => [
             'alwaysFlag' => false,
@@ -74,7 +74,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             'checkInstance' => true,
             'strictConcatenation' => false,
             'severity' => Severity::High,  // Query fragment only
-            'recommendation' => 'Use parameter binding: ->orderByRaw(\'column = ?\', [$value]) instead of concatenation',
+            'recommendation' => 'Pass values as a binding array to orderByRaw rather than concatenating them into the SQL string.',
         ],
         'selectRaw' => [
             'alwaysFlag' => false,
@@ -82,7 +82,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             'checkInstance' => true,
             'strictConcatenation' => false,
             'severity' => Severity::High,  // Query fragment only
-            'recommendation' => 'Use parameter binding: ->selectRaw(\'column = ?\', [$value]) instead of concatenation',
+            'recommendation' => 'Pass values as a binding array to selectRaw rather than concatenating them into the SQL string.',
         ],
         'select' => [
             'alwaysFlag' => false,

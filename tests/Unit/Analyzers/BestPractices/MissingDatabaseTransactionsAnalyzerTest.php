@@ -345,7 +345,7 @@ PHP;
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertGreaterThan(0, count($issues));
-        $this->assertStringContainsString('DB::transaction()', $issues[0]->recommendation);
+        $this->assertStringContainsString('database transaction', $issues[0]->recommendation);
         $this->assertStringContainsString('atomicity', $issues[0]->recommendation);
     }
 

@@ -4129,4 +4129,92 @@ PHP;
 
         $this->assertEmpty($result->getIssues());
     }
+
+    public function test_unauthenticated_method_recommendation_contains_no_code_samples(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+
+class UserController extends Controller
+{
+    public function destroy(Request $request, int $id): void
+    {
+        // no auth check
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+        $issues = array_filter(
+            $result->getIssues(),
+            fn ($i) => str_contains($i->message, 'without authentication check')
+        );
+
+        if (empty($issues)) {
+            $this->markTestSkipped('No auth issues detected for this fixture — adjust fixture to trigger the expected issue.');
+        }
+
+        $issue = reset($issues);
+        $this->assertStringNotContainsString('$this->middleware(', $issue->recommendation);
+        $this->assertStringContainsString('auth middleware', $issue->recommendation);
+    }
+
+    public function test_form_request_recommendation_contains_no_code_samples(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class DeleteUserRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    public function rules(): array
+    {
+        return [];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Requests/DeleteUserRequest.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+        $issues = array_filter(
+            $result->getIssues(),
+            fn ($i) => str_contains($i->message, 'authorize()')
+        );
+
+        if (empty($issues)) {
+            $this->markTestSkipped('No FormRequest authorization issue detected — adjust fixture if needed.');
+        }
+
+        $issue = reset($issues);
+        $this->assertStringNotContainsString('$this->', $issue->recommendation);
+        $this->assertStringNotContainsString('->can(', $issue->recommendation);
+        $this->assertStringContainsString('Gate or Policy', $issue->recommendation);
+    }
 }

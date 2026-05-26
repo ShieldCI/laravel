@@ -411,8 +411,8 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
     {
         return sprintf(
             'When MySQL runs on the same server as your application, use Unix sockets instead of TCP for measurable performance improvement. '.
-            "Add 'unix_socket' => env('DB_SOCKET', '/var/run/mysqld/mysqld.sock') to the '%s' connection config, ".
-            'then set DB_SOCKET in your .env file with the path to your MySQL socket file. Common paths: '.
+            "Add a unix_socket option to the '%s' connection in config/database.php pointing to your MySQL socket file, ".
+            'then set the DB_SOCKET environment variable in .env with the socket path. Common paths: '.
             '/var/run/mysqld/mysqld.sock (Ubuntu/Debian), /tmp/mysql.sock (macOS), /var/lib/mysql/mysql.sock (RHEL/CentOS).',
             $connectionName
         );

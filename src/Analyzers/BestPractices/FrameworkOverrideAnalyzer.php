@@ -316,33 +316,32 @@ class FrameworkOverrideVisitor extends NodeVisitorAbstract
     private function getRecommendation(string $coreClass): string
     {
         $recommendations = [
-            'Illuminate\\Http\\Request' => 'Instead of extending Request, use Request::macro() in a service provider to add custom methods, '.
-                'or create a FormRequest for validation.',
+            'Illuminate\\Http\\Request' => 'Instead of extending Request, register custom methods via the macro extension point in a service provider boot method, '.
+                'or create a FormRequest for validation logic.',
 
-            'Illuminate\\Database\\Eloquent\\Builder' => 'Instead of extending Builder, use query scopes on your Eloquent models. '.
-                'Example: public function scopeActive($query) { return $query->where("active", true); }',
+            'Illuminate\\Database\\Eloquent\\Builder' => 'Instead of extending Builder, use local query scopes on your Eloquent models '.
+                'to encapsulate reusable query constraints.',
 
             'Illuminate\\Database\\Query\\Builder' => 'Extending Query Builder is extremely dangerous and will break during framework upgrades. '.
-                'Use query scopes on Eloquent models or macros via DB::macro() for query builder extensions.',
+                'Use local query scopes on Eloquent models or register macros in a service provider boot method for query builder extensions.',
 
             'Illuminate\\Routing\\Router' => 'Extending Router is extremely dangerous and will break during framework upgrades. '.
-                'Use Router::macro() in a service provider or configure routes in RouteServiceProvider.',
+                'Register route macros in a service provider boot method or configure routes in RouteServiceProvider instead.',
 
             'Illuminate\\Foundation\\Application' => 'Never extend Application. This is the core of Laravel and extending it will cause severe upgrade issues. '.
                 'Use service providers to customize behavior.',
 
-            'Illuminate\\Http\\Response' => 'Instead of extending Response, use Response::macro() to add custom methods, '.
+            'Illuminate\\Http\\Response' => 'Instead of extending Response, register custom response methods via the macro extension point in a service provider boot method, '.
                 'or return custom response types from your controllers.',
 
             'Illuminate\\Database\\Connection' => 'Extending Connection is extremely risky. Use database events or query macros instead.',
 
-            'Illuminate\\Validation\\Validator' => 'Instead of extending Validator, use custom validation rules via Validator::extend() in a service provider.',
+            'Illuminate\\Validation\\Validator' => 'Instead of extending Validator, use custom validation rule objects or register custom rules in a service provider boot method.',
         ];
 
         return $recommendations[$coreClass] ??
-            'Avoid extending core framework classes. They frequently change between Laravel versions. '.
-            'Use Laravel\'s extension points instead: macros (e.g., Request::macro()), service providers, '.
-            'middleware, event listeners, or custom helpers. Extending core classes will cause issues during framework upgrades.';
+            'Avoid extending core framework classes. They frequently change between Laravel versions and cause upgrade failures. '.
+            'Use service providers, middleware, event listeners, macros, or custom helpers as extension points instead.';
     }
 
     /**

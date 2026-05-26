@@ -170,7 +170,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
                         severity: Severity::High,
-                        recommendation: 'Add @csrf or <x-csrf /> inside the form, or use {{ csrf_field() }}',
+                        recommendation: 'Add the @csrf Blade directive inside the form tag to include a hidden CSRF token field.',
                         metadata: [
                             'file' => basename($file),
                             'form_method' => $method,
@@ -251,7 +251,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
                         severity: Severity::High,
-                        recommendation: 'Add X-CSRF-TOKEN header: headers: { "X-CSRF-TOKEN": $("meta[name=csrf-token]").attr("content") }',
+                        recommendation: 'Add the X-CSRF-TOKEN request header using the token value stored in the csrf-token meta tag.',
                         metadata: [
                             'file' => basename($file),
                             'ajax_type' => $ajaxType,

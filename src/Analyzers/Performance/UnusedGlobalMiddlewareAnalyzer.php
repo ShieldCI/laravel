@@ -158,7 +158,7 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
                     class_basename($middlewareClass),
                     $middlewareClass,
                     'No proxies are configured',
-                    'Remove TrustProxies middleware from app/Http/Kernel.php $middleware array, as no proxies are configured. This middleware runs on every request unnecessarily. Only add it back if you deploy behind a proxy (like CloudFlare, AWS ALB, nginx).'
+                    'Remove TrustProxies middleware from the global middleware stack in app/Http/Kernel.php, as no proxies are configured. This middleware runs on every request unnecessarily. Only add it back if you deploy behind a proxy such as CloudFlare, AWS ALB, or nginx.'
                 );
             }
         } catch (\Throwable $e) {
@@ -196,7 +196,7 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
                 class_basename(TrustHosts::class),
                 TrustHosts::class,
                 'TrustHosts is useless without TrustProxies',
-                'Remove TrustHosts middleware from app/Http/Kernel.php $middleware array. TrustHosts only works when used together with TrustProxies middleware, as it validates the Host header from trusted proxies.'
+                'Remove TrustHosts middleware from the global middleware stack in app/Http/Kernel.php. TrustHosts only works when used together with TrustProxies middleware, as it validates the Host header from trusted proxies.'
             );
         }
     }
@@ -225,7 +225,7 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
 
             $recommendation = $this->isLaravel11OrNewer()
                 ? 'Remove HandleCors from the withMiddleware() callback in bootstrap/app.php, as no CORS paths are configured. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths in config/cors.php.'
-                : 'Remove HandleCors middleware from app/Http/Kernel.php $middleware array, as no CORS paths are configured. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths that require CORS handling in config/cors.php.';
+                : 'Remove HandleCors middleware from the global middleware stack in app/Http/Kernel.php, as no CORS paths are configured. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths that require CORS handling in config/cors.php.';
 
             $this->addUnusedMiddleware(
                 class_basename($middlewareClass),

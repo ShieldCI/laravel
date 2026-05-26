@@ -1120,10 +1120,10 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     private function getRelationshipRecommendation(array $chain, string $pattern): string
     {
         $relationshipRecommendations = [
-            'filter' => 'Use constrained eager loading instead: User::with([\'relationship\' => fn($q) => $q->where(...)])->get(). Or query the relationship directly: $model->relationship()->where(...)->get().',
-            'reject' => 'Use constrained eager loading with whereNot conditions: User::with([\'relationship\' => fn($q) => $q->whereNot(...)])->get(). Or query directly: $model->relationship()->whereNot(...)->get().',
-            'whereIn' => 'Use constrained eager loading: User::with([\'relationship\' => fn($q) => $q->whereIn(...)])->get(). Or query directly: $model->relationship()->whereIn(...)->get().',
-            'whereNotIn' => 'Use constrained eager loading: User::with([\'relationship\' => fn($q) => $q->whereNotIn(...)])->get(). Or query directly: $model->relationship()->whereNotIn(...)->get().',
+            'filter' => 'Use constrained eager loading with a where condition applied inside the eager load closure, or query the relationship directly with database-level filtering.',
+            'reject' => 'Use constrained eager loading with a whereNot condition applied inside the eager load, or query the relationship directly with a whereNot clause at the database level.',
+            'whereIn' => 'Use constrained eager loading with a whereIn clause applied inside the eager load, or query the relationship directly with database-level filtering.',
+            'whereNotIn' => 'Use constrained eager loading with a whereNotIn clause applied inside the eager load, or query the relationship directly with database-level filtering.',
         ];
 
         foreach ($relationshipRecommendations as $method => $recommendation) {
@@ -1153,10 +1153,10 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     private function getPluckRecommendation(array $chain, string $pattern): string
     {
         $pluckRecommendations = [
-            'filter' => 'Add where() clauses before pluck() to filter at database level. Example: User::where("active", true)->pluck("id") instead of User::pluck("id")->filter(...).',
-            'reject' => 'Add whereNot() or where() clauses before pluck() to exclude values at database level. Example: User::where("banned", false)->pluck("id") instead of User::pluck("id")->reject(...).',
-            'whereIn' => 'Add whereIn() to the query before pluck(). Example: User::whereIn("role", ["admin"])->pluck("id") instead of User::pluck("id")->whereIn(...).',
-            'whereNotIn' => 'Add whereNotIn() to the query before pluck(). Example: User::whereNotIn("status", ["deleted"])->pluck("id") instead of User::pluck("id")->whereNotIn(...).',
+            'filter' => 'Add where clauses before pluck to filter at the database level rather than filtering the plucked collection in PHP.',
+            'reject' => 'Add whereNot or where clauses before pluck to exclude values at the database level rather than rejecting from the plucked collection in PHP.',
+            'whereIn' => 'Add a whereIn clause to the query before calling pluck so that filtering happens at the database level rather than on the plucked collection in PHP.',
+            'whereNotIn' => 'Add a whereNotIn clause to the query before calling pluck so that filtering happens at the database level rather than on the plucked collection in PHP.',
         ];
 
         foreach ($pluckRecommendations as $method => $recommendation) {
@@ -1184,10 +1184,10 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     {
         // Standard recommendations for static model patterns
         $recommendations = [
-            'filter' => 'Replace filter() with where() clauses before get()/all() to filter at database level. For complex filtering logic, consider database computed columns or raw where clauses.',
-            'reject' => 'Replace reject() with where() or whereNot() clauses before get()/all() to filter at database level. The inverse logic can be expressed with whereNot() or negative where conditions.',
-            'whereIn' => 'Move whereIn() into the query builder before get()/all(). Example: User::whereIn(...)->get() instead of User::get()->whereIn(...).',
-            'whereNotIn' => 'Move whereNotIn() into the query builder before get()/all(). Example: User::whereNotIn(...)->get() instead of User::get()->whereNotIn(...).',
+            'filter' => 'Replace collection filter with where clauses applied before fetching to filter at the database level. For complex filtering, consider database computed columns or raw SQL where conditions.',
+            'reject' => 'Replace collection reject with where or whereNot clauses applied before fetching to filter at the database level using inverse conditions.',
+            'whereIn' => 'Apply whereIn to the query builder before fetching results so that filtering happens in SQL rather than on an already-loaded collection.',
+            'whereNotIn' => 'Apply whereNotIn to the query builder before fetching results so that filtering happens in SQL rather than on an already-loaded collection.',
         ];
 
         // Find which filter method is being used

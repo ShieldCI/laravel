@@ -613,7 +613,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 filePath: $file,
                 lineNumber: $assign->getStartLine(),
                 severity: Severity::Critical,
-                recommendation: 'Always hash passwords using Hash::make() or bcrypt()',
+                recommendation: 'Always hash passwords using Laravel\'s Hash facade or the bcrypt helper before storing them.',
                 metadata: ['issue_type' => 'plain_text_password']
             );
         }

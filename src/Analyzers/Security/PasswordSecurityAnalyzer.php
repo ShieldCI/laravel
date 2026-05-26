@@ -1791,7 +1791,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                     $this->getRelativePath($loginFlowFile)
                 ),
                 severity: Severity::Medium,
-                recommendation: "Add Hash::needsRehash() after authentication, or upgrade to Laravel 11+ and set 'rehash_on_login' => true in config/hashing.php",
+                recommendation: 'Check whether the stored password hash needs rehashing after a successful authentication and update it if so. On Laravel 11 or higher, this can be enabled automatically via the rehash_on_login option in config/hashing.php.',
                 metadata: ['issue_type' => 'missing_password_rehash']
             );
         }

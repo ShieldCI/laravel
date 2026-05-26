@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\Security;
 
 use Illuminate\Contracts\Config\Repository as Config;
-use Illuminate\Foundation\Configuration\Middleware;
 use PhpParser\Node;
 use PhpParser\Node\VariadicPlaceholder;
 use PhpParser\NodeTraverser;
@@ -19,6 +18,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\Concerns\DetectsLaravelVersion;
 
 /**
  * Detects missing authentication and authorization protection.
@@ -32,6 +32,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Issue;
  */
 class AuthenticationAnalyzer extends AbstractFileAnalyzer
 {
+    use DetectsLaravelVersion;
+
     /**
      * @var array<string>
      */
@@ -1353,12 +1355,6 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         $this->resolvedAuthMiddleware[$fqcn] = $isAuth;
 
         return $isAuth;
-    }
-
-    private function isLaravel11OrNewer(): bool
-    {
-        /** @phpstan-ignore-next-line */
-        return class_exists(Middleware::class);
     }
 }
 

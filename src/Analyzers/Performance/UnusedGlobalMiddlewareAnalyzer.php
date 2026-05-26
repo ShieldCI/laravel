@@ -9,7 +9,6 @@ use Fruitcake\Cors\HandleCors as FruitcakeHandleCors;
 use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Http\Kernel;
-use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Middleware\HandleCors;
 use Illuminate\Http\Middleware\TrustHosts;
 use Illuminate\Http\Middleware\TrustProxies;
@@ -23,6 +22,7 @@ use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Concerns\AnalyzesMiddleware;
+use ShieldCI\Concerns\DetectsLaravelVersion;
 
 /**
  * Detects unused global HTTP middleware in the application.
@@ -37,6 +37,7 @@ use ShieldCI\Concerns\AnalyzesMiddleware;
 class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
 {
     use AnalyzesMiddleware;
+    use DetectsLaravelVersion;
 
     /**
      * @var array<int, array{name: string, class: string, reason: string, recommendation: string}>
@@ -308,19 +309,6 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
         }
 
         return $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Kernel.php';
-    }
-
-    /**
-     * Determine if the application uses Laravel 11+.
-     *
-     * Detected via the presence of Illuminate\Foundation\Configuration\Middleware,
-     * which was introduced in Laravel 11 as part of the new bootstrap/app.php API.
-     * This is more reliable than filesystem checks since the laravel/framework
-     * package is always present and its version reflects the actual Laravel version.
-     */
-    private function isLaravel11OrNewer(): bool
-    {
-        return class_exists(Middleware::class);
     }
 
     /**

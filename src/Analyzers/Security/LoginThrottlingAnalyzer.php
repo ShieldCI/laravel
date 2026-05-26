@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
-use Illuminate\Foundation\Configuration\Middleware;
 use PhpParser\Node;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -13,6 +12,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\DetectsLaravelVersion;
 use ShieldCI\Support\BootstrapRouteParser;
 
 /**
@@ -26,6 +26,8 @@ use ShieldCI\Support\BootstrapRouteParser;
  */
 class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 {
+    use DetectsLaravelVersion;
+
     public function __construct(
         private ParserInterface $parser
     ) {}
@@ -1075,11 +1077,5 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         // For Breeze/Jetstream using default Fortify routes, the Fortify check above
         // already validates throttling configuration, so we don't need additional checks here.
         // This avoids false positives since Fortify's default behavior includes throttling.
-    }
-
-    private function isLaravel11OrNewer(): bool
-    {
-        /** @phpstan-ignore-next-line */
-        return class_exists(Middleware::class);
     }
 }

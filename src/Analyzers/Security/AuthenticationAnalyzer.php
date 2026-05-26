@@ -1105,7 +1105,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 filePath: $file,
                 lineNumber: $lineNumber + 1,
                 severity: Severity::Medium,
-                recommendation: "Check if user is authenticated before accessing: if ({$checkMethod}) or use {$method}?->property",
+                recommendation: 'Verify that the user is authenticated before accessing their properties. Guard the access with an authentication check condition, or switch to the nullsafe property access operator to safely handle unauthenticated users.',
                 metadata: [
                     'method' => $method,
                     'check_method' => $checkMethod,

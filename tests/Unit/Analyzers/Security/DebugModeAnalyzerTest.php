@@ -1275,7 +1275,7 @@ PHP;
 
         $issues = $result->getIssues();
         $this->assertStringContainsString('abort()', $issues[0]->recommendation);
-        $this->assertStringContainsString('Command::FAILURE', $issues[0]->recommendation);
+        $this->assertStringContainsString('exit() directly', $issues[0]->recommendation);
     }
 
     public function test_detects_both_exit_and_die_in_same_file(): void

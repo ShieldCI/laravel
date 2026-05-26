@@ -366,9 +366,7 @@ class SharedCacheLockAnalyzer extends AbstractFileAnalyzer
         return <<<'REC'
 Your application uses cache locks on your default cache store. This means that when your cache is cleared, your locks will also be cleared. Typically, this is not the intention when using locks for managing race conditions or concurrent processing.
 
-Add this to your cache store config: "lock_connection" => "lock_redis",
-
-Then define a separate "lock_redis" connection in config/database.php that uses a different Redis database number.
+Add a lock_connection option to your cache store configuration in config/cache.php, pointing it to a dedicated Redis connection. Then define that separate connection in config/database.php using a different Redis database number.
 REC;
     }
 }

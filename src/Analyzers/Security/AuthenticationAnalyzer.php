@@ -18,6 +18,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\Concerns\DetectsLaravelVersion;
 
 /**
  * Detects missing authentication and authorization protection.
@@ -31,6 +32,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Issue;
  */
 class AuthenticationAnalyzer extends AbstractFileAnalyzer
 {
+    use DetectsLaravelVersion;
+
     /**
      * @var array<string>
      */
@@ -349,7 +352,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     filePath: $file,
                     lineNumber: $group['line'],
                     severity: Severity::High,
-                    recommendation: 'Add auth middleware to this route group: Route::middleware(["auth"])->group(). If these routes are intentionally public, add their URIs to the public_routes config option.',
+                    recommendation: 'Add the auth middleware to this route group. If these routes are intentionally public, add their URIs to the public_routes config option.',
                     metadata: ['route_type' => 'group', 'file' => basename($file)]
                 );
             }
@@ -387,8 +390,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     lineNumber: $route['line'],
                     severity: Severity::High,
                     recommendation: $isClosure
-                        ? 'Add auth middleware: ->middleware("auth") or wrap in Route::middleware(["auth"])->group(). If intentionally public, add the route URI to the public_routes config option. Consider moving closure logic to a controller.'
-                        : 'Protect this route with auth middleware or wrap in Route::middleware(["auth"])->group(). If intentionally public, add the route URI to the public_routes config option.',
+                        ? 'Apply auth middleware to this closure route or extract the logic into a controller action and protect it with auth middleware at the route or group level. If intentionally public, add the route URI to the public_routes config option.'
+                        : 'Apply auth middleware to this route at the route level or inside a middleware group. If intentionally public, add the route URI to the public_routes config option.',
                     metadata: [
                         'type' => 'authentication',
                         'method' => $httpMethod,
@@ -469,7 +472,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                                 filePath: $file,
                                 lineNumber: $stmt->getLine(),
                                 severity: Severity::High,
-                                recommendation: 'Add $this->middleware("auth") in constructor, or protect all routes to this method with route-level auth middleware. If intentionally public, add route URIs to the public_routes config option.'
+                                recommendation: $this->isLaravel11OrNewer()
+                                    ? 'Apply the auth middleware at the route or route group level that reaches this method. Constructor-based middleware was removed in Laravel 11. If intentionally public, add route URIs to the public_routes config option.'
+                                    : 'Apply the auth middleware in the controller constructor or on all routes that reach this method. If intentionally public, add route URIs to the public_routes config option.',
                             );
 
                             continue;
@@ -537,7 +542,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $authorizeMethod->getLine(),
                         severity: Severity::High,
-                        recommendation: 'Add authorization logic in authorize() (e.g., return $this->user()->can(\'delete\', $model)), add auth middleware to the route, or add $this->middleware(\'auth\') in the controller constructor.',
+                        recommendation: 'Add real authorization logic in the authorize() method using a Gate or Policy check against the authenticated user, or apply auth middleware at the route or controller level.',
                         metadata: [
                             'type' => 'form_request_authorization',
                             'class' => $className,
@@ -1100,7 +1105,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 filePath: $file,
                 lineNumber: $lineNumber + 1,
                 severity: Severity::Medium,
-                recommendation: "Check if user is authenticated before accessing: if ({$checkMethod}) or use {$method}?->property",
+                recommendation: 'Verify that the user is authenticated before accessing their properties. Guard the access with an authentication check condition, or switch to the nullsafe property access operator to safely handle unauthenticated users.',
                 metadata: [
                     'method' => $method,
                     'check_method' => $checkMethod,

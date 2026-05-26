@@ -12,6 +12,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\DetectsLaravelVersion;
 use ShieldCI\Support\BootstrapRouteParser;
 
 /**
@@ -25,6 +26,8 @@ use ShieldCI\Support\BootstrapRouteParser;
  */
 class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 {
+    use DetectsLaravelVersion;
+
     public function __construct(
         private ParserInterface $parser
     ) {}
@@ -690,7 +693,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                                 filePath: $filePath,
                                 lineNumber: $lineNumber + 1,
                                 severity: Severity::High,
-                                recommendation: 'Add ->middleware("throttle:5,1") to Auth::routes() or configure rate limiting in AuthServiceProvider',
+                                recommendation: $this->isLaravel11OrNewer()
+                                    ? 'Configure a rate limiter for the login endpoint in a service provider or via the middleware configuration in bootstrap/app.php to prevent brute force attacks.'
+                                    : 'Apply rate limiting middleware to the login endpoint or configure a login rate limiter in your AuthServiceProvider to prevent brute force attacks.',
                                 metadata: [
                                     'route' => 'Auth::routes()',
                                     'issue_type' => 'missing_route_throttle',
@@ -726,7 +731,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                                 filePath: $filePath,
                                 lineNumber: $lineNumber + 1,
                                 severity: Severity::High,
-                                recommendation: 'Add ->middleware("throttle:5,1") or similar rate limiting to prevent brute force attacks',
+                                recommendation: 'Apply rate limiting middleware to this route to cap authentication attempts and prevent brute force attacks.',
                                 metadata: [
                                     'route' => $routeUri,
                                     'route_type' => $isApiRoute ? 'api' : 'web',
@@ -978,7 +983,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 filePath: $throttleDisabledFile,
                 lineNumber: 1,
                 severity: Severity::Critical,
-                recommendation: 'Enable Fortify login throttling by configuring RateLimiter::for(\'login\', ...) with appropriate limits',
+                recommendation: 'Enable Fortify login throttling by defining a named rate limiter for the login endpoint with appropriate attempt limits and time windows.',
                 metadata: [
                     'framework' => 'fortify',
                     'issue_type' => 'fortify_throttle_disabled',
@@ -1005,7 +1010,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         filePath: $fortifyConfigPath,
                         lineNumber: 1,
                         severity: Severity::High,
-                        recommendation: 'Configure rate limiters in config/fortify.php or define RateLimiter::for(\'login\', ...) in a service provider',
+                        recommendation: 'Configure login rate limiting in config/fortify.php or register a named rate limiter for the login endpoint in a service provider.',
                         metadata: [
                             'framework' => 'fortify',
                             'issue_type' => 'fortify_no_custom_limiter',

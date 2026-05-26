@@ -466,7 +466,7 @@ class TransactionVisitor extends NodeVisitorAbstract
                     'line' => $this->methodStartLine,
                     'severity' => Severity::High,
                     'recommendation' => sprintf(
-                        'Wrap all related write operations in DB::transaction() to ensure atomicity. '.
+                        'Wrap all related write operations in a database transaction to ensure atomicity. '.
                         'Unprotected write operations at lines: %s',
                         implode(', ', $this->unprotectedWriteLines)
                     ),

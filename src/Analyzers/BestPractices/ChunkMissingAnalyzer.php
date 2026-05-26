@@ -122,7 +122,7 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
                     'message' => 'Looping over ->all() or ->get() without chunk() can cause memory issues on large datasets',
                     'line' => $node->getLine(),
                     'severity' => Severity::High,
-                    'recommendation' => 'Use Model::chunk(200, function($records) { ... }) or Model::cursor() for memory-efficient iteration over large datasets. chunk() processes records in batches, cursor() uses a generator',
+                    'recommendation' => 'Use the chunk method to process records in batches of a fixed size, or the cursor or lazy methods for generator-based iteration. All three avoid loading the entire result set into memory at once.',
                     'code' => $this->getCodeSnippet($loopIterator),
                 ];
             }
@@ -133,7 +133,7 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
                         'message' => 'Looping over a variable assigned with ->all() or ->get() can cause memory issues on large datasets',
                         'line' => $node->getLine(),
                         'severity' => Severity::High,
-                        'recommendation' => 'Use Model::chunk(200, function($records) { ... }) or Model::cursor() for memory-efficient iteration. Alternatively, use Model::lazy() which returns a generator',
+                        'recommendation' => 'Use the chunk method to process records in batches, or the cursor or lazy methods for generator-based iteration, to avoid loading the entire dataset into memory.',
                         'code' => $this->getCodeSnippet($loopIterator),
                     ];
                 }

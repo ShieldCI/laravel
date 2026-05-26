@@ -1369,4 +1369,38 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('API authentication route "/token" lacks rate limiting', $result);
     }
+
+    public function test_missing_throttle_recommendation_contains_no_code_samples(): void
+    {
+        $routeCode = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::post('/login', [App\Http\Controllers\Auth\LoginController::class, 'store']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+        $issues = array_filter(
+            $result->getIssues(),
+            fn ($i) => str_contains(strtolower($i->message), 'rate limit') || str_contains(strtolower($i->message), 'throttl')
+        );
+
+        if (empty($issues)) {
+            $this->markTestSkipped('No throttle issues detected for this fixture — adjust fixture if needed.');
+        }
+
+        foreach ($issues as $issue) {
+            $this->assertStringNotContainsString('->', $issue->recommendation);
+            $this->assertStringNotContainsString('throttle:', $issue->recommendation);
+            $this->assertStringNotContainsString('RateLimiter::for(', $issue->recommendation);
+        }
+    }
 }

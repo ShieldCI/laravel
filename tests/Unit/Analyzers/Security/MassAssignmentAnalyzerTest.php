@@ -783,7 +783,7 @@ PHP;
         $this->assertStringContainsString('blacklist filtering', $exceptIssue->message);
         $this->assertStringContainsString('except', $exceptIssue->message);
         $this->assertStringContainsString('only', $exceptIssue->recommendation);
-        $this->assertStringContainsString('Whitelist', $exceptIssue->recommendation);
+        $this->assertStringContainsString('whitelist', $exceptIssue->recommendation);
     }
 
     public function test_detects_input_facade(): void

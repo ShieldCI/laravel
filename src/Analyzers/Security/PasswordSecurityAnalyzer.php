@@ -318,7 +318,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                     filePath: $file,
                     lineNumber: $lineNumber,
                     severity: Severity::Critical,
-                    recommendation: 'Use Hash::make() or bcrypt() for password hashing',
+                    recommendation: 'Use Laravel\'s Hash facade or the bcrypt helper to hash passwords instead of weak or bare PHP hashing functions.',
                     metadata: ['function' => $func, 'issue_type' => 'weak_hash_function']
                 );
             } elseif ($func === 'hash') {
@@ -357,7 +357,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                     filePath: $file,
                     lineNumber: $lineNumber,
                     severity: Severity::Critical,
-                    recommendation: 'Use Hash::make() or bcrypt() for password hashing',
+                    recommendation: 'Use Laravel\'s Hash facade or the bcrypt helper to hash passwords instead of weak or bare PHP hashing functions.',
                     metadata: ['function' => 'hash', 'algorithm' => $algo, 'issue_type' => 'weak_hash_function']
                 );
             }
@@ -443,7 +443,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 filePath: $file,
                 lineNumber: $call->getStartLine(),
                 severity: Severity::Info,
-                recommendation: "Use Laravel's Hash::make() for password hashing, or specify an explicit algorithm constant (PASSWORD_BCRYPT or PASSWORD_ARGON2ID) when algorithm-specific options are needed",
+                recommendation: "Use Laravel's Hash facade to hash passwords, or specify an explicit algorithm constant such as PASSWORD_BCRYPT or PASSWORD_ARGON2ID when algorithm-specific options are needed.",
                 metadata: ['issue_type' => 'password_default_with_options']
             );
 
@@ -613,7 +613,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 filePath: $file,
                 lineNumber: $assign->getStartLine(),
                 severity: Severity::Critical,
-                recommendation: 'Always hash passwords using Hash::make() or bcrypt()',
+                recommendation: 'Always hash passwords using Laravel\'s Hash facade or the bcrypt helper before storing them.',
                 metadata: ['issue_type' => 'plain_text_password']
             );
         }
@@ -694,7 +694,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                     filePath: $file,
                     lineNumber: $lineNumber,
                     severity: Severity::Critical,
-                    recommendation: 'Always hash passwords using Hash::make() or bcrypt()',
+                    recommendation: 'Always hash passwords using Laravel\'s Hash facade or the bcrypt helper before storing them.',
                     metadata: ['issue_type' => 'plain_text_password']
                 );
 
@@ -727,7 +727,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                     filePath: $file,
                     lineNumber: $lineNumber,
                     severity: Severity::Critical,
-                    recommendation: 'Always hash passwords using Hash::make() or bcrypt()',
+                    recommendation: 'Always hash passwords using Laravel\'s Hash facade or the bcrypt helper before storing them.',
                     metadata: ['issue_type' => 'plain_text_password']
                 );
             }
@@ -1094,7 +1094,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 message: 'No Password::defaults() configured in service providers',
                 location: new Location('app/Providers/AppServiceProvider.php'),
                 severity: Severity::Medium,
-                recommendation: 'Define password validation defaults in a service provider boot() method or bootstrap/app.php: Password::defaults(function () { return Password::min(8)->letters()->mixedCase()->numbers()->symbols()->uncompromised(); });',
+                recommendation: 'Define password validation defaults in a service provider boot() method or in bootstrap/app.php. Defaults should enforce minimum length, mixed case, numbers, symbols, and rejection of known-breached passwords.',
                 metadata: ['issue_type' => 'missing_password_defaults']
             );
 
@@ -1126,7 +1126,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 message: 'Password::defaults() does not enforce minimum 8 character length',
                 location: new Location('app/Providers/AppServiceProvider.php'),
                 severity: Severity::Medium,
-                recommendation: 'Set minimum password length: Password::min(8)',
+                recommendation: 'Set a minimum password length of at least 8 characters in your Password defaults configuration.',
                 metadata: ['issue_type' => 'weak_password_min_length']
             );
         }
@@ -1136,7 +1136,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 message: 'Password::defaults() does not require mixed case characters',
                 location: new Location('app/Providers/AppServiceProvider.php'),
                 severity: Severity::Low,
-                recommendation: 'Add mixed case requirement: Password::min(8)->mixedCase()',
+                recommendation: 'Add a mixed case requirement to your Password defaults to enforce both uppercase and lowercase characters.',
                 metadata: ['issue_type' => 'no_mixed_case_requirement']
             );
         }
@@ -1146,7 +1146,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 message: 'Password::defaults() does not check against breached password databases',
                 location: new Location('app/Providers/AppServiceProvider.php'),
                 severity: Severity::Low,
-                recommendation: 'Add breached password check: Password::min(8)->uncompromised()',
+                recommendation: 'Add the uncompromised check to your Password defaults to reject passwords that have appeared in known data breaches.',
                 metadata: ['issue_type' => 'no_breached_password_check']
             );
         }
@@ -1229,7 +1229,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $item->getStartLine(),
                         severity: Severity::Medium,
-                        recommendation: 'Set minimum password length to at least 8 characters: \'password\' => [\'required\', Password::min(8)]',
+                        recommendation: 'Set a minimum password length of at least 8 characters in your validation rules using the Password rule object.',
                         metadata: ['min_length' => $minLength, 'issue_type' => 'weak_validation_min_length']
                     );
                 }
@@ -1777,7 +1777,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 filePath: $hashingConfigPath,
                 lineNumber: $lineNumber,
                 severity: Severity::Medium,
-                recommendation: "Set 'rehash_on_login' => true in config/hashing.php so passwords are automatically rehashed when algorithm options change",
+                recommendation: 'Enable the rehash_on_login option in config/hashing.php so passwords are automatically rehashed when algorithm parameters change.',
                 metadata: ['issue_type' => 'rehash_on_login_disabled']
             );
 
@@ -1791,7 +1791,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                     $this->getRelativePath($loginFlowFile)
                 ),
                 severity: Severity::Medium,
-                recommendation: "Add Hash::needsRehash() after authentication, or upgrade to Laravel 11+ and set 'rehash_on_login' => true in config/hashing.php",
+                recommendation: 'Check whether the stored password hash needs rehashing after a successful authentication and update it if so. On Laravel 11 or higher, this can be enabled automatically via the rehash_on_login option in config/hashing.php.',
                 metadata: ['issue_type' => 'missing_password_rehash']
             );
         }

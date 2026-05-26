@@ -239,7 +239,7 @@ PHP;
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertGreaterThan(0, count($issues));
-        $this->assertStringContainsString('chunk()', $issues[0]->recommendation);
+        $this->assertStringContainsString('chunk method', $issues[0]->recommendation);
     }
 
     public function test_ignores_files_with_parse_errors(): void

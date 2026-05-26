@@ -379,7 +379,7 @@ PHP;
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertEquals('high', $issues[0]->severity->value);
-        $this->assertStringContainsString('Validator::extend()', $issues[0]->recommendation);
+        $this->assertStringContainsString('custom validation rule', $issues[0]->recommendation);
     }
 
     // RARELY_EXTEND Tests (Medium Severity)
@@ -842,7 +842,7 @@ PHP;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertStringContainsString('Request::macro()', $issues[0]->recommendation);
+        $this->assertStringContainsString('macro extension point', $issues[0]->recommendation);
         $this->assertStringContainsString('FormRequest', $issues[0]->recommendation);
     }
 
@@ -874,7 +874,7 @@ PHP;
         $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertStringContainsString('query scopes', $issues[0]->recommendation);
-        $this->assertStringContainsString('scopeActive', $issues[0]->recommendation);
+        $this->assertStringContainsString('local query scopes', $issues[0]->recommendation);
     }
 
     public function test_provides_specific_recommendation_for_router(): void
@@ -905,7 +905,7 @@ PHP;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertStringContainsString('Router::macro()', $issues[0]->recommendation);
+        $this->assertStringContainsString('service provider boot method', $issues[0]->recommendation);
         $this->assertStringContainsString('extremely dangerous', $issues[0]->recommendation);
     }
 

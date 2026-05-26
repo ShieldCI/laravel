@@ -92,7 +92,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                             message: sprintf('Model "%s" does not define a local $fillable property; inherited fillable fields cannot be analyzed', $class->name?->toString() ?? 'Unknown'),
                             location: new Location($this->getRelativePath($file)),
                             severity: Severity::Medium,
-                            recommendation: 'Review inherited $fillable definitions for foreign keys.',
+                            recommendation: 'Review inherited fillable definitions to ensure foreign key fields are not inadvertently exposed to mass assignment.',
                             metadata: [
                                 'model_name' => $class->name?->toString(),
                                 'fillable_inherited' => true,
@@ -211,7 +211,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $stmt->getLine(),
                         severity: Severity::Medium,
-                        recommendation: 'Prefer a static $fillable array or manually review foreign key exposure.',
+                        recommendation: 'Prefer a static fillable property or manually review which fields are exposed to mass assignment.',
                         metadata: [
                             'model_name' => $modelName,
                             'dynamic_fillable' => true,
@@ -266,7 +266,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                     filePath: $file,
                     lineNumber: $stmt->getLine(),
                     severity: Severity::Critical,
-                    recommendation: 'Define an explicit $fillable array and avoid $guarded = [].',
+                    recommendation: 'Define an explicit fillable property listing only the fields you expect from user input, and avoid using an empty guarded array which disables mass assignment protection entirely.',
                     metadata: [
                         'model_name' => $modelName,
                         'model_file' => $this->getRelativePath($file),

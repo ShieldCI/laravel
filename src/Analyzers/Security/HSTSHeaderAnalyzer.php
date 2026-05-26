@@ -373,7 +373,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
                     message: 'HTTPS-only application has secure cookies disabled',
                     location: new Location($this->getRelativePath($sessionConfig), $entry['line']),
                     severity: Severity::High,
-                    recommendation: 'Set "secure" => true in config/session.php for HTTPS-only applications',
+                    recommendation: 'Enable the secure option in config/session.php so that session cookies are only transmitted over HTTPS connections.',
                     metadata: [
                         'issue_type' => 'insecure_cookies',
                         'https_only' => true,

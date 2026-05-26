@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\Security;
 
 use Illuminate\Contracts\Config\Repository as Config;
+use Illuminate\Foundation\Configuration\Middleware;
 use PhpParser\Node;
 use PhpParser\Node\VariadicPlaceholder;
 use PhpParser\NodeTraverser;
@@ -349,7 +350,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     filePath: $file,
                     lineNumber: $group['line'],
                     severity: Severity::High,
-                    recommendation: 'Add auth middleware to this route group: Route::middleware(["auth"])->group(). If these routes are intentionally public, add their URIs to the public_routes config option.',
+                    recommendation: 'Add the auth middleware to this route group. If these routes are intentionally public, add their URIs to the public_routes config option.',
                     metadata: ['route_type' => 'group', 'file' => basename($file)]
                 );
             }
@@ -469,7 +470,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                                 filePath: $file,
                                 lineNumber: $stmt->getLine(),
                                 severity: Severity::High,
-                                recommendation: 'Add $this->middleware("auth") in constructor, or protect all routes to this method with route-level auth middleware. If intentionally public, add route URIs to the public_routes config option.'
+                                recommendation: $this->isLaravel11OrNewer()
+                                    ? 'Apply the auth middleware at the route or route group level that reaches this method. Constructor-based middleware was removed in Laravel 11. If intentionally public, add route URIs to the public_routes config option.'
+                                    : 'Apply the auth middleware in the controller constructor or on all routes that reach this method. If intentionally public, add route URIs to the public_routes config option.',
                             );
 
                             continue;
@@ -537,7 +540,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $authorizeMethod->getLine(),
                         severity: Severity::High,
-                        recommendation: 'Add authorization logic in authorize() (e.g., return $this->user()->can(\'delete\', $model)), add auth middleware to the route, or add $this->middleware(\'auth\') in the controller constructor.',
+                        recommendation: 'Add real authorization logic in the authorize() method using a Gate or Policy check against the authenticated user, or apply auth middleware at the route or controller level.',
                         metadata: [
                             'type' => 'form_request_authorization',
                             'class' => $className,
@@ -1350,6 +1353,12 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         $this->resolvedAuthMiddleware[$fqcn] = $isAuth;
 
         return $isAuth;
+    }
+
+    private function isLaravel11OrNewer(): bool
+    {
+        /** @phpstan-ignore-next-line */
+        return class_exists(Middleware::class);
     }
 }
 

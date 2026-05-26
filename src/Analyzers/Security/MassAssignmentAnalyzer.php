@@ -1160,7 +1160,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $class->getLine(),
                         severity: Severity::Medium,
-                        recommendation: "Add '{$field}' to the hidden property to prevent it from appearing in API responses.",
+                        recommendation: 'Add this sensitive field to the hidden property to prevent it from appearing in JSON serialization and API responses.',
                         metadata: [
                             'model' => $modelName,
                             'missing_field' => $field,

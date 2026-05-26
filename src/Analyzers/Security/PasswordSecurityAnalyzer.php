@@ -1777,7 +1777,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 filePath: $hashingConfigPath,
                 lineNumber: $lineNumber,
                 severity: Severity::Medium,
-                recommendation: "Set 'rehash_on_login' => true in config/hashing.php so passwords are automatically rehashed when algorithm options change",
+                recommendation: 'Enable the rehash_on_login option in config/hashing.php so passwords are automatically rehashed when algorithm parameters change.',
                 metadata: ['issue_type' => 'rehash_on_login_disabled']
             );
 

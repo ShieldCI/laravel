@@ -136,11 +136,11 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
 
         // Service providers: Acknowledge the pattern but warn about production use
         if ($this->containsAny($normalized, ['app/providers', 'providers/'])) {
-            return 'While Model::unguard() in service providers is a documented pattern, it globally disables mass assignment protection for your entire application. Consider: (1) Use $fillable/$guarded properties on individual models instead, (2) Use the safe scoped pattern: Model::unguarded(fn() => User::create($data)), (3) If absolutely needed, wrap in environment check: if (!app()->environment("production")) { Model::unguard(); }';
+            return 'While Model::unguard() in service providers is a documented pattern, it globally disables mass assignment protection for your entire application. Prefer $fillable or $guarded properties on individual models, or use the scoped Model::unguarded() method which automatically re-guards after the callback. If global unguarding is unavoidable, restrict it to non-production environments.';
         }
 
         // Default recommendation for all other contexts
-        return 'Use the safe scoped pattern: Model::unguarded(function() { /* operations */ }) which automatically re-guards. Alternatively: (1) Call Model::reguard() immediately after importing in the same method/function scope, (2) Use $fillable/$guarded properties on models, or (3) Use forceFill() for trusted data.';
+        return 'Use the scoped Model::unguarded() method, which automatically re-guards after the callback completes. Alternatively: (1) Call Model::reguard() immediately after the operation in the same scope, (2) Use $fillable or $guarded properties on individual models, or (3) Use forceFill() for trusted data only.';
     }
 
     /**

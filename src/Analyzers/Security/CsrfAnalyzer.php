@@ -497,7 +497,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 filePath: $kernelFile,
                 lineNumber: null,
                 severity: Severity::Critical,
-                recommendation: 'Add \\App\\Http\\Middleware\\VerifyCsrfToken::class (Laravel 10) or \\App\\Http\\Middleware\\ValidateCsrfToken::class (Laravel 11+) to $middleware or $middlewareGroups[\'web\'] array',
+                recommendation: 'Register the CSRF validation middleware in the web middleware group in app/Http/Kernel.php to protect all web routes.',
                 metadata: [
                     'file' => 'Kernel.php',
                     'middleware' => 'CSRF',
@@ -599,7 +599,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $useMethodStartLine + 1,
                         severity: Severity::Critical,
-                        recommendation: 'Add \\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class to the $middleware->use() array to enable CSRF protection globally.',
+                        recommendation: 'Register ValidateCsrfToken middleware in the global middleware stack in bootstrap/app.php to enable CSRF protection for all requests.',
                         metadata: [
                             'file' => 'bootstrap/app.php',
                             'laravel_version' => '11+',
@@ -890,7 +890,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
                         severity: Severity::High,
-                        recommendation: 'Add ->middleware(\'web\') to the route or wrap it in Route::group([\'middleware\' => \'web\'], ...).',
+                        recommendation: 'Apply the web middleware group to this route or move it into a route group that includes the web middleware, which provides CSRF protection.',
                         metadata: [
                             'method' => $method,
                             'file' => basename($file),

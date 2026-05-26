@@ -693,7 +693,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                                 severity: Severity::High,
                                 recommendation: $this->isLaravel11OrNewer()
                                     ? 'Configure a rate limiter for the login endpoint in a service provider or via the middleware configuration in bootstrap/app.php to prevent brute force attacks.'
-                                    : 'Apply rate limiting middleware to the Auth::routes() call or configure a login rate limiter in your AuthServiceProvider to prevent brute force attacks.',
+                                    : 'Apply rate limiting middleware to the login endpoint or configure a login rate limiter in your AuthServiceProvider to prevent brute force attacks.',
                                 metadata: [
                                     'route' => 'Auth::routes()',
                                     'issue_type' => 'missing_route_throttle',

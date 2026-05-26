@@ -388,8 +388,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     lineNumber: $route['line'],
                     severity: Severity::High,
                     recommendation: $isClosure
-                        ? 'Add auth middleware: ->middleware("auth") or wrap in Route::middleware(["auth"])->group(). If intentionally public, add the route URI to the public_routes config option. Consider moving closure logic to a controller.'
-                        : 'Protect this route with auth middleware or wrap in Route::middleware(["auth"])->group(). If intentionally public, add the route URI to the public_routes config option.',
+                        ? 'Apply auth middleware to this closure route or extract the logic into a controller action and protect it with auth middleware at the route or group level. If intentionally public, add the route URI to the public_routes config option.'
+                        : 'Apply auth middleware to this route at the route level or inside a middleware group. If intentionally public, add the route URI to the public_routes config option.',
                     metadata: [
                         'type' => 'authentication',
                         'method' => $httpMethod,

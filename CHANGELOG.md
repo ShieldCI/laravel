@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.7.24
+
+### Changed
+- Recommendation strings across 8 analyzers tightened to remove internal repetition and make cross-detection findings distinguishable:
+  - `ConfigCachingAnalyzer` — dropped the "Without caching, Laravel must load and parse all config files on every request, causing significant performance degradation" closing clause, which restated the opening performance-benefit sentence from the opposite angle
+  - `SessionDriverAnalyzer` — dropped the "File session driver only works properly on single-server setups" opening sentence; the following sentence ("File sessions can cause users to be logged out when requests hit different servers") covers the same limitation with the concrete failure mode
+  - `QueueDriverAnalyzer` (development) — removed "and test queue functionality properly" from the sync-driver recommendation, which duplicated "to accurately simulate production behavior" in the same clause
+  - `QueueDriverAnalyzer` (production) — removed "will slow down web requests and" from the sync-driver recommendation, which duplicated "severely impact response times" immediately after it
+  - `DebugLogAnalyzer` — collapsed two sentences that both restated the same log-level instruction into one
+  - `AppKeyAnalyzer` — empty APP_KEY and placeholder APP_KEY now have distinct recommendations rather than sharing the same "Run php artisan key:generate" text; the placeholder case now leads with "Replace the placeholder value by running…"
+  - `LogicInBladeAnalyzer` — each of the six detection categories (HTTP facade calls, API function calls, business-logic functions, complex conditions with 3+ boolean operators, collection manipulation in @foreach, echo-expression arithmetic, and compound assignments) now has its own specific recommendation instead of a shared category-level string; previously all "business logic" detections were indistinguishable in reports
+  - `XssAnalyzer` — the three response-body XSS detections (text-scan path, `Response::make()`, and the `response()` helper) each name their specific API rather than sharing one generic escaping instruction
+
 ## v1.7.23
 
 ### Changed

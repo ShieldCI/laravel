@@ -279,7 +279,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $lineNumber + 1,
                         severity: Severity::High,
-                        recommendation: 'Escape output using the e() helper or htmlspecialchars(), or return structured data as a proper JSON response using Laravel\'s response helpers.'
+                        recommendation: 'Escape the response content with e() or htmlspecialchars() before passing user input, or return a JSON response using response()->json() instead.'
                     );
                 }
 
@@ -400,7 +400,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
                     filePath: $file,
                     lineNumber: $call->getStartLine(),
                     severity: Severity::High,
-                    recommendation: 'Escape output using the e() helper or htmlspecialchars(), or return structured data as a proper JSON response using Laravel\'s response helpers.'
+                    recommendation: 'In Response::make(), escape the content argument with e() or htmlspecialchars() before passing user input, or return a JsonResponse for structured data.'
                 );
             }
         }
@@ -427,7 +427,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
                         filePath: $file,
                         lineNumber: $funcCall->getStartLine(),
                         severity: Severity::High,
-                        recommendation: 'Escape output using the e() helper or htmlspecialchars(), or return structured data as a proper JSON response using Laravel\'s response helpers.'
+                        recommendation: 'In response(), escape the content argument with e() or htmlspecialchars() before passing user input, or return response()->json() for structured data.'
                     );
                 }
             }

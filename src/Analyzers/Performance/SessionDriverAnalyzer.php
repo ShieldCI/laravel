@@ -173,7 +173,7 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
             message: "Session driver is set to 'file' in $environment environment",
             location: $this->getConfigLocation(),
             severity: Severity::Medium,
-            recommendation: 'File session driver only works properly on single-server setups. For load-balanced or multi-server environments, use redis or database driver to share sessions across servers. File sessions can cause users to be logged out when requests hit different servers.',
+            recommendation: 'For load-balanced or multi-server environments, use redis or database driver to share sessions across servers. File sessions can cause users to be logged out when requests hit different servers.',
             metadata: [
                 'driver' => 'file',
                 'environment' => $environment,

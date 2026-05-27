@@ -180,7 +180,7 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
                 message: "Queue driver is set to 'sync' in {$environment} environment",
                 location: new Location($this->getRelativePath($configFile), $lineNumber),
                 severity: Severity::Low,
-                recommendation: "The 'sync' driver processes all jobs, mails, notifications, and event listeners immediately in a synchronous manner. While acceptable for development, consider using 'redis' or 'database' to accurately simulate production behavior and test queue functionality properly.",
+                recommendation: "The 'sync' driver processes all jobs, mails, notifications, and event listeners immediately in a synchronous manner. While acceptable for development, consider using 'redis' or 'database' to accurately simulate production behavior.",
                 metadata: [
                     'driver' => $driver,
                     'connection' => $defaultConnection,
@@ -195,7 +195,7 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
             message: "Queue driver is set to 'sync' in {$environment} environment",
             location: new Location($this->getRelativePath($configFile), $lineNumber),
             severity: Severity::High,
-            recommendation: "The 'sync' driver processes all jobs, mails, notifications, and event listeners immediately in a synchronous manner, defeating the purpose of queuing. These time-consuming tasks will slow down web requests and severely impact response times and user experience. This driver is not suitable for production environments. Use 'redis', 'sqs', or 'database' instead.",
+            recommendation: "The 'sync' driver processes all jobs, mails, notifications, and event listeners immediately in a synchronous manner, defeating the purpose of queuing. This severely impacts response times and user experience. Use 'redis', 'sqs', or 'database' instead.",
             metadata: [
                 'driver' => $driver,
                 'connection' => $defaultConnection,

@@ -128,7 +128,7 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
                 message: "Configuration is not cached in {$environment} environment",
                 location: null,
                 severity: Severity::High,
-                recommendation: 'Configuration caching is critical for production performance - it improves bootstrap time by up to 50% on every request. Add "php artisan config:cache" to your deployment script. Without caching, Laravel must load and parse all config files on every request, causing significant performance degradation.',
+                recommendation: 'Configuration caching is critical for production performance — it improves bootstrap time by up to 50% on every request. Add "php artisan config:cache" to your deployment script.',
                 metadata: [
                     'environment' => $environment,
                     'cached' => false,

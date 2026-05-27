@@ -273,6 +273,9 @@ class AnalyzeCommand extends Command
 
                 // Run analyzer
                 $result = $analyzer->analyze();
+                if (method_exists($analyzer, 'clearAstParserCache')) {
+                    $analyzer->clearAstParserCache();
+                }
                 $manager->clearParserCache();
                 $metadata = $analyzer->getMetadata();
 
@@ -410,6 +413,9 @@ class AnalyzeCommand extends Command
 
                 // Run analyzer
                 $result = $analyzer->analyze();
+                if (method_exists($analyzer, 'clearAstParserCache')) {
+                    $analyzer->clearAstParserCache();
+                }
                 $manager->clearParserCache();
                 $metadata = $analyzer->getMetadata();
 
@@ -650,6 +656,9 @@ class AnalyzeCommand extends Command
                 $progressBar->setMessage($metadata->name);
             }
             $result = $analyzer->analyze();
+            if (method_exists($analyzer, 'clearAstParserCache')) {
+                $analyzer->clearAstParserCache();
+            }
             $manager->clearParserCache();
             if ($progressBar !== null) {
                 $progressBar->advance();

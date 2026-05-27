@@ -672,7 +672,7 @@ class BladeLogicVisitor extends NodeVisitorAbstract
                 line: $node->getStartLine(),
                 message: 'API call found in Blade template',
                 severity: Severity::High,
-                recommendation: 'Make API calls in controllers or services, not in views. Views should only display pre-fetched data',
+                recommendation: 'Move HTTP client calls to a controller or service and pass the result to the view. Views should only display pre-fetched data.',
                 code: 'blade-has-api-call',
             );
         }
@@ -691,7 +691,7 @@ class BladeLogicVisitor extends NodeVisitorAbstract
                 line: $node->getStartLine(),
                 message: 'API call found in Blade template',
                 severity: Severity::High,
-                recommendation: 'Make API calls in controllers or services, not in views. Views should only display pre-fetched data',
+                recommendation: 'Move network or file-fetch calls to a controller or service and pass the result to the view. Views should only display pre-fetched data.',
                 code: 'blade-has-api-call',
             );
         }
@@ -710,7 +710,7 @@ class BladeLogicVisitor extends NodeVisitorAbstract
                 line: $node->getStartLine(),
                 message: 'Business logic found in Blade directive',
                 severity: Severity::Medium,
-                recommendation: 'Extract business logic to controllers or services. Use simple conditionals in views for presentation logic only',
+                recommendation: 'Move this function call to a controller or service and pass the result to the view. Keep Blade templates to simple conditionals and display logic only.',
                 code: 'blade-has-business-logic',
             );
         }
@@ -725,7 +725,7 @@ class BladeLogicVisitor extends NodeVisitorAbstract
                 line: $node->getStartLine(),
                 message: 'Business logic found in Blade directive',
                 severity: Severity::Medium,
-                recommendation: 'Extract business logic to controllers or services. Use simple conditionals in views for presentation logic only',
+                recommendation: 'Extract this complex condition to a controller variable or model method and pass a simple boolean to the view. Blade conditionals should read clearly without embedded logic.',
                 code: 'blade-has-business-logic',
             );
         }
@@ -764,7 +764,7 @@ class BladeLogicVisitor extends NodeVisitorAbstract
                 line: $node->getStartLine(),
                 message: 'Expensive computation found in Blade template',
                 severity: Severity::Medium,
-                recommendation: 'Move expensive operations to controllers or services. Use computed properties or view composers for complex transformations',
+                recommendation: 'Move this method chain to a controller or model accessor and pass the result to the view. Chained method calls in Blade templates couple data transformation with presentation.',
                 code: 'blade-expensive-computation',
             );
         }
@@ -783,7 +783,7 @@ class BladeLogicVisitor extends NodeVisitorAbstract
                 line: $node->getStartLine(),
                 message: 'Expensive computation found in Blade template',
                 severity: Severity::Medium,
-                recommendation: 'Move expensive operations to controllers or services. Use computed properties or view composers for complex transformations',
+                recommendation: 'Move this string transformation to a controller or model accessor and pass the result to the view. Expensive string functions in Blade templates run on every render.',
                 code: 'blade-expensive-computation',
             );
         }
@@ -804,7 +804,7 @@ class BladeLogicVisitor extends NodeVisitorAbstract
                 line: $node->getStartLine(),
                 message: 'Business logic found in Blade directive',
                 severity: Severity::Medium,
-                recommendation: 'Extract business logic to controllers or services. Use simple conditionals in views for presentation logic only',
+                recommendation: 'Apply collection filtering or transformation in the controller before passing the data to the view. Calling collection methods inside @foreach couples iteration and data preparation.',
                 code: 'blade-has-business-logic',
             );
         }
@@ -840,7 +840,7 @@ class BladeLogicVisitor extends NodeVisitorAbstract
                 line: $node->getStartLine(),
                 message: 'Business logic found in Blade directive',
                 severity: Severity::Medium,
-                recommendation: 'Extract business logic to controllers or services. Use simple conditionals in views for presentation logic only',
+                recommendation: 'Apply collection filtering or transformation in the controller before passing the data to the view. Calling collection methods inside @foreach couples iteration and data preparation.',
                 code: 'blade-has-business-logic',
             );
         }
@@ -870,7 +870,7 @@ class BladeLogicVisitor extends NodeVisitorAbstract
                     line: $node->getStartLine(),
                     message: 'Complex calculation found in Blade template',
                     severity: Severity::Low,
-                    recommendation: 'Move calculations to controller, view composer, or model accessor. Blade should only display pre-calculated values',
+                    recommendation: 'Compute this value in the controller or a model accessor and pass the result to the view. Arithmetic in {{ }} expressions mixes data preparation with presentation.',
                     code: 'blade-has-calculation',
                 );
             }
@@ -923,7 +923,7 @@ class BladeLogicVisitor extends NodeVisitorAbstract
                 line: $node->getStartLine(),
                 message: 'Complex calculation found in Blade template',
                 severity: Severity::Low,
-                recommendation: 'Move calculations to controller, view composer, or model accessor. Blade should only display pre-calculated values',
+                recommendation: 'Move cumulative arithmetic to the controller or a model accessor and pass the final value to the view. Compound assignments in Blade mix data mutation with presentation.',
                 code: 'blade-has-calculation',
             );
         }

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.24
+
+### Changed
+- Recommendation strings in `ConfigCachingAnalyzer`, `SessionDriverAnalyzer`, `QueueDriverAnalyzer`, `DebugLogAnalyzer`, `AppKeyAnalyzer`, `LogicInBladeAnalyzer`, and `XssAnalyzer` tightened — internal repetition removed (clauses that restated the same point in different words), and cross-detection duplicates differentiated so each detected pattern names its specific context rather than sharing a generic category-level string
+
 ## v1.7.23
 
 ### Changed

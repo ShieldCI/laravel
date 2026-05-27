@@ -713,6 +713,90 @@ class AnalyzerManagerTest extends TestCase
         $this->addToAssertionCount(1);
     }
 
+    #[Test]
+    public function it_calls_clear_ast_parser_cache_on_analyzer_after_run_all(): void
+    {
+        $analyzerInstance = null;
+
+        $container = Mockery::mock(Container::class);
+        $container->shouldReceive('make')
+            ->andReturnUsing(function (string $class) use (&$analyzerInstance) {
+                if ($class === ParserInterface::class) {
+                    throw new \RuntimeException('Not bound');
+                }
+                $instance = new $class;
+                if ($instance instanceof AnalyzerWithAstParserCache) {
+                    $analyzerInstance = $instance;
+                }
+
+                return $instance;
+            });
+
+        $config = Mockery::mock(Config::class);
+        $config->shouldReceive('get')
+            ->andReturnUsing(function (string $key, $default = null) {
+                $values = [
+                    'disabled_analyzers' => [],
+                    'analyzers' => [],
+                    'ci_mode' => false,
+                    'ci_mode_analyzers' => [],
+                    'ci_mode_exclude_analyzers' => [],
+                    'paths.analyze' => [],
+                    'excluded_paths' => [],
+                ];
+
+                return $values[str_replace('shieldci.', '', $key)] ?? $default;
+            });
+
+        $manager = new AnalyzerManager($config, [AnalyzerWithAstParserCache::class], $container);
+        $manager->runAll();
+
+        $this->assertNotNull($analyzerInstance);
+        $this->assertTrue($analyzerInstance->clearAstParserCacheCalled);
+    }
+
+    #[Test]
+    public function it_calls_clear_ast_parser_cache_on_analyzer_after_run(): void
+    {
+        $analyzerInstance = null;
+
+        $container = Mockery::mock(Container::class);
+        $container->shouldReceive('make')
+            ->andReturnUsing(function (string $class) use (&$analyzerInstance) {
+                if ($class === ParserInterface::class) {
+                    throw new \RuntimeException('Not bound');
+                }
+                $instance = new $class;
+                if ($instance instanceof AnalyzerWithAstParserCache) {
+                    $analyzerInstance = $instance;
+                }
+
+                return $instance;
+            });
+
+        $config = Mockery::mock(Config::class);
+        $config->shouldReceive('get')
+            ->andReturnUsing(function (string $key, $default = null) {
+                $values = [
+                    'disabled_analyzers' => [],
+                    'analyzers' => [],
+                    'ci_mode' => false,
+                    'ci_mode_exclude_analyzers' => [],
+                    'ci_mode_analyzers' => [],
+                    'paths.analyze' => [],
+                    'excluded_paths' => [],
+                ];
+
+                return $values[str_replace('shieldci.', '', $key)] ?? $default;
+            });
+
+        $manager = new AnalyzerManager($config, [AnalyzerWithAstParserCache::class], $container);
+        $manager->run('ast-cache-analyzer');
+
+        $this->assertNotNull($analyzerInstance);
+        $this->assertTrue($analyzerInstance->clearAstParserCacheCalled);
+    }
+
     protected function createManager(array $analyzerClasses): AnalyzerManager
     {
         $config = Mockery::mock(Config::class);
@@ -1045,5 +1129,46 @@ class ParserWithoutClearCache implements ParserInterface
     public function collectStringLines(array $ast): array
     {
         return [];
+    }
+}
+
+class AnalyzerWithAstParserCache implements AnalyzerInterface
+{
+    public bool $clearAstParserCacheCalled = false;
+
+    public function clearAstParserCache(): void
+    {
+        $this->clearAstParserCacheCalled = true;
+    }
+
+    public function analyze(): ResultInterface
+    {
+        return AnalysisResult::passed('ast-cache-analyzer', 'Test passed');
+    }
+
+    public function getMetadata(): AnalyzerMetadata
+    {
+        return new AnalyzerMetadata(
+            id: 'ast-cache-analyzer',
+            name: 'AST Cache Analyzer',
+            description: 'Test analyzer with clearAstParserCache()',
+            category: Category::Security,
+            severity: Severity::High,
+        );
+    }
+
+    public function shouldRun(): bool
+    {
+        return true;
+    }
+
+    public function getSkipReason(): string
+    {
+        return '';
+    }
+
+    public function getId(): string
+    {
+        return 'ast-cache-analyzer';
     }
 }

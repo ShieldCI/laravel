@@ -4352,4 +4352,156 @@ PHP);
             ->assertSuccessful()
             ->doesntExpectOutputToContain('is not a recognized standard environment');
     }
+
+    // ─── clearAstParserCache() call site tests ────────────────────────
+
+    #[Test]
+    public function it_calls_clear_ast_parser_cache_in_streaming_single_analyzer_path(): void
+    {
+        $astCacheAnalyzer = new AnalyzeCommandAstCacheAnalyzer;
+
+        /** @phpstan-ignore-next-line */
+        $this->app->singleton(AnalyzerManager::class, function ($app) use ($astCacheAnalyzer) {
+            /** @var MockInterface&AnalyzerManager $manager */
+            $manager = Mockery::mock(AnalyzerManager::class);
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getAnalyzers')
+                ->andReturn(collect([$astCacheAnalyzer]));
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getSkippedAnalyzers')
+                ->andReturn(collect());
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('clearParserCache')
+                ->andReturn(null);
+
+            return $manager;
+        });
+
+        $this->artisan('shield:analyze', [
+            '--analyzer' => 'ast-cache-analyzer',
+            '--format' => 'console',
+        ])->assertSuccessful();
+
+        $this->assertTrue($astCacheAnalyzer->clearAstParserCacheCalled);
+    }
+
+    #[Test]
+    public function it_calls_clear_ast_parser_cache_in_streaming_category_path(): void
+    {
+        $astCacheAnalyzer = new AnalyzeCommandAstCacheAnalyzer;
+
+        /** @phpstan-ignore-next-line */
+        $this->app->singleton(AnalyzerManager::class, function ($app) use ($astCacheAnalyzer) {
+            /** @var MockInterface&AnalyzerManager $manager */
+            $manager = Mockery::mock(AnalyzerManager::class);
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getAnalyzers')
+                ->andReturn(collect([$astCacheAnalyzer]));
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getSkippedAnalyzers')
+                ->andReturn(collect());
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('clearParserCache')
+                ->andReturn(null);
+
+            return $manager;
+        });
+
+        $this->artisan('shield:analyze', ['--format' => 'console'])
+            ->assertSuccessful();
+
+        $this->assertTrue($astCacheAnalyzer->clearAstParserCacheCalled);
+    }
+
+    #[Test]
+    public function it_calls_clear_ast_parser_cache_in_non_streaming_path(): void
+    {
+        $astCacheAnalyzer = new AnalyzeCommandAstCacheAnalyzer;
+
+        /** @phpstan-ignore-next-line */
+        $this->app->singleton(AnalyzerManager::class, function ($app) use ($astCacheAnalyzer) {
+            /** @var MockInterface&AnalyzerManager $manager */
+            $manager = Mockery::mock(AnalyzerManager::class);
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getAnalyzers')
+                ->andReturn(collect([$astCacheAnalyzer]));
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('getSkippedAnalyzers')
+                ->andReturn(collect());
+
+            /** @phpstan-ignore-next-line */
+            $manager->shouldReceive('clearParserCache')
+                ->andReturn(null);
+
+            return $manager;
+        });
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful();
+
+        $this->assertTrue($astCacheAnalyzer->clearAstParserCacheCalled);
+    }
+}
+
+class AnalyzeCommandAstCacheAnalyzer implements AnalyzerInterface
+{
+    public bool $clearAstParserCacheCalled = false;
+
+    public function clearAstParserCache(): void
+    {
+        $this->clearAstParserCacheCalled = true;
+    }
+
+    public function analyze(): ResultInterface
+    {
+        return new AnalysisResult(
+            analyzerId: 'ast-cache-analyzer',
+            status: Status::Passed,
+            message: 'No issues',
+            issues: [],
+            executionTime: 0.0,
+            metadata: [
+                'id' => 'ast-cache-analyzer',
+                'name' => 'AST Cache Analyzer',
+                'description' => 'Test analyzer',
+                'category' => Category::Security,
+                'severity' => Severity::High,
+                'docsUrl' => null,
+            ],
+        );
+    }
+
+    public function getMetadata(): AnalyzerMetadata
+    {
+        return new AnalyzerMetadata(
+            id: 'ast-cache-analyzer',
+            name: 'AST Cache Analyzer',
+            description: 'Test analyzer with clearAstParserCache',
+            category: Category::Security,
+            severity: Severity::High,
+        );
+    }
+
+    public function shouldRun(): bool
+    {
+        return true;
+    }
+
+    public function getSkipReason(): string
+    {
+        return '';
+    }
+
+    public function getId(): string
+    {
+        return 'ast-cache-analyzer';
+    }
 }

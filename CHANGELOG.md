@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.25
+
+### Fixed
+- `shield:analyze` no longer exhausts PHP memory when pro analyzers are installed — pro analyzers create private `AstParser` instances that bypass the container, making them invisible to the existing `clearParserCache()` singleton call; `runAll()`, `run()`, and `AnalyzeCommand` now call `clearAstParserCache()` via `method_exists()` after each `analyze()` invocation
+
 ## v1.7.24
 
 ### Changed

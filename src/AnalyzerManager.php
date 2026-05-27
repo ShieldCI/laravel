@@ -266,6 +266,9 @@ class AnalyzerManager
         $results = $this->getAnalyzers()
             ->map(function (AnalyzerInterface $analyzer) {
                 $result = $analyzer->analyze();
+                if (method_exists($analyzer, 'clearAstParserCache')) {
+                    $analyzer->clearAstParserCache();
+                }
                 $this->clearParserCache();
                 $metadata = $analyzer->getMetadata();
 
@@ -441,6 +444,9 @@ class AnalyzerManager
         }
 
         $result = $analyzer->analyze();
+        if (method_exists($analyzer, 'clearAstParserCache')) {
+            $analyzer->clearAstParserCache();
+        }
         $this->clearParserCache();
         $metadata = $analyzer->getMetadata();
 

@@ -158,7 +158,7 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                         message: 'APP_KEY is set to a placeholder/example value',
                         location: new Location($this->getRelativePath($envFile), $lineNumber + 1),
                         severity: Severity::Critical,
-                        recommendation: 'Run "php artisan key:generate" to generate a secure application key',
+                        recommendation: 'Replace the placeholder value by running "php artisan key:generate" to generate a real application key',
                         metadata: [
                             'file' => basename($envFile),
                             'placeholder_detected' => $normalizedValue,

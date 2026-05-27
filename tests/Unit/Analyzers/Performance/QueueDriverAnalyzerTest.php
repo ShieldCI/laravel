@@ -875,7 +875,7 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
         $this->assertNotEmpty($localIssues);
 
         // Production should mention severe impact
-        $this->assertStringContainsString('not suitable for production', $productionIssues[0]->recommendation);
+        $this->assertStringContainsString('severely impacts', $productionIssues[0]->recommendation);
 
         // Local should be more lenient
         $this->assertStringContainsString('acceptable for development', $localIssues[0]->recommendation);

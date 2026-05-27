@@ -159,7 +159,7 @@ class DebugLogAnalyzer extends AbstractAnalyzer
                 filePath: $configPath,
                 lineNumber: $lineNumber,
                 severity: $this->metadata()->severity,
-                recommendation: "Change the log level to 'info' or higher in production. Debug logging causes significant performance degradation, generates massive log files that can exhaust disk space, and exposes sensitive data in logs. Update your logging configuration or set LOG_LEVEL environment variable to 'info', 'warning', or 'error'.",
+                recommendation: "Set the log level to 'info' or higher in production by updating your logging configuration or setting the LOG_LEVEL environment variable. Debug logging causes significant performance degradation, generates excessive log files that can exhaust disk space, and exposes sensitive data.",
                 metadata: [
                     'environment' => $environment,
                     'channel' => $channel,

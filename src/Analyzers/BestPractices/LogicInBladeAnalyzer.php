@@ -160,6 +160,11 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
 
             // Check for @php block start
             if (preg_match('/@php\b/', $trimmed)) {
+                // Single-statement @php(expr) — self-closing, no @endphp needed
+                if (preg_match('/@php\s*\(/', $trimmed)) {
+                    continue;
+                }
+
                 $inPhpBlock = true;
                 $phpBlockStart = $lineNumber + 1;
                 $phpBlockLines = 0;

@@ -266,6 +266,21 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 
             $this->detectWeakHashing($file, $ast, $config, $issues);
             $this->detectWeakPasswordHashAlgorithm($file, $ast, $config, $issues);
+
+            // Same-file dehydrateStateUsing() + Hash::make is conclusive on its own:
+            // the hash runs before $data reaches any handler, whether the host is a
+            // Filament resource page or a standalone Livewire component with InteractsWithForms.
+            if ($this->astHasPasswordDehydration($ast)) {
+                continue;
+            }
+
+            // For Filament resource pages, also check sibling files in the same Pages/
+            // directory — CreateRecord pages typically delegate their form definition to
+            // the co-located EditRecord page, so the dehydrateStateUsing lives next door.
+            if ($this->isFilamentResourcePage($ast) && $this->hasSiblingWithPasswordDehydration($file)) {
+                continue;
+            }
+
             $this->detectPlainTextPasswordStorage($file, $ast, $issues);
             $this->detectPlainTextPasswordInMethodCalls($file, $ast, $issues);
         }
@@ -1659,6 +1674,121 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
         }
 
         return $paths;
+    }
+
+    /**
+     * Returns true if the AST contains a class that extends a Filament resource-page base.
+     *
+     * @param  array<Node>  $ast
+     */
+    private function isFilamentResourcePage(array $ast): bool
+    {
+        $filamentPageBases = ['CreateRecord', 'EditRecord', 'UpdateRecord', 'ViewRecord', 'ListRecords'];
+
+        /** @var array<Node\Stmt\Class_> $classes */
+        $classes = $this->parser->findNodes($ast, Node\Stmt\Class_::class);
+
+        foreach ($classes as $class) {
+            if (! $class instanceof Node\Stmt\Class_ || $class->extends === null) {
+                continue;
+            }
+
+            $parts = explode('\\', $class->extends->toString());
+            $shortName = (string) end($parts);
+
+            if (in_array($shortName, $filamentPageBases, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Returns true if any sibling file in the same directory contains a
+     * dehydrateStateUsing() call whose closure hashes the password argument.
+     *
+     * Used for Filament resource pages where CreateX.php has no form() definition
+     * but the co-located EditX.php defines the dehydrateStateUsing hashing.
+     */
+    private function hasSiblingWithPasswordDehydration(string $file): bool
+    {
+        $siblings = glob(dirname($file).'/*.php') ?: [];
+
+        foreach ($siblings as $sibling) {
+            if ($sibling === $file) {
+                continue;
+            }
+
+            $siblingAst = $this->parser->parseFile($sibling);
+            if (empty($siblingAst)) {
+                continue;
+            }
+
+            if ($this->astHasPasswordDehydration($siblingAst)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Returns true if the AST contains a dehydrateStateUsing() call whose closure
+     * body applies Hash::make(), bcrypt(), or password_hash() to its argument.
+     *
+     * @param  array<Node>  $ast
+     */
+    private function astHasPasswordDehydration(array $ast): bool
+    {
+        /** @var array<Node\Expr\MethodCall> $methodCalls */
+        $methodCalls = $this->parser->findNodes($ast, Node\Expr\MethodCall::class);
+
+        foreach ($methodCalls as $call) {
+            if (! $call instanceof Node\Expr\MethodCall) {
+                continue;
+            }
+
+            if (! $call->name instanceof Node\Identifier || $call->name->name !== 'dehydrateStateUsing') {
+                continue;
+            }
+
+            if (empty($call->args) || ! isset($call->args[0]) || ! $call->args[0] instanceof Node\Arg) {
+                continue;
+            }
+
+            $closure = $call->args[0]->value;
+
+            if (! $closure instanceof Node\Expr\Closure && ! $closure instanceof Node\Expr\ArrowFunction) {
+                continue;
+            }
+
+            /** @var array<Node\Expr\StaticCall> $staticCalls */
+            $staticCalls = $this->parser->findNodes([$closure], Node\Expr\StaticCall::class);
+
+            foreach ($staticCalls as $inner) {
+                if ($inner instanceof Node\Expr\StaticCall
+                    && $inner->class instanceof Node\Name
+                    && $inner->class->toString() === 'Hash'
+                    && $inner->name instanceof Node\Identifier
+                    && $inner->name->name === 'make') {
+                    return true;
+                }
+            }
+
+            /** @var array<Node\Expr\FuncCall> $funcCalls */
+            $funcCalls = $this->parser->findNodes([$closure], Node\Expr\FuncCall::class);
+
+            foreach ($funcCalls as $func) {
+                if ($func instanceof Node\Expr\FuncCall
+                    && $func->name instanceof Node\Name
+                    && in_array($func->name->toString(), ['bcrypt', 'password_hash'], true)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

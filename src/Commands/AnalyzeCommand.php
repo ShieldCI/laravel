@@ -79,6 +79,12 @@ class AnalyzeCommand extends Command
         try {
             return $this->executeAnalysis($manager, $reporter, $client, $triggeredBy);
         } catch (\Throwable $e) {
+            // Re-throw test-framework exceptions (e.g. PHPUnit error conversions) so
+            // they are not swallowed and falsely reported as analysis failures.
+            if (str_starts_with(get_class($e), 'PHPUnit\\')) {
+                throw $e;
+            }
+
             $this->error("Analysis failed with error: {$e->getMessage()}");
             $this->notifyFailure($client, AnalysisFailureReason::UncaughtException, $e->getMessage(), $triggeredBy);
 

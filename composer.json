@@ -79,7 +79,13 @@
     "config": {
         "sort-packages": true,
         "optimize-autoloader": true,
-        "preferred-install": "dist"
+        "preferred-install": "dist",
+        "audit": {
+            "ignore": {
+                "PKSA-8qx3-n5y5-vvnd": "Dev-only: Laravel framework advisory pulled via orchestra/testbench for testing older Laravel versions",
+                "PKSA-w7xr-vk7n-rstm": "Dev-only: Laravel framework advisory pulled via orchestra/testbench for testing older Laravel versions"
+            }
+        }
     },
     "minimum-stability": "stable",
     "prefer-stable": true

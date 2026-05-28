@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.26
+
+### Fixed
+- `LogicInBladeAnalyzer` no longer false-positives with "Unclosed @php block detected" on single-statement `@php($expr)` directives — the structural pass matched `@php\b` for both the block form (`@php ... @endphp`) and the self-closing parenthesised form (`@php($var = value)`), entering block-tracking mode for the latter and never finding a matching `@endphp`; single-statement directives are now detected via `@php\s*\(` and skipped before block tracking begins (#214)
+- `PasswordSecurityAnalyzer` no longer false-positives on Filament `dehydrateStateUsing` closures — the closure's return value is a transformed state string for the form, not a plaintext password being stored; the analyzer now suppresses findings when the enclosing method is `dehydrateStateUsing` (#213)
+
 ## v1.7.25
 
 ### Fixed

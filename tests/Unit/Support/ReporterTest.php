@@ -27,6 +27,7 @@ class ReporterTest extends TestCase
         $this->reporter = new Reporter;
     }
 
+    /** @test */
     #[Test]
     public function it_generates_report_with_default_trigger_source(): void
     {
@@ -39,6 +40,7 @@ class ReporterTest extends TestCase
         $this->assertEquals(TriggerSource::Manual, $report->triggeredBy);
     }
 
+    /** @test */
     #[Test]
     public function it_generates_report_with_custom_trigger_source(): void
     {
@@ -51,6 +53,7 @@ class ReporterTest extends TestCase
         $this->assertEquals(TriggerSource::CiCd, $report->triggeredBy);
     }
 
+    /** @test */
     #[Test]
     public function api_payload_includes_triggered_by(): void
     {
@@ -65,6 +68,7 @@ class ReporterTest extends TestCase
         $this->assertEquals('scheduled', $payload['triggered_by']);
     }
 
+    /** @test */
     #[Test]
     public function it_can_generate_report_from_results(): void
     {
@@ -86,6 +90,7 @@ class ReporterTest extends TestCase
         $this->assertCount(2, $report->results);
     }
 
+    /** @test */
     #[Test]
     public function it_can_format_to_console(): void
     {
@@ -101,6 +106,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Report Card', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_can_format_to_json(): void
     {
@@ -122,6 +128,7 @@ class ReporterTest extends TestCase
         $this->assertArrayHasKey('results', $decoded);
     }
 
+    /** @test */
     #[Test]
     public function it_can_format_to_api(): void
     {
@@ -141,6 +148,7 @@ class ReporterTest extends TestCase
         $this->assertEquals('test-project-id', $apiPayload['project_id']);
     }
 
+    /** @test */
     #[Test]
     public function console_output_includes_failed_analyzers(): void
     {
@@ -163,6 +171,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('/app/Controller.php:42', $output);
     }
 
+    /** @test */
     #[Test]
     public function console_output_includes_warnings(): void
     {
@@ -185,6 +194,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Warning issued', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_generates_stream_header(): void
     {
@@ -195,6 +205,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Please wait', $header);
     }
 
+    /** @test */
     #[Test]
     public function it_generates_stream_category_header(): void
     {
@@ -205,6 +216,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Running', $header);
     }
 
+    /** @test */
     #[Test]
     public function it_streams_passed_result(): void
     {
@@ -217,6 +229,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Passed', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_streams_failed_result_with_issues(): void
     {
@@ -253,6 +266,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Documentation URL', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_streams_skipped_result(): void
     {
@@ -264,6 +278,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Not applicable for this project', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_streams_result_with_time_to_fix(): void
     {
@@ -291,6 +306,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('5 mins', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_streams_result_with_one_minute_to_fix(): void
     {
@@ -318,6 +334,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('1 min', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_limits_displayed_issues_per_check(): void
     {
@@ -347,6 +364,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('more issue(s)', $output);
     }
 
+    /** @test */
     #[Test]
     public function console_output_includes_report_card_table(): void
     {
@@ -385,6 +403,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Total', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_shows_recommendations_when_enabled(): void
     {
@@ -411,6 +430,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Escape all user output', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_hides_recommendations_when_disabled(): void
     {
@@ -437,6 +457,7 @@ class ReporterTest extends TestCase
         $this->assertStringNotContainsString('This should not appear', $output);
     }
 
+    /** @test */
     #[Test]
     public function console_output_handles_issues_without_location(): void
     {
@@ -461,6 +482,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Application-wide security issue', $output);
     }
 
+    /** @test */
     #[Test]
     public function console_output_handles_skipped_analyzers_in_report(): void
     {
@@ -475,6 +497,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Not Applicable', $output);
     }
 
+    /** @test */
     #[Test]
     public function console_output_shows_time_to_fix_in_report(): void
     {
@@ -506,6 +529,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('5 mins', $output);
     }
 
+    /** @test */
     #[Test]
     public function console_output_shows_docs_url_in_report(): void
     {
@@ -538,6 +562,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('https://docs.shieldci.com/test-analyzer', $output);
     }
 
+    /** @test */
     #[Test]
     public function stream_result_shows_message_for_single_issue_without_line_number(): void
     {
@@ -565,6 +590,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Update package "ip-address" to a patched version', $output);
     }
 
+    /** @test */
     #[Test]
     public function stream_result_does_not_show_message_for_single_issue_with_line_number(): void
     {
@@ -591,6 +617,7 @@ class ReporterTest extends TestCase
         $this->assertStringNotContainsString('→ Catching Exception is overly broad', $output);
     }
 
+    /** @test */
     #[Test]
     public function stream_result_groups_issues_at_same_location(): void
     {
@@ -623,6 +650,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Second issue at same location', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_normalizes_string_integer_config_values(): void
     {
@@ -647,6 +675,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('more issue(s)', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_non_numeric_string_config_value(): void
     {
@@ -671,6 +700,7 @@ class ReporterTest extends TestCase
         $this->assertIsString($output);
     }
 
+    /** @test */
     #[Test]
     public function console_output_only_shows_categories_with_non_skipped_analyzers(): void
     {
@@ -696,6 +726,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Security', $output);
     }
 
+    /** @test */
     #[Test]
     public function console_output_handles_null_location_issues_in_to_console(): void
     {
@@ -727,6 +758,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Application-wide config problem', $output);
     }
 
+    /** @test */
     #[Test]
     public function console_output_truncates_many_issues_in_to_console(): void
     {
@@ -757,6 +789,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('more issue(s)', $output);
     }
 
+    /** @test */
     #[Test]
     public function console_output_shows_recommendations_in_to_console(): void
     {
@@ -790,6 +823,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Use parameterized queries', $output);
     }
 
+    /** @test */
     #[Test]
     public function console_output_shows_docs_url_in_to_console(): void
     {
@@ -822,6 +856,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Documentation URL', $output);
     }
 
+    /** @test */
     #[Test]
     public function console_report_card_falls_back_when_all_skipped(): void
     {
@@ -840,6 +875,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Report Card', $output);
     }
 
+    /** @test */
     #[Test]
     public function json_output_contains_all_required_fields(): void
     {
@@ -875,6 +911,7 @@ class ReporterTest extends TestCase
         $this->assertArrayHasKey('analyzed_at', $decoded);
     }
 
+    /** @test */
     #[Test]
     public function console_output_shows_error_status_label(): void
     {
@@ -898,6 +935,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Error', $output);
     }
 
+    /** @test */
     #[Test]
     public function color_returns_text_for_unknown_color(): void
     {
@@ -909,6 +947,7 @@ class ReporterTest extends TestCase
         $this->assertEquals('hello', $result);
     }
 
+    /** @test */
     #[Test]
     public function visible_width_handles_null_preg_result(): void
     {
@@ -924,6 +963,7 @@ class ReporterTest extends TestCase
         $this->assertEquals(5, $result);
     }
 
+    /** @test */
     #[Test]
     public function pad_visible_pads_left_and_center(): void
     {
@@ -943,6 +983,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Hi', $result);
     }
 
+    /** @test */
     #[Test]
     public function get_package_version_returns_dev_when_file_missing(): void
     {
@@ -955,6 +996,7 @@ class ReporterTest extends TestCase
         $this->assertIsString($version);
     }
 
+    /** @test */
     #[Test]
     public function console_output_shows_unknown_category_for_non_string_category(): void
     {
@@ -975,6 +1017,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('Unknown', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_generates_analyzed_at_in_utc(): void
     {
@@ -988,6 +1031,7 @@ class ReporterTest extends TestCase
         $this->assertStringContainsString('+00:00', $report->analyzedAt->format('c'));
     }
 
+    /** @test */
     #[Test]
     public function it_populates_auto_collected_metadata(): void
     {
@@ -1007,6 +1051,7 @@ class ReporterTest extends TestCase
         $this->assertEquals(PHP_OS_FAMILY, $report->metadata['os']);
     }
 
+    /** @test */
     #[Test]
     public function it_includes_git_context_in_metadata_when_provided(): void
     {
@@ -1023,6 +1068,7 @@ class ReporterTest extends TestCase
         $this->assertEquals('abc1234', $report->metadata['git_commit']);
     }
 
+    /** @test */
     #[Test]
     public function it_excludes_git_context_from_metadata_when_empty(): void
     {
@@ -1036,6 +1082,7 @@ class ReporterTest extends TestCase
         $this->assertArrayNotHasKey('git_commit', $report->metadata);
     }
 
+    /** @test */
     #[Test]
     public function it_excludes_git_context_when_values_are_empty_strings(): void
     {
@@ -1052,6 +1099,7 @@ class ReporterTest extends TestCase
         $this->assertArrayNotHasKey('git_commit', $report->metadata);
     }
 
+    /** @test */
     #[Test]
     public function metadata_appears_in_json_output(): void
     {
@@ -1073,6 +1121,7 @@ class ReporterTest extends TestCase
         $this->assertEquals('main', $decoded['metadata']['git_branch']);
     }
 
+    /** @test */
     #[Test]
     public function metadata_appears_in_api_payload(): void
     {
@@ -1093,6 +1142,7 @@ class ReporterTest extends TestCase
         $this->assertEquals('def5678', $payload['metadata']['git_commit']);
     }
 
+    /** @test */
     #[Test]
     public function it_applies_environment_mapping_to_metadata(): void
     {
@@ -1111,6 +1161,7 @@ class ReporterTest extends TestCase
         $this->assertEquals('production', $report->metadata['environment']);
     }
 
+    /** @test */
     #[Test]
     public function it_uses_raw_environment_when_no_mapping_configured(): void
     {
@@ -1126,6 +1177,7 @@ class ReporterTest extends TestCase
         $this->assertEquals('staging', $report->metadata['environment']);
     }
 
+    /** @test */
     #[Test]
     public function it_defaults_environment_to_production_when_not_set(): void
     {
@@ -1140,6 +1192,7 @@ class ReporterTest extends TestCase
         $this->assertEquals('production', $report->metadata['environment']);
     }
 
+    /** @test */
     #[Test]
     public function it_includes_ci_provider_in_metadata_when_provided(): void
     {
@@ -1156,6 +1209,7 @@ class ReporterTest extends TestCase
         $this->assertEquals('github_actions', $report->metadata['ci_provider']);
     }
 
+    /** @test */
     #[Test]
     public function it_excludes_ci_provider_from_metadata_when_not_in_context(): void
     {
@@ -1171,6 +1225,7 @@ class ReporterTest extends TestCase
         $this->assertArrayNotHasKey('ci_provider', $report->metadata);
     }
 
+    /** @test */
     #[Test]
     public function ci_provider_appears_in_json_output(): void
     {
@@ -1188,6 +1243,7 @@ class ReporterTest extends TestCase
         $this->assertEquals('gitlab_ci', $decoded['metadata']['ci_provider']);
     }
 
+    /** @test */
     #[Test]
     public function ci_provider_appears_in_api_payload(): void
     {
@@ -1208,6 +1264,7 @@ class ReporterTest extends TestCase
 
     // ─── PR metadata tests ────────────────────────────────────────────────
 
+    /** @test */
     #[Test]
     public function it_includes_pr_number_in_metadata_when_provided(): void
     {
@@ -1220,6 +1277,7 @@ class ReporterTest extends TestCase
         $this->assertEquals('42', $report->metadata['pr_number']);
     }
 
+    /** @test */
     #[Test]
     public function it_includes_repository_in_metadata_when_provided(): void
     {
@@ -1232,6 +1290,7 @@ class ReporterTest extends TestCase
         $this->assertEquals('owner/repo', $report->metadata['repository']);
     }
 
+    /** @test */
     #[Test]
     public function it_includes_base_branch_in_metadata_when_provided(): void
     {
@@ -1244,6 +1303,7 @@ class ReporterTest extends TestCase
         $this->assertEquals('main', $report->metadata['base_branch']);
     }
 
+    /** @test */
     #[Test]
     public function it_excludes_pr_fields_from_metadata_when_not_in_context(): void
     {
@@ -1256,6 +1316,7 @@ class ReporterTest extends TestCase
         $this->assertArrayNotHasKey('base_branch', $report->metadata);
     }
 
+    /** @test */
     #[Test]
     public function pr_fields_appear_in_json_output(): void
     {
@@ -1274,6 +1335,7 @@ class ReporterTest extends TestCase
         $this->assertEquals('develop', $decoded['metadata']['base_branch']);
     }
 
+    /** @test */
     #[Test]
     public function pr_fields_appear_in_api_payload(): void
     {
@@ -1292,6 +1354,7 @@ class ReporterTest extends TestCase
         $this->assertEquals('main', $payload['metadata']['base_branch']);
     }
 
+    /** @test */
     #[Test]
     public function get_package_version_returns_actual_version_when_found_in_installed_versions(): void
     {
@@ -1324,6 +1387,7 @@ class ReporterTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function get_pro_package_version_returns_version_when_pro_is_installed(): void
     {
@@ -1399,6 +1463,7 @@ class ReporterTest extends TestCase
         ]]);
     }
 
+    /** @test */
     #[Test]
     public function hyperlink_returns_plain_text_in_ci_environment(): void
     {
@@ -1419,6 +1484,7 @@ class ReporterTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function hyperlink_returns_plain_text_for_unsupported_terminal(): void
     {
@@ -1442,6 +1508,7 @@ class ReporterTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function hyperlink_returns_osc8_sequence_for_iterm(): void
     {
@@ -1465,6 +1532,7 @@ class ReporterTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function hyperlink_returns_osc8_for_vte_terminal(): void
     {
@@ -1493,6 +1561,7 @@ class ReporterTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function hyperlink_returns_osc8_for_windows_terminal(): void
     {
@@ -1523,6 +1592,7 @@ class ReporterTest extends TestCase
 
     // ─── Configuration snapshot tests ────────────────────────────────────────
 
+    /** @test */
     #[Test]
     public function it_includes_configuration_in_generated_report(): void
     {
@@ -1541,6 +1611,7 @@ class ReporterTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function api_payload_includes_configuration(): void
     {
@@ -1586,6 +1657,7 @@ class ReporterTest extends TestCase
         $this->assertNull($c['fail_threshold']);
     }
 
+    /** @test */
     #[Test]
     public function json_output_includes_configuration(): void
     {

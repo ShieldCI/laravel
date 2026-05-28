@@ -43,6 +43,7 @@ class ComposerDependencyReaderTest extends TestCase
         parent::tearDown();
     }
 
+    /** @test */
     #[Test]
     public function it_reads_packages_from_composer_lock(): void
     {
@@ -70,6 +71,7 @@ class ComposerDependencyReaderTest extends TestCase
         $this->assertEquals('7.5.0', $packages['guzzlehttp/guzzle']['version']);
     }
 
+    /** @test */
     #[Test]
     public function it_reads_packages_dev_from_composer_lock(): void
     {
@@ -99,6 +101,7 @@ class ComposerDependencyReaderTest extends TestCase
         $this->assertArrayHasKey('mockery/mockery', $packages);
     }
 
+    /** @test */
     #[Test]
     public function it_strips_v_prefix_from_versions(): void
     {
@@ -116,6 +119,7 @@ class ComposerDependencyReaderTest extends TestCase
         $this->assertEquals('1.2.3', $packages['test/package']['version']);
     }
 
+    /** @test */
     #[Test]
     public function it_includes_time_when_available(): void
     {
@@ -139,6 +143,7 @@ class ComposerDependencyReaderTest extends TestCase
         $this->assertNull($packages['test/without-time']['time']);
     }
 
+    /** @test */
     #[Test]
     public function it_throws_exception_for_missing_file(): void
     {
@@ -148,6 +153,7 @@ class ComposerDependencyReaderTest extends TestCase
         $this->reader->read('/non/existent/composer.lock');
     }
 
+    /** @test */
     #[Test]
     public function it_throws_exception_for_invalid_json(): void
     {
@@ -159,6 +165,7 @@ class ComposerDependencyReaderTest extends TestCase
         $this->reader->read($this->fixturesPath.'/invalid.lock');
     }
 
+    /** @test */
     #[Test]
     public function it_handles_missing_packages_section(): void
     {
@@ -172,6 +179,7 @@ class ComposerDependencyReaderTest extends TestCase
         $this->assertCount(0, $packages);
     }
 
+    /** @test */
     #[Test]
     public function it_skips_packages_without_name(): void
     {
@@ -193,6 +201,7 @@ class ComposerDependencyReaderTest extends TestCase
         $this->assertArrayHasKey('valid/package', $packages);
     }
 
+    /** @test */
     #[Test]
     public function it_skips_packages_without_version(): void
     {
@@ -215,6 +224,7 @@ class ComposerDependencyReaderTest extends TestCase
         $this->assertArrayHasKey('valid/package', $packages);
     }
 
+    /** @test */
     #[Test]
     public function it_skips_non_array_package_entries(): void
     {
@@ -236,6 +246,7 @@ class ComposerDependencyReaderTest extends TestCase
         $this->assertArrayHasKey('valid/package', $packages);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_non_string_name_or_version(): void
     {
@@ -262,6 +273,7 @@ class ComposerDependencyReaderTest extends TestCase
         $this->assertArrayHasKey('valid/package', $packages);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_non_string_time(): void
     {
@@ -280,6 +292,7 @@ class ComposerDependencyReaderTest extends TestCase
         $this->assertNull($packages['test/package']['time']);
     }
 
+    /** @test */
     #[Test]
     public function it_throws_exception_for_unreadable_file(): void
     {

@@ -19,6 +19,7 @@ use ShieldCI\ValueObjects\SuppressionRecord;
 
 class AnalysisReportTest extends TestCase
 {
+    /** @test */
     #[Test]
     public function it_defaults_triggered_by_to_manual(): void
     {
@@ -27,6 +28,7 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals(TriggerSource::Manual, $report->triggeredBy);
     }
 
+    /** @test */
     #[Test]
     public function it_accepts_custom_triggered_by(): void
     {
@@ -43,6 +45,7 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals(TriggerSource::CiCd, $report->triggeredBy);
     }
 
+    /** @test */
     #[Test]
     public function it_includes_triggered_by_in_to_array(): void
     {
@@ -62,6 +65,7 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals('scheduled', $array['triggered_by']);
     }
 
+    /** @test */
     #[Test]
     public function it_calculates_score_correctly(): void
     {
@@ -78,6 +82,7 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals(50, $report->score());
     }
 
+    /** @test */
     #[Test]
     public function it_excludes_skipped_from_score_denominator_when_all_applicable_pass(): void
     {
@@ -102,6 +107,7 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals(100, $report->score());
     }
 
+    /** @test */
     #[Test]
     public function it_excludes_skipped_from_score_denominator_with_failures(): void
     {
@@ -126,6 +132,7 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals(80, $report->score());
     }
 
+    /** @test */
     #[Test]
     public function it_returns_100_for_empty_results(): void
     {
@@ -134,6 +141,7 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals(100, $report->score());
     }
 
+    /** @test */
     #[Test]
     public function it_returns_100_when_all_pass(): void
     {
@@ -147,6 +155,7 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals(100, $report->score());
     }
 
+    /** @test */
     #[Test]
     public function it_returns_0_when_all_fail(): void
     {
@@ -160,6 +169,7 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals(0, $report->score());
     }
 
+    /** @test */
     #[Test]
     public function it_filters_passed_results(): void
     {
@@ -175,6 +185,7 @@ class AnalysisReportTest extends TestCase
         $this->assertCount(2, $passed);
     }
 
+    /** @test */
     #[Test]
     public function it_filters_failed_results(): void
     {
@@ -190,6 +201,7 @@ class AnalysisReportTest extends TestCase
         $this->assertCount(2, $failed);
     }
 
+    /** @test */
     #[Test]
     public function it_filters_warning_results(): void
     {
@@ -204,6 +216,7 @@ class AnalysisReportTest extends TestCase
         $this->assertCount(1, $warnings);
     }
 
+    /** @test */
     #[Test]
     public function it_filters_skipped_results(): void
     {
@@ -218,6 +231,7 @@ class AnalysisReportTest extends TestCase
         $this->assertCount(1, $skipped);
     }
 
+    /** @test */
     #[Test]
     public function it_filters_error_results(): void
     {
@@ -232,6 +246,7 @@ class AnalysisReportTest extends TestCase
         $this->assertCount(1, $errors);
     }
 
+    /** @test */
     #[Test]
     public function it_generates_summary(): void
     {
@@ -271,6 +286,7 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals(40, $summary['score']); // 2 passed out of 5 applicable (1 skipped excluded)
     }
 
+    /** @test */
     #[Test]
     public function it_counts_total_issues_across_all_results(): void
     {
@@ -294,6 +310,7 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals(6, $report->totalIssues());
     }
 
+    /** @test */
     #[Test]
     public function it_breaks_down_issues_by_severity(): void
     {
@@ -349,6 +366,7 @@ class AnalysisReportTest extends TestCase
         ], $report->issuesBySeverity());
     }
 
+    /** @test */
     #[Test]
     public function it_returns_zero_counts_when_no_issues(): void
     {
@@ -368,6 +386,7 @@ class AnalysisReportTest extends TestCase
         ], $report->issuesBySeverity());
     }
 
+    /** @test */
     #[Test]
     public function it_converts_to_array(): void
     {
@@ -388,6 +407,7 @@ class AnalysisReportTest extends TestCase
         $this->assertArrayHasKey('metadata', $array);
     }
 
+    /** @test */
     #[Test]
     public function it_includes_version_info_in_array(): void
     {
@@ -406,6 +426,7 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals('1.0.0', $array['package_version']);
     }
 
+    /** @test */
     #[Test]
     public function it_formats_analyzed_at_as_iso_8601(): void
     {
@@ -425,6 +446,7 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals('2024-06-15T10:30:00+00:00', $array['analyzed_at']);
     }
 
+    /** @test */
     #[Test]
     public function it_includes_metadata_in_array(): void
     {
@@ -443,6 +465,7 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals(['custom_key' => 'custom_value'], $array['metadata']);
     }
 
+    /** @test */
     #[Test]
     public function it_includes_all_results_in_array(): void
     {
@@ -464,6 +487,7 @@ class AnalysisReportTest extends TestCase
         $this->assertCount(2, $array['results']);
     }
 
+    /** @test */
     #[Test]
     public function it_preserves_readonly_properties(): void
     {
@@ -484,6 +508,7 @@ class AnalysisReportTest extends TestCase
         $this->assertSame($datetime, $report->analyzedAt);
     }
 
+    /** @test */
     #[Test]
     public function it_defaults_suppressed_issues_to_empty_array(): void
     {
@@ -492,6 +517,7 @@ class AnalysisReportTest extends TestCase
         $this->assertSame([], $report->suppressedIssues);
     }
 
+    /** @test */
     #[Test]
     public function suppressed_summary_counts_by_type_correctly(): void
     {
@@ -527,6 +553,7 @@ class AnalysisReportTest extends TestCase
         $this->assertSame(4, $summary['total']);
     }
 
+    /** @test */
     #[Test]
     public function suppressed_summary_returns_zeros_when_no_suppressions(): void
     {
@@ -540,6 +567,7 @@ class AnalysisReportTest extends TestCase
         $this->assertSame(0, $summary['total']);
     }
 
+    /** @test */
     #[Test]
     public function summary_includes_suppressed_issues_counts(): void
     {
@@ -571,6 +599,7 @@ class AnalysisReportTest extends TestCase
         $this->assertSame(1, $summary['suppressed_issues']['total']);
     }
 
+    /** @test */
     #[Test]
     public function to_array_includes_suppressed_issues_per_result(): void
     {
@@ -607,6 +636,7 @@ class AnalysisReportTest extends TestCase
         $this->assertSame('path_pattern: app/Legacy/*.php', $suppressed['suppression']['description']);
     }
 
+    /** @test */
     #[Test]
     public function to_array_includes_empty_suppressed_issues_when_none_for_result(): void
     {
@@ -620,6 +650,7 @@ class AnalysisReportTest extends TestCase
         $this->assertSame([], $resultArr['suppressed_issues']);
     }
 
+    /** @test */
     #[Test]
     public function it_includes_configuration_in_to_array(): void
     {
@@ -649,6 +680,7 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals($configuration, $array['configuration']);
     }
 
+    /** @test */
     #[Test]
     public function it_defaults_configuration_to_empty_array(): void
     {

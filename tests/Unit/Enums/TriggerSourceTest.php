@@ -10,6 +10,7 @@ use ShieldCI\Tests\TestCase;
 
 class TriggerSourceTest extends TestCase
 {
+    /** @test */
     #[Test]
     public function it_has_correct_string_values(): void
     {
@@ -18,6 +19,7 @@ class TriggerSourceTest extends TestCase
         $this->assertEquals('scheduled', TriggerSource::Scheduled->value);
     }
 
+    /** @test */
     #[Test]
     public function it_has_human_readable_labels(): void
     {
@@ -26,6 +28,7 @@ class TriggerSourceTest extends TestCase
         $this->assertEquals('Scheduled', TriggerSource::Scheduled->label());
     }
 
+    /** @test */
     #[Test]
     public function it_can_be_created_from_valid_string(): void
     {
@@ -34,6 +37,7 @@ class TriggerSourceTest extends TestCase
         $this->assertEquals(TriggerSource::Scheduled, TriggerSource::from('scheduled'));
     }
 
+    /** @test */
     #[Test]
     public function try_from_returns_null_for_invalid_string(): void
     {
@@ -42,6 +46,7 @@ class TriggerSourceTest extends TestCase
         $this->assertNull(TriggerSource::tryFrom('MANUAL'));
     }
 
+    /** @test */
     #[Test]
     public function it_enumerates_all_cases(): void
     {

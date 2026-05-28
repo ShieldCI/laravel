@@ -10,6 +10,7 @@ use ShieldCI\Tests\TestCase;
 
 class PathFilterTest extends TestCase
 {
+    /** @test */
     #[Test]
     public function it_allows_paths_in_analyze_paths(): void
     {
@@ -19,6 +20,7 @@ class PathFilterTest extends TestCase
         $this->assertTrue($filter->shouldAnalyze(base_path('routes/web.php')));
     }
 
+    /** @test */
     #[Test]
     public function it_rejects_paths_not_in_analyze_paths(): void
     {
@@ -28,6 +30,7 @@ class PathFilterTest extends TestCase
         $this->assertFalse($filter->shouldAnalyze(base_path('database/migrations/test.php')));
     }
 
+    /** @test */
     #[Test]
     public function it_excludes_paths_matching_exclusion_patterns(): void
     {
@@ -37,6 +40,7 @@ class PathFilterTest extends TestCase
         $this->assertFalse($filter->shouldAnalyze(base_path('node_modules/package/index.js')));
     }
 
+    /** @test */
     #[Test]
     public function it_allows_all_paths_when_analyze_paths_is_empty(): void
     {
@@ -47,6 +51,7 @@ class PathFilterTest extends TestCase
         $this->assertTrue($filter->shouldAnalyze(base_path('routes/web.php')));
     }
 
+    /** @test */
     #[Test]
     public function it_prioritizes_exclusions_over_inclusions(): void
     {
@@ -57,6 +62,7 @@ class PathFilterTest extends TestCase
         $this->assertFalse($filter->shouldAnalyze(base_path('app/Exceptions/Handler.php')));
     }
 
+    /** @test */
     #[Test]
     public function it_handles_glob_wildcard_patterns(): void
     {
@@ -66,6 +72,7 @@ class PathFilterTest extends TestCase
         $this->assertFalse($filter->shouldAnalyze(base_path('app/debug.log')));
     }
 
+    /** @test */
     #[Test]
     public function it_normalizes_windows_path_separators(): void
     {
@@ -75,6 +82,7 @@ class PathFilterTest extends TestCase
         $this->assertTrue($filter->shouldAnalyze(base_path('app\\Http\\Controllers\\HomeController.php')));
     }
 
+    /** @test */
     #[Test]
     public function it_handles_exact_path_matches(): void
     {
@@ -83,6 +91,7 @@ class PathFilterTest extends TestCase
         $this->assertTrue($filter->shouldAnalyze(base_path('app')));
     }
 
+    /** @test */
     #[Test]
     public function it_handles_relative_paths(): void
     {
@@ -93,6 +102,7 @@ class PathFilterTest extends TestCase
         $this->assertFalse($filter->shouldAnalyze('vendor/test.php'));
     }
 
+    /** @test */
     #[Test]
     public function it_returns_analyze_paths(): void
     {
@@ -102,6 +112,7 @@ class PathFilterTest extends TestCase
         $this->assertEquals($paths, $filter->getAnalyzePaths());
     }
 
+    /** @test */
     #[Test]
     public function it_returns_excluded_paths(): void
     {
@@ -111,6 +122,7 @@ class PathFilterTest extends TestCase
         $this->assertEquals($excluded, $filter->getExcludedPaths());
     }
 
+    /** @test */
     #[Test]
     public function it_handles_complex_glob_patterns(): void
     {
@@ -121,6 +133,7 @@ class PathFilterTest extends TestCase
         $this->assertFalse($filter->shouldAnalyze(base_path('app/Example.test.php')));
     }
 
+    /** @test */
     #[Test]
     public function it_is_case_insensitive_for_pattern_matching(): void
     {
@@ -132,6 +145,7 @@ class PathFilterTest extends TestCase
         $this->assertFalse($filter->shouldAnalyze('tests/Unit/Test.php'));
     }
 
+    /** @test */
     #[Test]
     public function it_handles_nested_directory_paths(): void
     {
@@ -142,6 +156,7 @@ class PathFilterTest extends TestCase
         $this->assertFalse($filter->shouldAnalyze('app/Models/User.php'));
     }
 
+    /** @test */
     #[Test]
     public function it_handles_paths_with_trailing_slashes(): void
     {

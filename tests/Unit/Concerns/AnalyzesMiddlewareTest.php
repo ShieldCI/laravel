@@ -21,6 +21,7 @@ class AnalyzesMiddlewareTest extends TestCase
         return $this->app->make(Router::class);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_global_middleware(): void
     {
@@ -31,6 +32,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertIsArray($globalMiddleware);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_all_route_middleware(): void
     {
@@ -44,6 +46,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertNotEmpty($routeMiddleware);
     }
 
+    /** @test */
     #[Test]
     public function it_compiles_all_middleware(): void
     {
@@ -53,6 +56,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertInstanceOf(Collection::class, $allMiddleware);
     }
 
+    /** @test */
     #[Test]
     public function it_checks_if_app_uses_specific_middleware(): void
     {
@@ -63,6 +67,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertIsBool($result);
     }
 
+    /** @test */
     #[Test]
     public function it_checks_if_app_uses_global_middleware(): void
     {
@@ -72,6 +77,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertIsBool($result);
     }
 
+    /** @test */
     #[Test]
     public function it_gets_middleware_for_a_route(): void
     {
@@ -93,6 +99,7 @@ class AnalyzesMiddlewareTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function it_checks_route_uses_middleware(): void
     {
@@ -113,6 +120,7 @@ class AnalyzesMiddlewareTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function it_checks_route_uses_basename_middleware(): void
     {
@@ -133,6 +141,7 @@ class AnalyzesMiddlewareTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function it_gets_basename_middleware_classes(): void
     {
@@ -153,6 +162,7 @@ class AnalyzesMiddlewareTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function it_determines_if_app_is_stateless(): void
     {
@@ -162,6 +172,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertIsBool($isStateless);
     }
 
+    /** @test */
     #[Test]
     public function it_determines_if_app_uses_cookies(): void
     {
@@ -175,6 +186,7 @@ class AnalyzesMiddlewareTest extends TestCase
     // isStartSessionMiddleware()
     // =========================================================================
 
+    /** @test */
     #[Test]
     public function is_start_session_middleware_matches_exact_class(): void
     {
@@ -183,6 +195,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertTrue($class->publicIsStartSessionMiddleware(StartSession::class));
     }
 
+    /** @test */
     #[Test]
     public function is_start_session_middleware_matches_by_basename(): void
     {
@@ -192,6 +205,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertTrue($class->publicIsStartSessionMiddleware('App\Http\Middleware\StartSession'));
     }
 
+    /** @test */
     #[Test]
     public function is_start_session_middleware_matches_subclass(): void
     {
@@ -206,6 +220,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertTrue($class->publicIsStartSessionMiddleware($subclass::class));
     }
 
+    /** @test */
     #[Test]
     public function is_start_session_middleware_rejects_unrelated_middleware(): void
     {
@@ -220,6 +235,7 @@ class AnalyzesMiddlewareTest extends TestCase
     // getGroupsContainingSession()
     // =========================================================================
 
+    /** @test */
     #[Test]
     public function get_groups_containing_session_returns_groups_with_start_session(): void
     {
@@ -234,6 +250,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertNotContains('api', $groups);
     }
 
+    /** @test */
     #[Test]
     public function get_groups_containing_session_excludes_groups_without_session(): void
     {
@@ -252,6 +269,7 @@ class AnalyzesMiddlewareTest extends TestCase
     // hasSessionInGlobalMiddleware()
     // =========================================================================
 
+    /** @test */
     #[Test]
     public function has_session_in_global_middleware_returns_false_in_test_env(): void
     {
@@ -261,6 +279,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertFalse($class->publicHasSessionInGlobalMiddleware());
     }
 
+    /** @test */
     #[Test]
     public function has_session_in_global_middleware_returns_true_when_start_session_is_global(): void
     {
@@ -269,6 +288,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertTrue($class->publicHasSessionInGlobalMiddleware());
     }
 
+    /** @test */
     #[Test]
     public function app_is_not_stateless_when_start_session_is_in_global_middleware(): void
     {
@@ -282,6 +302,7 @@ class AnalyzesMiddlewareTest extends TestCase
     // hasSessionGroupUsedByRoutes()
     // =========================================================================
 
+    /** @test */
     #[Test]
     public function has_session_group_used_by_routes_returns_true_for_app_web_route(): void
     {
@@ -295,6 +316,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertTrue($class->publicHasSessionGroupUsedByRoutes());
     }
 
+    /** @test */
     #[Test]
     public function has_session_group_used_by_routes_returns_false_when_only_api_routes(): void
     {
@@ -311,6 +333,7 @@ class AnalyzesMiddlewareTest extends TestCase
     // isVendorRoute()
     // =========================================================================
 
+    /** @test */
     #[Test]
     public function is_vendor_route_returns_false_for_closure_routes(): void
     {
@@ -322,6 +345,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertFalse($class->publicIsVendorRoute($route));
     }
 
+    /** @test */
     #[Test]
     public function is_vendor_route_returns_true_for_vendor_controller(): void
     {
@@ -334,6 +358,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertTrue($class->publicIsVendorRoute($route));
     }
 
+    /** @test */
     #[Test]
     public function is_vendor_route_returns_true_for_vendor_interface_as_controller(): void
     {
@@ -349,6 +374,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertTrue($class->publicIsVendorRoute($route));
     }
 
+    /** @test */
     #[Test]
     public function is_vendor_route_returns_false_for_unknown_class(): void
     {
@@ -365,6 +391,7 @@ class AnalyzesMiddlewareTest extends TestCase
     // routeMiddlewareContainsSession()
     // =========================================================================
 
+    /** @test */
     #[Test]
     public function route_middleware_contains_session_detects_direct_start_session(): void
     {
@@ -376,6 +403,7 @@ class AnalyzesMiddlewareTest extends TestCase
         ));
     }
 
+    /** @test */
     #[Test]
     public function route_middleware_contains_session_detects_session_group_name(): void
     {
@@ -387,6 +415,7 @@ class AnalyzesMiddlewareTest extends TestCase
         ));
     }
 
+    /** @test */
     #[Test]
     public function route_middleware_contains_session_returns_false_for_non_session_middleware(): void
     {
@@ -398,6 +427,7 @@ class AnalyzesMiddlewareTest extends TestCase
         ));
     }
 
+    /** @test */
     #[Test]
     public function route_middleware_contains_session_skips_non_string_items(): void
     {
@@ -408,6 +438,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertTrue($class->publicRouteMiddlewareContainsSession([42, StartSession::class], []));
     }
 
+    /** @test */
     #[Test]
     public function route_middleware_contains_session_returns_false_for_non_array(): void
     {
@@ -421,6 +452,7 @@ class AnalyzesMiddlewareTest extends TestCase
     // appIsStateless() — stateful cases
     // =========================================================================
 
+    /** @test */
     #[Test]
     public function app_is_not_stateless_when_closure_route_uses_session_group(): void
     {

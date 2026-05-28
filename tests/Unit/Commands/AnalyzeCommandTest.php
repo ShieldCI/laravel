@@ -42,6 +42,7 @@ class AnalyzeCommandTest extends TestCase
         parent::tearDown();
     }
 
+    /** @test */
     #[Test]
     public function it_runs_all_analyzers_by_default(): void
     {
@@ -51,6 +52,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_runs_specific_analyzer_by_id(): void
     {
@@ -64,6 +66,7 @@ class AnalyzeCommandTest extends TestCase
         $output->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_runs_multiple_analyzers_by_comma_separated_ids(): void
     {
@@ -77,6 +80,7 @@ class AnalyzeCommandTest extends TestCase
         $output->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_rejects_invalid_analyzer_id(): void
     {
@@ -87,6 +91,7 @@ class AnalyzeCommandTest extends TestCase
         ])->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_runs_analyzers_by_category(): void
     {
@@ -100,6 +105,7 @@ class AnalyzeCommandTest extends TestCase
         $output->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_rejects_invalid_category(): void
     {
@@ -110,6 +116,7 @@ class AnalyzeCommandTest extends TestCase
         ])->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_runs_multiple_categories_by_comma_separated_names(): void
     {
@@ -121,6 +128,7 @@ class AnalyzeCommandTest extends TestCase
         ])->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_warns_when_both_analyzer_and_category_are_provided(): void
     {
@@ -134,6 +142,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('--category will be ignored');
     }
 
+    /** @test */
     #[Test]
     public function it_outputs_json_format(): void
     {
@@ -144,6 +153,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('"summary"');
     }
 
+    /** @test */
     #[Test]
     public function it_outputs_console_format(): void
     {
@@ -154,6 +164,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('ShieldCI');
     }
 
+    /** @test */
     #[Test]
     public function it_rejects_invalid_format(): void
     {
@@ -164,6 +175,7 @@ class AnalyzeCommandTest extends TestCase
         ])->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_requires_json_extension_for_output_file(): void
     {
@@ -174,6 +186,7 @@ class AnalyzeCommandTest extends TestCase
         ])->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_rejects_path_traversal_in_output(): void
     {
@@ -184,6 +197,7 @@ class AnalyzeCommandTest extends TestCase
         ])->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_rejects_absolute_paths_in_output(): void
     {
@@ -194,6 +208,7 @@ class AnalyzeCommandTest extends TestCase
         ])->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_rejects_protected_files_in_output(): void
     {
@@ -208,6 +223,7 @@ class AnalyzeCommandTest extends TestCase
         ])->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_saves_report_to_file(): void
     {
@@ -232,6 +248,7 @@ class AnalyzeCommandTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function it_suppresses_stdout_when_output_file_is_specified(): void
     {
@@ -257,6 +274,7 @@ class AnalyzeCommandTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function it_respects_enabled_config(): void
     {
@@ -267,6 +285,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('disabled');
     }
 
+    /** @test */
     #[Test]
     public function it_warns_about_baseline_without_file(): void
     {
@@ -278,6 +297,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('baseline');
     }
 
+    /** @test */
     #[Test]
     public function it_validates_ignore_errors_config(): void
     {
@@ -294,6 +314,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_exits_with_failure_on_disabled_categories(): void
     {
@@ -310,6 +331,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('disabled');
     }
 
+    /** @test */
     #[Test]
     public function it_fails_when_disabled_category_is_requested(): void
     {
@@ -324,6 +346,7 @@ class AnalyzeCommandTest extends TestCase
         ])->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_runs_in_console_streaming_mode_by_default(): void
     {
@@ -335,6 +358,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('ShieldCI');
     }
 
+    /** @test */
     #[Test]
     public function it_shows_failed_analyzer_details_in_console(): void
     {
@@ -346,6 +370,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('Report Card');
     }
 
+    /** @test */
     #[Test]
     public function it_shows_report_card_in_streaming_mode(): void
     {
@@ -356,6 +381,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('Report Card');
     }
 
+    /** @test */
     #[Test]
     public function it_fails_when_critical_issues_found_and_fail_on_high(): void
     {
@@ -366,6 +392,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_succeeds_when_fail_on_is_never(): void
     {
@@ -376,6 +403,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_fails_when_score_below_threshold(): void
     {
@@ -386,6 +414,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_applies_memory_limit_from_config(): void
     {
@@ -396,6 +425,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_applies_timeout_from_config(): void
     {
@@ -406,6 +436,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_applies_string_timeout_from_config(): void
     {
@@ -418,6 +449,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_saves_report_using_config_output_file(): void
     {
@@ -438,6 +470,7 @@ class AnalyzeCommandTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function it_fails_on_low_severity_when_fail_on_is_low(): void
     {
@@ -448,6 +481,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_handles_dont_report_config(): void
     {
@@ -458,6 +492,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_filters_issues_with_ignore_errors_config(): void
     {
@@ -472,6 +507,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_warns_about_invalid_ignore_errors_config(): void
     {
@@ -487,6 +523,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('Configuration Warnings');
     }
 
+    /** @test */
     #[Test]
     public function it_filters_issues_with_ignore_errors_path_pattern(): void
     {
@@ -504,6 +541,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_filters_issues_with_ignore_errors_message_pattern(): void
     {
@@ -521,6 +559,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_filters_issues_with_ignore_errors_exact_message(): void
     {
@@ -538,6 +577,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_filters_issues_with_ignore_errors_path_and_message(): void
     {
@@ -558,6 +598,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_does_not_filter_when_path_does_not_match(): void
     {
@@ -575,6 +616,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_filters_against_baseline_with_hash_matching(): void
     {
@@ -610,6 +652,7 @@ class AnalyzeCommandTest extends TestCase
         @unlink($baselinePath);
     }
 
+    /** @test */
     #[Test]
     public function it_filters_against_baseline_with_pattern_matching(): void
     {
@@ -642,6 +685,7 @@ class AnalyzeCommandTest extends TestCase
         @unlink($baselinePath);
     }
 
+    /** @test */
     #[Test]
     public function it_filters_against_baseline_with_exact_path_and_message(): void
     {
@@ -674,6 +718,7 @@ class AnalyzeCommandTest extends TestCase
         @unlink($baselinePath);
     }
 
+    /** @test */
     #[Test]
     public function it_warns_about_invalid_baseline_structure(): void
     {
@@ -693,6 +738,7 @@ class AnalyzeCommandTest extends TestCase
         @unlink($baselinePath);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_baseline_dont_report(): void
     {
@@ -718,6 +764,7 @@ class AnalyzeCommandTest extends TestCase
         @unlink($baselinePath);
     }
 
+    /** @test */
     #[Test]
     public function it_fails_on_medium_severity_when_fail_on_medium(): void
     {
@@ -728,6 +775,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_fails_on_critical_severity_when_fail_on_critical(): void
     {
@@ -738,6 +786,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_succeeds_on_medium_severity_when_fail_on_critical(): void
     {
@@ -748,6 +797,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_succeeds_on_low_severity_when_fail_on_high(): void
     {
@@ -758,6 +808,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_succeeds_on_low_severity_when_fail_on_medium(): void
     {
@@ -769,6 +820,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_warns_about_valid_category_with_no_registered_analyzers(): void
     {
@@ -781,6 +833,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('No analyzers found for category');
     }
 
+    /** @test */
     #[Test]
     public function it_runs_specific_analyzer_in_streaming_mode(): void
     {
@@ -793,6 +846,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('Running analyzer');
     }
 
+    /** @test */
     #[Test]
     public function it_runs_multiple_analyzers_in_streaming_mode(): void
     {
@@ -805,6 +859,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('Running analyzers');
     }
 
+    /** @test */
     #[Test]
     public function it_runs_category_filter_in_json_mode(): void
     {
@@ -816,6 +871,7 @@ class AnalyzeCommandTest extends TestCase
         ])->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_validates_ignore_errors_with_conflicting_path_keys(): void
     {
@@ -831,6 +887,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('Conflicting');
     }
 
+    /** @test */
     #[Test]
     public function it_validates_ignore_errors_with_conflicting_message_keys(): void
     {
@@ -846,6 +903,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('Conflicting');
     }
 
+    /** @test */
     #[Test]
     public function it_validates_ignore_errors_with_empty_rules(): void
     {
@@ -859,6 +917,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('Empty rules');
     }
 
+    /** @test */
     #[Test]
     public function it_validates_ignore_errors_with_invalid_keys(): void
     {
@@ -874,6 +933,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('Invalid keys');
     }
 
+    /** @test */
     #[Test]
     public function it_partially_filters_ignore_errors_in_json_mode(): void
     {
@@ -892,6 +952,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_partially_filters_ignore_errors_in_streaming_mode(): void
     {
@@ -910,6 +971,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_partially_filters_baseline_issues(): void
     {
@@ -945,6 +1007,7 @@ class AnalyzeCommandTest extends TestCase
         @unlink($baselinePath);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_singular_grammar_fix_in_partial_filter(): void
     {
@@ -963,6 +1026,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_filters_with_ignore_errors_recommendation_matching(): void
     {
@@ -981,6 +1045,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_validates_ignore_errors_with_invalid_glob_pattern(): void
     {
@@ -996,6 +1061,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('Invalid glob pattern');
     }
 
+    /** @test */
     #[Test]
     public function it_validates_ignore_errors_with_empty_rule(): void
     {
@@ -1011,6 +1077,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('Empty rule');
     }
 
+    /** @test */
     #[Test]
     public function it_validates_ignore_errors_with_non_array_rules(): void
     {
@@ -1024,6 +1091,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('expected array');
     }
 
+    /** @test */
     #[Test]
     public function it_validates_ignore_errors_with_non_array_rule(): void
     {
@@ -1039,6 +1107,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('expected array');
     }
 
+    /** @test */
     #[Test]
     public function it_warns_about_baseline_with_invalid_errors_field(): void
     {
@@ -1063,6 +1132,7 @@ class AnalyzeCommandTest extends TestCase
         @unlink($baselinePath);
     }
 
+    /** @test */
     #[Test]
     public function it_fails_on_warnings_with_low_fail_on(): void
     {
@@ -1073,6 +1143,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_succeeds_on_warnings_with_high_fail_on(): void
     {
@@ -1083,6 +1154,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_fails_on_warnings_with_medium_severity_and_medium_fail_on(): void
     {
@@ -1093,6 +1165,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_succeeds_on_low_warnings_with_medium_fail_on(): void
     {
@@ -1103,6 +1176,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_handles_baseline_dont_report_in_exit_code(): void
     {
@@ -1126,6 +1200,7 @@ class AnalyzeCommandTest extends TestCase
         @unlink($baselinePath);
     }
 
+    /** @test */
     #[Test]
     public function it_validates_empty_string_analyzer_option(): void
     {
@@ -1136,6 +1211,7 @@ class AnalyzeCommandTest extends TestCase
         ])->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_handles_skipped_analyzers_in_streaming_mode(): void
     {
@@ -1147,6 +1223,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('skipped');
     }
 
+    /** @test */
     #[Test]
     public function it_handles_skipped_analyzers_in_json_mode(): void
     {
@@ -1157,6 +1234,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_handles_skipped_analyzers_with_category_filter_in_json(): void
     {
@@ -1167,6 +1245,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_handles_skipped_analyzers_with_category_in_streaming(): void
     {
@@ -1177,6 +1256,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_does_not_error_when_analyzer_option_targets_a_skipped_analyzer(): void
     {
@@ -1188,6 +1268,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('skipped');
     }
 
+    /** @test */
     #[Test]
     public function it_shows_warning_for_skipped_analyzer_in_validate_options(): void
     {
@@ -1199,6 +1280,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('⚠');
     }
 
+    /** @test */
     #[Test]
     public function it_includes_skipped_result_when_analyzer_option_targets_skipped_in_json_mode(): void
     {
@@ -1209,6 +1291,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_shows_analyzer_display_name_not_id_when_targeted_analyzer_is_skipped(): void
     {
@@ -1220,6 +1303,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('Test Skipped Analyzer');
     }
 
+    /** @test */
     #[Test]
     public function it_saves_report_in_console_format(): void
     {
@@ -1240,6 +1324,7 @@ class AnalyzeCommandTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function it_validates_null_baseline(): void
     {
@@ -1259,6 +1344,7 @@ class AnalyzeCommandTest extends TestCase
         @unlink($baselinePath);
     }
 
+    /** @test */
     #[Test]
     public function it_fully_filters_all_issues_via_ignore_errors_in_streaming_mode(): void
     {
@@ -1278,6 +1364,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_skips_ignore_errors_for_analyzer_not_in_config(): void
     {
@@ -1297,6 +1384,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_fully_filters_all_issues_via_ignore_errors_in_json_mode(): void
     {
@@ -1315,6 +1403,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_validates_invalid_category_option(): void
     {
@@ -1324,6 +1413,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_counts_skipped_without_category_config_in_streaming(): void
     {
@@ -1335,6 +1425,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('skipped');
     }
 
+    /** @test */
     #[Test]
     public function it_counts_skipped_without_category_config_in_json(): void
     {
@@ -1345,6 +1436,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_handles_string_category_in_report_card(): void
     {
@@ -1356,6 +1448,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('Report Card');
     }
 
+    /** @test */
     #[Test]
     public function it_handles_invalid_category_value_in_report_card(): void
     {
@@ -1367,6 +1460,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('Report Card');
     }
 
+    /** @test */
     #[Test]
     public function it_handles_null_category_in_report_card(): void
     {
@@ -1378,6 +1472,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('Report Card');
     }
 
+    /** @test */
     #[Test]
     public function it_falls_back_when_all_results_are_skipped(): void
     {
@@ -1389,6 +1484,7 @@ class AnalyzeCommandTest extends TestCase
             ->expectsOutputToContain('Report Card');
     }
 
+    /** @test */
     #[Test]
     public function it_rejects_non_writable_output_directory(): void
     {
@@ -1410,6 +1506,7 @@ class AnalyzeCommandTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function it_handles_non_array_ignore_error_entry_at_runtime(): void
     {
@@ -1429,6 +1526,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_skips_empty_ignore_error_rule_at_runtime(): void
     {
@@ -1448,6 +1546,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_handles_non_array_baseline_issue_entry(): void
     {
@@ -1476,6 +1575,7 @@ class AnalyzeCommandTest extends TestCase
         @unlink($baselinePath);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_baseline_without_errors_key(): void
     {
@@ -1500,6 +1600,7 @@ class AnalyzeCommandTest extends TestCase
         @unlink($baselinePath);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_string_category_in_skipped_streaming_output(): void
     {
@@ -1510,6 +1611,7 @@ class AnalyzeCommandTest extends TestCase
             ->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_returns_empty_results_when_no_analyzers_run(): void
     {
@@ -1581,6 +1683,7 @@ class AnalyzeCommandTest extends TestCase
         $this->tempPaths = [];
     }
 
+    /** @test */
     #[Test]
     public function inline_suppression_filters_issues_in_json_mode(): void
     {
@@ -1622,6 +1725,7 @@ PHP);
         $this->cleanupTempPaths();
     }
 
+    /** @test */
     #[Test]
     public function inline_suppression_filters_issues_in_streaming_mode(): void
     {
@@ -1662,6 +1766,7 @@ PHP);
         $this->cleanupTempPaths();
     }
 
+    /** @test */
     #[Test]
     public function suppressed_issues_note_appears_directly_below_analyzer_status_with_no_blank_line(): void
     {
@@ -1721,6 +1826,7 @@ PHP);
         $this->cleanupTempPaths();
     }
 
+    /** @test */
     #[Test]
     public function inline_suppression_partial_filtering_keeps_unsuppressed_issues(): void
     {
@@ -1770,6 +1876,7 @@ PHP);
         $this->cleanupTempPaths();
     }
 
+    /** @test */
     #[Test]
     public function inline_suppression_all_issues_suppressed_changes_status_to_passed(): void
     {
@@ -1822,6 +1929,7 @@ PHP);
         $this->cleanupTempPaths();
     }
 
+    /** @test */
     #[Test]
     public function inline_suppression_keeps_issues_without_location(): void
     {
@@ -1863,6 +1971,7 @@ PHP);
         $this->cleanupTempPaths();
     }
 
+    /** @test */
     #[Test]
     public function inline_suppression_keeps_issues_with_line_zero(): void
     {
@@ -1904,6 +2013,7 @@ PHP);
         $this->cleanupTempPaths();
     }
 
+    /** @test */
     #[Test]
     public function inline_suppression_passes_non_analysis_result_unchanged(): void
     {
@@ -1957,6 +2067,7 @@ PHP);
     // adjustFilteredMessage tests (via reflection)
     // ==========================================
 
+    /** @test */
     #[Test]
     public function adjust_filtered_message_all_filtered_returns_suppressed_message(): void
     {
@@ -1969,6 +2080,7 @@ PHP);
         $this->assertSame('All issues are suppressed via @shieldci-ignore', $result);
     }
 
+    /** @test */
     #[Test]
     public function adjust_filtered_message_none_filtered_returns_original(): void
     {
@@ -1981,6 +2093,7 @@ PHP);
         $this->assertSame('Found 3 issues', $result);
     }
 
+    /** @test */
     #[Test]
     public function adjust_filtered_message_partial_filter_updates_count(): void
     {
@@ -1993,6 +2106,7 @@ PHP);
         $this->assertSame('Found 2 issues', $result);
     }
 
+    /** @test */
     #[Test]
     public function adjust_filtered_message_singular_grammar_for_issues(): void
     {
@@ -2007,6 +2121,7 @@ PHP);
         $this->assertSame('Found 1 problem', $method->invoke($command, 'Found 3 problems', 3, 1));
     }
 
+    /** @test */
     #[Test]
     public function adjust_filtered_message_zero_original_and_zero_filtered(): void
     {
@@ -2022,6 +2137,7 @@ PHP);
 
     // ─── API Integration Tests ────────────────────────────────────────────
 
+    /** @test */
     #[Test]
     public function it_does_not_send_to_api_when_config_is_not_set(): void
     {
@@ -2035,6 +2151,7 @@ PHP);
             ->doesntExpectOutputToContain('Sending report to ShieldCI platform');
     }
 
+    /** @test */
     #[Test]
     public function it_sends_to_api_when_report_flag_is_used(): void
     {
@@ -2053,6 +2170,7 @@ PHP);
             ->expectsOutputToContain('Report sent successfully');
     }
 
+    /** @test */
     #[Test]
     public function it_sends_to_api_when_configured_and_reports_success(): void
     {
@@ -2072,6 +2190,7 @@ PHP);
             ->expectsOutputToContain('Report sent successfully');
     }
 
+    /** @test */
     #[Test]
     public function it_sends_to_api_and_reports_failure_response(): void
     {
@@ -2091,6 +2210,7 @@ PHP);
             ->expectsOutputToContain('Failed to send report: Invalid token');
     }
 
+    /** @test */
     #[Test]
     public function it_sends_to_api_and_handles_failure_without_message(): void
     {
@@ -2109,6 +2229,7 @@ PHP);
             ->expectsOutputToContain('Failed to send report: Unknown error');
     }
 
+    /** @test */
     #[Test]
     public function it_sends_to_api_and_handles_connection_exception(): void
     {
@@ -2131,6 +2252,7 @@ PHP);
             ->expectsOutputToContain('Failed to send report to API: Connection timed out');
     }
 
+    /** @test */
     #[Test]
     public function it_sends_to_api_in_streaming_mode(): void
     {
@@ -2150,6 +2272,7 @@ PHP);
             ->expectsOutputToContain('Report sent successfully');
     }
 
+    /** @test */
     #[Test]
     public function it_rejects_invalid_triggered_by_value(): void
     {
@@ -2160,6 +2283,7 @@ PHP);
         ])->assertFailed();
     }
 
+    /** @test */
     #[Test]
     public function it_accepts_valid_triggered_by_values(): void
     {
@@ -2171,6 +2295,7 @@ PHP);
         ])->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_accepts_ci_cd_triggered_by(): void
     {
@@ -2182,6 +2307,7 @@ PHP);
         ])->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function it_accepts_scheduled_triggered_by(): void
     {
@@ -2193,6 +2319,7 @@ PHP);
         ])->assertSuccessful();
     }
 
+    /** @test */
     #[Test]
     public function json_output_includes_triggered_by_field(): void
     {
@@ -2205,6 +2332,7 @@ PHP);
             ->expectsOutputToContain('"triggered_by": "ci_cd"');
     }
 
+    /** @test */
     #[Test]
     public function json_output_defaults_triggered_by_to_manual(): void
     {
@@ -2216,6 +2344,7 @@ PHP);
             ->expectsOutputToContain('"triggered_by": "manual"');
     }
 
+    /** @test */
     #[Test]
     public function ci_flag_sets_triggered_by_to_ci_cd(): void
     {
@@ -2228,6 +2357,7 @@ PHP);
             ->expectsOutputToContain('"triggered_by": "ci_cd"');
     }
 
+    /** @test */
     #[Test]
     public function triggered_by_flag_overrides_ci_flag(): void
     {
@@ -2241,6 +2371,7 @@ PHP);
             ->expectsOutputToContain('"triggered_by": "scheduled"');
     }
 
+    /** @test */
     #[Test]
     public function json_output_includes_php_version_in_metadata(): void
     {
@@ -2251,6 +2382,7 @@ PHP);
             ->expectsOutputToContain('"php_version": "'.PHP_VERSION.'"');
     }
 
+    /** @test */
     #[Test]
     public function json_output_includes_os_in_metadata(): void
     {
@@ -2261,6 +2393,7 @@ PHP);
             ->expectsOutputToContain('"os": "'.PHP_OS_FAMILY.'"');
     }
 
+    /** @test */
     #[Test]
     public function json_output_includes_environment_in_metadata(): void
     {
@@ -2271,6 +2404,7 @@ PHP);
             ->expectsOutputToContain('"environment":');
     }
 
+    /** @test */
     #[Test]
     public function json_output_includes_git_branch_when_provided(): void
     {
@@ -2283,6 +2417,7 @@ PHP);
             ->expectsOutputToContain('"git_branch": "feature/test-branch"');
     }
 
+    /** @test */
     #[Test]
     public function json_output_includes_git_commit_when_provided(): void
     {
@@ -2295,6 +2430,7 @@ PHP);
             ->expectsOutputToContain('"git_commit": "abc1234def5678"');
     }
 
+    /** @test */
     #[Test]
     public function json_output_includes_git_branch_and_commit_together(): void
     {
@@ -2313,6 +2449,7 @@ PHP);
         $this->assertStringContainsString('"git_commit": "deadbeef"', $output);
     }
 
+    /** @test */
     #[Test]
     public function json_output_excludes_git_fields_when_flags_not_provided(): void
     {
@@ -2327,6 +2464,7 @@ PHP);
         $this->assertStringNotContainsString('"ci_provider"', $output);
     }
 
+    /** @test */
     #[Test]
     public function analyzed_at_is_in_utc(): void
     {
@@ -3158,6 +3296,7 @@ PHP);
 
     // ─── Failure Notification Tests ──────────────────────────────────
 
+    /** @test */
     #[Test]
     public function it_sends_failure_notification_on_invalid_options(): void
     {
@@ -3179,6 +3318,7 @@ PHP);
         });
     }
 
+    /** @test */
     #[Test]
     public function it_does_not_send_failure_notification_when_api_disabled(): void
     {
@@ -3195,6 +3335,7 @@ PHP);
         Http::assertNothingSent();
     }
 
+    /** @test */
     #[Test]
     public function it_sends_failure_notification_on_all_categories_disabled(): void
     {
@@ -3221,6 +3362,7 @@ PHP);
         });
     }
 
+    /** @test */
     #[Test]
     public function it_sends_failure_notification_on_no_analyzers_ran(): void
     {
@@ -3257,6 +3399,7 @@ PHP);
         });
     }
 
+    /** @test */
     #[Test]
     public function it_sends_failure_notification_on_uncaught_exception(): void
     {
@@ -3312,6 +3455,7 @@ PHP);
         });
     }
 
+    /** @test */
     #[Test]
     public function it_silently_handles_failure_notification_api_error(): void
     {
@@ -3337,6 +3481,7 @@ PHP);
         // Command should still return FAILURE, not crash
     }
 
+    /** @test */
     #[Test]
     public function it_includes_metadata_in_failure_notification(): void
     {
@@ -3363,6 +3508,7 @@ PHP);
         });
     }
 
+    /** @test */
     #[Test]
     public function it_includes_git_context_in_failure_notification(): void
     {
@@ -3388,6 +3534,7 @@ PHP);
         });
     }
 
+    /** @test */
     #[Test]
     public function it_sends_failure_notification_with_send_to_api_config(): void
     {
@@ -3410,6 +3557,7 @@ PHP);
 
     // ─── CI Provider Detection Tests ──────────────────────────────────
 
+    /** @test */
     #[Test]
     public function it_includes_ci_provider_in_metadata_when_github_actions_detected(): void
     {
@@ -3431,6 +3579,7 @@ PHP);
         $this->assertStringContainsString('"ci_provider": "github_actions"', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_does_not_include_ci_provider_when_no_ci_detected(): void
     {
@@ -3443,6 +3592,7 @@ PHP);
         $this->assertStringNotContainsString('"ci_provider"', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_auto_detects_branch_from_github_head_ref(): void
     {
@@ -3464,6 +3614,7 @@ PHP);
         $this->assertStringContainsString('"git_branch": "feature/auto-detect"', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_auto_detects_commit_from_github_sha(): void
     {
@@ -3485,6 +3636,7 @@ PHP);
         $this->assertStringContainsString('"git_commit": "deadbeef12345678"', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_prefers_cli_flag_over_ci_env_vars_for_branch(): void
     {
@@ -3510,6 +3662,7 @@ PHP);
         $this->assertStringNotContainsString('"git_branch": "main"', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_prefers_cli_flag_over_ci_env_vars_for_commit(): void
     {
@@ -3535,6 +3688,7 @@ PHP);
         $this->assertStringNotContainsString('"git_commit": "env-sha-000"', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_includes_ci_provider_in_failure_notification_metadata(): void
     {
@@ -3613,6 +3767,7 @@ PHP);
 
     // ─── PR metadata auto-detection tests ─────────────────────────────────
 
+    /** @test */
     #[Test]
     public function it_auto_detects_pr_number_from_github_ref_number(): void
     {
@@ -3636,6 +3791,7 @@ PHP);
         $this->assertStringContainsString('"pr_number": "42"', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_auto_detects_repository_from_github_repository(): void
     {
@@ -3659,6 +3815,7 @@ PHP);
         $this->assertStringContainsString('"repository": "owner/repo"', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_auto_detects_base_branch_from_github_base_ref(): void
     {
@@ -3682,6 +3839,7 @@ PHP);
         $this->assertStringContainsString('"base_branch": "main"', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_prefers_cli_flags_over_ci_env_vars_for_pr_number(): void
     {
@@ -3709,6 +3867,7 @@ PHP);
         $this->assertStringNotContainsString('"pr_number": "1"', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_does_not_include_pr_fields_when_not_on_a_pr(): void
     {
@@ -3723,6 +3882,7 @@ PHP);
         $this->assertStringNotContainsString('"base_branch"', $output);
     }
 
+    /** @test */
     #[Test]
     public function it_includes_pr_fields_in_failure_notification_metadata(): void
     {
@@ -3765,6 +3925,7 @@ PHP);
 
     // ─── Suppressed Issues Tracking ───────────────────────────────────────────
 
+    /** @test */
     #[Test]
     public function json_output_includes_suppressed_issues_for_config_suppression(): void
     {
@@ -3805,6 +3966,7 @@ PHP);
         @unlink($outputPath);
     }
 
+    /** @test */
     #[Test]
     public function json_output_includes_suppressed_issues_for_inline_suppression(): void
     {
@@ -3864,6 +4026,7 @@ PHP);
         $this->cleanupTempPaths();
     }
 
+    /** @test */
     #[Test]
     public function json_output_includes_suppressed_issues_for_baseline_suppression(): void
     {
@@ -3915,6 +4078,7 @@ PHP);
         @unlink($outputPath);
     }
 
+    /** @test */
     #[Test]
     public function json_summary_includes_suppressed_issues_counts(): void
     {
@@ -3947,6 +4111,7 @@ PHP);
         unlink($outputPath);
     }
 
+    /** @test */
     #[Test]
     public function console_output_shows_suppression_count_hint(): void
     {
@@ -3965,6 +4130,7 @@ PHP);
             ->expectsOutputToContain('suppressed');
     }
 
+    /** @test */
     #[Test]
     public function suppressed_issues_is_empty_array_when_no_suppression_occurs(): void
     {
@@ -3991,6 +4157,7 @@ PHP);
         unlink($outputPath);
     }
 
+    /** @test */
     #[Test]
     public function json_output_does_not_contain_status_messages(): void
     {
@@ -4007,6 +4174,7 @@ PHP);
         $result->doesntExpectOutput('Running analyzer');
     }
 
+    /** @test */
     #[Test]
     public function json_output_with_specific_analyzer_does_not_contain_status_messages(): void
     {
@@ -4021,6 +4189,7 @@ PHP);
         $result->doesntExpectOutput('Running analyzers');
     }
 
+    /** @test */
     #[Test]
     public function json_output_with_multiple_analyzers_does_not_contain_status_messages(): void
     {
@@ -4034,6 +4203,7 @@ PHP);
         $result->doesntExpectOutput('Running analyzers');
     }
 
+    /** @test */
     #[Test]
     public function json_output_with_category_does_not_contain_status_messages(): void
     {
@@ -4047,6 +4217,7 @@ PHP);
         $result->doesntExpectOutput('Running');
     }
 
+    /** @test */
     #[Test]
     public function console_format_still_shows_output_without_regression(): void
     {
@@ -4057,6 +4228,7 @@ PHP);
             ->expectsOutputToContain('ShieldCI');
     }
 
+    /** @test */
     #[Test]
     public function progress_bar_renders_when_progress_enabled_for_all_analyzers(): void
     {
@@ -4066,6 +4238,7 @@ PHP);
         $this->assertCount(2, $results);
     }
 
+    /** @test */
     #[Test]
     public function progress_bar_renders_when_progress_enabled_for_specific_analyzer(): void
     {
@@ -4075,6 +4248,7 @@ PHP);
         $this->assertCount(1, $results);
     }
 
+    /** @test */
     #[Test]
     public function progress_bar_renders_when_progress_enabled_for_multiple_analyzers(): void
     {
@@ -4084,6 +4258,7 @@ PHP);
         $this->assertCount(2, $results);
     }
 
+    /** @test */
     #[Test]
     public function progress_bar_renders_when_progress_enabled_for_category(): void
     {
@@ -4168,6 +4343,7 @@ PHP);
     // configuration forwarding tests
     // ==========================================
 
+    /** @test */
     #[Test]
     public function filter_against_ignore_errors_forwards_configuration(): void
     {
@@ -4194,6 +4370,7 @@ PHP);
         $this->assertSame($configuration, $result->configuration);
     }
 
+    /** @test */
     #[Test]
     public function filter_against_inline_suppressions_forwards_configuration(): void
     {
@@ -4223,6 +4400,7 @@ PHP);
         $this->assertSame($configuration, $result->configuration);
     }
 
+    /** @test */
     #[Test]
     public function filter_against_baseline_forwards_configuration(): void
     {
@@ -4274,6 +4452,7 @@ PHP);
         @unlink($outputPath);
     }
 
+    /** @test */
     #[Test]
     public function handle_forwards_configuration_through_suppressed_issues_inject(): void
     {
@@ -4318,6 +4497,7 @@ PHP);
         @unlink($outputPath);
     }
 
+    /** @test */
     #[Test]
     public function it_warns_when_app_env_is_unrecognized_and_not_mapped(): void
     {
@@ -4330,6 +4510,7 @@ PHP);
             ->expectsOutputToContain("APP_ENV 'production-eu' is not a recognized standard environment");
     }
 
+    /** @test */
     #[Test]
     public function it_does_not_warn_when_app_env_is_standard(): void
     {
@@ -4341,6 +4522,7 @@ PHP);
             ->doesntExpectOutputToContain('is not a recognized standard environment');
     }
 
+    /** @test */
     #[Test]
     public function it_does_not_warn_when_custom_env_has_mapping(): void
     {
@@ -4355,6 +4537,7 @@ PHP);
 
     // ─── clearAstParserCache() call site tests ────────────────────────
 
+    /** @test */
     #[Test]
     public function it_calls_clear_ast_parser_cache_in_streaming_single_analyzer_path(): void
     {
@@ -4388,6 +4571,7 @@ PHP);
         $this->assertTrue($astCacheAnalyzer->clearAstParserCacheCalled);
     }
 
+    /** @test */
     #[Test]
     public function it_calls_clear_ast_parser_cache_in_streaming_category_path(): void
     {
@@ -4419,6 +4603,7 @@ PHP);
         $this->assertTrue($astCacheAnalyzer->clearAstParserCacheCalled);
     }
 
+    /** @test */
     #[Test]
     public function it_calls_clear_ast_parser_cache_in_non_streaming_path(): void
     {

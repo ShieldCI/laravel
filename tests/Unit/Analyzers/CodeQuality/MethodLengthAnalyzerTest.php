@@ -29,6 +29,7 @@ class MethodLengthAnalyzerTest extends AnalyzerTestCase
         return new MethodLengthAnalyzer($this->parser, $configRepo);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_long_methods(): void
     {
@@ -63,6 +64,7 @@ PHP;
         $this->assertHasIssueContaining('lines', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_passes_with_short_methods(): void
     {
@@ -98,6 +100,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_excludes_simple_getter_methods(): void
     {
@@ -132,6 +135,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_flags_large_getter_methods(): void
     {
@@ -168,6 +172,7 @@ PHP;
         $this->assertHasIssueContaining('getUsersWithComplexFiltering', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_excludes_simple_setter_methods(): void
     {
@@ -202,6 +207,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_excludes_simple_is_methods(): void
     {
@@ -236,6 +242,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_excludes_simple_has_methods(): void
     {
@@ -270,6 +277,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_flags_large_methods_matching_exclude_patterns(): void
     {
@@ -320,6 +328,7 @@ PHP;
         $this->assertHasIssueContaining('hasAdvancedPermissions', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_method_at_exact_threshold_passes(): void
     {
@@ -354,6 +363,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_method_at_threshold_plus_one_fails(): void
     {
@@ -388,6 +398,7 @@ PHP;
         $this->assertWarning($result);
     }
 
+    /** @test */
     #[Test]
     public function test_severity_is_low_for_moderate_length(): void
     {
@@ -424,6 +435,7 @@ PHP;
         $this->assertSame(Severity::Low, $issues[0]->severity);
     }
 
+    /** @test */
     #[Test]
     public function test_severity_is_medium_for_excessive_length(): void
     {
@@ -460,6 +472,7 @@ PHP;
         $this->assertSame(Severity::Medium, $issues[0]->severity);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_long_standalone_functions(): void
     {
@@ -491,6 +504,7 @@ PHP;
         $this->assertHasIssueContaining('processHelper', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_handles_abstract_methods(): void
     {
@@ -525,6 +539,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_multiple_long_methods_in_one_file(): void
     {
@@ -573,6 +588,7 @@ PHP;
         $this->assertHasIssueContaining('secondMethod', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_includes_correct_metadata(): void
     {
@@ -616,6 +632,7 @@ PHP;
         $this->assertSame(50, $metadata['threshold']);
     }
 
+    /** @test */
     #[Test]
     public function test_recommendation_uses_configured_threshold(): void
     {
@@ -657,6 +674,7 @@ PHP;
         $this->assertStringContainsString('Maximum recommended length: 75 lines', $issues[0]->recommendation);
     }
 
+    /** @test */
     #[Test]
     public function test_recommendation_uses_default_threshold(): void
     {
@@ -694,6 +712,7 @@ PHP;
         $this->assertStringContainsString('Maximum recommended length: 50 lines', $issues[0]->recommendation);
     }
 
+    /** @test */
     #[Test]
     public function test_differentiates_functions_from_methods(): void
     {
@@ -744,6 +763,7 @@ PHP;
         $this->assertStringContainsString('This method has', $methodIssue->recommendation);
     }
 
+    /** @test */
     #[Test]
     public function test_respects_custom_simple_accessor_max_lines_configuration(): void
     {
@@ -804,6 +824,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_has_correct_analyzer_metadata(): void
     {

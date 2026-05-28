@@ -10,6 +10,7 @@ use ShieldCI\Tests\TestCase;
 
 class AnalysisFailureReasonTest extends TestCase
 {
+    /** @test */
     #[Test]
     public function all_cases_have_non_empty_values(): void
     {
@@ -18,6 +19,7 @@ class AnalysisFailureReasonTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function all_cases_have_non_empty_labels(): void
     {
@@ -26,6 +28,7 @@ class AnalysisFailureReasonTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function try_from_returns_case_for_valid_values(): void
     {
@@ -35,6 +38,7 @@ class AnalysisFailureReasonTest extends TestCase
         $this->assertSame(AnalysisFailureReason::UncaughtException, AnalysisFailureReason::tryFrom('uncaught_exception'));
     }
 
+    /** @test */
     #[Test]
     public function try_from_returns_null_for_invalid_values(): void
     {
@@ -42,6 +46,7 @@ class AnalysisFailureReasonTest extends TestCase
         $this->assertNull(AnalysisFailureReason::tryFrom(''));
     }
 
+    /** @test */
     #[Test]
     public function labels_are_human_readable(): void
     {

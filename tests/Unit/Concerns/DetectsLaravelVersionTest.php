@@ -19,12 +19,14 @@ class DetectsLaravelVersionTest extends TestCase
         $this->subject = new ConcreteDetectsLaravelVersion;
     }
 
+    /** @test */
     #[Test]
     public function it_returns_a_boolean(): void
     {
         $this->assertIsBool($this->subject->check());
     }
 
+    /** @test */
     #[Test]
     public function it_matches_the_running_laravel_version(): void
     {
@@ -33,6 +35,7 @@ class DetectsLaravelVersionTest extends TestCase
         $this->assertSame($expected, $this->subject->check());
     }
 
+    /** @test */
     #[Test]
     public function it_returns_true_on_laravel_11_or_higher(): void
     {
@@ -43,6 +46,7 @@ class DetectsLaravelVersionTest extends TestCase
         $this->assertTrue($this->subject->check());
     }
 
+    /** @test */
     #[Test]
     public function it_returns_false_on_laravel_10_or_lower(): void
     {

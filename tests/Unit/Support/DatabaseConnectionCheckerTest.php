@@ -21,6 +21,7 @@ class DatabaseConnectionCheckerTest extends TestCase
         parent::tearDown();
     }
 
+    /** @test */
     #[Test]
     public function it_returns_success_for_valid_connection(): void
     {
@@ -40,6 +41,7 @@ class DatabaseConnectionCheckerTest extends TestCase
         $this->assertNull($result->message);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_failure_for_null_pdo(): void
     {
@@ -56,6 +58,7 @@ class DatabaseConnectionCheckerTest extends TestCase
         $this->assertStringContainsString('null PDO', $result->message);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_failure_for_connection_exception(): void
     {
@@ -72,6 +75,7 @@ class DatabaseConnectionCheckerTest extends TestCase
         $this->assertEquals('RuntimeException', $result->exceptionClass);
     }
 
+    /** @test */
     #[Test]
     public function it_captures_exception_class_on_failure(): void
     {
@@ -87,6 +91,7 @@ class DatabaseConnectionCheckerTest extends TestCase
         $this->assertEquals('InvalidArgumentException', $result->exceptionClass);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_pdo_exception(): void
     {
@@ -102,6 +107,7 @@ class DatabaseConnectionCheckerTest extends TestCase
         $this->assertStringContainsString('SQLSTATE', $result->message);
     }
 
+    /** @test */
     #[Test]
     public function it_works_with_real_database_manager(): void
     {

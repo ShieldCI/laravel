@@ -30,6 +30,7 @@ class NestingDepthAnalyzerTest extends AnalyzerTestCase
         return new NestingDepthAnalyzer($this->parser, $configRepo);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_deep_nesting_with_if_statements(): void
     {
@@ -73,6 +74,7 @@ PHP;
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_passes_with_guard_clauses(): void
     {
@@ -115,6 +117,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_elseif_and_else_do_not_add_nesting_levels(): void
     {
@@ -154,6 +157,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_deep_nesting_with_foreach_loops(): void
     {
@@ -196,6 +200,7 @@ PHP;
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_deep_nesting_with_while_loops(): void
     {
@@ -238,6 +243,7 @@ PHP;
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_deep_nesting_with_for_loops(): void
     {
@@ -280,6 +286,7 @@ PHP;
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_try_catch_does_not_add_extra_nesting(): void
     {
@@ -319,6 +326,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_deep_nesting_in_try_catch(): void
     {
@@ -365,6 +373,7 @@ PHP;
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_deep_nesting_in_switch_statement(): void
     {
@@ -409,6 +418,7 @@ PHP;
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_mixed_nesting_types(): void
     {
@@ -453,6 +463,7 @@ PHP;
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_depth_exactly_at_threshold(): void
     {
@@ -493,6 +504,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_depth_one_above_threshold(): void
     {
@@ -535,6 +547,7 @@ PHP;
         $this->assertHasIssueContaining('nesting depth of 5', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_handles_nested_closures(): void
     {
@@ -578,6 +591,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_deep_nesting_inside_closure(): void
     {
@@ -622,6 +636,7 @@ PHP;
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_tracks_multiple_methods_separately(): void
     {
@@ -677,6 +692,7 @@ PHP;
         $this->assertStringContainsString('badMethod', (string) $issues[0]->metadata['context']);
     }
 
+    /** @test */
     #[Test]
     public function test_do_while_loop_nesting(): void
     {
@@ -719,6 +735,7 @@ PHP;
         $this->assertHasIssueContaining('nesting depth', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_severity_levels(): void
     {
@@ -831,6 +848,7 @@ PHP;
         $this->assertEquals(Severity::High, $highIssue->severity);
     }
 
+    /** @test */
     #[Test]
     public function test_includes_correct_metadata(): void
     {
@@ -884,6 +902,7 @@ PHP;
         $this->assertEquals('testMethod', $metadata['context']);
     }
 
+    /** @test */
     #[Test]
     public function test_has_correct_analyzer_metadata(): void
     {
@@ -901,6 +920,7 @@ PHP;
         $this->assertStringContainsString('nested', $metadata->description);
     }
 
+    /** @test */
     #[Test]
     public function test_global_scope_code(): void
     {

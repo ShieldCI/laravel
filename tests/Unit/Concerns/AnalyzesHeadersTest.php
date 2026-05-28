@@ -16,6 +16,7 @@ use ShieldCI\Tests\TestCase;
 
 class AnalyzesHeadersTest extends TestCase
 {
+    /** @test */
     #[Test]
     public function it_can_set_and_get_client(): void
     {
@@ -35,6 +36,7 @@ class AnalyzesHeadersTest extends TestCase
         $this->assertSame($mockClient, $class->publicGetClient());
     }
 
+    /** @test */
     #[Test]
     public function it_creates_default_client_if_not_set(): void
     {
@@ -53,6 +55,7 @@ class AnalyzesHeadersTest extends TestCase
         $this->assertInstanceOf(Client::class, $client);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_header_exists_on_url(): void
     {
@@ -78,6 +81,7 @@ class AnalyzesHeadersTest extends TestCase
         $this->assertTrue($class->publicHeaderExistsOnUrl('https://example.com', 'X-Custom-Header'));
     }
 
+    /** @test */
     #[Test]
     public function it_detects_header_does_not_exist_on_url(): void
     {
@@ -103,6 +107,7 @@ class AnalyzesHeadersTest extends TestCase
         $this->assertFalse($class->publicHeaderExistsOnUrl('https://example.com', 'X-Custom-Header'));
     }
 
+    /** @test */
     #[Test]
     public function it_checks_multiple_headers(): void
     {
@@ -132,6 +137,7 @@ class AnalyzesHeadersTest extends TestCase
         ));
     }
 
+    /** @test */
     #[Test]
     public function it_returns_false_for_null_url(): void
     {
@@ -148,6 +154,7 @@ class AnalyzesHeadersTest extends TestCase
         $this->assertFalse($class->publicHeaderExistsOnUrl(null, 'X-Header'));
     }
 
+    /** @test */
     #[Test]
     public function it_gets_headers_on_url(): void
     {
@@ -179,6 +186,7 @@ class AnalyzesHeadersTest extends TestCase
         $this->assertContains('application/json', $headers);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_empty_array_for_missing_header(): void
     {
@@ -210,6 +218,7 @@ class AnalyzesHeadersTest extends TestCase
         $this->assertEmpty($headers);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_empty_array_for_null_url_in_get_headers(): void
     {
@@ -232,6 +241,7 @@ class AnalyzesHeadersTest extends TestCase
         $this->assertEmpty($headers);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_false_on_connection_exception(): void
     {
@@ -260,6 +270,7 @@ class AnalyzesHeadersTest extends TestCase
         $this->assertFalse($class->publicHeaderExistsOnUrl('https://example.com', 'X-Header'));
     }
 
+    /** @test */
     #[Test]
     public function it_supports_legacy_set_http_client_method(): void
     {

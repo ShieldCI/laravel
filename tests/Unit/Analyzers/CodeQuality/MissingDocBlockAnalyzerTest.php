@@ -16,6 +16,7 @@ class MissingDocBlockAnalyzerTest extends AnalyzerTestCase
         return new MissingDocBlockAnalyzer($this->parser);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_missing_docblocks(): void
     {
@@ -47,6 +48,7 @@ PHP;
         $this->assertHasIssueContaining('PHPDoc', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_passes_with_proper_docblocks(): void
     {
@@ -84,6 +86,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_excludes_getter_methods(): void
     {
@@ -121,6 +124,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_excludes_setter_methods(): void
     {
@@ -158,6 +162,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_excludes_is_methods(): void
     {
@@ -195,6 +200,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_excludes_has_methods(): void
     {
@@ -232,6 +238,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_excludes_magic_methods(): void
     {
@@ -274,6 +281,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_missing_param_tags(): void
     {
@@ -310,6 +318,7 @@ PHP;
         $this->assertHasIssueContaining('@param', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_partial_param_tags(): void
     {
@@ -349,6 +358,7 @@ PHP;
         $this->assertHasIssueContaining('found 1, need 5', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_missing_return_tags(): void
     {
@@ -385,6 +395,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_missing_throws_tags_with_direct_throw(): void
     {
@@ -426,6 +437,7 @@ PHP;
         $this->assertHasIssueContaining('@throws', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_throws_in_nested_if_statement(): void
     {
@@ -469,6 +481,7 @@ PHP;
         $this->assertHasIssueContaining('@throws', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_throws_in_foreach_loop(): void
     {
@@ -510,6 +523,7 @@ PHP;
         $this->assertHasIssueContaining('@throws', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_throws_in_try_catch_block(): void
     {
@@ -551,6 +565,7 @@ PHP;
         $this->assertHasIssueContaining('@throws', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_ignores_caught_exceptions_in_try_block(): void
     {
@@ -595,6 +610,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_throws_in_catch_block_without_rethrow(): void
     {
@@ -637,6 +653,7 @@ PHP;
         $this->assertHasIssueContaining('@throws', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_ignores_private_methods(): void
     {
@@ -669,6 +686,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_ignores_protected_methods(): void
     {
@@ -701,6 +719,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_method_without_parameters_doesnt_require_param_tags(): void
     {
@@ -737,6 +756,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_method_without_return_type_requires_return_tag(): void
     {
@@ -774,6 +794,7 @@ PHP;
         $this->assertHasIssueContaining('@return', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_return_type_requirements(): void
     {
@@ -847,6 +868,7 @@ PHP;
         );
     }
 
+    /** @test */
     #[Test]
     public function test_abstract_methods_can_be_documented(): void
     {
@@ -881,6 +903,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_multiple_issues_in_one_file(): void
     {
@@ -933,6 +956,7 @@ PHP;
         $this->assertHasIssueContaining('secondMethod', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_message_counts_issues_and_methods_separately(): void
     {
@@ -973,6 +997,7 @@ PHP;
         $this->assertStringContainsString('3 documentation issues across 1 public method', $result->getMessage());
     }
 
+    /** @test */
     #[Test]
     public function test_includes_correct_metadata(): void
     {
@@ -1013,6 +1038,7 @@ PHP;
         $this->assertSame('missing', $metadata['issue_type']);
     }
 
+    /** @test */
     #[Test]
     public function test_has_correct_analyzer_metadata(): void
     {
@@ -1024,6 +1050,7 @@ PHP;
         $this->assertContains('documentation', $metadata->tags);
     }
 
+    /** @test */
     #[Test]
     public function test_passes_with_throws_tag_when_exception_thrown(): void
     {
@@ -1065,6 +1092,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_union_of_concrete_class_types_doesnt_require_return_tag(): void
     {

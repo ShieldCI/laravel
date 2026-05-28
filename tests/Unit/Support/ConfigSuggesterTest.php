@@ -11,6 +11,7 @@ use ShieldCI\Tests\TestCase;
 
 class ConfigSuggesterTest extends TestCase
 {
+    /** @test */
     #[Test]
     public function it_suggests_app_config_for_app_prefixed_vars(): void
     {
@@ -19,6 +20,7 @@ class ConfigSuggesterTest extends TestCase
         $this->assertEquals(['app', 'app.name'], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_suggests_database_config_for_db_prefixed_vars(): void
     {
@@ -27,6 +29,7 @@ class ConfigSuggesterTest extends TestCase
         $this->assertEquals(['database', 'database.host'], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_suggests_database_config_for_database_prefixed_vars(): void
     {
@@ -35,6 +38,7 @@ class ConfigSuggesterTest extends TestCase
         $this->assertEquals(['database', 'database.connection'], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_suggests_cache_config_for_cache_prefixed_vars(): void
     {
@@ -43,6 +47,7 @@ class ConfigSuggesterTest extends TestCase
         $this->assertEquals(['cache', 'cache.driver'], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_suggests_mail_config_for_mail_prefixed_vars(): void
     {
@@ -51,6 +56,7 @@ class ConfigSuggesterTest extends TestCase
         $this->assertEquals(['mail', 'mail.host'], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_suggests_queue_config_for_queue_prefixed_vars(): void
     {
@@ -59,6 +65,7 @@ class ConfigSuggesterTest extends TestCase
         $this->assertEquals(['queue', 'queue.connection'], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_suggests_session_config_for_session_prefixed_vars(): void
     {
@@ -67,6 +74,7 @@ class ConfigSuggesterTest extends TestCase
         $this->assertEquals(['session', 'session.driver'], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_suggests_logging_config_for_log_prefixed_vars(): void
     {
@@ -75,6 +83,7 @@ class ConfigSuggesterTest extends TestCase
         $this->assertEquals(['logging', 'logging.channel'], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_suggests_broadcasting_config_for_broadcast_prefixed_vars(): void
     {
@@ -83,6 +92,7 @@ class ConfigSuggesterTest extends TestCase
         $this->assertEquals(['broadcasting', 'broadcasting.driver'], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_suggests_filesystems_config_for_filesystem_prefixed_vars(): void
     {
@@ -91,6 +101,7 @@ class ConfigSuggesterTest extends TestCase
         $this->assertEquals(['filesystems', 'filesystems.disk'], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_suggests_filesystems_config_for_aws_prefixed_vars(): void
     {
@@ -99,6 +110,7 @@ class ConfigSuggesterTest extends TestCase
         $this->assertEquals(['filesystems', 'filesystems.bucket'], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_suggests_custom_config_for_unknown_vars(): void
     {
@@ -107,6 +119,7 @@ class ConfigSuggesterTest extends TestCase
         $this->assertEquals(['custom', 'custom.my_custom_var'], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_case_insensitive_prefixes(): void
     {
@@ -115,6 +128,7 @@ class ConfigSuggesterTest extends TestCase
         $this->assertEquals(['app', 'app.debug'], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_generates_recommendation_with_var_name(): void
     {
@@ -126,6 +140,7 @@ class ConfigSuggesterTest extends TestCase
         $this->assertStringContainsString("config('app.debug')", $recommendation);
     }
 
+    /** @test */
     #[Test]
     public function it_generates_generic_recommendation_without_var_name(): void
     {
@@ -135,7 +150,11 @@ class ConfigSuggesterTest extends TestCase
         $this->assertStringContainsString('Move this env() call to a configuration file', $recommendation);
     }
 
-    /** @dataProvider envVarProvider */
+    /**
+     * @test
+     *
+     * @dataProvider envVarProvider
+     */
     #[Test]
     #[DataProvider('envVarProvider')]
     public function it_suggests_correct_config_for_various_env_vars(string $envVar, string $expectedFile, string $expectedKey): void

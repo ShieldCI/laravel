@@ -12,6 +12,7 @@ use ShieldCI\Tests\TestCase;
 
 class ShieldCIClientTest extends TestCase
 {
+    /** @test */
     #[Test]
     public function it_implements_client_interface(): void
     {
@@ -20,6 +21,7 @@ class ShieldCIClientTest extends TestCase
         $this->assertInstanceOf(ClientInterface::class, $client);
     }
 
+    /** @test */
     #[Test]
     public function it_reads_config_values_on_construction(): void
     {
@@ -45,6 +47,7 @@ class ShieldCIClientTest extends TestCase
         $this->assertEquals(['success' => true], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_trims_trailing_slash_from_base_url(): void
     {
@@ -61,6 +64,7 @@ class ShieldCIClientTest extends TestCase
         });
     }
 
+    /** @test */
     #[Test]
     public function it_defaults_base_url_when_config_is_non_string(): void
     {
@@ -77,6 +81,7 @@ class ShieldCIClientTest extends TestCase
         });
     }
 
+    /** @test */
     #[Test]
     public function it_defaults_token_when_config_is_non_string(): void
     {
@@ -93,6 +98,7 @@ class ShieldCIClientTest extends TestCase
         Http::assertSentCount(1);
     }
 
+    /** @test */
     #[Test]
     public function send_report_posts_payload_to_reports_endpoint(): void
     {
@@ -118,6 +124,7 @@ class ShieldCIClientTest extends TestCase
         });
     }
 
+    /** @test */
     #[Test]
     public function send_report_returns_empty_array_on_null_json(): void
     {
@@ -131,6 +138,7 @@ class ShieldCIClientTest extends TestCase
         $this->assertEquals([], $result);
     }
 
+    /** @test */
     #[Test]
     public function verify_token_calls_token_verify_endpoint(): void
     {
@@ -152,6 +160,7 @@ class ShieldCIClientTest extends TestCase
         });
     }
 
+    /** @test */
     #[Test]
     public function get_project_calls_project_endpoint(): void
     {
@@ -172,6 +181,7 @@ class ShieldCIClientTest extends TestCase
         });
     }
 
+    /** @test */
     #[Test]
     public function get_project_returns_empty_array_on_null_json(): void
     {
@@ -185,6 +195,7 @@ class ShieldCIClientTest extends TestCase
         $this->assertEquals([], $result);
     }
 
+    /** @test */
     #[Test]
     public function send_report_includes_bearer_token(): void
     {
@@ -198,6 +209,7 @@ class ShieldCIClientTest extends TestCase
         });
     }
 
+    /** @test */
     #[Test]
     public function send_failure_notification_posts_to_failure_endpoint(): void
     {
@@ -226,6 +238,7 @@ class ShieldCIClientTest extends TestCase
         });
     }
 
+    /** @test */
     #[Test]
     public function send_failure_notification_includes_bearer_token(): void
     {
@@ -240,6 +253,7 @@ class ShieldCIClientTest extends TestCase
         });
     }
 
+    /** @test */
     #[Test]
     public function send_failure_notification_returns_empty_array_on_null_json(): void
     {

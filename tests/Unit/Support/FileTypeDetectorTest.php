@@ -11,6 +11,7 @@ use ShieldCI\Tests\TestCase;
 
 class FileTypeDetectorTest extends TestCase
 {
+    /** @test */
     #[Test]
     public function it_detects_controller_files(): void
     {
@@ -19,6 +20,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertEquals('controller', $type);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_model_files(): void
     {
@@ -27,6 +29,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertEquals('model', $type);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_service_files(): void
     {
@@ -35,6 +38,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertEquals('service', $type);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_middleware_files(): void
     {
@@ -43,6 +47,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertEquals('middleware', $type);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_provider_files(): void
     {
@@ -51,6 +56,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertEquals('provider', $type);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_console_files(): void
     {
@@ -59,6 +65,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertEquals('console', $type);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_job_files(): void
     {
@@ -67,6 +74,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertEquals('job', $type);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_event_files(): void
     {
@@ -75,6 +83,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertEquals('event', $type);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_listener_files(): void
     {
@@ -83,6 +92,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertEquals('listener', $type);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_policy_files(): void
     {
@@ -91,6 +101,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertEquals('policy', $type);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_route_files(): void
     {
@@ -99,6 +110,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertEquals('route', $type);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_view_files(): void
     {
@@ -107,6 +119,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertEquals('view', $type);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_migration_files(): void
     {
@@ -115,6 +128,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertEquals('migration', $type);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_seeder_files(): void
     {
@@ -123,6 +137,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertEquals('seeder', $type);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_factory_files(): void
     {
@@ -131,6 +146,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertEquals('factory', $type);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_application_for_unknown_paths(): void
     {
@@ -139,6 +155,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertEquals('application', $type);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_application_for_root_app_files(): void
     {
@@ -147,6 +164,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertEquals('application', $type);
     }
 
+    /** @test */
     #[Test]
     public function it_checks_if_file_is_specific_type(): void
     {
@@ -154,6 +172,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertFalse(FileTypeDetector::is('/app/Http/Controllers/HomeController.php', 'model'));
     }
 
+    /** @test */
     #[Test]
     public function it_returns_supported_types(): void
     {
@@ -177,7 +196,11 @@ class FileTypeDetectorTest extends TestCase
         $this->assertContains('factory', $types);
     }
 
-    /** @dataProvider filePathProvider */
+    /**
+     * @test
+     *
+     * @dataProvider filePathProvider
+     */
     #[Test]
     #[DataProvider('filePathProvider')]
     public function it_correctly_detects_type_for_various_paths(string $path, string $expectedType): void

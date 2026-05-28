@@ -20,13 +20,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Laravel 9 (PHP 8.1–8.2)
+          # Laravel 9 (PHP 8.1–8.2) — uses phpunit9.xml; no coverage (PHPUnit 9 incompatible with <source>)
           - php: '8.1'
             laravel: '9.*'
             testbench: '^7.0'
+            phpunit-config: phpunit9.xml
           - php: '8.2'
             laravel: '9.*'
             testbench: '^7.0'
+            phpunit-config: phpunit9.xml
           # Laravel 10 (PHP 8.1–8.3)
           - php: '8.1'
             laravel: '10.*'
@@ -82,7 +84,7 @@ jobs:
         with:
           php-version: ${{ matrix.php }}
           extensions: mbstring, xml, ctype, json, dom, curl, libxml, zip, pcntl
-          coverage: xdebug
+          coverage: ${{ matrix.phpunit-config && 'none' || 'xdebug' }}
 
       - name: Get Composer cache directory
         id: composer-cache
@@ -100,10 +102,11 @@ jobs:
           composer require "laravel/framework:${{ matrix.laravel }}" "orchestra/testbench:${{ matrix.testbench }}" --no-interaction --no-update
           composer update --prefer-dist --no-interaction --no-progress
 
-      - name: Run tests with coverage
-        run: vendor/bin/phpunit --coverage-clover=coverage.xml
+      - name: Run tests
+        run: vendor/bin/phpunit ${{ matrix.phpunit-config && format('--configuration {0} --no-coverage', matrix.phpunit-config) || '--coverage-clover=coverage.xml' }}
 
       - name: Upload coverage to Codecov
+        if: ${{ !matrix.phpunit-config }}
         uses: codecov/codecov-action@v3
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.8.0
+
+### Added
+- Platform integration config keys in `config/shieldci.php`: `token` (`SHIELDCI_TOKEN`), `project_id` (`SHIELDCI_PROJECT_ID`), `api_url` (`SHIELDCI_API_URL`), and `report.send_to_api` (`SHIELDCI_SEND_TO_API`) — send results to the ShieldCI dashboard via `shield:analyze --report`; the package works fully offline without credentials (#202)
+- `pro_package_version` included in API payloads and JSON output when `shieldci/laravel-pro` is installed (#202)
+
 ## v1.7.26
 
 ### Fixed

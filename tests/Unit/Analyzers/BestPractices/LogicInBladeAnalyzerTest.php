@@ -409,6 +409,27 @@ BLADE;
         $this->assertHasIssueContaining('Unclosed', $result);
     }
 
+    public function test_single_statement_php_directive_does_not_trigger_unclosed_block(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php($total = $days['total'])
+    @php($count = $items['count'])
+    <p>{{ $total }}</p>
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/single-php.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_detects_inline_php(): void
     {
         $blade = <<<'BLADE'

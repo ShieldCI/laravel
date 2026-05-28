@@ -190,6 +190,7 @@ class AnalyzeCommand extends Command
             metadata: $report->metadata,
             suppressedIssues: $this->suppressedIssues,
             configuration: $report->configuration,
+            proPackageVersion: $report->proPackageVersion,
         );
 
         // Save to file if requested (CLI option or config default)
@@ -1422,6 +1423,7 @@ class AnalyzeCommand extends Command
             triggeredBy: $report->triggeredBy,
             metadata: $report->metadata,
             configuration: $report->configuration,
+            proPackageVersion: $report->proPackageVersion,
         );
     }
 
@@ -1509,6 +1511,7 @@ class AnalyzeCommand extends Command
             triggeredBy: $report->triggeredBy,
             metadata: $report->metadata,
             configuration: $report->configuration,
+            proPackageVersion: $report->proPackageVersion,
         );
     }
 
@@ -1644,6 +1647,7 @@ class AnalyzeCommand extends Command
             triggeredBy: $report->triggeredBy,
             metadata: $report->metadata,
             configuration: $report->configuration,
+            proPackageVersion: $report->proPackageVersion,
         );
     }
 

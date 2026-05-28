@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Support;
 
+use Composer\InstalledVersions;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -1289,6 +1290,113 @@ class ReporterTest extends TestCase
         $this->assertEquals('15', $payload['metadata']['pr_number']);
         $this->assertEquals('acme/app', $payload['metadata']['repository']);
         $this->assertEquals('main', $payload['metadata']['base_branch']);
+    }
+
+    #[Test]
+    public function get_package_version_returns_actual_version_when_found_in_installed_versions(): void
+    {
+        [$installedProp, $byVendorProp, $isLocalDirProp] = $this->reflectInstalledVersionsProps();
+        $savedInstalled = $installedProp->getValue(null);
+        $savedIsLocalDir = $isLocalDirProp->getValue(null);
+
+        $this->injectInstalledVersions($installedProp, $byVendorProp, $isLocalDirProp, [
+            'versions' => [
+                'shieldci/laravel' => [
+                    'pretty_version' => '1.5.0',
+                    'version' => '1.5.0.0',
+                    'reference' => null,
+                    'type' => 'library',
+                    'install_path' => '/vendor/shieldci/laravel/',
+                    'aliases' => [],
+                    'dev_requirement' => false,
+                ],
+            ],
+        ]);
+
+        try {
+            $reflection = new \ReflectionMethod($this->reporter, 'getPackageVersion');
+            $reflection->setAccessible(true);
+            $this->assertEquals('1.5.0', $reflection->invoke($this->reporter));
+        } finally {
+            $installedProp->setValue(null, $savedInstalled);
+            $isLocalDirProp->setValue(null, $savedIsLocalDir);
+            $byVendorProp->setValue(null, []);
+        }
+    }
+
+    #[Test]
+    public function get_pro_package_version_returns_version_when_pro_is_installed(): void
+    {
+        [$installedProp, $byVendorProp, $isLocalDirProp] = $this->reflectInstalledVersionsProps();
+        $savedInstalled = $installedProp->getValue(null);
+        $savedIsLocalDir = $isLocalDirProp->getValue(null);
+
+        $this->injectInstalledVersions($installedProp, $byVendorProp, $isLocalDirProp, [
+            'versions' => [
+                'shieldci/laravel-pro' => [
+                    'pretty_version' => '2.0.0',
+                    'version' => '2.0.0.0',
+                    'reference' => null,
+                    'type' => 'library',
+                    'install_path' => '/vendor/shieldci/laravel-pro/',
+                    'aliases' => [],
+                    'dev_requirement' => false,
+                ],
+            ],
+        ]);
+
+        try {
+            $reflection = new \ReflectionMethod($this->reporter, 'getProPackageVersion');
+            $reflection->setAccessible(true);
+            $this->assertEquals('2.0.0', $reflection->invoke($this->reporter));
+        } finally {
+            $installedProp->setValue(null, $savedInstalled);
+            $isLocalDirProp->setValue(null, $savedIsLocalDir);
+            $byVendorProp->setValue(null, []);
+        }
+    }
+
+    /**
+     * @return array{\ReflectionProperty, \ReflectionProperty, \ReflectionProperty}
+     */
+    private function reflectInstalledVersionsProps(): array
+    {
+        $make = static function (string $name): \ReflectionProperty {
+            $prop = new \ReflectionProperty(InstalledVersions::class, $name);
+            $prop->setAccessible(true);
+
+            return $prop;
+        };
+
+        return [$make('installed'), $make('installedByVendor'), $make('installedIsLocalDir')];
+    }
+
+    /**
+     * @param  array{versions: array<string, mixed>}  $testVersions
+     */
+    private function injectInstalledVersions(
+        \ReflectionProperty $installedProp,
+        \ReflectionProperty $byVendorProp,
+        \ReflectionProperty $isLocalDirProp,
+        array $testVersions
+    ): void {
+        // Set test data as the primary installed dataset
+        $installedProp->setValue(null, array_merge([
+            'root' => ['name' => 'test/project', 'pretty_version' => '1.0.0', 'version' => '1.0.0.0', 'reference' => null, 'type' => 'project', 'install_path' => '/', 'aliases' => [], 'dev' => true],
+        ], $testVersions));
+
+        // Mark $installed as NOT from the local vendor dir so getInstalled() appends it
+        // at the end of the dataset list (after the vendor cache entries)
+        $isLocalDirProp->setValue(null, false);
+
+        // Pre-fill $installedByVendor with an empty entry for the local vendor dir,
+        // preventing the real installed.php from being re-read and shadowing our test data
+        $installedFile = (new \ReflectionClass(InstalledVersions::class))->getFileName();
+        $vendorDir = is_string($installedFile) ? strtr(dirname(dirname($installedFile)), '\\', '/') : '';
+        $byVendorProp->setValue(null, [$vendorDir => [
+            'root' => ['name' => 'empty', 'pretty_version' => '1.0.0', 'version' => '1.0.0.0', 'reference' => null, 'type' => 'project', 'install_path' => '/', 'aliases' => [], 'dev' => false],
+            'versions' => [],
+        ]]);
     }
 
     #[Test]

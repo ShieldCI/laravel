@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.8.0
+
+### Added
+- Platform integration config keys added to `config/shieldci.php`: `token` (`SHIELDCI_TOKEN`), `project_id` (`SHIELDCI_PROJECT_ID`), `api_url` (`SHIELDCI_API_URL`, default `https://shieldci.com`), and `report.send_to_api` (`SHIELDCI_SEND_TO_API`, default `false`) — connect to the ShieldCI dashboard for centralised results, historical trends, and team visibility; the package continues to work fully offline without credentials configured (#202)
+- `AnalysisReport` now carries `proPackageVersion` — included as `pro_package_version` in API payloads and JSON output when `shieldci/laravel-pro` is installed, allowing the platform to correlate results with the correct pro analyzer version (#202)
+- README: platform credentials setup with link to ShieldCI dashboard, `--report` flag usage examples, scheduling examples for Laravel 9/10/11+, and ShieldCI Pro analyzer counts by category (#202)
+
 ## v1.7.26
 
 ### Fixed

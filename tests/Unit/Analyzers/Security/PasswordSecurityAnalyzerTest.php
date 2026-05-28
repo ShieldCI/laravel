@@ -5413,4 +5413,278 @@ PHP;
 
         $this->assertHasIssueContaining('No Password::defaults()', $result);
     }
+
+    // ==================== Filament dehydrateStateUsing False-Positive Tests ====================
+
+    public function test_does_not_flag_filament_edit_record_when_dehydrate_state_hashes_password(): void
+    {
+        // EditRecord page that defines its own form() with dehydrateStateUsing(Hash::make).
+        // By the time handleRecordUpdate() receives $data, the password is already hashed.
+        $editPage = <<<'PHP'
+<?php
+
+namespace App\Filament\Resources\System\Admins\Pages;
+
+use App\Filament\Resources\System\Admins\AdminResource;
+use App\Models\User;
+use Filament\Forms;
+use Filament\Resources\Pages\EditRecord;
+use Filament\Schemas\Schema;
+use Illuminate\Support\Facades\Hash;
+
+class EditAdmin extends EditRecord
+{
+    protected static string $resource = AdminResource::class;
+
+    public function form(Schema $schema): Schema
+    {
+        return $schema->schema([
+            Forms\Components\TextInput::make('user.password')
+                ->label('Password')
+                ->password()
+                ->dehydrateStateUsing(fn (string $state): string => Hash::make($state))
+                ->required(fn (string $operation): bool => $operation === 'create'),
+        ]);
+    }
+
+    protected function handleRecordUpdate(\Illuminate\Database\Eloquent\Model $record, array $data): \Illuminate\Database\Eloquent\Model
+    {
+        $userData = [
+            'name' => $data['user']['name'],
+            'email' => $data['user']['email'],
+        ];
+
+        if (! empty($data['user']['password'])) {
+            $userData['password'] = $data['user']['password'];
+        }
+
+        $record->user()->update($userData);
+
+        return $record;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Filament/Resources/System/Admins/Pages/EditAdmin.php' => $editPage,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasPlainTextIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'plain_text_password') {
+                $hasPlainTextIssue = true;
+                break;
+            }
+        }
+
+        $this->assertFalse($hasPlainTextIssue, 'Should not flag $data[...][password] in EditRecord when dehydrateStateUsing hashes it');
+    }
+
+    public function test_does_not_flag_filament_create_record_when_sibling_page_dehydrates_password(): void
+    {
+        // CreateRecord page with no form() definition — the form is defined in the
+        // sibling EditRecord page which applies dehydrateStateUsing(Hash::make).
+        // The analyzer should detect the sibling-file dehydration and suppress the false positive.
+        $createPage = <<<'PHP'
+<?php
+
+namespace App\Filament\Resources\System\Admins\Pages;
+
+use App\Filament\Resources\System\Admins\AdminResource;
+use App\Models\Admin;
+use App\Models\User;
+use Filament\Resources\Pages\CreateRecord;
+use Illuminate\Database\Eloquent\Model;
+
+class CreateAdmin extends CreateRecord
+{
+    protected static string $resource = AdminResource::class;
+
+    protected function handleRecordCreation(array $data): Model
+    {
+        $admin = Admin::create([
+            'is_active' => $data['is_active'] ?? true,
+        ]);
+
+        $user = new User;
+        $user->name = $data['user']['name'];
+        $user->email = $data['user']['email'];
+        $user->password = $data['user']['password'];
+
+        $admin->user()->save($user);
+
+        return $admin;
+    }
+}
+PHP;
+
+        $editPage = <<<'PHP'
+<?php
+
+namespace App\Filament\Resources\System\Admins\Pages;
+
+use Filament\Forms;
+use Filament\Resources\Pages\EditRecord;
+use Filament\Schemas\Schema;
+use Illuminate\Support\Facades\Hash;
+
+class EditAdmin extends EditRecord
+{
+    public function form(Schema $schema): Schema
+    {
+        return $schema->schema([
+            Forms\Components\TextInput::make('user.password')
+                ->dehydrateStateUsing(fn (string $state): string => Hash::make($state)),
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Filament/Resources/System/Admins/Pages/CreateAdmin.php' => $createPage,
+            'app/Filament/Resources/System/Admins/Pages/EditAdmin.php' => $editPage,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasPlainTextIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'plain_text_password') {
+                $hasPlainTextIssue = true;
+                break;
+            }
+        }
+
+        $this->assertFalse($hasPlainTextIssue, 'Should not flag CreateRecord handler when sibling EditRecord page dehydrates password via Hash::make');
+    }
+
+    public function test_does_not_flag_tall_stack_livewire_component_with_filament_form_dehydration(): void
+    {
+        // Standalone Livewire component using Filament's InteractsWithForms — no resource
+        // page base class, but dehydrateStateUsing(Hash::make) is in the same file.
+        // $data returned by $this->form->getState() already contains the hashed password.
+        $component = <<<'PHP'
+<?php
+
+namespace App\Livewire\Auth;
+
+use App\Models\User;
+use Filament\Forms;
+use Filament\Forms\Concerns\InteractsWithForms;
+use Filament\Forms\Contracts\HasForms;
+use Filament\Forms\Form;
+use Illuminate\Support\Facades\Hash;
+use Livewire\Component;
+
+class RegisterForm extends Component implements HasForms
+{
+    use InteractsWithForms;
+
+    public ?array $data = [];
+
+    public function mount(): void
+    {
+        $this->form->fill();
+    }
+
+    public function form(Form $form): Form
+    {
+        return $form
+            ->schema([
+                Forms\Components\TextInput::make('password')
+                    ->password()
+                    ->dehydrateStateUsing(fn (string $state): string => Hash::make($state))
+                    ->required(),
+            ])
+            ->statePath('data');
+    }
+
+    public function register(): void
+    {
+        $data = $this->form->getState();
+
+        $user = new User;
+        $user->password = $data['password'];
+        $user->save();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Livewire/Auth/RegisterForm.php' => $component,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasPlainTextIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'plain_text_password') {
+                $hasPlainTextIssue = true;
+                break;
+            }
+        }
+
+        $this->assertFalse($hasPlainTextIssue, 'Should not flag $data[password] in a TALL stack Livewire component when dehydrateStateUsing hashes it in the same file');
+    }
+
+    public function test_still_flags_filament_create_record_without_password_dehydration(): void
+    {
+        // A Filament CreateRecord page that genuinely stores the password as plain text —
+        // no dehydrateStateUsing with hashing anywhere in the Pages directory.
+        $createPage = <<<'PHP'
+<?php
+
+namespace App\Filament\Resources\Users\Pages;
+
+use App\Models\User;
+use Filament\Resources\Pages\CreateRecord;
+use Illuminate\Database\Eloquent\Model;
+
+class CreateUser extends CreateRecord
+{
+    protected function handleRecordCreation(array $data): Model
+    {
+        $user = new User;
+        $user->password = $data['password'];
+        $user->save();
+
+        return $user;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Filament/Resources/Users/Pages/CreateUser.php' => $createPage,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $hasPlainTextIssue = false;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['issue_type']) && $issue->metadata['issue_type'] === 'plain_text_password') {
+                $hasPlainTextIssue = true;
+                break;
+            }
+        }
+
+        $this->assertTrue($hasPlainTextIssue, 'Should still flag CreateRecord handler when no dehydrateStateUsing hashing is present');
+    }
 }

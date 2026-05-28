@@ -135,6 +135,7 @@ class ConfigSuggesterTest extends TestCase
         $this->assertStringContainsString('Move this env() call to a configuration file', $recommendation);
     }
 
+    /** @dataProvider envVarProvider */
     #[Test]
     #[DataProvider('envVarProvider')]
     public function it_suggests_correct_config_for_various_env_vars(string $envVar, string $expectedFile, string $expectedKey): void

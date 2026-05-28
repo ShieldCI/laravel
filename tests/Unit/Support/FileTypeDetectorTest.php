@@ -177,6 +177,7 @@ class FileTypeDetectorTest extends TestCase
         $this->assertContains('factory', $types);
     }
 
+    /** @dataProvider filePathProvider */
     #[Test]
     #[DataProvider('filePathProvider')]
     public function it_correctly_detects_type_for_various_paths(string $path, string $expectedType): void

@@ -135,6 +135,7 @@ class VersionConstraintMatcherTest extends TestCase
         $this->assertTrue($this->matcher->matches('1.0.0', '>=v1.0.0'));
     }
 
+    /** @dataProvider constraintMatchProvider */
     #[Test]
     #[DataProvider('constraintMatchProvider')]
     public function it_matches_various_constraint_formats(string $version, string $constraint, bool $expected): void

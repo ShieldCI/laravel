@@ -40,6 +40,7 @@ class BaselineCommandTest extends TestCase
         parent::tearDown();
     }
 
+    /** @test */
     #[Test]
     public function it_generates_baseline_file(): void
     {
@@ -54,6 +55,7 @@ class BaselineCommandTest extends TestCase
         $this->assertFileExists($this->baselinePath);
     }
 
+    /** @test */
     #[Test]
     public function it_generates_baseline_with_issues(): void
     {
@@ -84,6 +86,7 @@ class BaselineCommandTest extends TestCase
         $this->assertArrayHasKey('version', $content);
     }
 
+    /** @test */
     #[Test]
     public function it_supports_ci_mode_flag(): void
     {
@@ -96,6 +99,7 @@ class BaselineCommandTest extends TestCase
             ->expectsOutputToContain('CI mode');
     }
 
+    /** @test */
     #[Test]
     public function it_can_merge_with_existing_baseline(): void
     {
@@ -139,6 +143,7 @@ class BaselineCommandTest extends TestCase
         $this->assertArrayHasKey('errors', $content);
     }
 
+    /** @test */
     #[Test]
     public function it_adds_failed_analyzers_without_issues_to_dont_report(): void
     {
@@ -173,6 +178,7 @@ class BaselineCommandTest extends TestCase
         $this->assertContains('failed-no-issues', $content['dont_report']);
     }
 
+    /** @test */
     #[Test]
     public function it_skips_passed_analyzers(): void
     {
@@ -201,6 +207,7 @@ class BaselineCommandTest extends TestCase
         $this->assertArrayNotHasKey('passed-analyzer', $content['errors']);
     }
 
+    /** @test */
     #[Test]
     public function it_skips_skipped_analyzers(): void
     {
@@ -229,6 +236,7 @@ class BaselineCommandTest extends TestCase
         $this->assertArrayNotHasKey('skipped-analyzer', $content['errors']);
     }
 
+    /** @test */
     #[Test]
     public function it_preserves_existing_dont_report_when_merging(): void
     {
@@ -252,6 +260,7 @@ class BaselineCommandTest extends TestCase
         $this->assertContains('existing-dont-report-analyzer', $content['dont_report']);
     }
 
+    /** @test */
     #[Test]
     public function it_generates_unique_hashes_for_issues(): void
     {
@@ -296,6 +305,7 @@ class BaselineCommandTest extends TestCase
         $this->assertCount(count($hashes), array_unique(array_values(array_filter($hashes, 'is_string'))), 'Hashes should be unique');
     }
 
+    /** @test */
     #[Test]
     public function it_does_not_duplicate_issues_when_merging(): void
     {
@@ -355,6 +365,7 @@ class BaselineCommandTest extends TestCase
         $this->assertCount(1, $content['errors']['test-analyzer']);
     }
 
+    /** @test */
     #[Test]
     public function it_merges_with_baseline_missing_errors_key(): void
     {
@@ -378,6 +389,7 @@ class BaselineCommandTest extends TestCase
         $this->assertContains('some-analyzer', $content['dont_report']);
     }
 
+    /** @test */
     #[Test]
     public function it_merges_with_baseline_missing_dont_report_key(): void
     {
@@ -406,6 +418,7 @@ class BaselineCommandTest extends TestCase
         $this->assertArrayHasKey('old-analyzer', $content['errors']);
     }
 
+    /** @test */
     #[Test]
     public function it_uses_analyzer_id_when_metadata_has_no_name(): void
     {

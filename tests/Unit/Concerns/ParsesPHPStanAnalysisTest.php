@@ -21,6 +21,7 @@ class ParsesPHPStanAnalysisTest extends TestCase
         parent::tearDown();
     }
 
+    /** @test */
     #[Test]
     public function it_parses_phpstan_analysis_with_search(): void
     {
@@ -41,6 +42,7 @@ class ParsesPHPStanAnalysisTest extends TestCase
         $this->assertInstanceOf(Issue::class, $issues[0]);
     }
 
+    /** @test */
     #[Test]
     public function it_skips_malformed_traces_in_parse(): void
     {
@@ -61,6 +63,7 @@ class ParsesPHPStanAnalysisTest extends TestCase
         $this->assertCount(1, $issues);
     }
 
+    /** @test */
     #[Test]
     public function it_matches_phpstan_analysis_with_pattern(): void
     {
@@ -79,6 +82,7 @@ class ParsesPHPStanAnalysisTest extends TestCase
         $this->assertCount(1, $issues);
     }
 
+    /** @test */
     #[Test]
     public function it_preg_matches_phpstan_analysis(): void
     {
@@ -97,6 +101,7 @@ class ParsesPHPStanAnalysisTest extends TestCase
         $this->assertCount(1, $issues);
     }
 
+    /** @test */
     #[Test]
     public function it_skips_malformed_traces_in_preg_match(): void
     {
@@ -116,6 +121,7 @@ class ParsesPHPStanAnalysisTest extends TestCase
         $this->assertCount(1, $issues);
     }
 
+    /** @test */
     #[Test]
     public function it_generates_recommendation_for_collection_method(): void
     {
@@ -128,6 +134,7 @@ class ParsesPHPStanAnalysisTest extends TestCase
         $this->assertStringContainsString('database level', $recommendation);
     }
 
+    /** @test */
     #[Test]
     public function it_generates_recommendation_for_query_aggregation(): void
     {
@@ -140,6 +147,7 @@ class ParsesPHPStanAnalysisTest extends TestCase
         $this->assertStringContainsString('database query level', $recommendation);
     }
 
+    /** @test */
     #[Test]
     public function it_generates_default_recommendation_for_unknown_messages(): void
     {

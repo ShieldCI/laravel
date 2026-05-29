@@ -11,6 +11,7 @@ use ShieldCI\Tests\TestCase;
 
 class ComposerValidatorTest extends TestCase
 {
+    /** @test */
     #[Test]
     public function it_validates_valid_composer_json(): void
     {
@@ -23,6 +24,7 @@ class ComposerValidatorTest extends TestCase
         $this->assertTrue($result->successful);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_failure_for_invalid_working_directory(): void
     {
@@ -43,6 +45,7 @@ class ComposerValidatorTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function it_returns_failure_for_malformed_composer_json(): void
     {
@@ -64,6 +67,7 @@ class ComposerValidatorTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function it_returns_output_with_result(): void
     {
@@ -74,6 +78,7 @@ class ComposerValidatorTest extends TestCase
         $this->assertIsString($result->output);
     }
 
+    /** @test */
     #[Test]
     public function it_uses_composer_phar_when_present(): void
     {
@@ -104,6 +109,7 @@ class ComposerValidatorTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function it_validates_composer_json_with_missing_fields(): void
     {

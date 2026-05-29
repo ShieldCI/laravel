@@ -36,7 +36,7 @@
         "shieldci/analyzers-core": "^1.0"
     },
     "require-dev": {
-        "phpunit/phpunit": "^10.0|^11.0|^12.0|^13.0",
+        "phpunit/phpunit": "^9.0|^10.0|^11.0|^12.0|^13.0",
         "orchestra/testbench": "^7.0|^8.0|^9.0|^10.0|^11.0",
         "mockery/mockery": "^1.6",
         "laravel/pint": "^1.13"
@@ -79,7 +79,13 @@
     "config": {
         "sort-packages": true,
         "optimize-autoloader": true,
-        "preferred-install": "dist"
+        "preferred-install": "dist",
+        "audit": {
+            "ignore": {
+                "PKSA-8qx3-n5y5-vvnd": "Dev-only: Laravel framework advisory pulled via orchestra/testbench for testing older Laravel versions",
+                "PKSA-w7xr-vk7n-rstm": "Dev-only: Laravel framework advisory pulled via orchestra/testbench for testing older Laravel versions"
+            }
+        }
     },
     "minimum-stability": "stable",
     "prefer-stable": true

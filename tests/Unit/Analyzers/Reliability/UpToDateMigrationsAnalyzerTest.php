@@ -19,6 +19,7 @@ class UpToDateMigrationsAnalyzerTest extends AnalyzerTestCase
         return new UpToDateMigrationsAnalyzer;
     }
 
+    /** @test */
     #[Test]
     public function test_checks_migration_status(): void
     {
@@ -37,6 +38,7 @@ class UpToDateMigrationsAnalyzerTest extends AnalyzerTestCase
         $this->assertInstanceOf(ResultInterface::class, $result);
     }
 
+    /** @test */
     #[Test]
     public function test_has_correct_metadata(): void
     {
@@ -53,6 +55,7 @@ class UpToDateMigrationsAnalyzerTest extends AnalyzerTestCase
         $this->assertContains('deployment', $metadata->tags);
     }
 
+    /** @test */
     #[Test]
     public function test_run_in_ci_flag_is_false(): void
     {
@@ -60,6 +63,7 @@ class UpToDateMigrationsAnalyzerTest extends AnalyzerTestCase
         $this->assertFalse(UpToDateMigrationsAnalyzer::$runInCI);
     }
 
+    /** @test */
     #[Test]
     public function test_parses_pending_migrations(): void
     {
@@ -87,6 +91,7 @@ OUTPUT;
         $this->assertContains('2024_01_16_000000_create_comments_table', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_parses_pending_migrations_with_no_matches(): void
     {
@@ -111,6 +116,7 @@ OUTPUT;
         $this->assertEmpty($result);
     }
 
+    /** @test */
     #[Test]
     public function test_gets_pending_migrations_recommendation(): void
     {
@@ -133,6 +139,7 @@ OUTPUT;
         $this->assertStringContainsString('2024_01_16_000000_create_comments_table', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_limits_displayed_migrations_in_recommendation(): void
     {
@@ -162,6 +169,7 @@ OUTPUT;
         $this->assertStringNotContainsString('2024_01_06_000000_migration_6', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_is_database_error_detects_pdo_exception(): void
     {
@@ -178,6 +186,7 @@ OUTPUT;
         $this->assertTrue($result);
     }
 
+    /** @test */
     #[Test]
     public function test_is_database_error_detects_connection_messages(): void
     {
@@ -200,6 +209,7 @@ OUTPUT;
         }
     }
 
+    /** @test */
     #[Test]
     public function test_is_database_error_returns_false_for_non_database_errors(): void
     {
@@ -216,6 +226,7 @@ OUTPUT;
         $this->assertFalse($result);
     }
 
+    /** @test */
     #[Test]
     public function test_gets_database_error_recommendation(): void
     {
@@ -236,6 +247,7 @@ OUTPUT;
         $this->assertStringContainsString('Connection refused', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_gets_migrations_path_uses_database_path_helper(): void
     {
@@ -251,6 +263,7 @@ OUTPUT;
         $this->assertStringContainsString('migrations', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_missing_migrations_table(): void
     {

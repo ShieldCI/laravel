@@ -1077,6 +1077,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         $this->assertTrue($found, 'Should find unstable package issue');
     }
 
+    /** @dataProvider unstableVersionFormatsProvider */
     #[DataProvider('unstableVersionFormatsProvider')]
     public function test_detects_all_composer_unstable_version_formats(string $version, string $description): void
     {
@@ -1140,6 +1141,7 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         ];
     }
 
+    /** @dataProvider stableVersionFormatsProvider */
     #[DataProvider('stableVersionFormatsProvider')]
     public function test_does_not_flag_stable_version_formats(string $version, string $description): void
     {

@@ -168,19 +168,17 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
         // Build issues for missing and/or commented variables
         $issues = [];
 
-        if (! empty($missingVars)) {
-            $issues[] = $this->createIssue(
-                message: 'Missing environment variables',
-                location: new Location($this->getRelativePath($envPath)),
-                severity: Severity::High,
-                recommendation: $this->buildMissingVariablesRecommendation($missingVars),
-                metadata: [
-                    'missing_count' => count($missingVars),
-                    'missing_variables' => array_keys($missingVars),
-                    'code' => 'missing-variables',
-                ]
-            );
-        }
+        $issues[] = $this->createIssue(
+            message: 'Missing environment variables',
+            location: new Location($this->getRelativePath($envPath)),
+            severity: Severity::High,
+            recommendation: $this->buildMissingVariablesRecommendation($missingVars),
+            metadata: [
+                'missing_count' => count($missingVars),
+                'missing_variables' => array_keys($missingVars),
+                'code' => 'missing-variables',
+            ]
+        );
 
         if (! empty($commentedOnlyVars)) {
             $issues[] = $this->createIssue(

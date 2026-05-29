@@ -17,6 +17,7 @@ class QueueTimeoutAnalyzerTest extends AnalyzerTestCase
         return new QueueTimeoutAnalyzer;
     }
 
+    /** @test */
     #[Test]
     public function test_returns_warning_when_no_config_file(): void
     {
@@ -33,6 +34,7 @@ class QueueTimeoutAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('Unable to read queue configuration', $result->getMessage());
     }
 
+    /** @test */
     #[Test]
     public function test_passes_with_proper_configuration(): void
     {
@@ -65,6 +67,7 @@ PHP;
         $this->assertStringContainsString('Queue timeout configurations are correct', $result->getMessage());
     }
 
+    /** @test */
     #[Test]
     public function test_fails_when_timeout_equals_retry_after(): void
     {
@@ -105,6 +108,7 @@ PHP;
         $this->assertSame(Severity::High, $issue->severity);
     }
 
+    /** @test */
     #[Test]
     public function test_fails_when_timeout_exceeds_retry_after(): void
     {
@@ -143,6 +147,7 @@ PHP;
         $this->assertStringContainsString('retry_after', $issue->recommendation);
     }
 
+    /** @test */
     #[Test]
     public function test_skips_sync_driver(): void
     {
@@ -171,6 +176,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_skips_sqs_driver(): void
     {
@@ -204,6 +210,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_checks_database_driver(): void
     {
@@ -236,6 +243,7 @@ PHP;
         $this->assertFailed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_checks_beanstalkd_driver(): void
     {
@@ -268,6 +276,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_handles_multiple_connections(): void
     {
@@ -315,6 +324,7 @@ PHP;
         $this->assertSame('database', $metadata['driver']);
     }
 
+    /** @test */
     #[Test]
     public function test_includes_proper_metadata(): void
     {
@@ -360,6 +370,7 @@ PHP;
         $this->assertSame(55, $metadata['retry_after']);
     }
 
+    /** @test */
     #[Test]
     public function test_recommendation_message_format(): void
     {
@@ -399,6 +410,7 @@ PHP;
         $this->assertStringContainsString('processed twice', $recommendation);
     }
 
+    /** @test */
     #[Test]
     public function test_uses_default_retry_after_when_not_specified(): void
     {
@@ -431,6 +443,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_has_correct_metadata(): void
     {
@@ -447,6 +460,7 @@ PHP;
         $this->assertContains('jobs', $metadata->tags);
     }
 
+    /** @test */
     #[Test]
     public function test_handles_invalid_connections_gracefully(): void
     {
@@ -481,6 +495,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_handles_malformed_config_file(): void
     {
@@ -502,6 +517,7 @@ PHP;
         $this->assertWarning($result);
     }
 
+    /** @test */
     #[Test]
     public function test_handles_missing_driver_field(): void
     {
@@ -534,6 +550,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_enforces_minimum_buffer_requirement(): void
     {
@@ -584,6 +601,7 @@ PHP;
         $this->assertStringContainsString('buffer: 5 seconds', $issue->recommendation);
     }
 
+    /** @test */
     #[Test]
     public function test_passes_with_sufficient_buffer(): void
     {
@@ -618,6 +636,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_extracts_queue_name_from_connection(): void
     {
@@ -658,6 +677,7 @@ PHP;
         $this->assertSame('fast', $metadata['queue_name']);
     }
 
+    /** @test */
     #[Test]
     public function test_uses_fallback_when_queue_not_matched(): void
     {
@@ -701,6 +721,7 @@ PHP;
         }
     }
 
+    /** @test */
     #[Test]
     public function test_handles_wildcard_queue_in_horizon(): void
     {
@@ -736,6 +757,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_metadata_includes_horizon_detection_status(): void
     {
@@ -778,6 +800,7 @@ PHP;
         // (depends on test environment)
     }
 
+    /** @test */
     #[Test]
     public function test_uses_connection_specific_timeout_from_queue_config(): void
     {
@@ -820,6 +843,7 @@ PHP;
         $this->assertSame(5, $metadata['actual_buffer']); // 125 - 120
     }
 
+    /** @test */
     #[Test]
     public function test_database_driver_includes_detection_warning(): void
     {
@@ -863,6 +887,7 @@ PHP;
         $this->assertSame('default_assumption', $metadata['timeout_source']);
     }
 
+    /** @test */
     #[Test]
     public function test_beanstalkd_driver_includes_detection_warning(): void
     {
@@ -902,6 +927,7 @@ PHP;
         $this->assertSame('default_assumption', $metadata['timeout_source']);
     }
 
+    /** @test */
     #[Test]
     public function test_timeout_source_included_in_metadata(): void
     {

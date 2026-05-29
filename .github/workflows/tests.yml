@@ -20,6 +20,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Laravel 9 (PHP 8.1–8.2) — uses phpunit9.xml; no coverage (PHPUnit 9 incompatible with <source>)
+          - php: '8.1'
+            laravel: '9.*'
+            testbench: '^7.0'
+            phpunit-config: phpunit9.xml
+          - php: '8.2'
+            laravel: '9.*'
+            testbench: '^7.0'
+            phpunit-config: phpunit9.xml
           # Laravel 10 (PHP 8.1–8.3)
           - php: '8.1'
             laravel: '10.*'
@@ -75,17 +84,29 @@ jobs:
         with:
           php-version: ${{ matrix.php }}
           extensions: mbstring, xml, ctype, json, dom, curl, libxml, zip, pcntl
-          coverage: xdebug
+          coverage: ${{ matrix.phpunit-config && 'none' || 'xdebug' }}
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-php${{ matrix.php }}-laravel${{ matrix.laravel }}-${{ hashFiles('**/composer.json') }}
+          restore-keys: ${{ runner.os }}-php${{ matrix.php }}-laravel${{ matrix.laravel }}-
 
       - name: Install Composer dependencies
         run: |
           composer require "laravel/framework:${{ matrix.laravel }}" "orchestra/testbench:${{ matrix.testbench }}" --no-interaction --no-update
           composer update --prefer-dist --no-interaction --no-progress
 
-      - name: Run tests with coverage
-        run: vendor/bin/phpunit --coverage-clover=coverage.xml
+      - name: Run tests
+        run: vendor/bin/phpunit ${{ matrix.phpunit-config && format('--configuration {0} --no-coverage', matrix.phpunit-config) || '--coverage-clover=coverage.xml' }}
 
       - name: Upload coverage to Codecov
+        if: ${{ !matrix.phpunit-config }}
         uses: codecov/codecov-action@v3
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
@@ -93,3 +114,65 @@ jobs:
           flags: unittests
           name: codecov-umbrella
           fail_ci_if_error: true
+
+  phpstan:
+    name: PHPStan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: dom, curl, libxml, mbstring, zip, pcntl
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-phpstan-${{ hashFiles('**/composer.json') }}
+          restore-keys: ${{ runner.os }}-phpstan-
+
+      - name: Install Composer dependencies
+        run: |
+          composer require --dev "phpstan/phpstan:^1.10" "larastan/larastan:^2.0" --no-interaction --no-update
+          composer update --prefer-dist --no-interaction --no-progress
+
+      - name: Run PHPStan
+        run: vendor/bin/phpstan analyse --no-progress
+
+  pint:
+    name: Pint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-pint-${{ hashFiles('**/composer.json') }}
+          restore-keys: ${{ runner.os }}-pint-
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: Check code style
+        run: vendor/bin/pint --test

@@ -26,6 +26,7 @@ class AnalyzerManagerTest extends TestCase
         parent::tearDown();
     }
 
+    /** @test */
     #[Test]
     public function it_can_get_all_analyzers(): void
     {
@@ -39,6 +40,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertCount(2, $analyzers);
     }
 
+    /** @test */
     #[Test]
     public function it_filters_out_disabled_analyzers(): void
     {
@@ -52,6 +54,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertCount(1, $analyzers);
     }
 
+    /** @test */
     #[Test]
     public function it_can_filter_by_category(): void
     {
@@ -67,6 +70,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertCount(1, $performance);
     }
 
+    /** @test */
     #[Test]
     public function it_can_filter_by_multiple_categories(): void
     {
@@ -84,6 +88,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertCount(0, $none);
     }
 
+    /** @test */
     #[Test]
     public function it_can_run_all_analyzers(): void
     {
@@ -98,6 +103,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertInstanceOf(AnalysisResult::class, $results->first());
     }
 
+    /** @test */
     #[Test]
     public function it_can_run_specific_analyzer(): void
     {
@@ -112,6 +118,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals('test-analyzer', $result->getAnalyzerId());
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_non_existent_analyzer(): void
     {
@@ -122,6 +129,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertNull($result);
     }
 
+    /** @test */
     #[Test]
     public function it_can_count_analyzers(): void
     {
@@ -133,6 +141,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals(2, $manager->count());
     }
 
+    /** @test */
     #[Test]
     public function it_can_count_enabled_analyzers(): void
     {
@@ -144,6 +153,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals(1, $manager->enabledCount());
     }
 
+    /** @test */
     #[Test]
     public function it_filters_by_disabled_analyzers_config(): void
     {
@@ -158,6 +168,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals('another-test-analyzer', $analyzers->first()->getId());
     }
 
+    /** @test */
     #[Test]
     public function it_filters_by_ci_mode_whitelist(): void
     {
@@ -175,6 +186,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals('test-analyzer', $analyzers->first()->getId());
     }
 
+    /** @test */
     #[Test]
     public function it_filters_by_ci_mode_run_in_ci_property(): void
     {
@@ -189,6 +201,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals('test-analyzer', $analyzers->first()->getId());
     }
 
+    /** @test */
     #[Test]
     public function it_filters_by_ci_mode_blacklist(): void
     {
@@ -206,6 +219,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals('test-analyzer', $analyzers->first()->getId());
     }
 
+    /** @test */
     #[Test]
     public function it_filters_by_enabled_categories(): void
     {
@@ -220,6 +234,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals('test-analyzer', $analyzers->first()->getId());
     }
 
+    /** @test */
     #[Test]
     public function it_returns_no_analyzers_when_no_categories_enabled(): void
     {
@@ -233,6 +248,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertCount(0, $analyzers);
     }
 
+    /** @test */
     #[Test]
     public function it_gets_skipped_analyzers(): void
     {
@@ -247,6 +263,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals('disabled-test-analyzer', $skipped->first()->getAnalyzerId());
     }
 
+    /** @test */
     #[Test]
     public function it_gets_skip_reason_for_disabled_analyzer(): void
     {
@@ -261,6 +278,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertStringContainsString('Disabled', $skipped->first()->getMessage());
     }
 
+    /** @test */
     #[Test]
     public function it_gets_skip_reason_for_ci_whitelist(): void
     {
@@ -278,6 +296,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertStringContainsString('CI mode whitelist', $skipped->first()->getMessage());
     }
 
+    /** @test */
     #[Test]
     public function it_gets_skip_reason_for_ci_run_in_ci(): void
     {
@@ -292,6 +311,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertStringContainsString('CI', $skipped->first()->getMessage());
     }
 
+    /** @test */
     #[Test]
     public function it_gets_skip_reason_for_ci_blacklist(): void
     {
@@ -309,6 +329,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertStringContainsString('Excluded from CI', $skipped->first()->getMessage());
     }
 
+    /** @test */
     #[Test]
     public function it_gets_skip_reason_for_category_not_enabled(): void
     {
@@ -323,6 +344,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertStringContainsString('Category not enabled', $skipped->first()->getMessage());
     }
 
+    /** @test */
     #[Test]
     public function it_gets_skip_reason_for_should_run_false(): void
     {
@@ -337,6 +359,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertStringContainsString('Disabled for testing', $skipped->first()->getMessage());
     }
 
+    /** @test */
     #[Test]
     public function it_includes_skipped_analyzers_in_run_all(): void
     {
@@ -351,6 +374,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertCount(2, $results);
     }
 
+    /** @test */
     #[Test]
     public function it_gets_analyzer_config(): void
     {
@@ -364,6 +388,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals(5, $config['threshold']);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_defaults_for_missing_analyzer_config(): void
     {
@@ -377,6 +402,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals(10, $config['threshold']);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_defaults_for_missing_category_config(): void
     {
@@ -390,6 +416,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals(100, $config['limit']);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_defaults_when_category_config_is_not_array(): void
     {
@@ -403,6 +430,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals(10, $config['threshold']);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_defaults_when_analyzer_config_is_not_array(): void
     {
@@ -416,6 +444,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals(10, $config['threshold']);
     }
 
+    /** @test */
     #[Test]
     public function it_filters_out_analyzers_that_throw_on_construction(): void
     {
@@ -455,6 +484,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals('test-analyzer', $analyzers->first()->getId());
     }
 
+    /** @test */
     #[Test]
     public function it_sets_base_path_and_paths_on_file_analyzers(): void
     {
@@ -473,6 +503,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertNotEmpty($analyzer->excludePatterns);
     }
 
+    /** @test */
     #[Test]
     public function it_sets_file_analyzer_properties_on_skipped_analyzers(): void
     {
@@ -493,6 +524,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals('file-test-analyzer', $skipped->first()->getAnalyzerId());
     }
 
+    /** @test */
     #[Test]
     public function it_handles_throwing_analyzer_in_skipped_analyzers(): void
     {
@@ -534,6 +566,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertCount(0, $skipped);
     }
 
+    /** @test */
     #[Test]
     public function it_instantiates_each_analyzer_class_exactly_once_across_get_analyzers_and_get_skipped(): void
     {
@@ -572,6 +605,7 @@ class AnalyzerManagerTest extends TestCase
         $this->addToAssertionCount(1);
     }
 
+    /** @test */
     #[Test]
     public function it_reads_config_keys_exactly_once_regardless_of_call_count(): void
     {
@@ -608,6 +642,7 @@ class AnalyzerManagerTest extends TestCase
         $this->addToAssertionCount(1);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_same_collection_instance_on_repeated_calls_to_get_analyzers(): void
     {
@@ -619,6 +654,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertSame($first, $second);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_same_collection_instance_on_repeated_calls_to_get_skipped_analyzers(): void
     {
@@ -630,6 +666,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertSame($first, $second);
     }
 
+    /** @test */
     #[Test]
     public function it_re_instantiates_analyzers_after_invalidate_cache(): void
     {
@@ -673,6 +710,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertEquals(2, $callCount, 'After invalidateCache(), make() should be called again');
     }
 
+    /** @test */
     #[Test]
     public function it_calls_clear_cache_on_parser_when_method_exists(): void
     {
@@ -693,6 +731,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertTrue($parser->clearCacheCalled);
     }
 
+    /** @test */
     #[Test]
     public function it_does_not_throw_when_parser_has_no_clear_cache_method(): void
     {
@@ -713,6 +752,7 @@ class AnalyzerManagerTest extends TestCase
         $this->addToAssertionCount(1);
     }
 
+    /** @test */
     #[Test]
     public function it_calls_clear_ast_parser_cache_on_analyzer_after_run_all(): void
     {
@@ -755,6 +795,7 @@ class AnalyzerManagerTest extends TestCase
         $this->assertTrue($analyzerInstance->clearAstParserCacheCalled);
     }
 
+    /** @test */
     #[Test]
     public function it_calls_clear_ast_parser_cache_on_analyzer_after_run(): void
     {

@@ -19,6 +19,7 @@ class AdvisoryAnalyzerTest extends TestCase
         $this->analyzer = new AdvisoryAnalyzer(new VersionConstraintMatcher);
     }
 
+    /** @test */
     #[Test]
     public function it_finds_vulnerable_dependencies(): void
     {
@@ -45,6 +46,7 @@ class AdvisoryAnalyzerTest extends TestCase
         $this->assertEquals('Security vulnerability in Guzzle', $results['guzzlehttp/guzzle']['advisories'][0]['title']);
     }
 
+    /** @test */
     #[Test]
     public function it_ignores_non_vulnerable_dependencies(): void
     {
@@ -66,6 +68,7 @@ class AdvisoryAnalyzerTest extends TestCase
         $this->assertEmpty($results);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_packages_without_advisories(): void
     {
@@ -83,6 +86,7 @@ class AdvisoryAnalyzerTest extends TestCase
         $this->assertEmpty($results);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_multiple_advisories_per_package(): void
     {
@@ -110,6 +114,7 @@ class AdvisoryAnalyzerTest extends TestCase
         $this->assertCount(2, $results['vulnerable/package']['advisories']);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_affected_versions_key_format(): void
     {
@@ -131,6 +136,7 @@ class AdvisoryAnalyzerTest extends TestCase
         $this->assertArrayHasKey('test/package', $results);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_affected_versions_as_string(): void
     {
@@ -152,6 +158,7 @@ class AdvisoryAnalyzerTest extends TestCase
         $this->assertArrayHasKey('test/package', $results);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_missing_advisory_fields(): void
     {
@@ -176,6 +183,7 @@ class AdvisoryAnalyzerTest extends TestCase
         $this->assertNull($results['test/package']['advisories'][0]['link']);
     }
 
+    /** @test */
     #[Test]
     public function it_skips_non_array_advisories(): void
     {
@@ -199,6 +207,7 @@ class AdvisoryAnalyzerTest extends TestCase
         $this->assertCount(1, $results['test/package']['advisories']);
     }
 
+    /** @test */
     #[Test]
     public function it_skips_dependencies_with_non_string_version(): void
     {
@@ -222,6 +231,7 @@ class AdvisoryAnalyzerTest extends TestCase
         $this->assertArrayHasKey('valid/package', $results);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_non_array_advisories_list(): void
     {
@@ -238,6 +248,7 @@ class AdvisoryAnalyzerTest extends TestCase
         $this->assertEmpty($results);
     }
 
+    /** @test */
     #[Test]
     public function it_filters_non_string_affected_versions(): void
     {
@@ -263,6 +274,7 @@ class AdvisoryAnalyzerTest extends TestCase
         $this->assertEquals(['^1.0', '<2.0'], $affectedVersions);
     }
 
+    /** @test */
     #[Test]
     public function it_includes_advisory_link_and_cve(): void
     {
@@ -288,6 +300,7 @@ class AdvisoryAnalyzerTest extends TestCase
         $this->assertEquals('https://nvd.nist.gov/vuln/detail/CVE-2024-12345', $advisory['link']);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_empty_dependencies(): void
     {
@@ -300,6 +313,7 @@ class AdvisoryAnalyzerTest extends TestCase
         $this->assertEmpty($results);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_empty_advisories(): void
     {
@@ -310,6 +324,7 @@ class AdvisoryAnalyzerTest extends TestCase
         $this->assertEmpty($results);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_non_array_non_string_affected_versions(): void
     {

@@ -13,6 +13,7 @@ use ShieldCI\Tests\TestCase;
 
 class InspectsCodeTest extends TestCase
 {
+    /** @test */
     #[Test]
     public function it_finds_function_calls_in_fixture_files(): void
     {
@@ -28,6 +29,7 @@ class InspectsCodeTest extends TestCase
         $this->assertArrayHasKey('args', $results[0]);
     }
 
+    /** @test */
     #[Test]
     public function it_extracts_string_arguments(): void
     {
@@ -40,6 +42,7 @@ class InspectsCodeTest extends TestCase
         $this->assertEquals('APP_KEY', $results[0]['args'][0]);
     }
 
+    /** @test */
     #[Test]
     public function it_extracts_multiple_arguments_including_string_default(): void
     {
@@ -53,6 +56,7 @@ class InspectsCodeTest extends TestCase
         $this->assertEquals('false', $results[1]['args'][1]);
     }
 
+    /** @test */
     #[Test]
     public function it_extracts_integer_arguments(): void
     {
@@ -74,6 +78,7 @@ class InspectsCodeTest extends TestCase
         $this->assertEquals(8080, $portCall['args'][1]);
     }
 
+    /** @test */
     #[Test]
     public function it_extracts_const_fetch_arguments(): void
     {
@@ -95,6 +100,7 @@ class InspectsCodeTest extends TestCase
         $this->assertEquals('true', $flagCall['args'][1]);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_complex_arguments(): void
     {
@@ -116,6 +122,7 @@ class InspectsCodeTest extends TestCase
         $this->assertNull($complexCall['args'][0]);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_empty_when_function_not_found(): void
     {
@@ -127,6 +134,7 @@ class InspectsCodeTest extends TestCase
         $this->assertEmpty($results);
     }
 
+    /** @test */
     #[Test]
     public function it_excludes_files_matching_exclude_paths(): void
     {
@@ -139,6 +147,7 @@ class InspectsCodeTest extends TestCase
         $this->assertEmpty($results);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_empty_for_files_without_matching_functions(): void
     {
@@ -151,6 +160,7 @@ class InspectsCodeTest extends TestCase
         $this->assertCount(1, $results);
     }
 
+    /** @test */
     #[Test]
     public function it_skips_files_that_throw_during_parsing(): void
     {
@@ -178,6 +188,7 @@ class InspectsCodeTest extends TestCase
         $this->assertEmpty($results);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_empty_directory(): void
     {
@@ -196,6 +207,7 @@ class InspectsCodeTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function it_initializes_parser_only_once(): void
     {
@@ -209,6 +221,7 @@ class InspectsCodeTest extends TestCase
         $this->assertEquals(count($results1), count($results2));
     }
 
+    /** @test */
     #[Test]
     public function parse_config_array_extracts_string_int_float_bool_null_values(): void
     {
@@ -232,6 +245,7 @@ class InspectsCodeTest extends TestCase
         $this->assertNull($result['nullable']['value']);
     }
 
+    /** @test */
     #[Test]
     public function parse_config_array_detects_env_calls_without_default(): void
     {
@@ -244,6 +258,7 @@ class InspectsCodeTest extends TestCase
         $this->assertNull($result['key']['envDefault']);
     }
 
+    /** @test */
     #[Test]
     public function parse_config_array_detects_env_calls_with_default(): void
     {
@@ -260,6 +275,7 @@ class InspectsCodeTest extends TestCase
         $this->assertSame('http://localhost', $result['url']['envDefault']);
     }
 
+    /** @test */
     #[Test]
     public function parse_config_array_returns_null_for_complex_expressions(): void
     {
@@ -271,6 +287,7 @@ class InspectsCodeTest extends TestCase
         $this->assertFalse($result['complex']['isEnvCall']);
     }
 
+    /** @test */
     #[Test]
     public function parse_config_array_returns_empty_for_unparseable_file(): void
     {
@@ -280,6 +297,7 @@ class InspectsCodeTest extends TestCase
         $this->assertSame([], $result);
     }
 
+    /** @test */
     #[Test]
     public function parse_config_array_returns_empty_when_no_return_statement(): void
     {
@@ -289,6 +307,7 @@ class InspectsCodeTest extends TestCase
         $this->assertSame([], $result);
     }
 
+    /** @test */
     #[Test]
     public function parse_config_array_skips_integer_keyed_items(): void
     {
@@ -304,6 +323,7 @@ class InspectsCodeTest extends TestCase
         $this->assertCount(3, $result);
     }
 
+    /** @test */
     #[Test]
     public function parse_config_array_skips_spread_operator_items(): void
     {
@@ -317,6 +337,7 @@ class InspectsCodeTest extends TestCase
         $this->assertCount(2, $result);
     }
 
+    /** @test */
     #[Test]
     public function parse_config_array_delegates_to_config_file_helper(): void
     {
@@ -334,6 +355,7 @@ class InspectsCodeTest extends TestCase
         $this->assertFalse($result['name']['isEnvCall']);
     }
 
+    /** @test */
     #[Test]
     public function resolve_config_value_returns_literal_for_non_env_entries(): void
     {
@@ -350,6 +372,7 @@ class InspectsCodeTest extends TestCase
         ]));
     }
 
+    /** @test */
     #[Test]
     public function resolve_config_value_returns_env_default_for_env_entries(): void
     {
@@ -366,6 +389,7 @@ class InspectsCodeTest extends TestCase
         ]));
     }
 
+    /** @test */
     #[Test]
     public function resolve_config_value_returns_null_for_env_without_default(): void
     {
@@ -376,6 +400,7 @@ class InspectsCodeTest extends TestCase
         ]));
     }
 
+    /** @test */
     #[Test]
     public function parse_config_array_includes_line_numbers(): void
     {

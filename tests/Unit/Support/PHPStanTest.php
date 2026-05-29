@@ -11,6 +11,7 @@ use Symfony\Component\Process\Process;
 
 class PHPStanTest extends TestCase
 {
+    /** @test */
     #[Test]
     public function it_can_set_root_path(): void
     {
@@ -20,6 +21,7 @@ class PHPStanTest extends TestCase
         $this->assertInstanceOf(PHPStan::class, $result);
     }
 
+    /** @test */
     #[Test]
     public function it_can_set_config_path(): void
     {
@@ -29,6 +31,7 @@ class PHPStanTest extends TestCase
         $this->assertInstanceOf(PHPStan::class, $result);
     }
 
+    /** @test */
     #[Test]
     public function it_parses_analysis_with_search_string(): void
     {
@@ -52,6 +55,7 @@ class PHPStanTest extends TestCase
         $this->assertStringContainsString('undefined', $results[0]['message']);
     }
 
+    /** @test */
     #[Test]
     public function it_parses_analysis_with_array_of_search_strings(): void
     {
@@ -73,6 +77,7 @@ class PHPStanTest extends TestCase
         $this->assertCount(2, $results);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_empty_array_when_no_matches(): void
     {
@@ -92,6 +97,7 @@ class PHPStanTest extends TestCase
         $this->assertEmpty($results);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_empty_array_when_result_is_null(): void
     {
@@ -103,6 +109,7 @@ class PHPStanTest extends TestCase
         $this->assertEmpty($results);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_empty_array_when_no_files_key(): void
     {
@@ -114,6 +121,7 @@ class PHPStanTest extends TestCase
         $this->assertEmpty($results);
     }
 
+    /** @test */
     #[Test]
     public function it_matches_using_wildcard_pattern(): void
     {
@@ -135,6 +143,7 @@ class PHPStanTest extends TestCase
         $this->assertEquals(10, $results[0]['line']);
     }
 
+    /** @test */
     #[Test]
     public function it_matches_using_array_of_patterns(): void
     {
@@ -155,6 +164,7 @@ class PHPStanTest extends TestCase
         $this->assertCount(2, $results);
     }
 
+    /** @test */
     #[Test]
     public function it_matches_using_regex_pattern(): void
     {
@@ -176,6 +186,7 @@ class PHPStanTest extends TestCase
         $this->assertCount(2, $results);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_empty_for_preg_match_when_no_result(): void
     {
@@ -187,6 +198,7 @@ class PHPStanTest extends TestCase
         $this->assertEmpty($results);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_multiple_files(): void
     {
@@ -215,6 +227,7 @@ class PHPStanTest extends TestCase
         $this->assertContains('/app/Service.php', $paths);
     }
 
+    /** @test */
     #[Test]
     public function it_preserves_line_numbers(): void
     {
@@ -236,6 +249,7 @@ class PHPStanTest extends TestCase
         $this->assertEquals(100, $results[1]['line']);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_fluent_interface_from_setters(): void
     {
@@ -248,6 +262,7 @@ class PHPStanTest extends TestCase
         $this->assertSame($phpstan, $result2);
     }
 
+    /** @test */
     #[Test]
     public function it_resolves_real_path_when_setting_root_path(): void
     {
@@ -262,6 +277,7 @@ class PHPStanTest extends TestCase
         $this->assertNotNull($property->getValue($phpstan));
     }
 
+    /** @test */
     #[Test]
     public function it_gets_default_phpstan_options(): void
     {
@@ -271,6 +287,7 @@ class PHPStanTest extends TestCase
         $this->assertIsArray($options);
     }
 
+    /** @test */
     #[Test]
     public function it_gets_default_config_path(): void
     {
@@ -280,6 +297,7 @@ class PHPStanTest extends TestCase
         $this->assertStringContainsString('phpstan-analyzers.neon', $configPath);
     }
 
+    /** @test */
     #[Test]
     public function it_finds_phpstan_binary(): void
     {
@@ -291,6 +309,7 @@ class PHPStanTest extends TestCase
         $this->assertStringContainsString('phpstan', $binary[0]);
     }
 
+    /** @test */
     #[Test]
     public function it_creates_process_instance(): void
     {
@@ -301,6 +320,7 @@ class PHPStanTest extends TestCase
         $this->assertInstanceOf(Process::class, $process);
     }
 
+    /** @test */
     #[Test]
     public function it_runs_command_and_returns_output(): void
     {
@@ -312,6 +332,7 @@ class PHPStanTest extends TestCase
         $this->assertIsString($output);
     }
 
+    /** @test */
     #[Test]
     public function it_runs_command_without_error_output(): void
     {
@@ -323,6 +344,7 @@ class PHPStanTest extends TestCase
         $this->assertIsString($output);
     }
 
+    /** @test */
     #[Test]
     public function it_can_start_analysis_on_a_path(): void
     {
@@ -341,6 +363,7 @@ class PHPStanTest extends TestCase
         $this->assertInstanceOf(PHPStan::class, $result);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_empty_for_match_when_no_result(): void
     {
@@ -352,6 +375,7 @@ class PHPStanTest extends TestCase
         $this->assertEmpty($results);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_empty_for_match_when_no_files_key(): void
     {

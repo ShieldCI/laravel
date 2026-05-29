@@ -74,6 +74,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
             'description' => 'Usage of deprecated methods, classes, and functions',
             'severity' => Severity::High,
             'regex' => '#\s*deprecated\s*#i',
+            'patterns' => [],
         ],
 
         'foreach-iterable' => [

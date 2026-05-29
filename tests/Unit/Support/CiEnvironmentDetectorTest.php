@@ -57,6 +57,7 @@ class CiEnvironmentDetectorTest extends TestCase
     // Provider detection
     // ─────────────────────────────────────────────────────────────────────────
 
+    /** @test */
     #[Test]
     public function it_returns_null_when_no_ci_env_vars_set(): void
     {
@@ -68,6 +69,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertNull($this->makeDetector()->detectProvider());
     }
 
+    /** @test */
     #[Test]
     public function it_detects_github_actions(): void
     {
@@ -75,6 +77,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('github_actions', $this->makeDetector()->detectProvider());
     }
 
+    /** @test */
     #[Test]
     public function it_detects_gitlab_ci(): void
     {
@@ -83,6 +86,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('gitlab_ci', $this->makeDetector()->detectProvider());
     }
 
+    /** @test */
     #[Test]
     public function it_detects_circleci(): void
     {
@@ -92,6 +96,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('circleci', $this->makeDetector()->detectProvider());
     }
 
+    /** @test */
     #[Test]
     public function it_detects_bitbucket(): void
     {
@@ -102,6 +107,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('bitbucket', $this->makeDetector()->detectProvider());
     }
 
+    /** @test */
     #[Test]
     public function it_detects_azure_devops(): void
     {
@@ -113,6 +119,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('azure_devops', $this->makeDetector()->detectProvider());
     }
 
+    /** @test */
     #[Test]
     public function it_detects_jenkins(): void
     {
@@ -125,6 +132,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('jenkins', $this->makeDetector()->detectProvider());
     }
 
+    /** @test */
     #[Test]
     public function it_detects_travis_ci(): void
     {
@@ -138,6 +146,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('travis_ci', $this->makeDetector()->detectProvider());
     }
 
+    /** @test */
     #[Test]
     public function it_does_not_detect_when_value_wrong(): void
     {
@@ -151,6 +160,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertNull($this->makeDetector()->detectProvider());
     }
 
+    /** @test */
     #[Test]
     public function it_does_not_detect_bitbucket_when_var_is_empty(): void
     {
@@ -168,6 +178,7 @@ class CiEnvironmentDetectorTest extends TestCase
     // Branch resolution
     // ─────────────────────────────────────────────────────────────────────────
 
+    /** @test */
     #[Test]
     public function it_reads_github_head_ref_first_for_branch(): void
     {
@@ -177,6 +188,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('feature/pr-branch', $this->makeDetector()->resolveBranch('github_actions'));
     }
 
+    /** @test */
     #[Test]
     public function it_falls_back_to_github_ref_name_when_head_ref_empty(): void
     {
@@ -186,6 +198,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('main', $this->makeDetector()->resolveBranch('github_actions'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_branch_for_gitlab_ci(): void
     {
@@ -193,6 +206,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('develop', $this->makeDetector()->resolveBranch('gitlab_ci'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_branch_for_circleci(): void
     {
@@ -200,6 +214,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('release/1.0', $this->makeDetector()->resolveBranch('circleci'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_branch_for_bitbucket(): void
     {
@@ -207,6 +222,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('hotfix/x', $this->makeDetector()->resolveBranch('bitbucket'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_branch_for_azure_devops(): void
     {
@@ -214,6 +230,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('main', $this->makeDetector()->resolveBranch('azure_devops'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_branch_for_jenkins(): void
     {
@@ -221,6 +238,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('origin/main', $this->makeDetector()->resolveBranch('jenkins'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_branch_for_travis_ci(): void
     {
@@ -232,6 +250,7 @@ class CiEnvironmentDetectorTest extends TestCase
     // Commit resolution
     // ─────────────────────────────────────────────────────────────────────────
 
+    /** @test */
     #[Test]
     public function it_reads_commit_for_github_actions(): void
     {
@@ -239,6 +258,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('abc1234def5678', $this->makeDetector()->resolveCommit('github_actions'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_commit_for_gitlab_ci(): void
     {
@@ -246,6 +266,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('deadbeef', $this->makeDetector()->resolveCommit('gitlab_ci'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_commit_for_circleci(): void
     {
@@ -253,6 +274,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('cafebabe', $this->makeDetector()->resolveCommit('circleci'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_commit_for_bitbucket(): void
     {
@@ -260,6 +282,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('badf00d', $this->makeDetector()->resolveCommit('bitbucket'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_commit_for_azure_devops(): void
     {
@@ -267,6 +290,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('1234567890abcdef', $this->makeDetector()->resolveCommit('azure_devops'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_commit_for_jenkins(): void
     {
@@ -274,6 +298,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('feedface', $this->makeDetector()->resolveCommit('jenkins'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_commit_for_travis_ci(): void
     {
@@ -285,6 +310,7 @@ class CiEnvironmentDetectorTest extends TestCase
     // Real process execution (exercises getProcess())
     // ─────────────────────────────────────────────────────────────────────────
 
+    /** @test */
     #[Test]
     public function it_executes_real_git_process_without_throwing(): void
     {
@@ -304,6 +330,7 @@ class CiEnvironmentDetectorTest extends TestCase
     // Git command fallback
     // ─────────────────────────────────────────────────────────────────────────
 
+    /** @test */
     #[Test]
     public function it_falls_back_to_git_command_for_branch(): void
     {
@@ -314,6 +341,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('main', $detector->resolveBranch(null));
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_detached_head_state(): void
     {
@@ -321,6 +349,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertNull($detector->resolveBranch(null));
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_branch_when_git_fails(): void
     {
@@ -328,6 +357,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertNull($detector->resolveBranch(null));
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_branch_when_process_throws(): void
     {
@@ -335,6 +365,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertNull($detector->resolveBranch(null));
     }
 
+    /** @test */
     #[Test]
     public function it_falls_back_to_git_command_for_commit(): void
     {
@@ -344,6 +375,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertEquals('abc1234deadbeef', $detector->resolveCommit(null));
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_commit_when_git_fails(): void
     {
@@ -351,6 +383,7 @@ class CiEnvironmentDetectorTest extends TestCase
         $this->assertNull($detector->resolveCommit(null));
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_commit_when_process_throws(): void
     {
@@ -438,6 +471,7 @@ BASH);
     // resolvePrNumber
     // ─────────────────────────────────────────────────────────────────────────
 
+    /** @test */
     #[Test]
     public function it_reads_pr_number_from_github_ref_number(): void
     {
@@ -445,6 +479,7 @@ BASH);
         $this->assertEquals(42, $this->makeDetector()->resolvePrNumber('github_actions'));
     }
 
+    /** @test */
     #[Test]
     public function it_parses_pr_number_from_github_ref_merge_event(): void
     {
@@ -453,6 +488,7 @@ BASH);
         $this->assertEquals(42, $this->makeDetector()->resolvePrNumber('github_actions'));
     }
 
+    /** @test */
     #[Test]
     public function it_parses_pr_number_from_github_ref_head_event(): void
     {
@@ -461,6 +497,7 @@ BASH);
         $this->assertEquals(42, $this->makeDetector()->resolvePrNumber('github_actions'));
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_pr_number_when_github_ref_is_push(): void
     {
@@ -469,6 +506,7 @@ BASH);
         $this->assertNull($this->makeDetector()->resolvePrNumber('github_actions'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_pr_number_for_gitlab_ci(): void
     {
@@ -476,6 +514,7 @@ BASH);
         $this->assertEquals(7, $this->makeDetector()->resolvePrNumber('gitlab_ci'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_pr_number_for_circleci(): void
     {
@@ -483,6 +522,7 @@ BASH);
         $this->assertEquals(15, $this->makeDetector()->resolvePrNumber('circleci'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_pr_number_for_bitbucket(): void
     {
@@ -490,6 +530,7 @@ BASH);
         $this->assertEquals(8, $this->makeDetector()->resolvePrNumber('bitbucket'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_pr_number_for_azure_devops(): void
     {
@@ -497,6 +538,7 @@ BASH);
         $this->assertEquals(33, $this->makeDetector()->resolvePrNumber('azure_devops'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_pr_number_for_jenkins(): void
     {
@@ -504,6 +546,7 @@ BASH);
         $this->assertEquals(21, $this->makeDetector()->resolvePrNumber('jenkins'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_pr_number_for_travis_ci(): void
     {
@@ -511,6 +554,7 @@ BASH);
         $this->assertEquals(99, $this->makeDetector()->resolvePrNumber('travis_ci'));
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_travis_pr_number_when_not_a_pr(): void
     {
@@ -518,6 +562,7 @@ BASH);
         $this->assertNull($this->makeDetector()->resolvePrNumber('travis_ci'));
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_pr_number_when_env_var_missing(): void
     {
@@ -529,6 +574,7 @@ BASH);
     // resolveRepository
     // ─────────────────────────────────────────────────────────────────────────
 
+    /** @test */
     #[Test]
     public function it_reads_repository_for_github_actions(): void
     {
@@ -536,6 +582,7 @@ BASH);
         $this->assertEquals('owner/repo', $this->makeDetector()->resolveRepository('github_actions'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_repository_for_gitlab_ci(): void
     {
@@ -543,6 +590,7 @@ BASH);
         $this->assertEquals('group/project', $this->makeDetector()->resolveRepository('gitlab_ci'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_repository_for_circleci(): void
     {
@@ -551,6 +599,7 @@ BASH);
         $this->assertEquals('myorg/myrepo', $this->makeDetector()->resolveRepository('circleci'));
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_circleci_repository_when_either_var_missing(): void
     {
@@ -559,6 +608,7 @@ BASH);
         $this->assertNull($this->makeDetector()->resolveRepository('circleci'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_repository_for_bitbucket(): void
     {
@@ -566,6 +616,7 @@ BASH);
         $this->assertEquals('team/project', $this->makeDetector()->resolveRepository('bitbucket'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_repository_for_travis_ci(): void
     {
@@ -573,12 +624,14 @@ BASH);
         $this->assertEquals('user/app', $this->makeDetector()->resolveRepository('travis_ci'));
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_azure_devops_repository(): void
     {
         $this->assertNull($this->makeDetector()->resolveRepository('azure_devops'));
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_jenkins_repository(): void
     {
@@ -589,6 +642,7 @@ BASH);
     // resolveBaseBranch
     // ─────────────────────────────────────────────────────────────────────────
 
+    /** @test */
     #[Test]
     public function it_reads_base_branch_for_github_actions(): void
     {
@@ -596,6 +650,7 @@ BASH);
         $this->assertEquals('main', $this->makeDetector()->resolveBaseBranch('github_actions'));
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_base_branch_when_github_base_ref_is_empty(): void
     {
@@ -603,6 +658,7 @@ BASH);
         $this->assertNull($this->makeDetector()->resolveBaseBranch('github_actions'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_base_branch_for_gitlab_ci(): void
     {
@@ -610,6 +666,7 @@ BASH);
         $this->assertEquals('develop', $this->makeDetector()->resolveBaseBranch('gitlab_ci'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_base_branch_for_bitbucket(): void
     {
@@ -617,6 +674,7 @@ BASH);
         $this->assertEquals('main', $this->makeDetector()->resolveBaseBranch('bitbucket'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_base_branch_for_azure_devops(): void
     {
@@ -624,6 +682,7 @@ BASH);
         $this->assertEquals('main', $this->makeDetector()->resolveBaseBranch('azure_devops'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_base_branch_for_jenkins(): void
     {
@@ -631,6 +690,7 @@ BASH);
         $this->assertEquals('master', $this->makeDetector()->resolveBaseBranch('jenkins'));
     }
 
+    /** @test */
     #[Test]
     public function it_reads_base_branch_for_travis_ci(): void
     {
@@ -639,6 +699,7 @@ BASH);
         $this->assertEquals('main', $this->makeDetector()->resolveBaseBranch('travis_ci'));
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_travis_base_branch_when_not_a_pr(): void
     {
@@ -647,6 +708,7 @@ BASH);
         $this->assertNull($this->makeDetector()->resolveBaseBranch('travis_ci'));
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_circleci_base_branch(): void
     {

@@ -14,6 +14,7 @@ use ShieldCI\ValueObjects\FailureNotification;
 
 class FailureNotificationTest extends TestCase
 {
+    /** @test */
     #[Test]
     public function it_constructs_with_all_parameters(): void
     {
@@ -40,6 +41,7 @@ class FailureNotificationTest extends TestCase
         $this->assertSame(['php_version' => '8.3.2'], $notification->metadata);
     }
 
+    /** @test */
     #[Test]
     public function it_defaults_metadata_to_empty_array(): void
     {
@@ -56,6 +58,7 @@ class FailureNotificationTest extends TestCase
         $this->assertSame([], $notification->metadata);
     }
 
+    /** @test */
     #[Test]
     public function to_array_produces_correct_structure(): void
     {
@@ -86,6 +89,7 @@ class FailureNotificationTest extends TestCase
         $this->assertSame(['os' => 'Linux', 'php_version' => '8.2.0'], $array['metadata']);
     }
 
+    /** @test */
     #[Test]
     public function status_is_always_failed(): void
     {
@@ -104,6 +108,7 @@ class FailureNotificationTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function occurred_at_is_iso_8601_format(): void
     {
@@ -128,6 +133,7 @@ class FailureNotificationTest extends TestCase
         $this->assertSame('2026-01-15', $parsed->format('Y-m-d'));
     }
 
+    /** @test */
     #[Test]
     public function failure_reason_matches_enum_value(): void
     {
@@ -148,6 +154,7 @@ class FailureNotificationTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function laravel_and_package_versions_are_top_level_fields(): void
     {

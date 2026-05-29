@@ -17,6 +17,7 @@ use ShieldCI\Tests\TestCase;
 
 class HttpAdvisoryFetcherTest extends TestCase
 {
+    /** @test */
     #[Test]
     public function it_returns_empty_array_for_empty_dependencies(): void
     {
@@ -28,6 +29,7 @@ class HttpAdvisoryFetcherTest extends TestCase
         $this->assertSame([], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_fetches_advisories_for_dependencies(): void
     {
@@ -66,6 +68,7 @@ class HttpAdvisoryFetcherTest extends TestCase
         $this->assertEquals('https://github.com/advisory/GHSA-1234', $result['laravel/framework'][0]['link']);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_empty_array_on_non_200_response(): void
     {
@@ -83,6 +86,7 @@ class HttpAdvisoryFetcherTest extends TestCase
         $this->assertSame([], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_empty_array_on_invalid_json_response(): void
     {
@@ -100,6 +104,7 @@ class HttpAdvisoryFetcherTest extends TestCase
         $this->assertSame([], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_empty_array_on_connection_exception(): void
     {
@@ -120,6 +125,7 @@ class HttpAdvisoryFetcherTest extends TestCase
         $this->assertSame([], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_logs_failure_when_logger_is_provided(): void
     {
@@ -143,6 +149,7 @@ class HttpAdvisoryFetcherTest extends TestCase
         ]);
     }
 
+    /** @test */
     #[Test]
     public function it_skips_dependencies_with_invalid_data(): void
     {
@@ -163,6 +170,7 @@ class HttpAdvisoryFetcherTest extends TestCase
         $this->assertSame([], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_response_without_results_key(): void
     {
@@ -180,6 +188,7 @@ class HttpAdvisoryFetcherTest extends TestCase
         $this->assertSame([], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_vulns_without_aliases_or_references(): void
     {
@@ -212,6 +221,7 @@ class HttpAdvisoryFetcherTest extends TestCase
         $this->assertNull($result['test/package'][0]['link']);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_empty_array_on_non_200_status_like_204(): void
     {
@@ -229,6 +239,7 @@ class HttpAdvisoryFetcherTest extends TestCase
         $this->assertSame([], $result);
     }
 
+    /** @test */
     #[Test]
     public function it_skips_results_without_matching_query_index(): void
     {
@@ -256,6 +267,7 @@ class HttpAdvisoryFetcherTest extends TestCase
         $this->assertCount(1, $result['package/one']);
     }
 
+    /** @test */
     #[Test]
     public function it_skips_non_array_vuln_entries(): void
     {
@@ -286,6 +298,7 @@ class HttpAdvisoryFetcherTest extends TestCase
         $this->assertEquals('Real vulnerability', $result['test/package'][0]['title']);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_multiple_packages(): void
     {

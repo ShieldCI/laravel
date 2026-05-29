@@ -28,6 +28,7 @@ class SuppressionRecordTest extends TestCase
         );
     }
 
+    /** @test */
     #[Test]
     public function it_stores_all_properties(): void
     {
@@ -42,6 +43,7 @@ class SuppressionRecordTest extends TestCase
         $this->assertSame('path_pattern: app/Legacy/*.php', $record->description);
     }
 
+    /** @test */
     #[Test]
     public function to_array_includes_all_issue_fields_and_suppression_block(): void
     {
@@ -62,6 +64,7 @@ class SuppressionRecordTest extends TestCase
         $this->assertSame('path_pattern: app/Legacy/*.php', $arr['suppression']['description']);
     }
 
+    /** @test */
     #[Test]
     public function to_array_serializes_inline_type_as_string(): void
     {
@@ -76,6 +79,7 @@ class SuppressionRecordTest extends TestCase
         $this->assertSame('inline', $arr['suppression']['type']);
     }
 
+    /** @test */
     #[Test]
     public function to_array_serializes_baseline_type_as_string(): void
     {

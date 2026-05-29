@@ -95,10 +95,11 @@ class AnalyzeCommand extends Command
         ClientInterface $client,
         TriggerSource $triggeredBy,
     ): int {
-        // Apply memory limit
+        // Apply memory limit (best-effort: @-suppress the E_WARNING PHP 8.1+ raises when
+        // the current memory usage already exceeds the requested limit)
         $memoryLimit = config('shieldci.memory_limit');
         if ($memoryLimit !== null && is_string($memoryLimit)) {
-            ini_set('memory_limit', $memoryLimit);
+            @ini_set('memory_limit', $memoryLimit);
         }
 
         // Set timeout (no-op on Lambda — warn instead)

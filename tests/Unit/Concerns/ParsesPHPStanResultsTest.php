@@ -14,6 +14,7 @@ use ShieldCI\Tests\TestCase;
 
 class ParsesPHPStanResultsTest extends TestCase
 {
+    /** @test */
     #[Test]
     public function it_creates_issues_from_phpstan_results(): void
     {
@@ -37,6 +38,7 @@ class ParsesPHPStanResultsTest extends TestCase
         $this->assertEquals(Severity::High, $result[0]->severity);
     }
 
+    /** @test */
     #[Test]
     public function it_limits_issues_to_50(): void
     {
@@ -59,6 +61,7 @@ class ParsesPHPStanResultsTest extends TestCase
         $this->assertCount(50, $result);
     }
 
+    /** @test */
     #[Test]
     public function it_skips_issues_with_missing_fields(): void
     {
@@ -81,6 +84,7 @@ class ParsesPHPStanResultsTest extends TestCase
         $this->assertCount(1, $result);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_non_string_file_or_message(): void
     {
@@ -102,6 +106,7 @@ class ParsesPHPStanResultsTest extends TestCase
         $this->assertCount(1, $result);
     }
 
+    /** @test */
     #[Test]
     public function it_normalizes_invalid_line_numbers(): void
     {
@@ -127,6 +132,7 @@ class ParsesPHPStanResultsTest extends TestCase
         $this->assertEquals(10, $result[2]->location->line);
     }
 
+    /** @test */
     #[Test]
     public function it_formats_issue_count_message_when_truncated(): void
     {
@@ -137,6 +143,7 @@ class ParsesPHPStanResultsTest extends TestCase
         $this->assertEquals('Found 100 dead code issues (showing first 50)', $message);
     }
 
+    /** @test */
     #[Test]
     public function it_formats_issue_count_message_when_not_truncated(): void
     {
@@ -147,6 +154,7 @@ class ParsesPHPStanResultsTest extends TestCase
         $this->assertEquals('Found 25 deprecated code usages', $message);
     }
 
+    /** @test */
     #[Test]
     public function it_formats_issue_count_message_for_zero_issues(): void
     {
@@ -157,6 +165,7 @@ class ParsesPHPStanResultsTest extends TestCase
         $this->assertEquals('Found 0 issues', $message);
     }
 
+    /** @test */
     #[Test]
     public function it_calls_recommendation_callback_with_message(): void
     {

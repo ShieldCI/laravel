@@ -22,6 +22,7 @@ use ShieldCI\Tests\TestCase;
 
 class ShieldCIServiceProviderTest extends TestCase
 {
+    /** @test */
     #[Test]
     public function it_registers_parser_interface(): void
     {
@@ -30,6 +31,7 @@ class ShieldCIServiceProviderTest extends TestCase
         $this->assertInstanceOf(ParserInterface::class, $parser);
     }
 
+    /** @test */
     #[Test]
     public function it_registers_reporter_interface(): void
     {
@@ -38,6 +40,7 @@ class ShieldCIServiceProviderTest extends TestCase
         $this->assertInstanceOf(Reporter::class, $reporter);
     }
 
+    /** @test */
     #[Test]
     public function it_registers_analyzer_manager(): void
     {
@@ -46,6 +49,7 @@ class ShieldCIServiceProviderTest extends TestCase
         $this->assertInstanceOf(AnalyzerManager::class, $manager);
     }
 
+    /** @test */
     #[Test]
     public function it_registers_composer_support(): void
     {
@@ -54,6 +58,7 @@ class ShieldCIServiceProviderTest extends TestCase
         $this->assertInstanceOf(Composer::class, $composer);
     }
 
+    /** @test */
     #[Test]
     public function it_registers_path_filter(): void
     {
@@ -62,6 +67,7 @@ class ShieldCIServiceProviderTest extends TestCase
         $this->assertInstanceOf(PathFilter::class, $filter);
     }
 
+    /** @test */
     #[Test]
     public function it_registers_version_constraint_matcher(): void
     {
@@ -70,6 +76,7 @@ class ShieldCIServiceProviderTest extends TestCase
         $this->assertInstanceOf(VersionConstraintMatcher::class, $matcher);
     }
 
+    /** @test */
     #[Test]
     public function it_registers_advisory_analyzer_interface(): void
     {
@@ -78,6 +85,7 @@ class ShieldCIServiceProviderTest extends TestCase
         $this->assertInstanceOf(AdvisoryAnalyzerInterface::class, $analyzer);
     }
 
+    /** @test */
     #[Test]
     public function it_registers_advisory_fetcher_interface(): void
     {
@@ -86,6 +94,7 @@ class ShieldCIServiceProviderTest extends TestCase
         $this->assertInstanceOf(AdvisoryFetcherInterface::class, $fetcher);
     }
 
+    /** @test */
     #[Test]
     public function it_registers_composer_dependency_reader(): void
     {
@@ -94,6 +103,7 @@ class ShieldCIServiceProviderTest extends TestCase
         $this->assertInstanceOf(ComposerDependencyReader::class, $reader);
     }
 
+    /** @test */
     #[Test]
     public function it_merges_config(): void
     {
@@ -101,6 +111,7 @@ class ShieldCIServiceProviderTest extends TestCase
         $this->assertIsArray(config('shieldci'));
     }
 
+    /** @test */
     #[Test]
     public function it_registers_analyze_command(): void
     {
@@ -109,6 +120,7 @@ class ShieldCIServiceProviderTest extends TestCase
             ->expectsOutputToContain('shield:analyze');
     }
 
+    /** @test */
     #[Test]
     public function it_registers_baseline_command(): void
     {
@@ -117,6 +129,7 @@ class ShieldCIServiceProviderTest extends TestCase
             ->expectsOutputToContain('shield:baseline');
     }
 
+    /** @test */
     #[Test]
     public function it_uses_singleton_for_reporter(): void
     {
@@ -126,6 +139,7 @@ class ShieldCIServiceProviderTest extends TestCase
         $this->assertSame($reporter1, $reporter2);
     }
 
+    /** @test */
     #[Test]
     public function it_uses_singleton_for_analyzer_manager(): void
     {
@@ -135,6 +149,7 @@ class ShieldCIServiceProviderTest extends TestCase
         $this->assertSame($manager1, $manager2);
     }
 
+    /** @test */
     #[Test]
     public function it_uses_singleton_for_path_filter(): void
     {
@@ -144,6 +159,7 @@ class ShieldCIServiceProviderTest extends TestCase
         $this->assertSame($filter1, $filter2);
     }
 
+    /** @test */
     #[Test]
     public function it_discovers_analyzers(): void
     {
@@ -153,6 +169,7 @@ class ShieldCIServiceProviderTest extends TestCase
         $this->assertGreaterThan(0, $manager->count());
     }
 
+    /** @test */
     #[Test]
     public function it_respects_config_for_path_filter(): void
     {
@@ -167,6 +184,7 @@ class ShieldCIServiceProviderTest extends TestCase
         $this->assertEquals(['vendor', 'tests'], $filter->getExcludedPaths());
     }
 
+    /** @test */
     #[Test]
     public function it_resolves_logger_from_log_binding(): void
     {
@@ -200,6 +218,7 @@ class ShieldCIServiceProviderTest extends TestCase
         $this->assertInstanceOf(HttpAdvisoryFetcher::class, $fetcher);
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_file_without_namespace(): void
     {
@@ -220,6 +239,7 @@ class ShieldCIServiceProviderTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function it_returns_null_for_file_without_class_declaration(): void
     {
@@ -240,6 +260,7 @@ class ShieldCIServiceProviderTest extends TestCase
         }
     }
 
+    /** @test */
     #[Test]
     public function it_skips_non_existent_analyzer_directory(): void
     {
@@ -254,6 +275,7 @@ class ShieldCIServiceProviderTest extends TestCase
         $this->assertIsArray($analyzers);
     }
 
+    /** @test */
     #[Test]
     public function it_configures_docs_base_url_resolver(): void
     {

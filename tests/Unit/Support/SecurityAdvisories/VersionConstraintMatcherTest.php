@@ -19,6 +19,7 @@ class VersionConstraintMatcherTest extends TestCase
         $this->matcher = new VersionConstraintMatcher;
     }
 
+    /** @test */
     #[Test]
     public function it_matches_exact_version(): void
     {
@@ -27,6 +28,7 @@ class VersionConstraintMatcherTest extends TestCase
         $this->assertTrue($this->matcher->matches('1.0.0', '=1.0.0'));
     }
 
+    /** @test */
     #[Test]
     public function it_matches_wildcard_constraint(): void
     {
@@ -34,6 +36,7 @@ class VersionConstraintMatcherTest extends TestCase
         $this->assertTrue($this->matcher->matches('2.5.3', '*'));
     }
 
+    /** @test */
     #[Test]
     public function it_matches_empty_constraint(): void
     {
@@ -41,6 +44,7 @@ class VersionConstraintMatcherTest extends TestCase
         $this->assertTrue($this->matcher->matches('2.5.3', '  '));
     }
 
+    /** @test */
     #[Test]
     public function it_matches_greater_than_constraint(): void
     {
@@ -49,6 +53,7 @@ class VersionConstraintMatcherTest extends TestCase
         $this->assertFalse($this->matcher->matches('0.5.0', '>1.0.0'));
     }
 
+    /** @test */
     #[Test]
     public function it_matches_greater_than_or_equal_constraint(): void
     {
@@ -57,6 +62,7 @@ class VersionConstraintMatcherTest extends TestCase
         $this->assertFalse($this->matcher->matches('0.5.0', '>=1.0.0'));
     }
 
+    /** @test */
     #[Test]
     public function it_matches_less_than_constraint(): void
     {
@@ -65,6 +71,7 @@ class VersionConstraintMatcherTest extends TestCase
         $this->assertFalse($this->matcher->matches('2.0.0', '<1.0.0'));
     }
 
+    /** @test */
     #[Test]
     public function it_matches_less_than_or_equal_constraint(): void
     {
@@ -73,6 +80,7 @@ class VersionConstraintMatcherTest extends TestCase
         $this->assertFalse($this->matcher->matches('2.0.0', '<=1.0.0'));
     }
 
+    /** @test */
     #[Test]
     public function it_matches_caret_constraint(): void
     {
@@ -84,6 +92,7 @@ class VersionConstraintMatcherTest extends TestCase
         $this->assertFalse($this->matcher->matches('1.2.2', '^1.2.3'));
     }
 
+    /** @test */
     #[Test]
     public function it_matches_tilde_constraint(): void
     {
@@ -94,6 +103,7 @@ class VersionConstraintMatcherTest extends TestCase
         $this->assertFalse($this->matcher->matches('1.2.2', '~1.2.3'));
     }
 
+    /** @test */
     #[Test]
     public function it_matches_tilde_constraint_with_single_part(): void
     {
@@ -103,6 +113,7 @@ class VersionConstraintMatcherTest extends TestCase
         $this->assertFalse($this->matcher->matches('2.0.0', '~1'));
     }
 
+    /** @test */
     #[Test]
     public function it_matches_wildcard_in_version(): void
     {
@@ -111,6 +122,7 @@ class VersionConstraintMatcherTest extends TestCase
         $this->assertFalse($this->matcher->matches('2.0.0', '1.*'));
     }
 
+    /** @test */
     #[Test]
     public function it_matches_x_notation(): void
     {
@@ -119,6 +131,7 @@ class VersionConstraintMatcherTest extends TestCase
         $this->assertFalse($this->matcher->matches('2.0.0', '1.x'));
     }
 
+    /** @test */
     #[Test]
     public function it_matches_array_of_constraints(): void
     {
@@ -128,6 +141,7 @@ class VersionConstraintMatcherTest extends TestCase
         $this->assertFalse($this->matcher->matches('3.0.0', ['^1.0', '^2.0']));
     }
 
+    /** @test */
     #[Test]
     public function it_handles_version_with_v_prefix(): void
     {
@@ -135,6 +149,11 @@ class VersionConstraintMatcherTest extends TestCase
         $this->assertTrue($this->matcher->matches('1.0.0', '>=v1.0.0'));
     }
 
+    /**
+     * @test
+     *
+     * @dataProvider constraintMatchProvider
+     */
     #[Test]
     #[DataProvider('constraintMatchProvider')]
     public function it_matches_various_constraint_formats(string $version, string $constraint, bool $expected): void
@@ -167,12 +186,14 @@ class VersionConstraintMatcherTest extends TestCase
         ];
     }
 
+    /** @test */
     #[Test]
     public function it_returns_false_for_no_matching_constraints_in_array(): void
     {
         $this->assertFalse($this->matcher->matches('5.0.0', ['^1.0', '^2.0', '^3.0']));
     }
 
+    /** @test */
     #[Test]
     public function it_handles_empty_caret_constraint(): void
     {
@@ -180,6 +201,7 @@ class VersionConstraintMatcherTest extends TestCase
         $this->assertFalse($this->matcher->matches('1.0.0', '^'));
     }
 
+    /** @test */
     #[Test]
     public function it_handles_empty_tilde_constraint(): void
     {
@@ -187,6 +209,7 @@ class VersionConstraintMatcherTest extends TestCase
         $this->assertFalse($this->matcher->matches('1.0.0', '~'));
     }
 
+    /** @test */
     #[Test]
     public function it_handles_whitespace_in_constraints(): void
     {

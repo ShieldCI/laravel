@@ -17,6 +17,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         return new MaintenanceModeAnalyzer;
     }
 
+    /** @test */
     #[Test]
     public function it_passes_when_not_in_maintenance_mode(): void
     {
@@ -35,6 +36,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $this->assertEmpty($result->getIssues());
     }
 
+    /** @test */
     #[Test]
     public function it_fails_when_maintenance_file_exists(): void
     {
@@ -60,6 +62,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('php artisan up', $issue->recommendation);
     }
 
+    /** @test */
     #[Test]
     public function it_fails_when_maintenance_file_contains_json(): void
     {
@@ -85,6 +88,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $this->assertCount(1, $result->getIssues());
     }
 
+    /** @test */
     #[Test]
     public function it_includes_maintenance_file_path_in_metadata(): void
     {
@@ -109,6 +113,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $this->assertSame('production', $metadata['environment']);
     }
 
+    /** @test */
     #[Test]
     public function it_includes_proper_recommendation(): void
     {
@@ -131,6 +136,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('users are properly notified', $recommendation);
     }
 
+    /** @test */
     #[Test]
     public function it_sets_correct_location_for_maintenance_file(): void
     {
@@ -151,6 +157,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $this->assertEquals('storage/framework/down', $issue->metadata['detected_via']);
     }
 
+    /** @test */
     #[Test]
     public function it_does_not_include_code_snippet(): void
     {
@@ -171,6 +178,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $this->assertArrayNotHasKey('code', $issue->metadata);
     }
 
+    /** @test */
     #[Test]
     public function it_has_correct_metadata(): void
     {
@@ -187,6 +195,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $this->assertContains('downtime', $metadata->tags);
     }
 
+    /** @test */
     #[Test]
     public function it_handles_multiple_checks_consistently(): void
     {
@@ -212,6 +221,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
     // Environment Relevance Tests
     // =========================================================================
 
+    /** @test */
     #[Test]
     public function it_runs_in_production_environment(): void
     {
@@ -238,6 +248,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('affects real users', $issue->recommendation);
     }
 
+    /** @test */
     #[Test]
     public function it_runs_in_staging_environment(): void
     {
@@ -263,6 +274,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('users are affected', $issue->message);
     }
 
+    /** @test */
     #[Test]
     public function it_skips_in_development_environment(): void
     {
@@ -279,6 +291,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('production, staging', $analyzer->getSkipReason());
     }
 
+    /** @test */
     #[Test]
     public function it_skips_in_local_environment(): void
     {
@@ -294,6 +307,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString("Not relevant in 'local' environment", $analyzer->getSkipReason());
     }
 
+    /** @test */
     #[Test]
     public function it_skips_in_testing_environment(): void
     {
@@ -309,6 +323,7 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString("Not relevant in 'testing' environment", $analyzer->getSkipReason());
     }
 
+    /** @test */
     #[Test]
     public function it_includes_production_language_in_recommendations(): void
     {

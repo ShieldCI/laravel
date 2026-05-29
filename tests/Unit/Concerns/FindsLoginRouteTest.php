@@ -24,6 +24,7 @@ class FindsLoginRouteTest extends TestCase
         parent::tearDown();
     }
 
+    /** @test */
     #[Test]
     public function it_uses_config_guest_url_when_provided(): void
     {
@@ -36,6 +37,7 @@ class FindsLoginRouteTest extends TestCase
         $this->assertStringContainsString('/guest', $result);
     }
 
+    /** @test */
     #[Test]
     public function it_falls_back_to_named_login_route(): void
     {
@@ -52,6 +54,7 @@ class FindsLoginRouteTest extends TestCase
         $this->assertStringContainsString('/login', $result);
     }
 
+    /** @test */
     #[Test]
     public function it_searches_for_guest_middleware_route(): void
     {
@@ -70,6 +73,7 @@ class FindsLoginRouteTest extends TestCase
         $this->assertNotEmpty($result);
     }
 
+    /** @test */
     #[Test]
     public function it_falls_back_to_root_url(): void
     {
@@ -89,6 +93,7 @@ class FindsLoginRouteTest extends TestCase
         $this->assertNotEmpty($result);
     }
 
+    /** @test */
     #[Test]
     public function it_detects_guest_middleware_on_route(): void
     {
@@ -109,6 +114,7 @@ class FindsLoginRouteTest extends TestCase
         $this->assertFalse($class->publicRouteHasGuestMiddleware($routeWithAuth));
     }
 
+    /** @test */
     #[Test]
     public function it_handles_non_route_objects_in_guest_middleware_check(): void
     {
@@ -119,6 +125,7 @@ class FindsLoginRouteTest extends TestCase
         $this->assertFalse($class->publicRouteHasGuestMiddleware([]));
     }
 
+    /** @test */
     #[Test]
     public function it_handles_route_with_non_array_middleware(): void
     {
@@ -130,6 +137,7 @@ class FindsLoginRouteTest extends TestCase
         $this->assertFalse($class->publicRouteHasGuestMiddleware($route));
     }
 
+    /** @test */
     #[Test]
     public function it_can_set_router(): void
     {
@@ -142,6 +150,7 @@ class FindsLoginRouteTest extends TestCase
         $this->assertTrue(true);
     }
 
+    /** @test */
     #[Test]
     public function it_converts_url_to_string(): void
     {
@@ -151,6 +160,7 @@ class FindsLoginRouteTest extends TestCase
         $this->assertEquals('http://example.com', $class->publicConvertToString('http://example.com'));
     }
 
+    /** @test */
     #[Test]
     public function it_converts_object_with_current_method_to_string(): void
     {
@@ -167,6 +177,7 @@ class FindsLoginRouteTest extends TestCase
         $this->assertEquals('http://current.example.com', $class->publicConvertToString($urlObject));
     }
 
+    /** @test */
     #[Test]
     public function it_converts_object_with_to_string_method(): void
     {
@@ -183,6 +194,7 @@ class FindsLoginRouteTest extends TestCase
         $this->assertEquals('http://tostring.example.com', $class->publicConvertToString($urlObject));
     }
 
+    /** @test */
     #[Test]
     public function it_casts_object_to_string_as_last_resort(): void
     {

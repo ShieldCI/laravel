@@ -29,6 +29,7 @@ class CommentedCodeAnalyzerTest extends AnalyzerTestCase
         return new CommentedCodeAnalyzer($configRepo);
     }
 
+    /** @test */
     #[Test]
     public function test_passes_without_commented_code(): void
     {
@@ -66,6 +67,7 @@ PHP;
         $this->assertStringContainsString('No commented-out code', $result->getMessage());
     }
 
+    /** @test */
     #[Test]
     public function test_detects_commented_code_with_double_slash(): void
     {
@@ -107,6 +109,7 @@ PHP;
         $this->assertHasIssueContaining('commented-out code', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_commented_code_with_hash_comments(): void
     {
@@ -145,6 +148,7 @@ PHP;
         $this->assertHasIssueContaining('commented-out code', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_ignores_todo_comments(): void
     {
@@ -177,6 +181,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_ignores_fixme_comments(): void
     {
@@ -209,6 +214,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_ignores_prose_comments(): void
     {
@@ -241,6 +247,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_ignores_prose_at_sentence_boundaries(): void
     {
@@ -274,6 +281,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_minimum_consecutive_lines_threshold(): void
     {
@@ -307,6 +315,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_exactly_three_lines(): void
     {
@@ -340,6 +349,7 @@ PHP;
         $this->assertHasIssueContaining('3 consecutive lines', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_variable_patterns(): void
     {
@@ -372,6 +382,7 @@ PHP;
         $this->assertWarning($result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_function_patterns(): void
     {
@@ -404,6 +415,7 @@ PHP;
         $this->assertWarning($result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_method_call_patterns(): void
     {
@@ -436,6 +448,7 @@ PHP;
         $this->assertWarning($result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_static_call_patterns(): void
     {
@@ -468,6 +481,7 @@ PHP;
         $this->assertWarning($result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_control_structure_patterns(): void
     {
@@ -500,6 +514,7 @@ PHP;
         $this->assertWarning($result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_multiple_blocks_in_one_file(): void
     {
@@ -543,6 +558,7 @@ PHP;
         $this->assertCount(2, $issues);
     }
 
+    /** @test */
     #[Test]
     public function test_severity_is_low_for_small_blocks(): void
     {
@@ -586,6 +602,7 @@ PHP;
         $this->assertEquals(Severity::Low, $issue->severity);
     }
 
+    /** @test */
     #[Test]
     public function test_severity_is_medium_for_large_blocks(): void
     {
@@ -624,6 +641,7 @@ PHP;
         $this->assertEquals(Severity::Medium, $issue->severity);
     }
 
+    /** @test */
     #[Test]
     public function test_includes_proper_metadata(): void
     {
@@ -669,6 +687,7 @@ PHP;
         $this->assertIsString($metadata['preview']);
     }
 
+    /** @test */
     #[Test]
     public function test_preview_shows_first_three_lines(): void
     {
@@ -713,6 +732,7 @@ PHP;
         $this->assertStringContainsString('(2 more lines)', $preview);
     }
 
+    /** @test */
     #[Test]
     public function test_recommendation_includes_strategies(): void
     {
@@ -750,6 +770,7 @@ PHP;
         $this->assertStringContainsString('version control', $issue->recommendation);
     }
 
+    /** @test */
     #[Test]
     public function test_has_correct_metadata(): void
     {
@@ -765,6 +786,7 @@ PHP;
         $this->assertContains('dead-code', $metadata->tags);
     }
 
+    /** @test */
     #[Test]
     public function test_handles_empty_files(): void
     {
@@ -788,6 +810,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_block_commented_code(): void
     {
@@ -843,6 +866,7 @@ PHP;
         $this->assertGreaterThanOrEqual(3, $issue->metadata['lineCount']);
     }
 
+    /** @test */
     #[Test]
     public function test_ignores_phpdoc_block_comments(): void
     {
@@ -881,6 +905,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_multiple_block_comments(): void
     {
@@ -933,6 +958,7 @@ PHP;
         $this->assertGreaterThanOrEqual(2, count($issues));
     }
 
+    /** @test */
     #[Test]
     public function test_detects_both_single_line_and_block_comments(): void
     {
@@ -975,6 +1001,7 @@ PHP;
         $this->assertGreaterThanOrEqual(2, count($issues));
     }
 
+    /** @test */
     #[Test]
     public function test_allows_neutral_lines_within_threshold(): void
     {
@@ -1021,6 +1048,7 @@ PHP;
         $this->assertEquals(15, $issue->metadata['endLine']);
     }
 
+    /** @test */
     #[Test]
     public function test_breaks_block_when_exceeding_neutral_line_threshold(): void
     {
@@ -1057,6 +1085,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_ignores_variable_mentions_in_documentation(): void
     {
@@ -1089,6 +1118,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_ignores_inline_examples_in_documentation(): void
     {
@@ -1121,6 +1151,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_ignores_pseudocode_explanations(): void
     {
@@ -1153,6 +1184,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_actual_code_vs_documentation(): void
     {
@@ -1191,6 +1223,7 @@ PHP;
         $this->assertHasIssueContaining('3 consecutive lines', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_detects_code_with_todo_markers_inverted_logic(): void
     {
@@ -1236,6 +1269,7 @@ PHP;
         $this->assertHasIssueContaining('commented-out code', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_ignores_todo_with_weak_code_signals(): void
     {
@@ -1269,6 +1303,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_word_boundaries_prevent_false_positives_in_prose(): void
     {
@@ -1308,6 +1343,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_block_comment_reports_code_line_count_not_total_lines(): void
     {
@@ -1352,6 +1388,7 @@ PHP;
         $this->assertHasIssueContaining('4 consecutive lines', $result);
     }
 
+    /** @test */
     #[Test]
     public function test_respects_custom_min_consecutive_lines_configuration(): void
     {
@@ -1390,6 +1427,7 @@ PHP;
         $this->assertWarning($result);
     }
 
+    /** @test */
     #[Test]
     public function test_respects_custom_code_score_threshold_configuration(): void
     {
@@ -1429,6 +1467,7 @@ PHP;
         $this->assertWarning($result);
     }
 
+    /** @test */
     #[Test]
     public function test_respects_custom_max_neutral_lines_configuration(): void
     {

@@ -47,6 +47,7 @@ class InlineSuppressionParserTest extends TestCase
     // Bare @shieldci-ignore (suppress all analyzers)
     // ==========================================
 
+    /** @test */
     #[Test]
     public function bare_ignore_on_previous_line_suppresses_any_analyzer(): void
     {
@@ -61,6 +62,7 @@ PHP);
         $this->assertTrue($this->parser->isLineSuppressed($file, 3, 'any-analyzer'));
     }
 
+    /** @test */
     #[Test]
     public function bare_ignore_on_same_line_suppresses_any_analyzer(): void
     {
@@ -77,6 +79,7 @@ PHP);
     // Specific analyzer ID suppression
     // ==========================================
 
+    /** @test */
     #[Test]
     public function specific_analyzer_id_on_previous_line_suppresses_only_that_analyzer(): void
     {
@@ -90,6 +93,7 @@ PHP);
         $this->assertFalse($this->parser->isLineSuppressed($file, 3, 'xss-detection'));
     }
 
+    /** @test */
     #[Test]
     public function specific_analyzer_id_on_same_line_suppresses_only_that_analyzer(): void
     {
@@ -106,6 +110,7 @@ PHP);
     // Comma-separated multiple analyzer IDs
     // ==========================================
 
+    /** @test */
     #[Test]
     public function comma_separated_ids_suppress_all_listed_analyzers(): void
     {
@@ -124,6 +129,7 @@ PHP);
     // No suppression
     // ==========================================
 
+    /** @test */
     #[Test]
     public function line_without_suppression_comment_is_not_suppressed(): void
     {
@@ -136,6 +142,7 @@ PHP);
         $this->assertFalse($this->parser->isLineSuppressed($file, 3, 'sql-injection'));
     }
 
+    /** @test */
     #[Test]
     public function suppression_on_unrelated_line_does_not_affect_other_lines(): void
     {
@@ -158,12 +165,14 @@ PHP);
     // Edge cases
     // ==========================================
 
+    /** @test */
     #[Test]
     public function nonexistent_file_returns_not_suppressed(): void
     {
         $this->assertFalse($this->parser->isLineSuppressed('/nonexistent/path.php', 1, 'sql-injection'));
     }
 
+    /** @test */
     #[Test]
     public function line_zero_returns_not_suppressed(): void
     {
@@ -172,6 +181,7 @@ PHP);
         $this->assertFalse($this->parser->isLineSuppressed($file, 0, 'sql-injection'));
     }
 
+    /** @test */
     #[Test]
     public function negative_line_returns_not_suppressed(): void
     {
@@ -180,6 +190,7 @@ PHP);
         $this->assertFalse($this->parser->isLineSuppressed($file, -1, 'sql-injection'));
     }
 
+    /** @test */
     #[Test]
     public function first_line_of_file_can_be_suppressed(): void
     {
@@ -188,6 +199,7 @@ PHP);
         $this->assertTrue($this->parser->isLineSuppressed($file, 1, 'any-analyzer'));
     }
 
+    /** @test */
     #[Test]
     public function case_insensitive_matching(): void
     {
@@ -200,6 +212,7 @@ PHP);
         $this->assertTrue($this->parser->isLineSuppressed($file, 3, 'sql-injection'));
     }
 
+    /** @test */
     #[Test]
     public function file_reads_are_cached(): void
     {
@@ -221,6 +234,7 @@ PHP);
     // Comment styles
     // ==========================================
 
+    /** @test */
     #[Test]
     public function hash_comment_style_works(): void
     {
@@ -233,6 +247,7 @@ PHP);
         $this->assertTrue($this->parser->isLineSuppressed($file, 3, 'sql-injection'));
     }
 
+    /** @test */
     #[Test]
     public function block_comment_style_works(): void
     {
@@ -245,6 +260,7 @@ PHP);
         $this->assertTrue($this->parser->isLineSuppressed($file, 3, 'sql-injection'));
     }
 
+    /** @test */
     #[Test]
     public function docblock_comment_style_works(): void
     {
@@ -257,6 +273,7 @@ PHP);
         $this->assertTrue($this->parser->isLineSuppressed($file, 3, 'sql-injection'));
     }
 
+    /** @test */
     #[Test]
     public function multiline_docblock_bare_suppress_works(): void
     {
@@ -272,6 +289,7 @@ PHP);
         $this->assertTrue($this->parser->isLineSuppressed($file, 5, 'xss-detection'));
     }
 
+    /** @test */
     #[Test]
     public function multiline_docblock_specific_id_suppresses_only_that_analyzer(): void
     {
@@ -289,6 +307,7 @@ PHP);
         $this->assertFalse($this->parser->isLineSuppressed($file, 7, 'xss-detection'));
     }
 
+    /** @test */
     #[Test]
     public function multiline_docblock_non_matching_id_does_not_suppress(): void
     {
@@ -303,6 +322,7 @@ PHP);
         $this->assertFalse($this->parser->isLineSuppressed($file, 5, 'xss-detection'));
     }
 
+    /** @test */
     #[Test]
     public function multiline_docblock_with_extra_lines_works(): void
     {
@@ -323,6 +343,7 @@ PHP);
     // Additional edge cases
     // ==========================================
 
+    /** @test */
     #[Test]
     public function empty_file_returns_not_suppressed(): void
     {
@@ -331,6 +352,7 @@ PHP);
         $this->assertFalse($this->parser->isLineSuppressed($file, 1, 'sql-injection'));
     }
 
+    /** @test */
     #[Test]
     public function line_beyond_file_length_returns_not_suppressed(): void
     {
@@ -339,6 +361,7 @@ PHP);
         $this->assertFalse($this->parser->isLineSuppressed($file, 10, 'sql-injection'));
     }
 
+    /** @test */
     #[Test]
     public function whitespace_around_comma_separated_ids_prevents_match(): void
     {
@@ -357,6 +380,7 @@ PHP);
         $this->assertFalse($this->parser->isLineSuppressed($file, 3, 'xss-detection'));
     }
 
+    /** @test */
     #[Test]
     public function unreadable_file_returns_not_suppressed(): void
     {

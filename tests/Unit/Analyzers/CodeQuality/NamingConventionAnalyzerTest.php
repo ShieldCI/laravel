@@ -19,6 +19,7 @@ class NamingConventionAnalyzerTest extends AnalyzerTestCase
         return new NamingConventionAnalyzer($this->parser);
     }
 
+    /** @test */
     #[Test]
     public function test_passes_when_all_names_follow_conventions(): void
     {
@@ -58,6 +59,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_allows_single_character_properties_psr12_compliant(): void
     {
@@ -92,6 +94,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_flags_class_names_not_in_pascal_case(): void
     {
@@ -123,6 +126,7 @@ PHP;
         $this->assertSame('UserController', $issues[0]->metadata['suggestion']);
     }
 
+    /** @test */
     #[Test]
     public function test_flags_interface_names_not_in_pascal_case(): void
     {
@@ -151,6 +155,7 @@ PHP;
         $this->assertHasIssueContaining("Interface 'user_repository' does not follow PascalCase convention", $result);
     }
 
+    /** @test */
     #[Test]
     public function test_flags_trait_names_not_in_pascal_case(): void
     {
@@ -181,6 +186,7 @@ PHP;
         $this->assertSame('HasTimestamps', $issues[0]->metadata['suggestion']);
     }
 
+    /** @test */
     #[Test]
     public function test_flags_enum_names_not_in_pascal_case(): void
     {
@@ -210,6 +216,7 @@ PHP;
         $this->assertHasIssueContaining("Enum 'user_status' does not follow PascalCase convention", $result);
     }
 
+    /** @test */
     #[Test]
     public function test_flags_method_names_not_in_camel_case(): void
     {
@@ -245,6 +252,7 @@ PHP;
         $this->assertSame('processPayment', $issues[1]->metadata['suggestion']);
     }
 
+    /** @test */
     #[Test]
     public function test_skips_magic_methods(): void
     {
@@ -274,6 +282,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_flags_property_names_not_in_camel_case(): void
     {
@@ -308,6 +317,7 @@ PHP;
         $this->assertSame('totalAmount', $issues[1]->metadata['suggestion']);
     }
 
+    /** @test */
     #[Test]
     public function test_flags_public_constant_names_not_in_screaming_snake_case(): void
     {
@@ -341,6 +351,7 @@ PHP;
         $this->assertSame('MAX_RETRIES', $issues[0]->metadata['suggestion']);
     }
 
+    /** @test */
     #[Test]
     public function test_allows_acronyms_in_pascal_case(): void
     {
@@ -368,6 +379,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_provides_correct_recommendations_for_each_type(): void
     {
@@ -424,6 +436,7 @@ PHP;
         $this->assertStringContainsString('badMethod', $methodIssue->recommendation);
     }
 
+    /** @test */
     #[Test]
     public function test_handles_multiple_properties_in_one_statement(): void
     {
@@ -456,6 +469,7 @@ PHP;
         $this->assertStringContainsString("Property 'email_address' does not follow camelCase convention", $issues[2]->message);
     }
 
+    /** @test */
     #[Test]
     public function test_correctly_converts_snake_case_to_camel_case(): void
     {
@@ -488,6 +502,7 @@ PHP;
         $this->assertSame('getUserById', $issues[1]->metadata['suggestion']);
     }
 
+    /** @test */
     #[Test]
     public function test_correctly_converts_to_screaming_snake_case(): void
     {
@@ -519,6 +534,7 @@ PHP;
         $this->assertSame('API_BASE_URL', $issues[1]->metadata['suggestion']);
     }
 
+    /** @test */
     #[Test]
     public function test_handles_acronyms_in_constant_names_correctly(): void
     {
@@ -561,6 +577,7 @@ PHP;
         $this->assertSame('HTML2_PDF', $issues[5]->metadata['suggestion']);
     }
 
+    /** @test */
     #[Test]
     public function test_allows_camel_case_for_private_and_protected_constants(): void
     {
@@ -596,6 +613,7 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /** @test */
     #[Test]
     public function test_flags_only_public_constants_with_incorrect_naming(): void
     {
@@ -637,6 +655,7 @@ PHP;
         $this->assertSame('API_KEY', $issues[1]->metadata['suggestion']);
     }
 
+    /** @test */
     #[Test]
     public function test_does_not_flag_explicitly_set_table_string_values(): void
     {

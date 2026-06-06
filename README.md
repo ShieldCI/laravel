@@ -10,7 +10,7 @@
 
 ![ShieldCI terminal demo](https://raw.githubusercontent.com/ShieldCI/laravel/master/.github/assets/analyzer-terminal.gif)
 
-Open-source code quality analysis for Laravel applications with 73 comprehensive analyzers covering security, performance, reliability, code quality, and best practices.
+Automated code analysis for Laravel applications — 73 open-source analyzers covering security, performance, reliability, code quality, and best practices.
 
 Built on top of [`shieldci/analyzers-core`](https://github.com/ShieldCI/analyzers-core) (v1.x) - a shared, framework-agnostic foundation for static analysis tools.
 
@@ -285,7 +285,7 @@ class MyAnalyzer extends AbstractFileAnalyzer
 ## Testing
 
 ```bash
-composer test           # 400+ tests
+composer test           # 4,000+ tests
 composer test-coverage  # 98%+ code coverage
 composer analyse        # PHPStan Level 9
 ```

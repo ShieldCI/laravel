@@ -182,6 +182,9 @@ class TransactionVisitor extends NodeVisitorAbstract
     /** @var list<int> Unprotected write lines of the heaviest sibling closure. */
     private array $maxClosureLines = [];
 
+    /** Declaration line of the heaviest sibling closure, used to locate the issue. */
+    private int $maxClosureLine = 0;
+
     /**
      * Stack of saved parent-scope counters while traversing a callback closure.
      * Each callback closure is its own write-counting unit; on entry we snapshot
@@ -199,7 +202,8 @@ class TransactionVisitor extends NodeVisitorAbstract
      *   ifElseBranchStack: list<array{pos: int, elsePos: int, inElse: bool, ifWrites: int, elseWrites: int, ifLines: list<int>, elseLines: list<int>}>,
      *   maxClosureWrites: int,
      *   maxClosureUnprotected: int,
-     *   maxClosureLines: list<int>
+     *   maxClosureLines: list<int>,
+     *   maxClosureLine: int
      * }>
      */
     private array $closureScopeStack = [];
@@ -281,6 +285,7 @@ class TransactionVisitor extends NodeVisitorAbstract
             $this->maxClosureWrites = 0;
             $this->maxClosureUnprotected = 0;
             $this->maxClosureLines = [];
+            $this->maxClosureLine = 0;
             $this->closureScopeStack = [];
         }
 
@@ -428,7 +433,7 @@ class TransactionVisitor extends NodeVisitorAbstract
                     $this->transactionDepth--;
                 }
             } else {
-                $this->popClosureScope();
+                $this->popClosureScope($node);
             }
         }
 
@@ -513,14 +518,24 @@ class TransactionVisitor extends NodeVisitorAbstract
 
             // If effective writes >= threshold, they should be protected
             if ($effectiveWrites >= $this->threshold) {
+                // When every unprotected write lives inside a callback closure (the
+                // method's own body has none), attribute the issue to that closure's
+                // location instead of the method declaration. Otherwise a long Filament
+                // table()/form() would be reported at its signature line, far from the
+                // offending callback (e.g. an ->action(fn ...) handler).
+                $closureDriven = $mainFlowUnprotected <= 0 && $this->maxClosureLine > 0;
+
+                $subject = $closureDriven
+                    ? sprintf('Closure in "%s::%s()"', $this->currentClassName ?? 'Unknown', $this->currentMethodName ?? 'unknown')
+                    : sprintf('Method "%s::%s()"', $this->currentClassName ?? 'Unknown', $this->currentMethodName ?? 'unknown');
+
                 $this->issues[] = [
                     'message' => sprintf(
-                        'Method "%s::%s()" has %d database write operation(s) outside transaction protection',
-                        $this->currentClassName ?? 'Unknown',
-                        $this->currentMethodName ?? 'unknown',
+                        '%s has %d database write operation(s) outside transaction protection',
+                        $subject,
                         $effectiveUnprotected
                     ),
-                    'line' => $this->methodStartLine,
+                    'line' => $closureDriven ? $this->maxClosureLine : $this->methodStartLine,
                     'severity' => Severity::High,
                     'recommendation' => sprintf(
                         'Wrap all related write operations in a database transaction to ensure atomicity. '.
@@ -555,6 +570,7 @@ class TransactionVisitor extends NodeVisitorAbstract
             'maxClosureWrites' => $this->maxClosureWrites,
             'maxClosureUnprotected' => $this->maxClosureUnprotected,
             'maxClosureLines' => $this->maxClosureLines,
+            'maxClosureLine' => $this->maxClosureLine,
         ];
 
         $this->writeOperations = 0;
@@ -568,6 +584,7 @@ class TransactionVisitor extends NodeVisitorAbstract
         $this->maxClosureWrites = 0;
         $this->maxClosureUnprotected = 0;
         $this->maxClosureLines = [];
+        $this->maxClosureLine = 0;
     }
 
     /**
@@ -575,7 +592,7 @@ class TransactionVisitor extends NodeVisitorAbstract
      * its effective writes (own main flow + its own heaviest child closure)
      * contribute to the parent via max(), never summed across siblings.
      */
-    private function popClosureScope(): void
+    private function popClosureScope(Node $closure): void
     {
         if ($this->closureScopeStack === []) {
             return;
@@ -601,6 +618,7 @@ class TransactionVisitor extends NodeVisitorAbstract
         $this->maxClosureWrites = $frame['maxClosureWrites'];
         $this->maxClosureUnprotected = $frame['maxClosureUnprotected'];
         $this->maxClosureLines = $frame['maxClosureLines'];
+        $this->maxClosureLine = $frame['maxClosureLine'];
 
         // Fold the just-left closure into the restored parent as the heaviest sibling.
         if ($effClosureWrites > $this->maxClosureWrites) {
@@ -609,6 +627,8 @@ class TransactionVisitor extends NodeVisitorAbstract
         if ($effClosureUnprotected > $this->maxClosureUnprotected) {
             $this->maxClosureUnprotected = $effClosureUnprotected;
             $this->maxClosureLines = $effClosureLines;
+            // Record this closure's declaration line so the issue can point at it.
+            $this->maxClosureLine = $closure->getStartLine();
         }
     }
 

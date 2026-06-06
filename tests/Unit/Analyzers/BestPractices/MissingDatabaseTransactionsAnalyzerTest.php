@@ -2261,4 +2261,68 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    public function test_closure_driven_issue_is_located_at_the_closure_not_the_method(): void
+    {
+        // Mirrors a Filament table() resource: the writes live in an ->action() callback
+        // far below the (long) method declaration. The issue must point at the closure,
+        // not at the method's signature line.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Filament\Resources;
+
+use App\Models\Order;
+use Filament\Tables\Actions\Action;
+use Filament\Tables\Table;
+
+class OrderResource
+{
+    public function table(Table $table): Table
+    {
+        return $table
+            ->recordActions([
+                Action::make('approve')
+                    ->action(function (Order $record): void {
+                        $record->status = 'approved';
+                        $record->save();
+                        $record->touch();
+                    }),
+            ]);
+    }
+}
+PHP;
+
+        // Resolve the expected line dynamically so the assertion is not brittle.
+        $closureLine = null;
+        $methodLine = null;
+        foreach (explode("\n", $code) as $index => $lineText) {
+            if (str_contains($lineText, '->action(function')) {
+                $closureLine = $index + 1;
+            }
+            if (str_contains($lineText, 'public function table')) {
+                $methodLine = $index + 1;
+            }
+        }
+        $this->assertNotNull($closureLine);
+        $this->assertNotNull($methodLine);
+
+        $tempDir = $this->createTempDirectory(['Filament/Resources/OrderResource.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        // The issue points at the closure, not the method signature.
+        $this->assertNotNull($issues[0]->location);
+        $this->assertSame($closureLine, $issues[0]->location->line);
+        $this->assertNotSame($methodLine, $issues[0]->location->line);
+        $this->assertStringContainsString('Closure in', $issues[0]->message);
+    }
 }

@@ -1,12 +1,17 @@
 {
     "name": "shieldci/laravel",
-    "description": "ShieldCI Laravel Package - Security and code quality analysis for Laravel applications",
+    "description": "Automated code analysis for Laravel applications covering security, performance, reliability, code quality and best practices.",
     "keywords": [
         "laravel",
         "security",
-        "static-analysis",
+        "performance",
+        "reliability",
         "code-quality",
+        "best-practices",
+        "static-analysis",
         "vulnerability-scanner",
+        "enlightn",
+        "enlightn-alternative",
         "shieldci"
     ],
     "type": "library",

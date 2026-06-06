@@ -2093,4 +2093,172 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    public function test_passes_with_filament_sibling_action_closures(): void
+    {
+        // Each Filament action closure fires on a different user action / request, so
+        // the writes never co-execute and must not be summed across sibling closures.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Filament\Resources;
+
+use App\Models\Order;
+use Filament\Tables\Actions\Action;
+use Filament\Tables\Table;
+
+class OrderResource
+{
+    public function table(Table $table): Table
+    {
+        return $table
+            ->actions([
+                Action::make('approve')
+                    ->action(function (Order $record) {
+                        $record->update(['status' => 'approved']);
+                    }),
+                Action::make('reject')
+                    ->action(function (Order $record) {
+                        $record->delete();
+                    }),
+            ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Filament/Resources/OrderResource.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // One write per independent callback → below threshold → passes.
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_single_action_closure_has_multiple_writes(): void
+    {
+        // A single closure that performs two writes is a genuine atomicity risk and
+        // must still be flagged (guards against over-relaxing the closure scoping).
+        $code = <<<'PHP'
+<?php
+
+namespace App\Filament\Resources;
+
+use App\Models\Order;
+use App\Models\Log;
+use Filament\Tables\Actions\Action;
+use Filament\Tables\Table;
+
+class OrderResource
+{
+    public function table(Table $table): Table
+    {
+        return $table
+            ->actions([
+                Action::make('approve')
+                    ->action(function (Order $record) {
+                        $record->update(['status' => 'approved']);
+                        Log::create(['action' => 'approved', 'order_id' => $record->id]);
+                    }),
+            ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Filament/Resources/OrderResource.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('database write operation(s) outside transaction protection', $result);
+    }
+
+    public function test_fails_with_main_flow_write_plus_synchronous_closure_write(): void
+    {
+        // A main-flow write co-executes with a write inside a synchronous closure
+        // (each()), so together they exceed the threshold and must be flagged.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Order;
+use App\Models\OrderItem;
+
+class OrderService
+{
+    public function createOrder(array $data, array $items)
+    {
+        $order = Order::create($data);
+
+        collect($items)->each(function (array $item) use ($order) {
+            OrderItem::create(['order_id' => $order->id] + $item);
+        });
+
+        return $order;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('database write operation(s) outside transaction protection', $result);
+    }
+
+    public function test_passes_with_synchronous_closure_inside_transaction(): void
+    {
+        // Writes inside a synchronous closure that is itself inside DB::transaction()
+        // are protected — the closure inherits the enclosing transaction.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Order;
+use App\Models\OrderItem;
+use App\Models\Log;
+use Illuminate\Support\Facades\DB;
+
+class OrderService
+{
+    public function createOrder(array $data, array $items)
+    {
+        return DB::transaction(function () use ($data, $items) {
+            $order = Order::create($data);
+
+            collect($items)->each(function (array $item) use ($order) {
+                OrderItem::create(['order_id' => $order->id] + $item);
+                Log::create(['order_id' => $order->id]);
+            });
+
+            return $order;
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

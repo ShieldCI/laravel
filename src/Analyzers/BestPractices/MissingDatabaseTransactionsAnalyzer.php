@@ -127,7 +127,7 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
         }
 
         return $this->resultBySeverity(
-            sprintf('Found %d method(s) with multiple writes missing transaction protection', count($issues)),
+            sprintf('Found %d location(s) with multiple writes missing transaction protection', count($issues)),
             $issues
         );
     }

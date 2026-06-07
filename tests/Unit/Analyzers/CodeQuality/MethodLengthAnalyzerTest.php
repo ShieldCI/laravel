@@ -1044,4 +1044,112 @@ PHP;
         $this->assertWarning($result);
         $this->assertHasIssueContaining('form', $result);
     }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_seeder_files(): void
+    {
+        // A seeder's run() is a data dump (huge insert arrays / JSON); its length
+        // measures data volume, not code complexity, so it must not be flagged.
+        $statements = str_repeat('        $var = "value";'."\n", 60);
+
+        $code = <<<PHP
+<?php
+
+namespace Database\Seeders;
+
+use Illuminate\Database\Seeder;
+
+class BankSeeder extends Seeder
+{
+    public function run(): void
+    {
+{$statements}
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'database/seeders/BankSeeder.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['database']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_migration_files(): void
+    {
+        // A migration's up() is schema definition; length reflects table/column count,
+        // not branching complexity.
+        $statements = str_repeat('        $var = "value";'."\n", 60);
+
+        $code = <<<PHP
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+{$statements}
+    }
+};
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'database/migrations/2024_01_01_000000_create_things.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['database']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_factory_files(): void
+    {
+        $statements = str_repeat('        $var = "value";'."\n", 60);
+
+        $code = <<<PHP
+<?php
+
+namespace Database\Factories;
+
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+class UserFactory extends Factory
+{
+    public function definition(): array
+    {
+{$statements}
+        return [];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'database/factories/UserFactory.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['database']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

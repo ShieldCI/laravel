@@ -15,6 +15,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\ClassifiesFiles;
 
 /**
  * Flags methods and functions exceeding recommended line count.
@@ -24,10 +25,14 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  * - Counts physical lines (from declaration to closing brace)
  * - Excludes simple getter/setter patterns (get*, set*, is*, has*) only if ≤ 10 lines
  * - Large methods matching exclude patterns are still flagged (prevents hiding real problems)
+ * - Skips development/data files (seeders, migrations, factories, tests) where method
+ *   length measures data/schema volume rather than code complexity
  * - Differentiates between global functions and class methods in messaging
  */
 class MethodLengthAnalyzer extends AbstractFileAnalyzer
 {
+    use ClassifiesFiles;
+
     public const DEFAULT_THRESHOLD = 50;
 
     /** @var array<string> */
@@ -95,6 +100,13 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
         $ignoreFluentChains = $this->ignoreFluentChains;
 
         foreach ($this->getPhpFiles() as $file) {
+            // Skip development/data files (seeders, migrations, factories, tests):
+            // their methods are data dumps or schema definitions whose length reflects
+            // data volume, not code complexity — flagging them is noise.
+            if ($this->isTestFile($file) || $this->isDevelopmentFile($file)) {
+                continue;
+            }
+
             $ast = $this->parser->parseFile($file);
 
             if (empty($ast)) {

@@ -621,10 +621,16 @@ class TransactionVisitor extends NodeVisitorAbstract
         $this->maxClosureLine = $frame['maxClosureLine'];
 
         // Fold the just-left closure into the restored parent as the heaviest sibling.
-        if ($effClosureWrites > $this->maxClosureWrites) {
+        // Only closures that contain unprotected writes can add transaction risk to the
+        // parent; fully-protected closures (e.g. an ->action() that wraps its writes in
+        // DB::transaction()) contribute nothing. Among the unprotected siblings we keep
+        // the heaviest (by write count) as a COHERENT unit — its own writes, unprotected
+        // count, lines and declaration line are kept together. Metrics are never mixed
+        // across siblings, which never co-execute on the same request: doing so would,
+        // for example, pair a protected sibling's write count with another sibling's lone
+        // unprotected write and report a phantom multi-write transaction gap.
+        if ($effClosureUnprotected > 0 && $effClosureWrites > $this->maxClosureWrites) {
             $this->maxClosureWrites = $effClosureWrites;
-        }
-        if ($effClosureUnprotected > $this->maxClosureUnprotected) {
             $this->maxClosureUnprotected = $effClosureUnprotected;
             $this->maxClosureLines = $effClosureLines;
             // Record this closure's declaration line so the issue can point at it.
@@ -737,6 +743,27 @@ class TransactionVisitor extends NodeVisitorAbstract
         return false;
     }
 
+    /**
+     * Detect a fluent builder chain rooted at a `SomeComponent::make(...)` static call
+     * — the universal factory convention for Filament/Livewire/Forms builders. Methods
+     * such as ->toggle()/->sync() on such a chain configure UI; they are not Eloquent
+     * relationship writes. A real relationship op is rooted on a model instance
+     * (e.g. $user->roles()->toggle()) or a query (User::find($id)->roles()->sync()),
+     * neither of which has a `make` root.
+     */
+    private function isFluentMakeBuilderChain(Node\Expr\MethodCall $node): bool
+    {
+        $current = $node->var;
+
+        while ($current instanceof Node\Expr\MethodCall) {
+            $current = $current->var;
+        }
+
+        return $current instanceof Node\Expr\StaticCall
+            && $current->name instanceof Node\Identifier
+            && $current->name->toString() === 'make';
+    }
+
     private function isWriteOperation(Node $node): bool
     {
         // Static method calls
@@ -801,6 +828,13 @@ class TransactionVisitor extends NodeVisitorAbstract
                 // Relationship sync/attach/detach
                 $relationMethods = ['sync', 'attach', 'detach', 'toggle', 'syncWithoutDetaching'];
                 if (in_array($method, $relationMethods, true)) {
+                    // Skip fluent builder chains like Filament's
+                    // Filter::make('x')->...->toggle(), which configure UI and are not
+                    // Eloquent relationship writes.
+                    if ($this->isFluentMakeBuilderChain($node)) {
+                        return false;
+                    }
+
                     return true;
                 }
             }

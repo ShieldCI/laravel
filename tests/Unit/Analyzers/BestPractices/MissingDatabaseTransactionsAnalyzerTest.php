@@ -2325,4 +2325,133 @@ PHP;
         $this->assertNotSame($methodLine, $issues[0]->location->line);
         $this->assertStringContainsString('Closure in', $issues[0]->message);
     }
+
+    public function test_passes_with_protected_sibling_and_single_write_sibling(): void
+    {
+        // One action wraps two writes in a transaction (protected); a sibling action
+        // performs a single write. Neither closure is a problem on its own, and they
+        // never co-execute, so the method must not be flagged. Guards against mixing
+        // the write count of one sibling with the unprotected count of another.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Filament\Resources;
+
+use App\Models\Quotation;
+use App\Models\WorkOrder;
+use Filament\Tables\Actions\Action;
+use Filament\Tables\Table;
+use Illuminate\Support\Facades\DB;
+
+class QuotationResource
+{
+    public function table(Table $table): Table
+    {
+        return $table
+            ->recordActions([
+                Action::make('approve')
+                    ->action(function (Quotation $record): void {
+                        DB::transaction(function () use ($record): void {
+                            $record->update(['client_approved' => 1]);
+                            $record->touch();
+                        });
+                    }),
+                Action::make('work_order')
+                    ->action(function (Quotation $record, array $data): void {
+                        WorkOrder::create($data);
+                    }),
+            ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Filament/Resources/QuotationResource.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_filament_filter_toggle_as_write(): void
+    {
+        // Filament's Filter::make('x')->...->toggle() configures a UI toggle filter;
+        // it is not an Eloquent relationship toggle and must not count as a DB write.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Filament\Resources;
+
+use App\Models\WorkOrder;
+use Filament\Tables\Actions\Action;
+use Filament\Tables\Filters\Filter;
+use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
+
+class QuotationResource
+{
+    public function table(Table $table): Table
+    {
+        return $table
+            ->filters([
+                Filter::make('approved')
+                    ->query(fn (Builder $query): Builder => $query->where('approved', 1))
+                    ->toggle(),
+            ])
+            ->recordActions([
+                Action::make('work_order')
+                    ->action(function (array $data): void {
+                        WorkOrder::create($data);
+                    }),
+            ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Filament/Resources/QuotationResource.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_detects_real_relationship_toggle_on_model(): void
+    {
+        // A genuine Eloquent relationship toggle/attach (rooted on a model instance,
+        // not a ::make() builder) must still be flagged.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class RoleService
+{
+    public function manageRoles(User $user, array $roleIds, array $permIds): void
+    {
+        $user->roles()->toggle($roleIds);
+        $user->permissions()->attach($permIds);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/RoleService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('database write operation(s) outside transaction protection', $result);
+    }
 }

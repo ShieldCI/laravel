@@ -940,6 +940,117 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_skips_wildcard_public_routes_from_config(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('welcome/{employee}', [WelcomeController::class, 'savePassword']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        // Wildcard pattern should match the route URI even though it contains a
+        // {parameter} placeholder and is registered without a leading slash.
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => [
+                    '/welcome/*',
+                ],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_matches_public_route_registered_without_leading_slash(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('api/webhook', [WebhookController::class, 'handle']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        // Config pattern has a leading slash; route URI does not. They should match.
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => [
+                    '/api/webhook',
+                ],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_route_group_when_all_routes_are_public(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['middleware' => ['web']], function () {
+    Route::get('welcome/{employee}', [WelcomeController::class, 'showWelcomeForm']);
+    Route::post('welcome/{employee}', [WelcomeController::class, 'savePassword']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        // Both routes inside the group are covered by the wildcard, so the group
+        // warning must be suppressed too.
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => [
+                    '/welcome/*',
+                ],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_route_group_when_a_route_is_not_public(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['middleware' => ['web']], function () {
+    Route::post('welcome/{employee}', [WelcomeController::class, 'savePassword']);
+    Route::post('admin/settings', [AdminController::class, 'update']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        // Only the welcome route is whitelisted; the admin route is not, so the
+        // group warning must still fire.
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => [
+                    '/welcome/*',
+                ],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Route group without authentication middleware', $result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
     public function test_skips_default_public_routes(): void
     {
         $routes = <<<'PHP'
@@ -1028,7 +1139,7 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_detects_route_group_even_with_public_route_names(): void
+    public function test_skips_route_group_when_inner_routes_are_default_public(): void
     {
         $routes = <<<'PHP'
 <?php
@@ -1046,9 +1157,10 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Route group itself is flagged (prefix contains 'auth' but that's just a name)
-        // The individual routes inside are skipped because they contain 'login' and 'register'
-        $this->assertFalse($result->isSuccess());
+        // Every route inside the group is a default-public auth-entry route
+        // (/login, /register), so requiring auth here would be nonsensical.
+        // The group warning must be suppressed along with the individual routes.
+        $this->assertPassed($result);
     }
 
     public function test_without_middleware_removes_auth_from_route(): void

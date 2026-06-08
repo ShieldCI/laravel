@@ -835,4 +835,321 @@ PHP;
         $this->assertSame('Method Length Analyzer', $metadata->name);
         $this->assertContains('maintainability', $metadata->tags);
     }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_filament_form_builder_chain(): void
+    {
+        // A Filament resource form() is a single return of a builder chain whose
+        // length reflects the number of UI fields, not code complexity.
+        $fields = str_repeat("            TextInput::make('field')->required()->maxLength(255),\n", 60);
+
+        $code = <<<PHP
+<?php
+
+namespace App\Filament\Resources;
+
+use Filament\Forms\Components\TextInput;
+use Filament\Forms\Form;
+
+class UserResource
+{
+    public function form(Form \$form): Form
+    {
+        return \$form
+            ->schema([
+{$fields}
+            ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Filament/Resources/UserResource.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass: a single-expression builder chain is declarative, not complex.
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_filament_table_builder_chain(): void
+    {
+        $columns = str_repeat("                TextColumn::make('column')->sortable()->searchable(),\n", 30);
+        $actions = str_repeat("                Action::make('do')->icon('heroicon-o-eye'),\n", 30);
+
+        $code = <<<PHP
+<?php
+
+namespace App\Filament\Resources;
+
+use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Actions\Action;
+use Filament\Tables\Table;
+
+class UserResource
+{
+    public function table(Table \$table): Table
+    {
+        return \$table
+            ->columns([
+{$columns}
+            ])
+            ->actions([
+{$actions}
+            ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Filament/Resources/UserResource.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_migration_schema_builder(): void
+    {
+        // Migration up() is a single Schema::create() expression; the closure body
+        // (column definitions) must not count as method-level control flow.
+        $columns = str_repeat("            \$table->string('column')->nullable();\n", 60);
+
+        $code = <<<PHP
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('users', function (Blueprint \$table) {
+            \$table->id();
+{$columns}
+            \$table->timestamps();
+        });
+    }
+};
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'database/migrations/2024_01_01_000000_create_users.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['database']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_still_flags_long_imperative_method_without_control_flow(): void
+    {
+        // Regression guard: many separate scalar-assignment statements are NOT a
+        // declarative builder and must remain flagged even with no control flow.
+        $statements = str_repeat('        $var = "value";'."\n", 60);
+
+        $code = <<<PHP
+<?php
+
+namespace App\Services;
+
+class DataProcessor
+{
+    public function processData(\$input)
+    {
+{$statements}
+        return \$var;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/DataProcessor.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('processData', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_fluent_chain_exclusion_can_be_disabled_via_config(): void
+    {
+        $fields = str_repeat("            TextInput::make('field')->required()->maxLength(255),\n", 60);
+
+        $code = <<<PHP
+<?php
+
+namespace App\Filament\Resources;
+
+use Filament\Forms\Components\TextInput;
+use Filament\Forms\Form;
+
+class UserResource
+{
+    public function form(Form \$form): Form
+    {
+        return \$form
+            ->schema([
+{$fields}
+            ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Filament/Resources/UserResource.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'method-length' => [
+                'ignore_fluent_chains' => false,
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // With the exclusion disabled, the long builder method is flagged again.
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('form', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_seeder_files(): void
+    {
+        // A seeder's run() is a data dump (huge insert arrays / JSON); its length
+        // measures data volume, not code complexity, so it must not be flagged.
+        $statements = str_repeat('        $var = "value";'."\n", 60);
+
+        $code = <<<PHP
+<?php
+
+namespace Database\Seeders;
+
+use Illuminate\Database\Seeder;
+
+class BankSeeder extends Seeder
+{
+    public function run(): void
+    {
+{$statements}
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'database/seeders/BankSeeder.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['database']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_migration_files(): void
+    {
+        // A migration's up() is schema definition; length reflects table/column count,
+        // not branching complexity.
+        $statements = str_repeat('        $var = "value";'."\n", 60);
+
+        $code = <<<PHP
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+{$statements}
+    }
+};
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'database/migrations/2024_01_01_000000_create_things.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['database']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_factory_files(): void
+    {
+        $statements = str_repeat('        $var = "value";'."\n", 60);
+
+        $code = <<<PHP
+<?php
+
+namespace Database\Factories;
+
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+class UserFactory extends Factory
+{
+    public function definition(): array
+    {
+{$statements}
+        return [];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'database/factories/UserFactory.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['database']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

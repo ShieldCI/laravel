@@ -127,7 +127,7 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
         }
 
         return $this->resultBySeverity(
-            sprintf('Found %d method(s) with multiple writes missing transaction protection', count($issues)),
+            sprintf('Found %d location(s) with multiple writes missing transaction protection', count($issues)),
             $issues
         );
     }
@@ -168,6 +168,45 @@ class TransactionVisitor extends NodeVisitorAbstract
     private int $isolatedWrites = 0;
 
     private int $earlyExitIfDepth = 0;
+
+    /**
+     * Heaviest sibling-closure contribution for the current scope. Independent
+     * callback closures (e.g. Filament ->action(fn...)) are mutually-exclusive
+     * dispatch paths that never co-execute, so — like if/else branches — only the
+     * heaviest one counts toward the enclosing scope, not the sum of all of them.
+     */
+    private int $maxClosureWrites = 0;
+
+    private int $maxClosureUnprotected = 0;
+
+    /** @var list<int> Unprotected write lines of the heaviest sibling closure. */
+    private array $maxClosureLines = [];
+
+    /** Declaration line of the heaviest sibling closure, used to locate the issue. */
+    private int $maxClosureLine = 0;
+
+    /**
+     * Stack of saved parent-scope counters while traversing a callback closure.
+     * Each callback closure is its own write-counting unit; on entry we snapshot
+     * and reset the counters, on exit we restore them and fold the closure in as a
+     * sibling (max), never summing across siblings.
+     *
+     * @var list<array{
+     *   writeOperations: int,
+     *   writeOperationsInTransaction: int,
+     *   unprotectedWriteLines: list<int>,
+     *   isolatedWrites: int,
+     *   earlyExitIfDepth: int,
+     *   earlyExitIfPositions: array<int, true>,
+     *   guardClauseElsePositions: array<int, true>,
+     *   ifElseBranchStack: list<array{pos: int, elsePos: int, inElse: bool, ifWrites: int, elseWrites: int, ifLines: list<int>, elseLines: list<int>}>,
+     *   maxClosureWrites: int,
+     *   maxClosureUnprotected: int,
+     *   maxClosureLines: list<int>,
+     *   maxClosureLine: int
+     * }>
+     */
+    private array $closureScopeStack = [];
 
     /**
      * Track file positions of closures passed directly to DB::transaction().
@@ -243,6 +282,11 @@ class TransactionVisitor extends NodeVisitorAbstract
             $this->earlyExitIfPositions = [];
             $this->guardClauseElsePositions = [];
             $this->ifElseBranchStack = [];
+            $this->maxClosureWrites = 0;
+            $this->maxClosureUnprotected = 0;
+            $this->maxClosureLines = [];
+            $this->maxClosureLine = 0;
+            $this->closureScopeStack = [];
         }
 
         // Check for DB::transaction or DB::beginTransaction
@@ -272,11 +316,16 @@ class TransactionVisitor extends NodeVisitorAbstract
             }
         }
 
-        // Track entering transaction closure (only closures actually passed to DB::transaction)
+        // Track entering a closure. A closure passed directly to DB::transaction()
+        // marks protection (transactionDepth). Any other callback closure is an
+        // independent execution unit (e.g. a Filament ->action(fn...) handler that
+        // fires on a separate request) and gets its own write-counting scope.
         if ($node instanceof Node\Expr\Closure || $node instanceof Node\Expr\ArrowFunction) {
             $pos = $node->getStartFilePos();
             if (isset($this->transactionClosurePositions[$pos])) {
                 $this->transactionDepth++;
+            } else {
+                $this->pushClosureScope();
             }
         }
 
@@ -374,11 +423,17 @@ class TransactionVisitor extends NodeVisitorAbstract
 
     public function leaveNode(Node $node): ?Node
     {
-        // Track leaving transaction closure (only decrement for closures actually in transaction)
+        // Track leaving a closure: decrement transaction depth for a DB::transaction()
+        // closure, otherwise fold the independent callback closure back into its
+        // parent scope as a sibling (max, not sum).
         if ($node instanceof Node\Expr\Closure || $node instanceof Node\Expr\ArrowFunction) {
             $pos = $node->getStartFilePos();
-            if (isset($this->transactionClosurePositions[$pos]) && $this->transactionDepth > 0) {
-                $this->transactionDepth--;
+            if (isset($this->transactionClosurePositions[$pos])) {
+                if ($this->transactionDepth > 0) {
+                    $this->transactionDepth--;
+                }
+            } else {
+                $this->popClosureScope($node);
             }
         }
 
@@ -449,26 +504,43 @@ class TransactionVisitor extends NodeVisitorAbstract
             $mainFlowWrites = $this->writeOperations - $this->isolatedWrites;
             $mainFlowUnprotected = $mainFlowWrites - $this->writeOperationsInTransaction;
 
-            // If all main-flow writes are protected, no issue
-            if ($mainFlowUnprotected <= 0) {
+            // Fold in the heaviest sibling callback closure. Main-flow writes co-execute
+            // with whichever single callback fires, so we add the heaviest closure's
+            // counts; sibling closures never co-execute with each other, so they are
+            // not summed (only the max is kept).
+            $effectiveWrites = $mainFlowWrites + $this->maxClosureWrites;
+            $effectiveUnprotected = $mainFlowUnprotected + $this->maxClosureUnprotected;
+
+            // If all effective writes are protected, no issue
+            if ($effectiveUnprotected <= 0) {
                 return null;
             }
 
-            // If main-flow writes >= threshold, they should be protected
-            if ($mainFlowWrites >= $this->threshold) {
+            // If effective writes >= threshold, they should be protected
+            if ($effectiveWrites >= $this->threshold) {
+                // When every unprotected write lives inside a callback closure (the
+                // method's own body has none), attribute the issue to that closure's
+                // location instead of the method declaration. Otherwise a long Filament
+                // table()/form() would be reported at its signature line, far from the
+                // offending callback (e.g. an ->action(fn ...) handler).
+                $closureDriven = $mainFlowUnprotected <= 0 && $this->maxClosureLine > 0;
+
+                $subject = $closureDriven
+                    ? sprintf('Closure in "%s::%s()"', $this->currentClassName ?? 'Unknown', $this->currentMethodName ?? 'unknown')
+                    : sprintf('Method "%s::%s()"', $this->currentClassName ?? 'Unknown', $this->currentMethodName ?? 'unknown');
+
                 $this->issues[] = [
                     'message' => sprintf(
-                        'Method "%s::%s()" has %d database write operation(s) outside transaction protection',
-                        $this->currentClassName ?? 'Unknown',
-                        $this->currentMethodName ?? 'unknown',
-                        $mainFlowUnprotected
+                        '%s has %d database write operation(s) outside transaction protection',
+                        $subject,
+                        $effectiveUnprotected
                     ),
-                    'line' => $this->methodStartLine,
+                    'line' => $closureDriven ? $this->maxClosureLine : $this->methodStartLine,
                     'severity' => Severity::High,
                     'recommendation' => sprintf(
                         'Wrap all related write operations in a database transaction to ensure atomicity. '.
                         'Unprotected write operations at lines: %s',
-                        implode(', ', $this->unprotectedWriteLines)
+                        implode(', ', array_merge($this->unprotectedWriteLines, $this->maxClosureLines))
                     ),
                     'code' => null,
                 ];
@@ -476,6 +548,94 @@ class TransactionVisitor extends NodeVisitorAbstract
         }
 
         return null;
+    }
+
+    /**
+     * Snapshot the current scope's write counters and reset them so the callback
+     * closure body is counted as its own independent unit. Transaction depth is
+     * intentionally inherited, so a synchronous closure inside DB::transaction()
+     * remains protected.
+     */
+    private function pushClosureScope(): void
+    {
+        $this->closureScopeStack[] = [
+            'writeOperations' => $this->writeOperations,
+            'writeOperationsInTransaction' => $this->writeOperationsInTransaction,
+            'unprotectedWriteLines' => $this->unprotectedWriteLines,
+            'isolatedWrites' => $this->isolatedWrites,
+            'earlyExitIfDepth' => $this->earlyExitIfDepth,
+            'earlyExitIfPositions' => $this->earlyExitIfPositions,
+            'guardClauseElsePositions' => $this->guardClauseElsePositions,
+            'ifElseBranchStack' => $this->ifElseBranchStack,
+            'maxClosureWrites' => $this->maxClosureWrites,
+            'maxClosureUnprotected' => $this->maxClosureUnprotected,
+            'maxClosureLines' => $this->maxClosureLines,
+            'maxClosureLine' => $this->maxClosureLine,
+        ];
+
+        $this->writeOperations = 0;
+        $this->writeOperationsInTransaction = 0;
+        $this->unprotectedWriteLines = [];
+        $this->isolatedWrites = 0;
+        $this->earlyExitIfDepth = 0;
+        $this->earlyExitIfPositions = [];
+        $this->guardClauseElsePositions = [];
+        $this->ifElseBranchStack = [];
+        $this->maxClosureWrites = 0;
+        $this->maxClosureUnprotected = 0;
+        $this->maxClosureLines = [];
+        $this->maxClosureLine = 0;
+    }
+
+    /**
+     * Restore the parent scope's counters and fold this closure in as a sibling:
+     * its effective writes (own main flow + its own heaviest child closure)
+     * contribute to the parent via max(), never summed across siblings.
+     */
+    private function popClosureScope(Node $closure): void
+    {
+        if ($this->closureScopeStack === []) {
+            return;
+        }
+
+        // Effective metrics for the closure we are leaving (mirror the method check).
+        $closureMainWrites = $this->writeOperations - $this->isolatedWrites;
+        $closureMainUnprotected = $closureMainWrites - $this->writeOperationsInTransaction;
+        $effClosureWrites = $closureMainWrites + $this->maxClosureWrites;
+        $effClosureUnprotected = $closureMainUnprotected + $this->maxClosureUnprotected;
+        $effClosureLines = array_merge($this->unprotectedWriteLines, $this->maxClosureLines);
+
+        $frame = array_pop($this->closureScopeStack);
+
+        $this->writeOperations = $frame['writeOperations'];
+        $this->writeOperationsInTransaction = $frame['writeOperationsInTransaction'];
+        $this->unprotectedWriteLines = $frame['unprotectedWriteLines'];
+        $this->isolatedWrites = $frame['isolatedWrites'];
+        $this->earlyExitIfDepth = $frame['earlyExitIfDepth'];
+        $this->earlyExitIfPositions = $frame['earlyExitIfPositions'];
+        $this->guardClauseElsePositions = $frame['guardClauseElsePositions'];
+        $this->ifElseBranchStack = $frame['ifElseBranchStack'];
+        $this->maxClosureWrites = $frame['maxClosureWrites'];
+        $this->maxClosureUnprotected = $frame['maxClosureUnprotected'];
+        $this->maxClosureLines = $frame['maxClosureLines'];
+        $this->maxClosureLine = $frame['maxClosureLine'];
+
+        // Fold the just-left closure into the restored parent as the heaviest sibling.
+        // Only closures that contain unprotected writes can add transaction risk to the
+        // parent; fully-protected closures (e.g. an ->action() that wraps its writes in
+        // DB::transaction()) contribute nothing. Among the unprotected siblings we keep
+        // the heaviest (by write count) as a COHERENT unit — its own writes, unprotected
+        // count, lines and declaration line are kept together. Metrics are never mixed
+        // across siblings, which never co-execute on the same request: doing so would,
+        // for example, pair a protected sibling's write count with another sibling's lone
+        // unprotected write and report a phantom multi-write transaction gap.
+        if ($effClosureUnprotected > 0 && $effClosureWrites > $this->maxClosureWrites) {
+            $this->maxClosureWrites = $effClosureWrites;
+            $this->maxClosureUnprotected = $effClosureUnprotected;
+            $this->maxClosureLines = $effClosureLines;
+            // Record this closure's declaration line so the issue can point at it.
+            $this->maxClosureLine = $closure->getStartLine();
+        }
     }
 
     /**
@@ -583,6 +743,27 @@ class TransactionVisitor extends NodeVisitorAbstract
         return false;
     }
 
+    /**
+     * Detect a fluent builder chain rooted at a `SomeComponent::make(...)` static call
+     * — the universal factory convention for Filament/Livewire/Forms builders. Methods
+     * such as ->toggle()/->sync() on such a chain configure UI; they are not Eloquent
+     * relationship writes. A real relationship op is rooted on a model instance
+     * (e.g. $user->roles()->toggle()) or a query (User::find($id)->roles()->sync()),
+     * neither of which has a `make` root.
+     */
+    private function isFluentMakeBuilderChain(Node\Expr\MethodCall $node): bool
+    {
+        $current = $node->var;
+
+        while ($current instanceof Node\Expr\MethodCall) {
+            $current = $current->var;
+        }
+
+        return $current instanceof Node\Expr\StaticCall
+            && $current->name instanceof Node\Identifier
+            && $current->name->toString() === 'make';
+    }
+
     private function isWriteOperation(Node $node): bool
     {
         // Static method calls
@@ -647,6 +828,13 @@ class TransactionVisitor extends NodeVisitorAbstract
                 // Relationship sync/attach/detach
                 $relationMethods = ['sync', 'attach', 'detach', 'toggle', 'syncWithoutDetaching'];
                 if (in_array($method, $relationMethods, true)) {
+                    // Skip fluent builder chains like Filament's
+                    // Filter::make('x')->...->toggle(), which configure UI and are not
+                    // Eloquent relationship writes.
+                    if ($this->isFluentMakeBuilderChain($node)) {
+                        return false;
+                    }
+
                     return true;
                 }
             }

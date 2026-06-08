@@ -225,7 +225,7 @@ class FilePermissionsAnalyzerTest extends AnalyzerTestCase
     public function test_detects_env_file_with_644_permissions(): void
     {
         $tempDir = $this->createTempDirectory([
-            '.env' => 'APP_KEY=test',
+            '.env' => "APP_ENV=production\nAPP_KEY=test",
         ]);
 
         chmod($tempDir.'/.env', 0644);
@@ -241,6 +241,63 @@ class FilePermissionsAnalyzerTest extends AnalyzerTestCase
         $issues = $result->getIssues();
         $this->assertEquals(Severity::Critical, $issues[0]->severity);
         $this->assertTrue($issues[0]->metadata['world_readable'] ?? false);
+    }
+
+    public function test_ignores_env_file_with_644_permissions_in_local(): void
+    {
+        // In local/dev the multi-user threat model doesn't apply and the default
+        // umask (644) would flag nearly every .env. The world-readable check is
+        // suppressed outside staging/production.
+        $tempDir = $this->createTempDirectory([
+            '.env' => "APP_ENV=local\nAPP_KEY=test",
+        ]);
+
+        chmod($tempDir.'/.env', 0644);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_env_file_with_644_permissions_in_staging(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => "APP_ENV=staging\nAPP_KEY=test",
+        ]);
+
+        chmod($tempDir.'/.env', 0644);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('world-readable', $result);
+        $this->assertEquals(Severity::Critical, $result->getIssues()[0]->severity);
+    }
+
+    public function test_detects_world_writable_env_file_in_local(): void
+    {
+        // World-writable is a genuine tampering vector regardless of environment,
+        // so it is flagged even in local.
+        $tempDir = $this->createTempDirectory([
+            '.env' => "APP_ENV=local\nAPP_KEY=test",
+        ]);
+
+        chmod($tempDir.'/.env', 0666);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('world-writable', $result);
+        $this->assertEquals(Severity::Critical, $result->getIssues()[0]->severity);
     }
 
     public function test_passes_env_file_with_600_permissions(): void
@@ -400,7 +457,7 @@ class FilePermissionsAnalyzerTest extends AnalyzerTestCase
     {
         $tempDir = $this->createTempDirectory([
             'app/Models/User.php' => '<?php class User {}',
-            '.env' => 'APP_KEY=test',
+            '.env' => "APP_ENV=production\nAPP_KEY=test",
         ]);
 
         chmod($tempDir.'/app', 0777);
@@ -475,12 +532,14 @@ class FilePermissionsAnalyzerTest extends AnalyzerTestCase
     public function test_overly_permissive_stops_further_checks(): void
     {
         $tempDir = $this->createTempDirectory([
-            '.env' => 'APP_KEY=test',
+            '.env' => "APP_ENV=production\nAPP_KEY=test",
         ]);
 
         // 0620 exceeds max 0600 (group-write bit set) but is not world-writable/world-readable.
         // Overly-permissive (check 3) should fire and return early,
         // preventing the group-writable-on-critical-file check (check 4) from also running.
+        // Requires production env, since sensitive-file permissiveness checks are
+        // suppressed outside staging/production.
         chmod($tempDir.'/.env', 0620);
 
         $analyzer = $this->createAnalyzer();

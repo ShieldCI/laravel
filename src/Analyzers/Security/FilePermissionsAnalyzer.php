@@ -22,6 +22,11 @@ use ShieldCI\Concerns\DetectsDeploymentPlatform;
  * - Sensitive files (.env, config files) with insecure permissions
  * - Executable permissions on non-executable files
  * - Group-writable permissions on sensitive files
+ *
+ * Sensitive-file readability checks (world-readable / group-writable on .env) only
+ * run in staging/production, where untrusted local users could read secrets. They are
+ * suppressed in local/development/testing, where the default umask (644) would
+ * otherwise flag nearly every .env. World-writable is flagged in every environment.
  */
 class FilePermissionsAnalyzer extends AbstractFileAnalyzer
 {
@@ -207,6 +212,16 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
             return; // Don't check further - world-writable is the main issue
         }
 
+        // Sensitive-file readability/permissiveness checks only matter on shared
+        // production/staging hosts, where other untrusted local users could read
+        // secrets (CWE-732). On local/development/testing the multi-user threat
+        // model doesn't apply, and the default umask (644) would flag nearly every
+        // .env, so suppress these checks. World-writable (above) stays flagged in
+        // every environment since it's a genuine tampering vector.
+        if ($isCritical && ! $this->isProductionOrStaging()) {
+            return;
+        }
+
         // Check 2: World-readable on critical files (CRITICAL - for sensitive files)
         if ($isCritical && $this->isWorldReadable($permissions['raw'])) {
             $issues[] = $this->createIssue(
@@ -370,6 +385,17 @@ class FilePermissionsAnalyzer extends AbstractFileAnalyzer
             'octal' => $octal,
             'numeric' => $permissionBits,
         ];
+    }
+
+    /**
+     * Whether the current application environment is staging or production.
+     *
+     * Uses the shared environment resolution (honoring shieldci.environment_mapping)
+     * provided by the base analyzer.
+     */
+    private function isProductionOrStaging(): bool
+    {
+        return in_array($this->getEnvironment(), ['staging', 'production'], true);
     }
 
     /**

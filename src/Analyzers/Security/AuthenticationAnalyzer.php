@@ -189,6 +189,29 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Determine whether a route URI is considered public.
+     *
+     * Matching is leading-slash insensitive and supports glob "*" wildcards
+     * via fnmatch(), so a configured pattern like "/welcome/*" matches a route
+     * registered as "welcome/{employee}". Patterns without wildcards fall back
+     * to an exact (slash-normalized) comparison.
+     */
+    private function isPublicRoute(string $uri): bool
+    {
+        $normalizedUri = '/'.ltrim($uri, '/');
+
+        foreach ($this->publicRoutes as $pattern) {
+            $normalizedPattern = '/'.ltrim($pattern, '/');
+
+            if ($normalizedPattern === $normalizedUri || fnmatch($normalizedPattern, $normalizedUri)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Build route-level authentication statistics per controller method.
      *
      * Uses PHP-Parser AST via RouteAuthVisitor so that all valid PHP formatting
@@ -223,7 +246,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             $controllerMethods = $this->expandControllerMethods($controller, $route['action'], $route['http_methods']);
 
             $isGuestRoute = in_array('guest', $route['middleware'], true);
-            $isPublicUri = in_array($route['uri'], $this->publicRoutes, true);
+            $isPublicUri = $this->isPublicRoute($route['uri']);
             $hasExplicitAuthRemoval = $this->routeDirectRemoveHasAuth($route['direct_remove']);
 
             foreach ($controllerMethods as $method) {
@@ -347,6 +370,12 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             $hasAuth = $this->isRouteMiddlewareAuthenticated($allMiddleware);
 
             if (! $hasAuth && ! $group['has_guest']) {
+                // Skip when every route inside this group is explicitly public —
+                // the user has opted these URIs out via the public_routes config.
+                if ($this->groupContainsOnlyPublicRoutes($group, $visitor->getCollectedRoutes())) {
+                    continue;
+                }
+
                 $issues[] = $this->createIssueWithSnippet(
                     message: 'Route group without authentication middleware',
                     filePath: $file,
@@ -361,7 +390,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         // Check individual routes
         foreach ($visitor->getCollectedRoutes() as $route) {
             // Skip public URIs
-            if (in_array($route['uri'], $this->publicRoutes, true)) {
+            if ($this->isPublicRoute($route['uri'])) {
                 continue;
             }
 
@@ -400,6 +429,40 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 );
             }
         }
+    }
+
+    /**
+     * Determine whether every route physically nested within a group's line
+     * range is explicitly public (whitelisted URI, guest, or auth removed).
+     *
+     * Returns false when the group contains no routes, so genuinely empty or
+     * non-whitelisted groups continue to be flagged.
+     *
+     * @param  array{middleware: list<string>, inherited_middleware: list<string>, line: int, end_line: int, has_guest: bool, is_static_group: bool}  $group
+     * @param  list<array{uri: string, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, line: int}>  $routes
+     */
+    private function groupContainsOnlyPublicRoutes(array $group, array $routes): bool
+    {
+        $found = false;
+
+        foreach ($routes as $route) {
+            // Only consider routes that physically sit inside this group's braces.
+            if ($route['line'] < $group['line'] || $route['line'] > $group['end_line']) {
+                continue;
+            }
+
+            $found = true;
+
+            $isPublic = $this->isPublicRoute($route['uri'])
+                || in_array('guest', $route['middleware'], true)
+                || $this->routeDirectRemoveHasAuth($route['direct_remove']);
+
+            if (! $isPublic) {
+                return false;
+            }
+        }
+
+        return $found;
     }
 
     /**
@@ -1384,7 +1447,7 @@ class RouteAuthVisitor extends NodeVisitorAbstract
     private array $collectedRoutes = [];
 
     /**
-     * @var list<array{middleware: list<string>, inherited_middleware: list<string>, line: int, has_guest: bool, is_static_group: bool}>
+     * @var list<array{middleware: list<string>, inherited_middleware: list<string>, line: int, end_line: int, has_guest: bool, is_static_group: bool}>
      */
     private array $collectedGroups = [];
 
@@ -1402,7 +1465,7 @@ class RouteAuthVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * @return list<array{middleware: list<string>, inherited_middleware: list<string>, line: int, has_guest: bool, is_static_group: bool}>
+     * @return list<array{middleware: list<string>, inherited_middleware: list<string>, line: int, end_line: int, has_guest: bool, is_static_group: bool}>
      */
     public function getCollectedGroups(): array
     {
@@ -1421,6 +1484,7 @@ class RouteAuthVisitor extends NodeVisitorAbstract
                 'middleware' => $own['add'],
                 'inherited_middleware' => $inherited,
                 'line' => $node->getStartLine(),
+                'end_line' => $node->getEndLine(),
                 'has_guest' => in_array('guest', $own['add'], true),
                 'is_static_group' => $node instanceof Node\Expr\StaticCall,
             ];

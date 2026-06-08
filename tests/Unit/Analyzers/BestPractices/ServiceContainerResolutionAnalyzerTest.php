@@ -183,8 +183,11 @@ PHP;
         $this->assertHasIssueContaining('app()->make()', $result);
     }
 
-    public function test_detects_app_make_with(): void
+    public function test_skips_make_with_runtime_parameters(): void
     {
+        // makeWith() always carries a runtime parameters array, making it a
+        // container-as-factory call. DI cannot supply per-request args, so it
+        // is not a DI smell and must not be flagged.
         $code = <<<'PHP'
 <?php
 
@@ -210,8 +213,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('app()->makeWith()', $result);
+        $this->assertPassed($result);
     }
 
     public function test_detects_app_static_make(): void
@@ -782,6 +784,185 @@ PHP;
 
         $this->assertWarning($result);
         $this->assertHasIssueContaining('global scope', $result);
+    }
+
+    public function test_skips_app_resolution_in_global_helper_function(): void
+    {
+        // app() inside a free helper function is the canonical Laravel pattern,
+        // mirroring the framework's own auth()/cache() helpers. Unlike top-level
+        // script code, a function body has no constructor to inject into.
+        $code = <<<'PHP'
+<?php
+
+use App\Services\EmployeeConfigService;
+
+if (! function_exists('employeeConfig')) {
+    function employeeConfig(): EmployeeConfigService
+    {
+        return app(EmployeeConfigService::class);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Helpers/Helpers.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_container_factory_with_parameters(): void
+    {
+        // A runtime parameters array makes this a container-as-factory call.
+        // DI cannot provide per-request args, so it is not a DI smell.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class PasswordResetService
+{
+    public function build(string $token)
+    {
+        return app(ResetPasswordNotification::class, ['token' => $token]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/PasswordResetService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_app_resolution_in_filament_resource_closure(): void
+    {
+        // Static table()/form() builders and framework-evaluated action closures
+        // expose no constructor or injectable method.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Filament\Resources\HR\Employees;
+
+use Filament\Resources\Resource;
+
+class EmployeeResource extends Resource
+{
+    public static function table($table)
+    {
+        return $table->actions([
+            Action::make('download')
+                ->action(function ($record) {
+                    $qrService = app(QrCodeService::class);
+
+                    return $qrService->generate($record);
+                }),
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Filament/Resources/HR/Employees/EmployeeResource.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_app_resolution_in_filament_namespace_fallback(): void
+    {
+        // Class extends a project-local base (not a Filament\ class directly),
+        // but the App\Filament\... namespace marks it as a Filament UI class.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Filament\Resources\HR\Employees\Pages;
+
+use App\Filament\BasePage;
+
+class ViewEmployee extends BasePage
+{
+    protected function getHeaderActions(): array
+    {
+        return [
+            Action::make('view')
+                ->action(function () {
+                    $qrService = app(QrCodeService::class);
+
+                    return $qrService->generate($this->record);
+                }),
+        ];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Filament/Resources/HR/Employees/Pages/ViewEmployee.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_bare_app_in_filament_regular_method(): void
+    {
+        // Suppression only applies inside static methods or closures. A regular
+        // (non-static, non-closure) method does have an injectable surface, so
+        // bare resolution there is still flagged.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Filament\Resources\HR\Employees\Pages;
+
+use Filament\Resources\Pages\ViewRecord;
+
+class ViewEmployee extends ViewRecord
+{
+    public function loadData()
+    {
+        $service = app(EmployeeConfigService::class);
+
+        return $service->all();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Filament/Resources/HR/Employees/Pages/ViewEmployee.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('app()', $result);
     }
 
     public function test_detects_multiple_patterns_in_one_file(): void

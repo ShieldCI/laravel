@@ -54,6 +54,15 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  *   queue jobs) don't support automatic injection. A closure-aware recommendation is
  *   provided. Note: Binding inside closures is still flagged at High severity as it's always wrong.
  * - Route files: Use closures without DI support
+ * - Global helper functions: Resolution inside a free function (e.g. a helper like
+ *   employeeConfig()) is the canonical Laravel pattern, mirroring the framework's own
+ *   auth()/cache() helpers. Top-level script code (not in a function) is still flagged.
+ * - Container-as-factory: app(Class::class, [$params]) / make($abstract, $parameters) passes a
+ *   runtime parameters array the container cannot infer. DI cannot supply per-request args, so
+ *   any resolution call carrying a second (parameters) argument is suppressed.
+ * - Filament Resource/Page/RelationManager: static table()/form() and framework-evaluated action
+ *   closures expose no constructor or injectable method, so manual resolution is unavoidable.
+ *   Suppressed only inside static methods or closures; binding is still flagged.
  *
  * Configuration:
  * - whitelist_dirs: Directories to skip (e.g., tests, database/migrations, routes)
@@ -300,6 +309,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             $isServiceProvider = $this->isServiceProviderFromAst($ast, $file);
             $isEloquentModel = $this->isEloquentModelFromAst($ast);
             $isShouldQueue = $this->isShouldQueueFromAst($ast);
+            $isFilamentClass = $this->isFilamentClassFromAst($ast);
 
             $visitor = new ServiceContainerVisitor(
                 $this->whitelistClasses,
@@ -311,7 +321,8 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
                 $this->manualInstantiationExcludePatterns,
                 $isServiceProvider,
                 $isEloquentModel,
-                $isShouldQueue
+                $isShouldQueue,
+                $isFilamentClass
             );
             $traverser = new NodeTraverser;
             $traverser->addVisitor($visitor);
@@ -564,6 +575,73 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Check if AST represents a Filament Resource/Page/RelationManager.
+     *
+     * Uses the same CloningVisitor + NameResolver pattern as the other detectors
+     * to resolve parent class names to FQN before checking. A class is treated as
+     * a Filament UI class when it extends a Filament base class OR lives in a
+     * Filament namespace (catches project-local intermediate bases such as
+     * App\Filament\BaseResource that ultimately extend a Filament class).
+     *
+     * @param  array<Node>  $ast
+     */
+    private function isFilamentClassFromAst(array $ast): bool
+    {
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor(new CloningVisitor);
+        $traverser->addVisitor(new NameResolver);
+        $resolvedAst = $traverser->traverse($ast);
+
+        foreach ($resolvedAst as $node) {
+            if ($node instanceof Stmt\Namespace_) {
+                $namespace = $node->name?->toString();
+
+                foreach ($node->stmts as $stmt) {
+                    if ($stmt instanceof Stmt\Class_ &&
+                        ($this->extendsFilamentBase($stmt) || $this->isFilamentNamespace($namespace))) {
+                        return true;
+                    }
+                }
+            } elseif ($node instanceof Stmt\Class_ && $this->extendsFilamentBase($node)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a class extends a Filament base class.
+     *
+     * After NameResolver has been applied, the parent class name is FQN, so any
+     * parent in the Filament\ namespace (e.g. Filament\Resources\Resource,
+     * Filament\Resources\Pages\ViewRecord) marks a Filament UI class.
+     */
+    private function extendsFilamentBase(Stmt\Class_ $class): bool
+    {
+        if ($class->extends === null) {
+            return false;
+        }
+
+        $parent = ltrim($class->extends->toString(), '\\');
+
+        return str_starts_with($parent, 'Filament\\');
+    }
+
+    /**
+     * Check if a namespace is a Filament namespace (e.g. App\Filament\Resources).
+     */
+    private function isFilamentNamespace(?string $namespace): bool
+    {
+        if ($namespace === null) {
+            return false;
+        }
+
+        return str_starts_with($namespace, 'Filament\\')
+            || str_contains($namespace, '\\Filament\\');
+    }
+
+    /**
      * Get recommendation for container resolution.
      */
     private function getRecommendation(string $pattern, string $location, string $argumentType, bool $inClosure = false): string
@@ -633,6 +711,19 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     private int $closureDepth = 0;
 
     /**
+     * Global function depth. Resolution inside a free function (e.g. a helper
+     * function like employeeConfig()) is the canonical Laravel pattern, just
+     * like the framework's own auth()/cache() helpers.
+     */
+    private int $functionDepth = 0;
+
+    /**
+     * Whether the enclosing method is declared static. Static methods (e.g.
+     * Filament's table()/form()) have no instance to inject into.
+     */
+    private bool $currentMethodIsStatic = false;
+
+    /**
      * Namespaces where severity should be escalated to High.
      * These classes are fully DI-capable and manual resolution is almost always wrong.
      *
@@ -661,7 +752,8 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         private array $manualInstantiationExcludePatterns = [],
         private bool $isServiceProvider = false,
         private bool $isEloquentModel = false,
-        private bool $isShouldQueue = false
+        private bool $isShouldQueue = false,
+        private bool $isFilamentClass = false
     ) {}
 
     public function enterNode(Node $node)
@@ -680,9 +772,17 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
             return null;
         }
 
+        // Track global function entry (free functions support no constructor DI)
+        if ($node instanceof Stmt\Function_) {
+            $this->functionDepth++;
+
+            return null;
+        }
+
         // Track method entry
         if ($node instanceof Stmt\ClassMethod) {
             $this->currentMethod = $node->name->toString();
+            $this->currentMethodIsStatic = $node->isStatic();
 
             return null;
         }
@@ -1038,9 +1138,15 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
 
     public function leaveNode(Node $node)
     {
+        // Track global function exit
+        if ($node instanceof Stmt\Function_) {
+            $this->functionDepth--;
+        }
+
         // Clear method context on exit
         if ($node instanceof Stmt\ClassMethod) {
             $this->currentMethod = null;
+            $this->currentMethodIsStatic = false;
         }
 
         // Clear class context on exit
@@ -1066,6 +1172,27 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
      */
     private function addIssue(string $pattern, int $line, Severity $severity, string $argumentType, bool $inClosure = false): void
     {
+        // Container-as-factory: runtime parameters can't come from DI.
+        if ($argumentType === 'factory') {
+            return;
+        }
+
+        // Resolution inside a global helper function is the canonical Laravel
+        // pattern (mirrors the framework's own auth()/cache() helpers). Bindings
+        // ('binding') are always wrong outside a provider, so keep flagging them.
+        if ($this->functionDepth > 0 && $argumentType !== 'binding') {
+            return;
+        }
+
+        // Filament Resource/Page/RelationManager: static table()/form() and
+        // framework-evaluated action closures expose no constructor or injectable
+        // method, so manual resolution there is unavoidable. Bindings stay flagged.
+        if ($this->isFilamentClass
+            && $argumentType !== 'binding'
+            && ($this->closureDepth > 0 || $this->currentMethodIsStatic)) {
+            return;
+        }
+
         $key = "{$line}:{$pattern}";
 
         // Skip if already seen (deduplication)
@@ -1184,6 +1311,14 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     {
         if (empty($args)) {
             return 'none';
+        }
+
+        // Container-as-factory: a second (parameters) argument supplies
+        // constructor values the container cannot infer (e.g.
+        // app(Notification::class, ['token' => $token])). DI categorically
+        // cannot provide per-request args, so this is not a DI smell.
+        if (count($args) >= 2) {
+            return 'factory';
         }
 
         // Skip VariadicPlaceholder

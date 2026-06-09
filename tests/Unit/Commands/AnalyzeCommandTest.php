@@ -2274,6 +2274,111 @@ PHP);
 
     /** @test */
     #[Test]
+    public function it_does_not_send_to_api_for_single_analyzer_run(): void
+    {
+        $this->registerTestAnalyzers();
+
+        Http::fake([
+            'api.test.shieldci.com/api/reports' => Http::response(['success' => true]),
+        ]);
+
+        $this->artisan('shield:analyze', [
+            '--analyzer' => 'test-security-analyzer',
+            '--format' => 'json',
+            '--report' => true,
+        ])
+            ->assertSuccessful()
+            ->expectsOutputToContain('Skipping platform upload');
+
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), '/api/reports'));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_does_not_send_to_api_for_category_run(): void
+    {
+        $this->registerTestAnalyzers();
+
+        Http::fake([
+            'api.test.shieldci.com/api/reports' => Http::response(['success' => true]),
+        ]);
+
+        $this->artisan('shield:analyze', [
+            '--category' => 'security',
+            '--format' => 'json',
+            '--report' => true,
+        ])
+            ->assertSuccessful()
+            ->expectsOutputToContain('Skipping platform upload');
+
+        Http::assertNotSent(fn ($request) => str_contains($request->url(), '/api/reports'));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_still_sends_to_api_for_unscoped_ci_run(): void
+    {
+        $this->registerTestAnalyzers();
+
+        Http::fake([
+            'api.test.shieldci.com/api/reports' => Http::response(['success' => true]),
+        ]);
+
+        $this->artisan('shield:analyze', [
+            '--ci' => true,
+            '--format' => 'json',
+            '--report' => true,
+        ])
+            ->assertSuccessful()
+            ->expectsOutputToContain('Report sent successfully');
+    }
+
+    /** @test */
+    #[Test]
+    public function it_suppresses_report_card_for_single_analyzer_run(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', [
+            '--analyzer' => 'test-security-analyzer',
+            '--format' => 'console',
+        ])
+            ->assertSuccessful()
+            ->expectsOutputToContain('Test Security Analyzer')
+            ->doesntExpectOutputToContain('Report Card');
+    }
+
+    /** @test */
+    #[Test]
+    public function it_shows_report_card_for_category_run(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', [
+            '--category' => 'security',
+            '--format' => 'console',
+        ])
+            ->assertSuccessful()
+            ->expectsOutputToContain('Report Card');
+    }
+
+    /** @test */
+    #[Test]
+    public function it_shows_report_card_for_multiple_analyzer_run(): void
+    {
+        $this->registerTestAnalyzers();
+
+        // Suppression is keyed on a single analyzer; a multi-analyzer run keeps the card.
+        $this->artisan('shield:analyze', [
+            '--analyzer' => 'test-security-analyzer,test-performance-analyzer',
+            '--format' => 'console',
+        ])
+            ->assertSuccessful()
+            ->expectsOutputToContain('Report Card');
+    }
+
+    /** @test */
+    #[Test]
     public function it_rejects_invalid_triggered_by_value(): void
     {
         $this->registerTestAnalyzers();

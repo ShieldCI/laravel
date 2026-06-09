@@ -1130,4 +1130,364 @@ PHP;
         // Adding @return would conflict with Pint which strips redundant type declarations
         $this->assertPassed($result);
     }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_filament_resource_builder_overrides(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Filament\Resources;
+
+use Filament\Resources\Resource;
+use Filament\Schemas\Schema;
+use Filament\Tables\Table;
+
+class ClientResource extends Resource
+{
+    public static function form(Schema $schema): Schema
+    {
+        return $schema->components([]);
+    }
+
+    public static function table(Table $table): Table
+    {
+        return $table->columns([]);
+    }
+
+    public static function infolist(Schema $schema): Schema
+    {
+        return $schema->components([]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Filament/Resources/ClientResource.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // form/table/infolist are framework overrides with self-explanatory signatures
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_filament_authorization_overrides(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Filament\Resources;
+
+use Filament\Resources\Resource;
+use Illuminate\Database\Eloquent\Model;
+
+class AllocationResource extends Resource
+{
+    public static function canAccess(): bool
+    {
+        return auth()->user()->can('access', Allocation::class);
+    }
+
+    public static function canView(Model $record): bool
+    {
+        return auth()->user()->can('view', $record);
+    }
+
+    public static function canViewAny(): bool
+    {
+        return auth()->user()->can('viewAny', Allocation::class);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Filament/Resources/AllocationResource.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // can* authorization overrides should not require docblocks
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_filament_panel_provider_override(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Providers\Filament;
+
+use Filament\Panel;
+use Filament\PanelProvider;
+
+class AppPanelProvider extends PanelProvider
+{
+    public function panel(Panel $panel): Panel
+    {
+        return $panel->default()->id('app');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/Filament/AppPanelProvider.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // panel() is a Filament framework override (class extends Filament\PanelProvider)
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_does_not_exclude_builder_methods_in_non_filament_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ReportBuilder
+{
+    public function form($data)
+    {
+        return $data;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/ReportBuilder.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // form() in a plain service class is NOT a Filament override and stays flagged
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('PHPDoc', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_still_flags_custom_methods_in_filament_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Filament\Resources;
+
+use Filament\Resources\Resource;
+use Filament\Schemas\Schema;
+
+class AllocationResource extends Resource
+{
+    public static function form(Schema $schema): Schema
+    {
+        return $schema->components([]);
+    }
+
+    public function calculateTotals($rows, $modifier)
+    {
+        return collect($rows)->sum();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Filament/Resources/AllocationResource.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Only known framework overrides are skipped; custom methods stay flagged
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('calculateTotals', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_detects_filament_class_via_namespace(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Filament\Resources;
+
+use App\Filament\BaseResource;
+use Filament\Schemas\Schema;
+
+class ProductResource extends BaseResource
+{
+    public static function form(Schema $schema): Schema
+    {
+        return $schema->components([]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Filament/Resources/ProductResource.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Class extends a project-local base but lives in an App\Filament namespace
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_skips_migration_files(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+
+class CreatePermissionTables extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        if (empty(config('permission.table_names'))) {
+            throw new Exception('config not loaded');
+        }
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        if (empty(config('permission.table_names'))) {
+            throw new Exception('config not found');
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'database/migrations/2022_10_14_000000_create_permission_tables.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['database']);
+
+        $result = $analyzer->analyze();
+
+        // Migrations are scaffolding: no @throws noise on up()/down()
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_skips_factory_files(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace Database\Factories;
+
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+class ClientFactory extends Factory
+{
+    public function configure()
+    {
+        return $this->afterCreating(fn ($client) => null);
+    }
+
+    public function surveyed(): static
+    {
+        return $this->state(fn () => ['site_survey_requested' => true]);
+    }
+
+    public function forEmployee($employee, $extra): static
+    {
+        return $this->state(fn () => ['employee_id' => $employee->id]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'database/factories/ClientFactory.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['database']);
+
+        $result = $analyzer->analyze();
+
+        // Factory hooks (configure) and arbitrary state methods are test-support noise
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_skips_seeder_files(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace Database\Seeders;
+
+use Illuminate\Database\Seeder;
+
+class DatabaseSeeder extends Seeder
+{
+    public function run($extra)
+    {
+        return null;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'database/seeders/DatabaseSeeder.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['database']);
+
+        $result = $analyzer->analyze();
+
+        // Seeders are scaffolding/test-support files
+        $this->assertPassed($result);
+    }
 }

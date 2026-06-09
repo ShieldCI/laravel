@@ -109,9 +109,18 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         $files = [];
 
         foreach ($this->getFilesToAnalyze() as $file) {
-            if (str_ends_with($file->getFilename(), '.blade.php')) {
-                $files[] = $file->getPathname();
+            if (! str_ends_with($file->getFilename(), '.blade.php')) {
+                continue;
             }
+
+            // Skip published vendor views (resources/views/vendor/*) — these are
+            // third-party package templates, not developer-authored code.
+            $normalized = strtolower(str_replace('\\', '/', $file->getPathname()));
+            if (str_contains($normalized, '/vendor/')) {
+                continue;
+            }
+
+            $files[] = $file->getPathname();
         }
 
         return $files;

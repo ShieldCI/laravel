@@ -53,6 +53,67 @@ BLADE;
         $this->assertPassed($result);
     }
 
+    public function test_skips_published_vendor_views(): void
+    {
+        // Laravel's published notification mail template — framework-authored
+        // code under resources/views/vendor/ that the developer cannot fix.
+        $blade = <<<'BLADE'
+@isset($actionText)
+<?php
+    $color = match ($level) {
+        'success', 'error' => $level,
+        default => 'primary',
+    };
+?>
+@endisset
+@php
+    $rows = \App\Models\Order::where('status', 'paid')->get();
+@endphp
+BLADE;
+
+        $tempDir = $this->createTempDirectory([
+            'views/vendor/notifications/email.blade.php' => $blade,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_same_content_outside_vendor_directory(): void
+    {
+        // Identical content as the vendor test, but developer-authored — must flag.
+        $blade = <<<'BLADE'
+@isset($actionText)
+<?php
+    $color = match ($level) {
+        'success', 'error' => $level,
+        default => 'primary',
+    };
+?>
+@endisset
+@php
+    $rows = \App\Models\Order::where('status', 'paid')->get();
+@endphp
+BLADE;
+
+        $tempDir = $this->createTempDirectory([
+            'views/notifications/email.blade.php' => $blade,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('Inline PHP found in Blade template', $result);
+    }
+
     public function test_passes_with_simple_single_calculation(): void
     {
         $blade = <<<'BLADE'

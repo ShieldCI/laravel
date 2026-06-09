@@ -2991,4 +2991,233 @@ PHP;
         $issues = $result->getIssues();
         $this->assertCount(2, $issues);
     }
+
+    // ========================================================================
+    // DUPLICATE-REPORTING & AUTHORIZATION FALSE POSITIVE TESTS
+    // ========================================================================
+
+    public function test_does_not_duplicate_filter_followed_by_each(): void
+    {
+        // filter() followed by a non-fetch chained call (each) must not be
+        // reported twice for the same location.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function activateUsers()
+    {
+        \App\Models\User::get()
+            ->filter(fn($u) => $u->active)
+            ->each(fn($u) => $u->save());
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+    }
+
+    public function test_ignores_filter_with_authorization_can_check(): void
+    {
+        // Filtering by a Gate/policy ability cannot be done in SQL - not a FP target.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class SiteService
+{
+    public function authorizedEmployees($site)
+    {
+        return \App\Models\Employee::get()->filter(function ($employee) use ($site) {
+            $user = $employee->user;
+
+            return $user ? $user->can('update', $site) : false;
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/SiteService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_reject_with_role_check(): void
+    {
+        // Filtering by roles/permissions has no database-level equivalent.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function nonAdmins()
+    {
+        return \App\Models\User::all()->reject(fn($u) => $u->hasRole('admin'));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_filter_with_gate_facade(): void
+    {
+        // Gate::allows() inside the closure is a non-SQL authorization check.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Gate;
+
+class UserService
+{
+    public function editable($resource)
+    {
+        return \App\Models\User::get()->filter(fn($u) => Gate::forUser($u)->allows('update', $resource));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_real_world_authorization_chain(): void
+    {
+        // Mirrors the reported false positive: active()->with()->get()->filter(can)->each()
+        // Must produce zero issues (no duplicate, no authorization flag).
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Livewire\Listeners;
+
+class GlobalEvents
+{
+    public function addBillingRateToSite($site, $product)
+    {
+        \App\Models\Employee::active()
+            ->with('user')
+            ->get()
+            ->filter(function ($employee) use ($site) {
+                $user = $employee->user;
+
+                return $user ? $user->can('update', $site) : false;
+            })
+            ->each(function ($employee) use ($site, $product) {
+                $employee->save();
+            });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Listeners/GlobalEvents.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_detects_non_authorization_filter_once(): void
+    {
+        // A column-based filter remains a single, valid detection.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function active()
+    {
+        return \App\Models\User::get()->filter(fn($u) => $u->status === 'active')->values();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+    }
+
+    public function test_still_detects_filter_without_inspectable_closure(): void
+    {
+        // A variable callback (non-closure) and an argument-less filter() cannot be
+        // inspected for authorization calls, so both are still flagged. This also
+        // exercises the non-closure and missing-argument branches.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class UserService
+{
+    public function process(callable $check)
+    {
+        \App\Models\User::get()->filter($check);
+        \App\Models\Post::get()->filter();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+    }
 }

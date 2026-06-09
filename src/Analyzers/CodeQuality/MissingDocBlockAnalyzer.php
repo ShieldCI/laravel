@@ -9,6 +9,8 @@ use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Stmt;
 use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\CloningVisitor;
+use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -16,6 +18,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\ClassifiesFiles;
 
 /**
  * Flags public methods without documentation.
@@ -27,6 +30,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  */
 class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
 {
+    use ClassifiesFiles;
+
     /**
      * @var array<string>
      */
@@ -56,13 +61,20 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
         $requireTags = true;
 
         foreach ($this->getPhpFiles() as $file) {
+            // Skip Laravel scaffolding/test-support files (migrations, factories,
+            // seeders). Their framework hooks (up/down, configure, definition) and
+            // trivial state methods make docblock enforcement pure noise.
+            if ($this->isDevelopmentFile($file)) {
+                continue;
+            }
+
             $ast = $this->parser->parseFile($file);
 
             if (empty($ast)) {
                 continue;
             }
 
-            $visitor = new DocBlockVisitor($excludePatterns, $requireTags);
+            $visitor = new DocBlockVisitor($excludePatterns, $requireTags, $this->isFilamentClassFromAst($ast));
             $traverser = new NodeTraverser;
             $traverser->addVisitor($visitor);
             $traverser->traverse($ast);
@@ -112,6 +124,72 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Check if the file's AST represents a Filament Resource/Page/RelationManager/Provider.
+     *
+     * Uses the same CloningVisitor + NameResolver pattern as the other detectors to
+     * resolve parent class names to FQN before checking. A class is treated as a
+     * Filament UI class when it extends a Filament base class OR lives in a Filament
+     * namespace (catches project-local intermediate bases such as App\Filament\BaseResource).
+     *
+     * @param  array<Node>  $ast
+     */
+    private function isFilamentClassFromAst(array $ast): bool
+    {
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor(new CloningVisitor);
+        $traverser->addVisitor(new NameResolver);
+        $resolvedAst = $traverser->traverse($ast);
+
+        foreach ($resolvedAst as $node) {
+            if ($node instanceof Stmt\Namespace_) {
+                $namespace = $node->name?->toString();
+
+                foreach ($node->stmts as $stmt) {
+                    if ($stmt instanceof Stmt\Class_ &&
+                        ($this->extendsFilamentBase($stmt) || $this->isFilamentNamespace($namespace))) {
+                        return true;
+                    }
+                }
+            } elseif ($node instanceof Stmt\Class_ && $this->extendsFilamentBase($node)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a class extends a Filament base class.
+     *
+     * After NameResolver has been applied, the parent class name is FQN, so any parent
+     * in the Filament\ namespace (e.g. Filament\Resources\Resource, Filament\PanelProvider)
+     * marks a Filament UI class.
+     */
+    private function extendsFilamentBase(Stmt\Class_ $class): bool
+    {
+        if ($class->extends === null) {
+            return false;
+        }
+
+        $parent = ltrim($class->extends->toString(), '\\');
+
+        return str_starts_with($parent, 'Filament\\');
+    }
+
+    /**
+     * Check if a namespace is a Filament namespace (e.g. App\Filament\Resources).
+     */
+    private function isFilamentNamespace(?string $namespace): bool
+    {
+        if ($namespace === null) {
+            return false;
+        }
+
+        return str_starts_with($namespace, 'Filament\\')
+            || str_contains($namespace, '\\Filament\\');
+    }
+
+    /**
      * Get recommendation based on issue type.
      */
     private function getRecommendation(string $type, string $method): string
@@ -153,11 +231,26 @@ class DocBlockVisitor extends NodeVisitorAbstract
     private ?string $currentClass = null;
 
     /**
+     * Filament framework override methods whose meaning and signature are fixed by the
+     * framework contract. Documenting them adds only noise, so they are skipped when the
+     * containing class is a Filament UI class. Compared case-insensitively.
+     *
+     * @var array<string>
+     */
+    private array $filamentOverrides = [
+        'form', 'table', 'infolist', 'panel',
+        'canaccess', 'canview', 'canviewany', 'cancreate', 'canedit', 'candelete',
+        'canviewforrecord', 'canforcedelete', 'canforcedeleteany', 'candeleteany',
+        'canrestore', 'canrestoreany', 'canreorder', 'canreplicate',
+    ];
+
+    /**
      * @param  array<string>  $excludePatterns
      */
     public function __construct(
         private array $excludePatterns = [],
-        private bool $requireTags = true
+        private bool $requireTags = true,
+        private bool $isFilamentClass = false
     ) {}
 
     public function enterNode(Node $node)
@@ -180,6 +273,12 @@ class DocBlockVisitor extends NodeVisitorAbstract
 
             // Skip magic methods
             if (str_starts_with($methodName, '__')) {
+                return null;
+            }
+
+            // Skip Filament framework overrides (form, table, infolist, panel, can*)
+            // whose contract and signature are fixed by the framework.
+            if ($this->isFilamentClass && in_array(strtolower($methodName), $this->filamentOverrides, true)) {
                 return null;
             }
 

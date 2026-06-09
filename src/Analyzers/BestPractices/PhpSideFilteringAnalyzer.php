@@ -6,6 +6,7 @@ namespace ShieldCI\Analyzers\BestPractices;
 
 use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
+use PhpParser\NodeFinder;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
@@ -232,6 +233,26 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
     ];
 
     /**
+     * Authorization/permission methods whose results cannot be expressed as SQL.
+     *
+     * When a filter()/reject() closure filters on one of these (Gate, policies,
+     * spatie/laravel-permission), there is no database-level equivalent, so the
+     * pattern is intentionally PHP-side and should not be flagged.
+     *
+     * @var array<string>
+     */
+    private const AUTHORIZATION_METHODS = [
+        // Gate / policy abilities
+        'can', 'cannot', 'cant', 'canAny',
+        'authorize', 'authorizeForUser',
+        'allows', 'denies', 'check',
+        // Roles / permissions (spatie/laravel-permission)
+        'hasRole', 'hasAnyRole', 'hasAllRoles',
+        'hasPermissionTo', 'hasAnyPermission', 'hasAllPermissions',
+        'hasDirectPermission', 'hasPermissionViaRole', 'checkPermissionTo',
+    ];
+
+    /**
      * Classes that are not Eloquent models/queries.
      * Static calls on these classes should not be flagged.
      *
@@ -363,6 +384,24 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
 
     private function analyzeMethodChain(Node\Expr\MethodCall $node): void
     {
+        // Only treat the current node as a detection point if it IS the filtering
+        // call itself (filter/reject/whereIn/whereNotIn). Downstream chained calls
+        // like ->each(), ->map(), ->values() would otherwise re-detect the same
+        // filter and emit duplicate issues for one location.
+        if (! $node->name instanceof Node\Identifier
+            || ! in_array($node->name->toString(), self::FILTER_METHODS, true)) {
+            return;
+        }
+
+        // Filtering by an authorization check (->can(), ->hasRole(), Gate::allows())
+        // cannot be expressed as a SQL where clause, so flagging it as "filter in the
+        // database" is a false positive. Skip filter()/reject() with such closures.
+        $methodName = $node->name->toString();
+        if (in_array($methodName, ['filter', 'reject'], true)
+            && $this->filterCallbackUsesAuthorization($node)) {
+            return;
+        }
+
         // Get the full chain of methods
         $chain = $this->getMethodChain($node);
 
@@ -400,6 +439,49 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
                 'code' => null,
             ];
         }
+    }
+
+    /**
+     * Check whether a filter()/reject() closure filters by an authorization check.
+     *
+     * Patterns like ->filter(fn ($u) => $u->can('update', $x)) or closures using
+     * hasRole()/hasPermissionTo()/Gate::allows() cannot be translated to SQL where
+     * clauses, so they are legitimate PHP-side filtering and must not be flagged.
+     */
+    private function filterCallbackUsesAuthorization(Node\Expr\MethodCall $node): bool
+    {
+        $firstArg = $node->args[0] ?? null;
+        if (! ($firstArg instanceof Node\Arg)) {
+            return false;
+        }
+
+        $callback = $firstArg->value;
+        if (! ($callback instanceof Node\Expr\Closure) && ! ($callback instanceof Node\Expr\ArrowFunction)) {
+            return false;
+        }
+
+        $finder = new NodeFinder;
+        $found = $finder->findFirst($callback, function (Node $inner): bool {
+            // Instance calls: $user->can(...), $user->hasRole(...)
+            if ($inner instanceof Node\Expr\MethodCall && $inner->name instanceof Node\Identifier) {
+                return in_array($inner->name->toString(), self::AUTHORIZATION_METHODS, true);
+            }
+
+            // Static calls: Gate::allows(...), Gate::denies(...), Gate::check(...)
+            if ($inner instanceof Node\Expr\StaticCall) {
+                if ($inner->class instanceof Node\Name && $inner->class->getLast() === 'Gate') {
+                    return true;
+                }
+
+                if ($inner->name instanceof Node\Identifier) {
+                    return in_array($inner->name->toString(), self::AUTHORIZATION_METHODS, true);
+                }
+            }
+
+            return false;
+        });
+
+        return $found !== null;
     }
 
     /**

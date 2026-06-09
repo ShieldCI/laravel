@@ -208,8 +208,10 @@ class AnalyzeCommand extends Command
         // Output report to STDOUT (skip if saved to file or already streamed)
         if (! $output && ! $useStreaming) {
             $this->outputReport($report, $reporter);
-        } elseif (! $output && $useStreaming) {
-            // For streaming mode, just output the report card
+        } elseif (! $output && $useStreaming && ! $this->isSingleAnalyzerRun()) {
+            // For streaming mode, output the report card — but skip it for a single-analyzer
+            // run, where the percentage table degenerates to a meaningless 100%/0% summary
+            // already conveyed by the streamed result line.
             $this->newLine();
             $this->line($this->color('Report Card', 'bright_yellow'));
             $this->line($this->color('===========', 'bright_yellow'));
@@ -220,7 +222,13 @@ class AnalyzeCommand extends Command
 
         // Send to API if configured
         if ($this->shouldSendToApi()) {
-            $this->sendToApi($client, $reporter, $report);
+            if ($this->isScopedRun()) {
+                $this->warn('⚠️  Skipping platform upload: --analyzer/--category produces a partial '
+                    .'report that would skew your project score and history. Run a full scan '
+                    .'(php artisan shield:analyze --report) to upload.');
+            } else {
+                $this->sendToApi($client, $reporter, $report);
+            }
         }
 
         // Determine exit code
@@ -1037,6 +1045,40 @@ class AnalyzeCommand extends Command
         file_put_contents($path, $content);
 
         $this->info("Report saved to: {$path}");
+    }
+
+    /**
+     * Determine whether this run is scoped to a subset of analyzers via --analyzer or --category.
+     *
+     * Scoped runs produce a partial report whose score/summary reflect only the requested
+     * subset, so they must not be uploaded as a full project snapshot.
+     */
+    protected function isScopedRun(): bool
+    {
+        $analyzer = $this->option('analyzer');
+        $category = $this->option('category');
+
+        return (is_string($analyzer) && $analyzer !== '')
+            || (is_string($category) && $category !== '');
+    }
+
+    /**
+     * Determine whether this run targets exactly one analyzer via --analyzer.
+     */
+    protected function isSingleAnalyzerRun(): bool
+    {
+        $analyzer = $this->option('analyzer');
+
+        if (! is_string($analyzer) || $analyzer === '') {
+            return false;
+        }
+
+        $ids = array_filter(
+            array_map('trim', explode(',', $analyzer)),
+            fn (string $id) => $id !== ''
+        );
+
+        return count($ids) === 1;
     }
 
     /**

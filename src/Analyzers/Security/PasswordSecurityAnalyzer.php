@@ -1109,7 +1109,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                 message: 'No Password::defaults() configured in service providers',
                 location: new Location('app/Providers/AppServiceProvider.php'),
                 severity: Severity::Medium,
-                recommendation: 'Define password validation defaults in a service provider boot() method or in bootstrap/app.php. Defaults should enforce minimum length, mixed case, numbers, symbols, and rejection of known-breached passwords.',
+                recommendation: "Define password validation defaults by calling Password::defaults() in a service provider's boot() method. Defaults should enforce a minimum length of at least 8 characters, mixed case, and rejection of known-breached passwords.",
                 metadata: ['issue_type' => 'missing_password_defaults']
             );
 

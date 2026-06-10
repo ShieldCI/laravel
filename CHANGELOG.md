@@ -3,7 +3,7 @@
 ## v1.8.2
 
 ### Fixed
-- `CacheHeaderAnalyzer` no longer false-positives on Laravel Vapor — Vapor serves compiled assets from a CDN with platform-managed cache headers rather than from `APP_URL`, so probing `APP_URL` is unactionable (and is intercepted by auth gateways like CloudFlare Access); the analyzer now skips on Vapor/serverless, mirroring the existing Laravel Cloud skip (#231)
+- `CacheHeaderAnalyzer` no longer false-positives on Laravel Vapor — Vapor serves compiled assets from a CDN with platform-managed cache headers rather than from `APP_URL`, so probing `APP_URL` is unactionable; the analyzer now skips on Vapor/serverless, mirroring the existing Laravel Cloud skip (#231)
 
 ## v1.8.1
 

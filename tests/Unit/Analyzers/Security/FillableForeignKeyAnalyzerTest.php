@@ -487,8 +487,11 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_handles_model_without_fillable_property(): void
+    public function test_empty_guarded_is_not_reported_here(): void
     {
+        // $guarded = [] is a mass-assignment-protection concern owned by
+        // MassAssignmentAnalyzer (which reports it Critical). This analyzer no longer
+        // duplicates it, so a model whose only signal is $guarded = [] passes here.
         $code = <<<'PHP'
 <?php
 
@@ -510,7 +513,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
     }
 
     public function test_only_checks_eloquent_models(): void

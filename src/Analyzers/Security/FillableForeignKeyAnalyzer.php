@@ -17,14 +17,12 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
 /**
  * Detects ownership/impersonation foreign keys exposed to mass assignment.
  *
- * Checks for:
- * - Curated ownership/impersonation keys in $fillable (user_id, owner_id, tenant_id, ...)
- *   that allow users to reassign records to other principals
- * - $guarded = [], which disables mass assignment protection entirely
+ * Flags curated ownership/impersonation keys in $fillable (user_id, owner_id, tenant_id,
+ * ...) that allow users to reassign records to other principals.
  *
- * Generic *_id fields are deliberately not flagged: whether a fillable foreign key is
- * exploitable depends on data flow (an untrusted create()/update()/fill() sink), which
- * is detected by MassAssignmentAnalyzer, not on the field name.
+ * Out of scope by design (owned by MassAssignmentAnalyzer): $guarded = [] and untrusted
+ * create()/update()/fill() sinks. Generic *_id fields are likewise not flagged — whether
+ * a fillable foreign key is exploitable is a data-flow property, not a field-name one.
  */
 class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 {
@@ -43,7 +41,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
         return new AnalyzerMetadata(
             id: 'fillable-foreign-key',
             name: 'Fillable Foreign Key Analyzer',
-            description: 'Detects ownership/impersonation foreign keys in fillable arrays, and unrestricted mass assignment, in Eloquent models',
+            description: 'Detects ownership/impersonation foreign keys exposed to mass assignment in Eloquent model $fillable arrays',
             category: Category::Security,
             severity: Severity::High,
             tags: ['mass-assignment', 'foreign-keys', 'eloquent', 'security', 'relationships'],
@@ -104,7 +102,6 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                     }
 
                     $this->checkFillableProperty($file, $class, $issues);
-                    $this->checkGuardedProperty($file, $class, $issues);
                 }
             }
         }
@@ -231,52 +228,6 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                         $this->checkField($file, $item->getLine(), $modelName, $fieldName, $issues);
                     }
                 }
-            }
-        }
-    }
-
-    /**
-     * Check guarded property for full mass assignment.
-     */
-    private function checkGuardedProperty(string $file, Node\Stmt\Class_ $class, array &$issues): void
-    {
-        $modelName = $class->name ? $class->name->toString() : 'Unknown';
-
-        foreach ($class->stmts as $stmt) {
-            if (! $stmt instanceof Node\Stmt\Property) {
-                continue;
-            }
-
-            foreach ($stmt->props as $prop) {
-                if ($prop->name->toString() !== 'guarded') {
-                    continue;
-                }
-
-                if (! $prop->default instanceof Node\Expr\Array_) {
-                    continue;
-                }
-
-                if (count($prop->default->items) !== 0) {
-                    continue;
-                }
-
-                // guarded = []
-                $issues[] = $this->createIssueWithSnippet(
-                    message: sprintf(
-                        'Model "%s" uses $guarded = [] which allows unrestricted mass assignment',
-                        $modelName
-                    ),
-                    filePath: $file,
-                    lineNumber: $stmt->getLine(),
-                    severity: Severity::Critical,
-                    recommendation: 'Define an explicit fillable property listing only the fields you expect from user input, and avoid using an empty guarded array which disables mass assignment protection entirely.',
-                    metadata: [
-                        'model_name' => $modelName,
-                        'model_file' => $this->getRelativePath($file),
-                        'guarded_empty' => true,
-                        'line' => $stmt->getLine(),
-                    ]
-                );
             }
         }
     }

@@ -1278,6 +1278,34 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('Laravel Cloud manages asset cache headers', $analyzer->getSkipReason());
     }
 
+    public function test_skips_on_vapor(): void
+    {
+        $manifest = json_encode(['resources/js/app.js' => ['file' => 'assets/app.abc123.js']]);
+        $tempDir = $this->createTempDirectory(['public/build/manifest.json' => $manifest]);
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPublicPath($tempDir.'/public');
+        $analyzer->setDeploymentPlatform('vapor');
+
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertStringContainsString('Laravel Vapor serves compiled assets from a CDN', $analyzer->getSkipReason());
+    }
+
+    public function test_skips_on_serverless(): void
+    {
+        $manifest = json_encode(['resources/js/app.js' => ['file' => 'assets/app.abc123.js']]);
+        $tempDir = $this->createTempDirectory(['public/build/manifest.json' => $manifest]);
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setPublicPath($tempDir.'/public');
+        $analyzer->setDeploymentPlatform('serverless');
+
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertStringContainsString('platform-managed cache headers', $analyzer->getSkipReason());
+    }
+
     public function test_recommendation_mentions_web_server_config_on_traditional_servers(): void
     {
         $manifest = json_encode([

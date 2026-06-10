@@ -164,6 +164,14 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             return false;
         }
 
+        // On Vapor/serverless, compiled assets are served from a CDN (ASSET_URL /
+        // CloudFront) with platform-managed cache headers, not from APP_URL. Probing
+        // APP_URL yields false positives (and is intercepted by any auth gateway such
+        // as CloudFlare Access), so there is no actionable fix to surface.
+        if ($this->isVaporOrServerless()) {
+            return false;
+        }
+
         // Only run if an asset build system is present
         return $this->hasMixManifest() || $this->hasViteManifest();
     }
@@ -179,6 +187,10 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
 
         if ($this->isLaravelCloud()) {
             return 'Laravel Cloud manages asset cache headers. No configuration is possible.';
+        }
+
+        if ($this->isVaporOrServerless()) {
+            return 'Laravel Vapor serves compiled assets from a CDN with platform-managed cache headers. No configuration is possible.';
         }
 
         return 'No asset build system detected (Laravel Mix or Vite)';

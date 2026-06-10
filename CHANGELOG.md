@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.8.2
+
+### Fixed
+- `CacheHeaderAnalyzer` no longer false-positives with "missing Cache-Control headers" on Laravel Vapor — Vapor serves compiled assets from a CDN (`ASSET_URL`/CloudFront) with platform-managed cache headers, not from `APP_URL`, so probing `APP_URL/build/...` never reaches the real asset and is additionally intercepted by any auth gateway in front of the app (e.g. CloudFlare Access), whose login/challenge page carries `private`/`no-cache`; with no actionable in-app fix the analyzer now skips on Vapor/serverless via `isVaporOrServerless()`, mirroring the existing Laravel Cloud skip (#231)
+
 ## v1.8.1
 
 ### Fixed

@@ -11,7 +11,6 @@ use Illuminate\View\FileViewFinder;
 use Mockery;
 use Mockery\MockInterface;
 use ShieldCI\Analyzers\Performance\ViewCachingAnalyzer;
-use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -55,7 +54,7 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
         array $viewPaths = [],
         array $viewHints = [],
         array|false|null $globReturn = null,
-    ): AnalyzerInterface {
+    ): ViewCachingAnalyzer {
         /** @var Filesystem&MockInterface $files */
         $files = Mockery::mock(Filesystem::class);
 
@@ -602,6 +601,42 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('local', $reason);
         $this->assertStringContainsString('production', $reason);
         $this->assertStringContainsString('staging', $reason);
+    }
+
+    public function test_skips_on_laravel_vapor(): void
+    {
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setDeploymentPlatform('vapor');
+
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertStringContainsString('Vapor', $analyzer->getSkipReason());
+
+        $result = $analyzer->analyze();
+
+        $this->assertSkipped($result);
+    }
+
+    public function test_runs_on_traditional_platform(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'resources/views/welcome.blade.php' => '<html></html>',
+        ]);
+
+        // No setDeploymentPlatform() call - traditional (non-Vapor) deployment.
+        $compiledFiles = $this->createCompiledViews(1, time());
+
+        $analyzer = $this->createAnalyzer(
+            configValues: [],
+            viewPaths: [$tempDir.'/resources/views'],
+            viewHints: [],
+            globReturn: $compiledFiles
+        );
+
+        $this->assertTrue($analyzer->shouldRun());
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
     }
 
     public function test_handles_empty_view_hints(): void

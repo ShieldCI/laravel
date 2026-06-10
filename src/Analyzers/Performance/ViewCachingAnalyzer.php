@@ -13,6 +13,7 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\PlatformDetector;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use Symfony\Component\Finder\Finder;
 
@@ -48,6 +49,8 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
      */
     protected ?array $relevantEnvironments = ['production', 'staging'];
 
+    private ?string $deploymentPlatformOverride = null;
+
     public function __construct(
         private Filesystem $files,
         private Config $config
@@ -70,7 +73,19 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
 
     public function shouldRun(): bool
     {
-        return $this->isRelevantForCurrentEnvironment();
+        if (! $this->isRelevantForCurrentEnvironment()) {
+            return false;
+        }
+
+        // Timestamp-based freshness is meaningless on Vapor: the build copies every
+        // file (resetting blade mtimes) and the artifact is unzipped onto a read-only
+        // Lambda FS, so mtime ordering does not reflect real staleness. View caching
+        // there is a build-time concern (vapor.yml), not fixable at runtime.
+        if ($this->isVapor()) {
+            return false;
+        }
+
+        return true;
     }
 
     public function getSkipReason(): string
@@ -82,7 +97,31 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
             return "Not relevant in '{$currentEnv}' environment (only relevant in: {$relevantEnvs})";
         }
 
+        if ($this->isVapor()) {
+            return 'Not applicable on Laravel Vapor - view caching is handled at build time and the read-only Lambda filesystem makes timestamp-based freshness checks unreliable';
+        }
+
         return 'Analyzer is not applicable in current context';
+    }
+
+    /**
+     * Override deployment platform detection (testing only).
+     */
+    public function setDeploymentPlatform(string $platform): void
+    {
+        $this->deploymentPlatformOverride = $platform;
+    }
+
+    /**
+     * Check if the application is deployed on Laravel Vapor.
+     */
+    private function isVapor(): bool
+    {
+        if ($this->deploymentPlatformOverride !== null) {
+            return $this->deploymentPlatformOverride === 'vapor';
+        }
+
+        return PlatformDetector::isLaravelVapor($this->getBasePath());
     }
 
     protected function runAnalysis(): ResultInterface

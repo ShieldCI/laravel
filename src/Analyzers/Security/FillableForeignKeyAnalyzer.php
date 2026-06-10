@@ -15,13 +15,16 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
- * Detects foreign keys in fillable arrays.
+ * Detects ownership/impersonation foreign keys exposed to mass assignment.
  *
  * Checks for:
- * - Fields ending in _id in $fillable arrays
- * - Foreign key columns exposed to mass assignment
- * - Potential relationship manipulation attacks
- * - Critical patterns like user_id, owner_id that allow impersonation
+ * - Curated ownership/impersonation keys in $fillable (user_id, owner_id, tenant_id, ...)
+ *   that allow users to reassign records to other principals
+ * - $guarded = [], which disables mass assignment protection entirely
+ *
+ * Generic *_id fields are deliberately not flagged: whether a fillable foreign key is
+ * exploitable depends on data flow (an untrusted create()/update()/fill() sink), which
+ * is detected by MassAssignmentAnalyzer, not on the field name.
  */
 class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 {
@@ -40,7 +43,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
         return new AnalyzerMetadata(
             id: 'fillable-foreign-key',
             name: 'Fillable Foreign Key Analyzer',
-            description: 'Detects foreign keys in fillable arrays that may allow unauthorized relationship manipulation',
+            description: 'Detects ownership/impersonation foreign keys in fillable arrays, and unrestricted mass assignment, in Eloquent models',
             category: Category::Security,
             severity: Severity::High,
             tags: ['mass-assignment', 'foreign-keys', 'eloquent', 'security', 'relationships'],
@@ -283,7 +286,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
      */
     private function checkField(string $file, int $itemLine, string $modelName, string $fieldName, array &$issues): void
     {
-        // Check dangerous patterns FIRST (prevents duplicates)
+        // Report only curated impersonation/ownership keys (user_id, owner_id, ...).
         if (array_key_exists($fieldName, $this->dangerousPatterns)) {
             $relationship = $this->dangerousPatterns[$fieldName];
 
@@ -310,36 +313,14 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                     'line' => $itemLine,
                 ]
             );
-
-            return; // Early return - don't create second issue
         }
 
-        // Check for generic _id pattern (only if not a dangerous pattern)
-        if (str_ends_with($fieldName, '_id')) {
-            $issues[] = $this->createIssueWithSnippet(
-                message: sprintf(
-                    'Potential foreign key "%s" is fillable in model "%s"',
-                    $fieldName,
-                    $modelName
-                ),
-                filePath: $file,
-                lineNumber: $itemLine,
-                severity: Severity::High,
-                recommendation: sprintf(
-                    'Remove "%s" from $fillable or validate that users should be able to set this relationship. '.
-                    'Consider using $guarded or manual assignment for foreign keys.',
-                    $fieldName
-                ),
-                metadata: [
-                    'field_name' => $fieldName,
-                    'model_name' => $modelName,
-                    'model_file' => $this->getRelativePath($file),
-                    'is_dangerous_pattern' => false,
-                    'pattern_type' => 'foreign_key',
-                    'line' => $itemLine,
-                ]
-            );
-        }
+        // Generic *_id foreign keys are intentionally NOT reported here. Whether a
+        // fillable foreign key is exploitable depends on data flow (an untrusted
+        // create()/update()/fill() sink with no allowlist), not on the field name —
+        // and that is already detected by MassAssignmentAnalyzer. Flagging every *_id
+        // field lexically produces evidence-free noise, so this analyzer reports only
+        // the curated impersonation/ownership patterns above.
     }
 
     /**

@@ -92,8 +92,11 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_detects_foreign_key_in_fillable(): void
+    public function test_generic_foreign_key_is_not_flagged(): void
     {
+        // A generic *_id key (not a curated ownership/impersonation pattern) is no
+        // longer reported: fillable-FK exploitability is a data-flow concern handled
+        // by MassAssignmentAnalyzer, not a lexical field-name check.
         $code = <<<'PHP'
 <?php
 
@@ -115,8 +118,38 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('post_id', $result);
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_generic_foreign_keys_are_not_reported(): void
+    {
+        // Regression guard for the SIMS24 case: a model full of reference/catalog
+        // foreign keys (none of them curated ownership/impersonation patterns) must
+        // produce zero findings rather than a wall of high-severity false positives.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Quotation extends Model
+{
+    protected $fillable = ['client_id', 'product_id', 'employee_id', 'deployment_id'];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Quotation.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
     }
 
     // ==================== Dangerous Pattern Tests ====================
@@ -389,11 +422,12 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        // Should detect: user_id (Critical), parent_id (Critical), post_id (High)
-        $this->assertCount(3, $result->getIssues());
+        // Should detect: user_id (Critical), parent_id (Critical). post_id is a generic
+        // foreign key and is no longer reported.
+        $this->assertCount(2, $result->getIssues());
     }
 
-    public function test_detects_mix_of_dangerous_and_normal_foreign_keys(): void
+    public function test_reports_only_dangerous_foreign_keys(): void
     {
         $code = <<<'PHP'
 <?php
@@ -417,19 +451,12 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertCount(2, $result->getIssues());
+        // Only user_id (Critical) is reported; product_id is a generic foreign key.
+        $this->assertCount(1, $result->getIssues());
 
-        // user_id should be Critical
-        $criticalIssue = collect($result->getIssues())
-            ->first(fn ($issue) => str_contains($issue->message, 'user_id'));
-        $this->assertNotNull($criticalIssue);
+        $criticalIssue = $result->getIssues()[0];
+        $this->assertStringContainsString('user_id', $criticalIssue->message);
         $this->assertEquals(Severity::Critical, $criticalIssue->severity);
-
-        // product_id should be High
-        $highIssue = collect($result->getIssues())
-            ->first(fn ($issue) => str_contains($issue->message, 'product_id'));
-        $this->assertNotNull($highIssue);
-        $this->assertEquals(Severity::High, $highIssue->severity);
     }
 
     // ==================== Edge Cases ====================
@@ -616,8 +643,11 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        // Both are critical dangerous patterns
-        $this->assertCount(2, $result->getIssues());
+        // user_id is a curated dangerous pattern (Critical); role_id is a generic
+        // foreign key and is no longer reported.
+        $this->assertCount(1, $result->getIssues());
+        $this->assertEquals(Severity::Critical, $result->getIssues()[0]->severity);
+        $this->assertHasIssueContaining('user_id', $result);
     }
 
     // ==================== shouldRun() Tests ====================
@@ -693,41 +723,6 @@ PHP;
 
     // ==================== Metadata Tests ====================
 
-    public function test_metadata_includes_field_information(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Model;
-
-class Comment extends Model
-{
-    protected $fillable = ['content', 'post_id'];
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['Models/Comment.php' => $code]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        $issue = $result->getIssues()[0];
-
-        $this->assertArrayHasKey('field_name', $issue->metadata);
-        $this->assertEquals('post_id', $issue->metadata['field_name']);
-        $this->assertArrayHasKey('model_name', $issue->metadata);
-        $this->assertEquals('Comment', $issue->metadata['model_name']);
-        $this->assertArrayHasKey('is_dangerous_pattern', $issue->metadata);
-        $this->assertFalse($issue->metadata['is_dangerous_pattern']);
-        $this->assertArrayHasKey('pattern_type', $issue->metadata);
-        $this->assertEquals('foreign_key', $issue->metadata['pattern_type']);
-    }
-
     public function test_metadata_includes_dangerous_pattern_info(): void
     {
         $code = <<<'PHP'
@@ -763,35 +758,6 @@ PHP;
 
     // ==================== Message Format Tests ====================
 
-    public function test_high_severity_message_format(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Model;
-
-class Comment extends Model
-{
-    protected $fillable = ['post_id'];
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['Models/Comment.php' => $code]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        $issue = $result->getIssues()[0];
-        $this->assertStringContainsString('Potential foreign key', $issue->message);
-        $this->assertStringContainsString('post_id', $issue->message);
-        $this->assertStringContainsString('Comment', $issue->message);
-    }
-
     public function test_critical_severity_message_format(): void
     {
         $code = <<<'PHP'
@@ -824,42 +790,6 @@ PHP;
     // Note: @shieldci-ignore suppression is applied by AnalyzeCommand, not the analyzer.
     // These tests verify that issues are reported at the array item line (not the property
     // declaration line), which is what allows per-item inline suppression to work correctly.
-
-    public function test_issue_is_reported_at_array_item_line_not_property_line(): void
-    {
-        // 'post_id' is on line 11, 'protected $fillable' is on line 9
-        $code = <<<'PHP'
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Model;
-
-class Post extends Model
-{
-    protected $fillable = [
-        'title',
-        'post_id',
-    ];
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['Models/Post.php' => $code]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $issues = $result->getIssues();
-        $this->assertCount(1, $issues);
-
-        // Issue must report at line 11 ('post_id'), not line 9 ('protected $fillable = [')
-        $this->assertNotNull($issues[0]->location);
-        $this->assertEquals(11, $issues[0]->location->line);
-    }
 
     public function test_dangerous_pattern_issue_is_reported_at_array_item_line(): void
     {

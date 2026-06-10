@@ -190,11 +190,17 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
      */
     private function isEloquentModel(string $file, Node\Stmt\Class_ $class): bool
     {
-        // First check if extends Model (most reliable)
+        // First check the parent class (most reliable). Covers Model plus the other
+        // Eloquent bases that carry mass-assignment behaviour: Authenticatable (the
+        // User model) and Pivot/MorphPivot (join models), which may live outside the
+        // App\Models namespace.
         if ($class->extends !== null) {
             $parentClass = $class->extends->toString();
-            if ($parentClass === 'Model' || str_ends_with($parentClass, '\\Model')) {
-                return true;
+
+            foreach (['Model', 'Authenticatable', 'Pivot', 'MorphPivot'] as $base) {
+                if ($parentClass === $base || str_ends_with($parentClass, '\\'.$base)) {
+                    return true;
+                }
             }
         }
 

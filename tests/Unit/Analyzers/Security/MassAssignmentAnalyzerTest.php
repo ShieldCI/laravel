@@ -157,6 +157,70 @@ PHP;
         $this->assertHasIssueContaining('$guarded = []', $result);
     }
 
+    public function test_detects_empty_guarded_on_authenticatable_outside_models_namespace(): void
+    {
+        // Legacy layout: App\User extends Authenticatable, not in App\Models. Detection
+        // must come from the parent class, not the namespace.
+        $code = <<<'PHP'
+<?php
+
+namespace App;
+
+use Illuminate\Foundation\Auth\User as Authenticatable;
+
+class User extends Authenticatable
+{
+    protected $guarded = [];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/User.php' => $code,
+            // Presence of app/Models/ satisfies shouldRun(); this model is protected.
+            'app/Models/Placeholder.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Placeholder extends Model { protected \$fillable = ['name']; }",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('$guarded = []', $result);
+    }
+
+    public function test_detects_empty_guarded_on_pivot_outside_models_namespace(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Pivots;
+
+use Illuminate\Database\Eloquent\Relations\Pivot;
+
+class Membership extends Pivot
+{
+    protected $guarded = [];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Pivots/Membership.php' => $code,
+            // Presence of app/Models/ satisfies shouldRun(); this model is protected.
+            'app/Models/Placeholder.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Placeholder extends Model { protected \$fillable = ['name']; }",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('$guarded = []', $result);
+    }
+
     public function test_detects_create_with_request_all(): void
     {
         $code = <<<'PHP'

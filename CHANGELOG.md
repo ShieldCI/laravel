@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.8.3
+
+### Changed
+- `FillableForeignKeyAnalyzer` now reports only curated ownership/impersonation keys (`user_id`, `owner_id`, … extensible via `dangerous_patterns`) — the generic `*_id` branch produced evidence-free false positives and is removed, and the duplicate `$guarded = []` finding is dropped in favour of `MassAssignmentAnalyzer` (#232)
+
+### Fixed
+- `MassAssignmentAnalyzer` now also analyses `Authenticatable`, `Pivot`, and `MorphPivot` models, not just `extends Model` / `App\Models` — so `$guarded = []` on a legacy `App\User` or a pivot outside `App\Models` is no longer missed (#233)
+
 ## v1.8.2
 
 ### Fixed

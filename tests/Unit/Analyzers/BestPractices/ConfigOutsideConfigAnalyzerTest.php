@@ -732,6 +732,127 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_excludes_array_access_key_identifiers(): void
+    {
+        // Long descriptive camelCase key used as an array-access key is an identifier,
+        // not a hardcoded secret. Reproduces the reported false positive.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class MetricsService
+{
+    public function value(array $metrics)
+    {
+        return $metrics['monthlyActiveUsersWith2FactorAuthByQACount'];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/MetricsService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_excludes_compact_argument_identifiers(): void
+    {
+        // A long descriptive token passed to compact() is a variable name, not a secret.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ReportService
+{
+    public function build()
+    {
+        $monthlyActiveUsersWith2FactorAuthByQACount = 0;
+
+        return compact('monthlyActiveUsersWith2FactorAuthByQACount');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ReportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_excludes_array_literal_key_identifiers(): void
+    {
+        // The key of an array literal is an identifier; only the value could be a secret.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class MetricsService
+{
+    public function defaults()
+    {
+        return [
+            'monthlyActiveUsersWith2FactorAuthByQACount' => 0,
+        ];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/MetricsService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_detects_secret_as_array_value(): void
+    {
+        // Regression guard: a secret in the VALUE position of an array literal is still flagged,
+        // even though the surrounding key is treated as an identifier.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class PaymentService
+{
+    public function config()
+    {
+        return [
+            'api_key' => 'secret_aBcDeF0123456789aBcDeF0123456789xyz',
+        ];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/PaymentService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('API key', $result);
+    }
+
     public function test_excludes_css_class_combinations(): void
     {
         $code = <<<'PHP'

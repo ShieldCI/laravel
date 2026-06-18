@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.8.4
+
+### Fixed
+- `ConfigOutsideConfigAnalyzer` no longer false-positives on long descriptive identifiers (e.g. camelCase array keys) reported as "Possible hardcoded API key or secret" — the heuristics now skip strings in identifier positions (array-access keys, array-literal keys, and `compact()` arguments) since these can never hold a credential; array values continue to be scanned (#235)
+
 ## v1.8.3
 
 ### Changed

@@ -8,6 +8,7 @@ use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Error as PhpParserError;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\ParentConnectingVisitor;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -75,6 +76,8 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
 
                 $visitor = new ConfigHardcodeVisitor($this->excludedDomains, $this->strictUrlDetection);
                 $traverser = new NodeTraverser;
+                // ParentConnectingVisitor MUST be added first to enable parent node tracking
+                $traverser->addVisitor(new ParentConnectingVisitor);
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
 
@@ -239,6 +242,13 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
     public function enterNode(Node $node): ?Node
     {
         if ($node instanceof Node\Scalar\String_) {
+            // Skip strings used as identifiers (array keys, compact() arguments) rather than
+            // values. These are never credentials, so applying the secret/URL heuristics to
+            // them produces false positives (e.g. long descriptive camelCase array keys).
+            if ($this->isIdentifierContext($node)) {
+                return null;
+            }
+
             $value = $node->value;
 
             // Check for hardcoded URLs (including localhost and IP addresses)
@@ -269,6 +279,44 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
         }
 
         return null;
+    }
+
+    /**
+     * Check if a string node is used as an identifier rather than a value.
+     *
+     * Identifier positions (array keys, array-access keys, compact() arguments) name things;
+     * they can never hold a credential or configurable URL, so they must not be flagged.
+     */
+    private function isIdentifierContext(Node $node): bool
+    {
+        $parent = $node->getAttribute('parent');
+
+        if (! $parent instanceof Node) {
+            return false;
+        }
+
+        // Array-access key: $metrics['someKey']
+        if ($parent instanceof Node\Expr\ArrayDimFetch && $parent->dim === $node) {
+            return true;
+        }
+
+        // Array-literal key: ['someKey' => $value] (only the key, never the value)
+        if ($parent instanceof Node\Expr\ArrayItem && $parent->key === $node) {
+            return true;
+        }
+
+        // compact('someVar', 'otherVar'): arguments name variables, not values
+        if ($parent instanceof Node\Arg) {
+            $grandparent = $parent->getAttribute('parent');
+
+            if ($grandparent instanceof Node\Expr\FuncCall
+                && $grandparent->name instanceof Node\Name
+                && strtolower($grandparent->name->toString()) === 'compact') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

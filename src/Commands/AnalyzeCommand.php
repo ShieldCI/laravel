@@ -11,6 +11,7 @@ use Illuminate\Support\Str;
 use ShieldCI\AnalyzerManager;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Enums\Status;
 use ShieldCI\AnalyzersCore\Results\AnalysisResult;
 use ShieldCI\AnalyzersCore\Support\FileParser;
@@ -1385,9 +1386,7 @@ class AnalyzeCommand extends Command
         });
 
         // Create new result with filtered issues
-        $status = $newIssues->isEmpty()
-            ? Status::Passed
-            : $result->getStatus();
+        $status = $this->deriveSuppressedStatus($result->getStatus(), $newIssues->all());
 
         // Update message to reflect filtered count
         $message = $result->getMessage();
@@ -1509,9 +1508,7 @@ class AnalyzeCommand extends Command
             return new FilterResult($result, []); // Nothing was suppressed
         }
 
-        $status = $newIssues === []
-            ? Status::Passed
-            : $result->getStatus();
+        $status = $this->deriveSuppressedStatus($result->getStatus(), $newIssues);
 
         $message = $this->adjustFilteredMessage($result->getMessage(), count($currentIssues), count($newIssues));
 
@@ -1636,9 +1633,7 @@ class AnalyzeCommand extends Command
             $this->accumulateSuppressed($suppressedRecords, $analyzerId);
 
             // Create new result with filtered issues
-            $status = $newIssues->isEmpty()
-                ? Status::Passed
-                : $result->getStatus();
+            $status = $this->deriveSuppressedStatus($result->getStatus(), $newIssues->all());
 
             // Update message to reflect filtered count
             $message = $result->getMessage();
@@ -1712,6 +1707,36 @@ class AnalyzeCommand extends Command
         foreach ($records as $record) {
             $this->suppressedIssues[$analyzerId][] = $record;
         }
+    }
+
+    /**
+     * Derive a result's status after suppression has removed some issues.
+     *
+     * Suppression only ever removes issues, so a result's status can only
+     * improve or stay the same — never worsen:
+     *   - no issues remain                              → Passed
+     *   - issues remain, none High/Critical, was Failed → Warning (downgrade)
+     *   - otherwise                                     → unchanged
+     *
+     * @param  array<Issue>  $remainingIssues
+     */
+    private function deriveSuppressedStatus(Status $original, array $remainingIssues): Status
+    {
+        if ($remainingIssues === []) {
+            return Status::Passed;
+        }
+
+        if ($original !== Status::Failed) {
+            return $original;
+        }
+
+        foreach ($remainingIssues as $issue) {
+            if ($issue->severity->level() >= Severity::High->level()) {
+                return Status::Failed; // a High/Critical issue survived
+            }
+        }
+
+        return Status::Warning; // only Low/Medium remain → downgrade
     }
 
     /**

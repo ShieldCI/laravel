@@ -2135,6 +2135,94 @@ PHP);
         $this->assertSame('All issues are suppressed via @shieldci-ignore', $result);
     }
 
+    // ==========================================
+    // deriveSuppressedStatus tests (via reflection)
+    // ==========================================
+
+    /** @test */
+    #[Test]
+    public function derive_suppressed_status_returns_passed_when_no_issues_remain(): void
+    {
+        $command = new AnalyzeCommand;
+        $method = new \ReflectionMethod($command, 'deriveSuppressedStatus');
+        $method->setAccessible(true);
+
+        $this->assertSame(Status::Passed, $method->invoke($command, Status::Failed, []));
+        $this->assertSame(Status::Passed, $method->invoke($command, Status::Warning, []));
+    }
+
+    /** @test */
+    #[Test]
+    public function derive_suppressed_status_downgrades_failed_to_warning_when_only_low_medium_remain(): void
+    {
+        $command = new AnalyzeCommand;
+        $method = new \ReflectionMethod($command, 'deriveSuppressedStatus');
+        $method->setAccessible(true);
+
+        // Mirrors the production case: a High issue was suppressed, leaving 25 Low issues.
+        $remaining = array_map(
+            fn () => $this->makeIssue(Severity::Low),
+            range(1, 25)
+        );
+
+        $this->assertSame(Status::Warning, $method->invoke($command, Status::Failed, $remaining));
+
+        // Medium-only also downgrades.
+        $this->assertSame(
+            Status::Warning,
+            $method->invoke($command, Status::Failed, [$this->makeIssue(Severity::Medium)])
+        );
+    }
+
+    /** @test */
+    #[Test]
+    public function derive_suppressed_status_keeps_failed_when_high_or_critical_survives(): void
+    {
+        $command = new AnalyzeCommand;
+        $method = new \ReflectionMethod($command, 'deriveSuppressedStatus');
+        $method->setAccessible(true);
+
+        $this->assertSame(
+            Status::Failed,
+            $method->invoke($command, Status::Failed, [$this->makeIssue(Severity::Low), $this->makeIssue(Severity::High)])
+        );
+        $this->assertSame(
+            Status::Failed,
+            $method->invoke($command, Status::Failed, [$this->makeIssue(Severity::Critical)])
+        );
+    }
+
+    /** @test */
+    #[Test]
+    public function derive_suppressed_status_never_upgrades_non_failed_status(): void
+    {
+        $command = new AnalyzeCommand;
+        $method = new \ReflectionMethod($command, 'deriveSuppressedStatus');
+        $method->setAccessible(true);
+
+        // A Warning stays a Warning even if a High issue is present — suppression never worsens status.
+        $this->assertSame(
+            Status::Warning,
+            $method->invoke($command, Status::Warning, [$this->makeIssue(Severity::High)])
+        );
+
+        // Error is left untouched when issues remain.
+        $this->assertSame(
+            Status::Error,
+            $method->invoke($command, Status::Error, [$this->makeIssue(Severity::Low)])
+        );
+    }
+
+    private function makeIssue(Severity $severity): Issue
+    {
+        return new Issue(
+            message: 'Issue',
+            location: new Location('app/Example.php', 1),
+            severity: $severity,
+            recommendation: 'Fix it',
+        );
+    }
+
     // ─── API Integration Tests ────────────────────────────────────────────
 
     /** @test */

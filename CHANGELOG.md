@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.8.5
+
+### Fixed
+- Suppressed High/Critical issues no longer leave a result mislabeled "failed" — when inline `@shieldci-ignore`, an `ignore_errors` rule, or a baseline match removes the last High/Critical issue and only Low/Medium issues remain, the result now downgrades to "warning" (and "passed" when all issues are suppressed); suppression only removes issues, so status can only improve. Exit codes and score are unchanged
+
 ## v1.8.4
 
 ### Fixed

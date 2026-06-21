@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.8.6
+
+### Fixed
+- `ComposerValidationAnalyzer` no longer reports a false Critical "composer.json validation failed" finding when the `composer` binary is absent — slimmed CI containers and pipeline steps that restore `vendor/` without installing composer made the `composer validate` subprocess exit 127, which was indistinguishable from a real schema error; the existing serverless guard is generalised to skip the subprocess (returning a skipped result) whenever composer cannot be run, and `composer.json` JSON syntax is still validated independently beforehand; also fixes a latent mismatch where the `composer.phar` lookup probed `getcwd()` while the process ran in the working directory (#238)
+
 ## v1.8.5
 
 ### Fixed

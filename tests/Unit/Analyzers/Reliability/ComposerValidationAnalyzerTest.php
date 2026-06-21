@@ -60,6 +60,7 @@ class ComposerValidationAnalyzerTest extends AnalyzerTestCase
 
         /** @var ComposerValidator&MockInterface $validator */
         $validator = Mockery::mock(ComposerValidator::class);
+        $validator->shouldReceive('isAvailable')->andReturn(true);
         $validator->shouldReceive('validate')
             ->andReturn(new ComposerValidatorResult(true, 'composer.json is valid'));
 
@@ -71,6 +72,25 @@ class ComposerValidationAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
+    public function test_skips_when_composer_binary_unavailable(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => '{"name":"shieldci/demo"}',
+        ]);
+
+        /** @var ComposerValidator&MockInterface $validator */
+        $validator = Mockery::mock(ComposerValidator::class);
+        $validator->shouldReceive('isAvailable')->andReturn(false);
+        $validator->shouldNotReceive('validate');
+
+        $analyzer = $this->createAnalyzer($validator);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertSkipped($result);
+    }
+
     public function test_fails_when_composer_validate_reports_errors(): void
     {
         $tempDir = $this->createTempDirectory([
@@ -79,6 +99,7 @@ class ComposerValidationAnalyzerTest extends AnalyzerTestCase
 
         /** @var ComposerValidator&MockInterface $validator */
         $validator = Mockery::mock(ComposerValidator::class);
+        $validator->shouldReceive('isAvailable')->andReturn(true);
         $validator->shouldReceive('validate')
             ->andReturn(new ComposerValidatorResult(false, 'composer.json is invalid'));
 
@@ -212,6 +233,7 @@ class ComposerValidationAnalyzerTest extends AnalyzerTestCase
 
         /** @var ComposerValidator&MockInterface $validator */
         $validator = Mockery::mock(ComposerValidator::class);
+        $validator->shouldReceive('isAvailable')->andReturn(true);
         $validator->shouldReceive('validate')
             ->andReturn(new ComposerValidatorResult(true, 'composer.json is valid'));
 
@@ -262,6 +284,7 @@ class ComposerValidationAnalyzerTest extends AnalyzerTestCase
 
         /** @var ComposerValidator&MockInterface $validator */
         $validator = Mockery::mock(ComposerValidator::class);
+        $validator->shouldReceive('isAvailable')->andReturn(true);
         $validator->shouldReceive('validate')
             ->andReturn(new ComposerValidatorResult(true, 'composer.json is valid'));
 
@@ -281,6 +304,7 @@ class ComposerValidationAnalyzerTest extends AnalyzerTestCase
 
         /** @var ComposerValidator&MockInterface $validator */
         $validator = Mockery::mock(ComposerValidator::class);
+        $validator->shouldReceive('isAvailable')->andReturn(true);
         $validator->shouldReceive('validate')
             ->andReturn(new ComposerValidatorResult(false, 'name is required'));
 
@@ -338,7 +362,7 @@ class ComposerValidationAnalyzerTest extends AnalyzerTestCase
 
         putenv('VAPOR_SSM_PATH');
 
-        $this->assertPassed($result);
+        $this->assertSkipped($result);
     }
 
     public function test_location_points_to_composer_json(): void

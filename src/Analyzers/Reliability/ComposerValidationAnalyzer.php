@@ -63,13 +63,16 @@ class ComposerValidationAnalyzer extends AbstractFileAnalyzer
             return $jsonValidationResult;
         }
 
-        // Skip `composer validate` subprocess on serverless runtimes — composer binary
-        // is not installed on Lambda/Cloud Functions/etc. JSON syntax already validated above.
-        if (PlatformDetector::isServerless()) {
-            return $this->passed('composer.json is valid');
+        $basePath = $this->getBasePath();
+
+        // Skip the `composer validate` subprocess when composer cannot be run — serverless
+        // runtimes (Lambda/Cloud Functions) don't ship the binary, and slimmed CI containers
+        // may restore vendor/ without installing composer itself. JSON syntax is already
+        // validated above, so a missing binary is a skip, not a failure.
+        if (PlatformDetector::isServerless() || ! $this->composerValidator->isAvailable($basePath)) {
+            return $this->skipped('Skipped composer validate: composer binary not available. composer.json JSON syntax is valid.');
         }
 
-        $basePath = $this->getBasePath();
         $result = $this->composerValidator->validate($basePath);
 
         if (! $result->successful) {

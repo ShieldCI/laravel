@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ShieldCI\Support;
 
+use RuntimeException;
+use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 
 class ComposerValidator
@@ -13,7 +15,12 @@ class ComposerValidator
      */
     public function validate(string $workingDirectory): ComposerValidatorResult
     {
-        $composer = $this->findComposerBinary();
+        $composer = $this->findComposerBinary($workingDirectory);
+
+        if ($composer === null) {
+            throw new RuntimeException('No composer binary could be located.');
+        }
+
         $process = new Process(array_merge($composer, ['validate', '--no-check-publish']), $workingDirectory);
         $process->run();
 
@@ -21,14 +28,26 @@ class ComposerValidator
     }
 
     /**
-     * Determine the composer binary to execute.
+     * Determine whether a composer binary can be located for the given working directory.
      */
-    private function findComposerBinary(): array
+    public function isAvailable(string $workingDirectory): bool
     {
-        if (file_exists(getcwd().'/composer.phar')) {
-            return [PHP_BINARY, getcwd().'/composer.phar'];
+        return $this->findComposerBinary($workingDirectory) !== null;
+    }
+
+    /**
+     * Determine the composer binary to execute.
+     *
+     * @return list<string>|null Null when no composer binary can be located.
+     */
+    private function findComposerBinary(string $workingDirectory): ?array
+    {
+        if (file_exists($workingDirectory.'/composer.phar')) {
+            return [PHP_BINARY, $workingDirectory.'/composer.phar'];
         }
 
-        return ['composer'];
+        $binary = (new ExecutableFinder)->find('composer');
+
+        return $binary !== null ? [$binary] : null;
     }
 }

@@ -148,6 +148,31 @@ class ComposerValidatorTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_throws_when_validating_without_a_composer_binary(): void
+    {
+        $validator = new ComposerValidator;
+
+        // Temp dir with no composer.phar, and an empty PATH so ExecutableFinder finds nothing.
+        $tempDir = sys_get_temp_dir().'/shieldci-novalidate-test-'.uniqid();
+        mkdir($tempDir);
+
+        $originalPath = getenv('PATH');
+
+        try {
+            putenv('PATH=');
+
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('No composer binary could be located.');
+
+            $validator->validate($tempDir);
+        } finally {
+            putenv($originalPath === false ? 'PATH' : 'PATH='.$originalPath);
+            rmdir($tempDir);
+        }
+    }
+
+    /** @test */
+    #[Test]
     public function it_validates_composer_json_with_missing_fields(): void
     {
         $validator = new ComposerValidator;

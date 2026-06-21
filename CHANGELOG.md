@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.8.6
+
+### Fixed
+- `ComposerValidationAnalyzer` no longer reports a false Critical "composer.json validation failed" finding when the `composer` binary is absent (slimmed CI containers, or steps that restore `vendor/` without installing composer) — a missing binary made `composer validate` exit 127, indistinguishable from a real schema error; the subprocess is now skipped when composer cannot be run, while JSON syntax is still validated independently (#238)
+
 ## v1.8.5
 
 ### Fixed

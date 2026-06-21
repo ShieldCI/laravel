@@ -92,19 +92,81 @@ class ComposerValidatorTest extends TestCase
         mkdir($tempDir);
         file_put_contents($tempDir.'/composer.phar', '<?php echo "fake composer";');
 
-        $originalDir = (string) getcwd();
-
         try {
-            chdir($tempDir);
-            /** @var array<int, string> $binary */
-            $binary = $reflection->invoke($validator);
+            // The phar lookup must use the passed working directory, not getcwd().
+            /** @var array<int, string>|null $binary */
+            $binary = $reflection->invoke($validator, $tempDir);
 
+            $this->assertNotNull($binary);
             $this->assertCount(2, $binary);
             $this->assertEquals(PHP_BINARY, $binary[0]);
-            $this->assertStringContainsString('composer.phar', $binary[1]);
+            $this->assertEquals($tempDir.'/composer.phar', $binary[1]);
         } finally {
-            chdir($originalDir);
             unlink($tempDir.'/composer.phar');
+            rmdir($tempDir);
+        }
+    }
+
+    /** @test */
+    #[Test]
+    public function it_reports_available_when_composer_phar_present(): void
+    {
+        $validator = new ComposerValidator;
+
+        $tempDir = sys_get_temp_dir().'/shieldci-avail-test-'.uniqid();
+        mkdir($tempDir);
+        file_put_contents($tempDir.'/composer.phar', '<?php echo "fake composer";');
+
+        try {
+            $this->assertTrue($validator->isAvailable($tempDir));
+        } finally {
+            unlink($tempDir.'/composer.phar');
+            rmdir($tempDir);
+        }
+    }
+
+    /** @test */
+    #[Test]
+    public function it_reports_unavailable_when_no_binary_can_be_found(): void
+    {
+        $validator = new ComposerValidator;
+
+        // Temp dir with no composer.phar, and an empty PATH so ExecutableFinder finds nothing.
+        $tempDir = sys_get_temp_dir().'/shieldci-noavail-test-'.uniqid();
+        mkdir($tempDir);
+
+        $originalPath = getenv('PATH');
+
+        try {
+            putenv('PATH=');
+            $this->assertFalse($validator->isAvailable($tempDir));
+        } finally {
+            putenv($originalPath === false ? 'PATH' : 'PATH='.$originalPath);
+            rmdir($tempDir);
+        }
+    }
+
+    /** @test */
+    #[Test]
+    public function it_throws_when_validating_without_a_composer_binary(): void
+    {
+        $validator = new ComposerValidator;
+
+        // Temp dir with no composer.phar, and an empty PATH so ExecutableFinder finds nothing.
+        $tempDir = sys_get_temp_dir().'/shieldci-novalidate-test-'.uniqid();
+        mkdir($tempDir);
+
+        $originalPath = getenv('PATH');
+
+        try {
+            putenv('PATH=');
+
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('No composer binary could be located.');
+
+            $validator->validate($tempDir);
+        } finally {
+            putenv($originalPath === false ? 'PATH' : 'PATH='.$originalPath);
             rmdir($tempDir);
         }
     }

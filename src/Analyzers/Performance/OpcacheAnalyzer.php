@@ -133,7 +133,18 @@ class OpcacheAnalyzer extends AbstractAnalyzer
     public function setPhpIniPath(string $phpIniPath): void
     {
         $this->phpIniPathOverride = $phpIniPath;
-        $this->phpIniLinesCache = null;
+        $this->phpIniLinesCache = [];
+    }
+
+    /**
+     * Override the conf.d drop-in files to scan (testing only).
+     *
+     * @param  array<int, string>  $paths
+     */
+    public function setScannedIniFiles(array $paths): void
+    {
+        $this->scannedIniFilesOverride = $paths;
+        $this->phpIniLinesCache = [];
     }
 
     /**
@@ -153,10 +164,11 @@ class OpcacheAnalyzer extends AbstractAnalyzer
 
     private ?string $deploymentPlatformOverride = null;
 
-    private ?string $cachedPhpIniPath = null;
-
     /** @var array<int, string>|null */
-    private ?array $phpIniLinesCache = null;
+    private ?array $scannedIniFilesOverride = null;
+
+    /** @var array<string, array<int, string>> */
+    private array $phpIniLinesCache = [];
 
     protected function runAnalysis(): ResultInterface
     {
@@ -383,7 +395,10 @@ class OpcacheAnalyzer extends AbstractAnalyzer
             return;
         }
 
-        $memoryConsumption = (int) $directives['opcache.memory_consumption'];
+        // opcache_get_configuration() reports memory_consumption in bytes
+        // (e.g. 134217728 for 128MB), unlike interned_strings_buffer which is
+        // reported in MB. Convert to MB before comparing against the thresholds.
+        $memoryConsumption = (int) round(((int) $directives['opcache.memory_consumption']) / 1048576);
 
         if ($memoryConsumption >= 0 && $memoryConsumption < self::MIN_MEMORY_CONSUMPTION) {
             $issues[] = $this->createOpcacheIssue(
@@ -517,7 +532,13 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         string $recommendation,
         array $metadata = []
     ): Issue {
-        $line = $this->getSettingLine($phpIniPath, $setting);
+        // Point at the file/line where the directive is actively set (the loaded
+        // php.ini or a conf.d drop-in). When it isn't set anywhere we can see,
+        // fall back to the loaded php.ini with no line — the runtime value is a
+        // PHP default, so there's no line to highlight.
+        $location = $this->findSettingLocation($setting);
+        $filePath = $location['file'] ?? $phpIniPath;
+        $line = $location['line'] ?? null;
 
         if ($this->isVaporOrServerless()) {
             $recommendation = $this->buildVaporRecommendation($setting, $recommendation);
@@ -527,7 +548,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
         // Try to get code snippet, but handle open_basedir restrictions gracefully
         return $this->createIssueWithSnippet(
             message: $message,
-            filePath: $phpIniPath,
+            filePath: $filePath,
             lineNumber: $line,
             severity: $severity,
             recommendation: $recommendation,
@@ -536,9 +557,76 @@ class OpcacheAnalyzer extends AbstractAnalyzer
     }
 
     /**
-     * Get the line number where a setting is defined in php.ini.
+     * Find the file and line where a setting is actively defined.
+     *
+     * Searches the loaded php.ini followed by any conf.d drop-ins, returning the
+     * first active (uncommented) match. Returns null when the directive isn't
+     * explicitly set anywhere we scan — its runtime value is then a PHP default.
+     *
+     * @return array{file: string, line: int}|null
      */
-    private function getSettingLine(string $phpIniPath, string $setting): int
+    private function findSettingLocation(string $setting): ?array
+    {
+        foreach ($this->getIniFilesToScan() as $file) {
+            $line = $this->getSettingLine($file, $setting);
+
+            if ($line !== null) {
+                return ['file' => $file, 'line' => $line];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Get the ini files that may define directives, in precedence order: the
+     * loaded php.ini followed by any conf.d drop-ins (the "Additional .ini files
+     * parsed" list). On the common Debian/Ubuntu layout OPcache is loaded and
+     * tuned from a drop-in (e.g. conf.d/10-opcache.ini), not the main php.ini.
+     *
+     * @return array<int, string>
+     */
+    private function getIniFilesToScan(): array
+    {
+        $files = [$this->getPhpIniPath()];
+
+        // Explicit override (testing): scan exactly what was provided.
+        if ($this->scannedIniFilesOverride !== null) {
+            return array_merge($files, $this->scannedIniFilesOverride);
+        }
+
+        // When the php.ini path is overridden (testing) without drop-ins, don't
+        // reach into the real system's scanned directory.
+        if ($this->phpIniPathOverride !== null) {
+            return $files;
+        }
+
+        $scanned = php_ini_scanned_files();
+
+        if (is_string($scanned) && $scanned !== '') {
+            foreach (explode(',', $scanned) as $scannedFile) {
+                $scannedFile = trim($scannedFile);
+
+                if ($scannedFile !== '') {
+                    $files[] = $scannedFile;
+                }
+            }
+        }
+
+        return $files;
+    }
+
+    /**
+     * Get the line number where a setting is actively defined in php.ini.
+     *
+     * Returns null when the setting has no active (uncommented) line. The
+     * runtime value still comes from opcache_get_configuration(), so a missing
+     * line just means the directive isn't explicitly set in this file (it may
+     * be a PHP default or set in a conf.d drop-in). Returning null avoids
+     * pinning the issue to an unrelated line (e.g. a comment), which previously
+     * made commented directives look active.
+     */
+    private function getSettingLine(string $phpIniPath, string $setting): ?int
     {
         $lines = $this->getPhpIniLines($phpIniPath);
 
@@ -557,7 +645,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
             }
         }
 
-        return 1;
+        return null;
     }
 
     /**
@@ -567,22 +655,17 @@ class OpcacheAnalyzer extends AbstractAnalyzer
      */
     private function getPhpIniLines(string $phpIniPath): array
     {
-        if ($this->cachedPhpIniPath !== $phpIniPath) {
-            $this->phpIniLinesCache = null;
-            $this->cachedPhpIniPath = $phpIniPath;
-        }
-
-        if ($this->phpIniLinesCache === null) {
+        if (! array_key_exists($phpIniPath, $this->phpIniLinesCache)) {
             // Try to read the file, but handle open_basedir restrictions gracefully
             try {
-                $this->phpIniLinesCache = FileParser::getLines($phpIniPath);
+                $this->phpIniLinesCache[$phpIniPath] = FileParser::getLines($phpIniPath);
             } catch (\Throwable $e) {
-                // If we can't read the file (e.g., due to open_basedir restrictions), return empty array
-                $this->phpIniLinesCache = [];
+                // If we can't read the file (e.g., due to open_basedir restrictions), cache empty
+                $this->phpIniLinesCache[$phpIniPath] = [];
             }
         }
 
-        return $this->phpIniLinesCache ?? [];
+        return $this->phpIniLinesCache[$phpIniPath];
     }
 
     /**

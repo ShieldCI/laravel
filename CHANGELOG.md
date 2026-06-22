@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.8.7
+
+### Fixed
+- `OpcacheAnalyzer` no longer pins issues to commented `php.ini` lines — when a directive has no active line, the issue now carries no line/snippet instead of falling back to line 1, which made PHP defaults look like misconfigured active settings (#240)
+- `OpcacheAnalyzer` `memory_consumption` check now converts the byte value from `opcache_get_configuration()` to MB before comparing — it previously compared bytes against an MB threshold and never fired (#240)
+
+### Added
+- `OpcacheAnalyzer` now scans `conf.d` drop-ins (`php_ini_scanned_files()`), pinning a directive tuned in e.g. `conf.d/10-opcache.ini` to the correct file and line (#240)
+
 ## v1.8.6
 
 ### Fixed

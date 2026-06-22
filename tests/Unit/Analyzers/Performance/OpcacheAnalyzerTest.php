@@ -12,6 +12,12 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class OpcacheAnalyzerTest extends AnalyzerTestCase
 {
+    /**
+     * Bytes per megabyte. opcache_get_configuration() reports
+     * opcache.memory_consumption in bytes, so overrides use byte values.
+     */
+    private const MB = 1048576;
+
     protected function createAnalyzer(): AnalyzerInterface
     {
         $analyzer = new class extends OpcacheAnalyzer
@@ -68,7 +74,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
             'directives' => [
                 'opcache.enable' => true,
                 'opcache.validate_timestamps' => false,
-                'opcache.memory_consumption' => 64,
+                'opcache.memory_consumption' => 64 * self::MB,
                 'opcache.interned_strings_buffer' => 8,
                 'opcache.max_accelerated_files' => 5000,
                 'opcache.revalidate_freq' => 0,
@@ -90,7 +96,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
             'directives' => [
                 'opcache.enable' => true,
                 'opcache.validate_timestamps' => false,
-                'opcache.memory_consumption' => 256,
+                'opcache.memory_consumption' => 256 * self::MB,
                 'opcache.interned_strings_buffer' => 16,
                 'opcache.max_accelerated_files' => 20000,
                 'opcache.revalidate_freq' => 0,
@@ -249,7 +255,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $analyzer->setScenario(true, [
             'directives' => [
                 'opcache.enable' => true,
-                'opcache.memory_consumption' => 64, // Below MIN (128)
+                'opcache.memory_consumption' => 64 * self::MB, // Below MIN (128)
             ],
         ]);
 
@@ -270,7 +276,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $analyzer->setScenario(true, [
             'directives' => [
                 'opcache.enable' => true,
-                'opcache.memory_consumption' => 128, // Exactly at MIN
+                'opcache.memory_consumption' => 128 * self::MB, // Exactly at MIN
             ],
         ]);
 
@@ -324,7 +330,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $analyzer->setScenario(true, [
             'directives' => [
                 'opcache.enable' => true,
-                'opcache.memory_consumption' => '64', // String number
+                'opcache.memory_consumption' => (string) (64 * self::MB), // String number (bytes)
             ],
         ]);
 
@@ -593,7 +599,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
             'directives' => [
                 'opcache.enable' => true,
                 'opcache.validate_timestamps' => true, // Issue 1
-                'opcache.memory_consumption' => 64, // Issue 2
+                'opcache.memory_consumption' => 64 * self::MB, // Issue 2
                 'opcache.interned_strings_buffer' => 8, // Issue 3
                 'opcache.max_accelerated_files' => 5000, // Issue 4
             ],
@@ -615,7 +621,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
             'directives' => [
                 'opcache.enable' => true,
                 'opcache.validate_timestamps' => false,
-                'opcache.memory_consumption' => 64, // Only this is suboptimal
+                'opcache.memory_consumption' => 64 * self::MB, // Only this is suboptimal
                 'opcache.interned_strings_buffer' => 16,
                 'opcache.max_accelerated_files' => 20000,
                 'opcache.revalidate_freq' => 0,
@@ -670,7 +676,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $analyzer->setScenario(true, [
             'directives' => [
                 'opcache.enable' => true,
-                'opcache.memory_consumption' => 64,
+                'opcache.memory_consumption' => 64 * self::MB,
             ],
         ]);
 
@@ -717,7 +723,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $analyzer->setScenario(true, [
             'directives' => [
                 'opcache.enable' => true,
-                'opcache.memory_consumption' => 64,
+                'opcache.memory_consumption' => 64 * self::MB,
             ],
         ]);
 
@@ -779,9 +785,12 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        // Should report line 1 (generic), NOT line 2 (the commented line)
+        // No active (uncommented) line exists, so the issue must NOT be pinned to
+        // a line — the commented line is not "active" and line 1 would be misleading.
         $this->assertNotNull($issues[0]->location);
-        $this->assertEquals(1, $issues[0]->location->line);
+        $this->assertNull($issues[0]->location->line);
+        // And no code snippet should be attached when there's no line to point at.
+        $this->assertNull($issues[0]->codeSnippet);
     }
 
     public function test_active_setting_reports_correct_line_number(): void
@@ -803,7 +812,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
             'directives' => [
                 'opcache.enable' => true,
                 'opcache.validate_timestamps' => true,
-                'opcache.memory_consumption' => 64,
+                'opcache.memory_consumption' => 64 * self::MB,
             ],
         ]);
         $analyzer->setPhpIniPath($tempDir.'/php.ini');
@@ -833,7 +842,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $analyzer->setScenario(true, [
             'directives' => [
                 'opcache.enable' => true,
-                'opcache.memory_consumption' => 64,
+                'opcache.memory_consumption' => 64 * self::MB,
             ],
         ]);
         $analyzer->setDeploymentPlatform('vapor');
@@ -870,7 +879,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $analyzer->setScenario(true, [
             'directives' => [
                 'opcache.enable' => true,
-                'opcache.memory_consumption' => 32,          // below MIN — would normally flag
+                'opcache.memory_consumption' => 32 * self::MB,          // below MIN — would normally flag
                 'opcache.interned_strings_buffer' => 4,       // below MIN — would normally flag
                 'opcache.max_accelerated_files' => 1000,      // below MIN — would normally flag
                 'opcache.validate_timestamps' => true,        // enabled — would normally flag
@@ -893,7 +902,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $analyzer->setScenario(true, [
             'directives' => [
                 'opcache.enable' => true,
-                'opcache.memory_consumption' => 32,          // PHP_INI_SYSTEM — should be suppressed
+                'opcache.memory_consumption' => 32 * self::MB,          // PHP_INI_SYSTEM — should be suppressed
                 'opcache.interned_strings_buffer' => 4,       // PHP_INI_SYSTEM — should be suppressed
                 'opcache.max_accelerated_files' => 1000,      // PHP_INI_SYSTEM — should be suppressed
                 'opcache.validate_timestamps' => true,        // PHP_INI_ALL — should still flag
@@ -932,7 +941,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $analyzer->setScenario(true, [
             'directives' => [
                 'opcache.enable' => true,
-                'opcache.memory_consumption' => 64,
+                'opcache.memory_consumption' => 64 * self::MB,
             ],
         ]);
         // No setDeploymentPlatform() call — traditional server
@@ -949,5 +958,86 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
         $this->assertStringNotContainsString('php/conf.d', $recommendation);
 
         $this->assertArrayNotHasKey('deployment_platform', $issues[0]->metadata);
+    }
+
+    // Category 14: conf.d Drop-in Scanning
+
+    public function test_reports_directive_set_in_conf_d_drop_in(): void
+    {
+        // Common Debian/Ubuntu layout: OPcache is loaded and tuned from a
+        // conf.d drop-in, not the main php.ini.
+        $tempDir = $this->createTempDirectory([
+            'php.ini' => implode("\n", [
+                '[opcache]',
+                '; opcache is tuned in conf.d',
+            ]),
+            '10-opcache.ini' => implode("\n", [
+                '; configuration for php opcache module',
+                'zend_extension=opcache.so',
+                'opcache.interned_strings_buffer=8',
+            ]),
+        ]);
+
+        /** @var OpcacheAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        // @phpstan-ignore-next-line
+        $analyzer->setScenario(true, [
+            'directives' => [
+                'opcache.enable' => true,
+                'opcache.interned_strings_buffer' => 8,
+            ],
+        ]);
+        $analyzer->setPhpIniPath($tempDir.'/php.ini');
+        $analyzer->setScannedIniFiles([$tempDir.'/10-opcache.ini']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        // The issue must point at the conf.d drop-in (line 3), not the main php.ini.
+        $this->assertNotNull($issues[0]->location);
+        $this->assertEquals(3, $issues[0]->location->line);
+        $this->assertStringContainsString('10-opcache.ini', $issues[0]->location->file);
+    }
+
+    public function test_falls_back_to_php_ini_when_directive_not_in_any_scanned_file(): void
+    {
+        // OPcache loaded via a drop-in that only loads the extension — no tuning
+        // anywhere, so the runtime value is a PHP default with no line to point at.
+        $tempDir = $this->createTempDirectory([
+            'php.ini' => implode("\n", [
+                '[opcache]',
+                ';opcache.interned_strings_buffer=8',
+            ]),
+            '10-opcache.ini' => implode("\n", [
+                '; configuration for php opcache module',
+                'zend_extension=opcache.so',
+                'opcache.jit=off',
+            ]),
+        ]);
+
+        /** @var OpcacheAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        // @phpstan-ignore-next-line
+        $analyzer->setScenario(true, [
+            'directives' => [
+                'opcache.enable' => true,
+                'opcache.interned_strings_buffer' => 8,
+            ],
+        ]);
+        $analyzer->setPhpIniPath($tempDir.'/php.ini');
+        $analyzer->setScannedIniFiles([$tempDir.'/10-opcache.ini']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        // No active line anywhere → fall back to php.ini with no line / snippet.
+        $this->assertNotNull($issues[0]->location);
+        $this->assertNull($issues[0]->location->line);
+        $this->assertStringContainsString('php.ini', $issues[0]->location->file);
+        $this->assertNull($issues[0]->codeSnippet);
     }
 }

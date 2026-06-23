@@ -1038,4 +1038,97 @@ PHP;
             $this->removeDir($tempDir);
         }
     }
+
+    public function test_detects_files_required_inside_web_middleware_group_closure(): void
+    {
+        // Compass pattern: route files are require'd inside a ->group(Closure) on a
+        // Route::domain()->middleware('web') chain, rather than via ->group(base_path()).
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Support\Facades\Route;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        then: function () {
+            Route::domain(config('app.domain'))
+                ->middleware('web')
+                ->group(function () {
+                    require __DIR__.'/../routes/auth.php';
+                    require __DIR__.'/../routes/settings.php';
+                });
+        },
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/auth.php' => '<?php // auth routes',
+            'routes/settings.php' => '<?php // settings routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getWebProtectedRouteFiles();
+
+            $this->assertCount(2, $result);
+            $this->assertTrue($this->endsWithMatch($result, '/routes/auth.php'));
+            $this->assertTrue($this->endsWithMatch($result, '/routes/settings.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_ignores_files_required_inside_group_closure_without_web_middleware(): void
+    {
+        // True positive preserved: a closure group with no 'web' middleware must NOT
+        // mark the required file as web-protected.
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Support\Facades\Route;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            Route::prefix('legacy')
+                ->group(function () {
+                    require __DIR__.'/../routes/legacy.php';
+                });
+        },
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/legacy.php' => '<?php // legacy routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame([], $parser->getWebProtectedRouteFiles());
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @param  array<string>  $paths
+     */
+    private function endsWithMatch(array $paths, string $suffix): bool
+    {
+        foreach ($paths as $path) {
+            if (str_ends_with($path, $suffix)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }

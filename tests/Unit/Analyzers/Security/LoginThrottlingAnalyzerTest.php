@@ -1403,4 +1403,143 @@ PHP;
             $this->assertStringNotContainsString('RateLimiter::for(', $issue->recommendation);
         }
     }
+
+    public function test_passes_when_login_request_throttles_via_form_request(): void
+    {
+        // Compass repro: the login route delegates throttling to a LoginRequest in
+        // app/Http/Requests, which the analyzer previously never scanned.
+        $route = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Auth\AuthenticatedSessionController;
+
+Route::post('/login', [AuthenticatedSessionController::class, 'store']);
+PHP;
+
+        $loginRequest = <<<'PHP'
+<?php
+
+namespace App\Http\Requests\Auth;
+
+use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Validation\ValidationException;
+
+class LoginRequest extends FormRequest
+{
+    public function ensureIsNotRateLimited(): void
+    {
+        if (! RateLimiter::tooManyAttempts($this->throttleKey(), 5)) {
+            return;
+        }
+
+        throw ValidationException::withMessages(['email' => 'Too many attempts.']);
+    }
+
+    protected function throttleKey(): string
+    {
+        return 'login';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $route,
+            'app/Http/Requests/Auth/LoginRequest.php' => $loginRequest,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_passes_when_form_request_uses_rate_limiter_only_in_ensure_method(): void
+    {
+        // Isolates the AST gate: the only throttling signal is RateLimiter::hit/clear
+        // inside ensureIsNotRateLimited() — no tooManyAttempts text, no 'login' literal —
+        // so detection relies on ensureIsNotRateLimited being a recognized auth method.
+        $route = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Auth\AuthenticatedSessionController;
+
+Route::post('/login', [AuthenticatedSessionController::class, 'store']);
+PHP;
+
+        $loginRequest = <<<'PHP'
+<?php
+
+namespace App\Http\Requests\Auth;
+
+use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Support\Facades\RateLimiter;
+
+class LoginRequest extends FormRequest
+{
+    public function ensureIsNotRateLimited(): void
+    {
+        RateLimiter::hit($this->key());
+        RateLimiter::clear($this->key());
+    }
+
+    protected function key(): string
+    {
+        return 'auth-key';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $route,
+            'app/Http/Requests/Auth/LoginRequest.php' => $loginRequest,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_fails_when_login_request_does_not_throttle(): void
+    {
+        // True positive preserved: a login route whose FormRequest performs no rate
+        // limiting (and no route-level throttle) must still be flagged.
+        $route = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Auth\AuthenticatedSessionController;
+
+Route::post('/login', [AuthenticatedSessionController::class, 'store']);
+PHP;
+
+        $loginRequest = <<<'PHP'
+<?php
+
+namespace App\Http\Requests\Auth;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class LoginRequest extends FormRequest
+{
+    public function rules(): array
+    {
+        return ['email' => ['required'], 'password' => ['required']];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $route,
+            'app/Http/Requests/Auth/LoginRequest.php' => $loginRequest,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $this->assertFailed($analyzer->analyze());
+    }
 }

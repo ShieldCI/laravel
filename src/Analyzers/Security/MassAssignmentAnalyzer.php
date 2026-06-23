@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\EloquentModelHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 
@@ -262,6 +263,10 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 }
             }
         }
+
+        // Mass-assignment config can also be declared via #[Fillable]/#[Guarded]/#[Unguarded] attributes.
+        $hasFillable = $hasFillable || EloquentModelHelper::hasFillable($class);
+        $hasGuarded = $hasGuarded || EloquentModelHelper::hasGuarded($class);
 
         $modelName = $class->name ? $class->name->toString() : 'Unknown';
 
@@ -1074,59 +1079,12 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
      */
     private function checkHiddenAttributes(string $file, Node\Stmt\Class_ $class, array &$issues): void
     {
-        $hasHidden = false;
-        $hasFillable = false;
-        $hasGuarded = false;
-        $hiddenFields = [];
-        $guardedFields = [];
-        $fillableFields = [];
-
-        foreach ($class->stmts as $stmt) {
-            if ($stmt instanceof Node\Stmt\Property) {
-                foreach ($stmt->props as $prop) {
-                    $propName = $prop->name->toString();
-
-                    if ($propName === 'hidden') {
-                        $hasHidden = true;
-
-                        // Extract hidden field names
-                        if ($prop->default instanceof Node\Expr\Array_) {
-                            foreach ($prop->default->items as $item) {
-                                if ($item && $item->value instanceof Node\Scalar\String_) {
-                                    $hiddenFields[] = $item->value->value;
-                                }
-                            }
-                        }
-                    }
-
-                    if ($propName === 'fillable') {
-                        $hasFillable = true;
-
-                        // Extract fillable field names
-                        if ($prop->default instanceof Node\Expr\Array_) {
-                            foreach ($prop->default->items as $item) {
-                                if ($item && $item->value instanceof Node\Scalar\String_) {
-                                    $fillableFields[] = $item->value->value;
-                                }
-                            }
-                        }
-                    }
-
-                    if ($propName === 'guarded') {
-                        $hasGuarded = true;
-
-                        // Extract guarded field names
-                        if ($prop->default instanceof Node\Expr\Array_) {
-                            foreach ($prop->default->items as $item) {
-                                if ($item && $item->value instanceof Node\Scalar\String_) {
-                                    $guardedFields[] = $item->value->value;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Read configuration from either properties or #[Fillable]/#[Guarded]/#[Hidden] attributes.
+        $hasHidden = EloquentModelHelper::hasHidden($class);
+        $hasFillable = EloquentModelHelper::hasFillable($class);
+        $hiddenFields = EloquentModelHelper::extractHiddenFields($class);
+        $guardedFields = EloquentModelHelper::extractGuardedFields($class);
+        $fillableFields = EloquentModelHelper::extractFillableFields($class);
 
         $modelName = $class->name ? $class->name->toString() : 'Unknown';
 

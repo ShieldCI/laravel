@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\EloquentModelHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
@@ -102,6 +103,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                     }
 
                     $this->checkFillableProperty($file, $class, $issues);
+                    $this->checkFillableAttribute($file, $class, $issues);
                 }
             }
         }
@@ -146,43 +148,19 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if fillable is declared in an Eloquent model.
+     * Check if fillable is declared locally, via a $fillable property or a #[Fillable] attribute.
      */
     private function hasLocalFillable(Node\Stmt\Class_ $class): bool
     {
-        foreach ($class->stmts as $stmt) {
-            if (! $stmt instanceof Node\Stmt\Property) {
-                continue;
-            }
-
-            foreach ($stmt->props as $prop) {
-                if ($prop->name->toString() === 'fillable') {
-                    return true;
-                }
-            }
-        }
-
-        return false;
+        return EloquentModelHelper::hasFillable($class);
     }
 
     /**
-     * Check if guarded is declared in an Eloquent model.
+     * Check if guarded is declared locally, via a $guarded property or a #[Guarded]/#[Unguarded] attribute.
      */
     private function hasLocalGuarded(Node\Stmt\Class_ $class): bool
     {
-        foreach ($class->stmts as $stmt) {
-            if (! $stmt instanceof Node\Stmt\Property) {
-                continue;
-            }
-
-            foreach ($stmt->props as $prop) {
-                if ($prop->name->toString() === 'guarded') {
-                    return true;
-                }
-            }
-        }
-
-        return false;
+        return EloquentModelHelper::hasGuarded($class);
     }
 
     /**
@@ -230,6 +208,45 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                 }
             }
         }
+    }
+
+    /**
+     * Check fields declared via a #[Fillable(...)] attribute for foreign keys.
+     *
+     * Reuses the same curated-pattern detection (checkField) as the property path so an
+     * attribute-based model is analyzed identically to a property-based one.
+     */
+    private function checkFillableAttribute(string $file, Node\Stmt\Class_ $class, array &$issues): void
+    {
+        $fields = EloquentModelHelper::extractFillableFieldsFromAttribute($class);
+        if ($fields === []) {
+            return;
+        }
+
+        $modelName = $class->name ? $class->name->toString() : 'Unknown';
+        $line = $this->fillableAttributeLine($class);
+
+        foreach ($fields as $fieldName) {
+            $this->checkField($file, $line, $modelName, $fieldName, $issues);
+        }
+    }
+
+    /**
+     * Line of the #[Fillable] attribute, falling back to the class line.
+     */
+    private function fillableAttributeLine(Node\Stmt\Class_ $class): int
+    {
+        foreach ($class->attrGroups as $group) {
+            foreach ($group->attrs as $attr) {
+                $name = $attr->name->toString();
+                $short = ($pos = strrpos($name, '\\')) !== false ? substr($name, $pos + 1) : $name;
+                if ($short === 'Fillable') {
+                    return $attr->getLine();
+                }
+            }
+        }
+
+        return $class->getLine();
     }
 
     /**

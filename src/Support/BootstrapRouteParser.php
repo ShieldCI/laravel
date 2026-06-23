@@ -420,15 +420,15 @@ class BootstrapRouteParser
         $includes = $this->parser->findNodes([$closure], Include_::class);
 
         foreach ($includes as $include) {
-            if (! ($include instanceof Include_)) {
-                continue;
-            }
-
-            $path = $this->resolveIncludePath($include->expr, $dir);
-            if ($path !== null && file_exists($path)) {
-                $normalized = $this->normalizePath($path);
-                if ($normalized !== null) {
-                    $found[] = $normalized;
+            // findNodes() only ever yields Include_ nodes; the instanceof narrows the
+            // type for static analysis without an unreachable skip branch.
+            if ($include instanceof Include_) {
+                $path = $this->resolveIncludePath($include->expr, $dir);
+                if ($path !== null && file_exists($path)) {
+                    $normalized = $this->normalizePath($path);
+                    if ($normalized !== null) {
+                        $found[] = $normalized;
+                    }
                 }
             }
         }

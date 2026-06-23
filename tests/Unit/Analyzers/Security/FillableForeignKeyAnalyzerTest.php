@@ -860,4 +860,123 @@ PHP;
         // Verify analyzer runs successfully
         $this->assertPassed($result);
     }
+
+    public function test_passes_with_fillable_attribute_no_foreign_key(): void
+    {
+        // Direct regression for the Compass false positive: a #[Fillable] model with
+        // no foreign keys must produce zero issues (no "inherited fillable" notice).
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Model;
+
+#[Fillable(['first_name', 'last_name', 'phone', 'email', 'password'])]
+class User extends Model
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/User.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_detects_company_id_in_fillable_attribute(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Model;
+
+#[Fillable(['name', 'company_id'])]
+class Membership extends Model
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Membership.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('company_id', $result);
+    }
+
+    public function test_detects_user_id_in_fillable_attribute_variadic(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Model;
+
+#[Fillable('title', 'user_id')]
+class Post extends Model
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Post.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('user_id', $result);
+        $this->assertHasIssueContaining('impersonate', $result);
+    }
+
+    public function test_still_notices_when_no_property_and_no_attribute(): void
+    {
+        // True positive preserved: a model with neither $fillable property nor
+        // #[Fillable] attribute still gets the medium "cannot analyze" notice.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Widget extends Model
+{
+    protected $table = 'widgets';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Widget.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $inheritedIssues = array_filter(
+            $result->getIssues(),
+            fn ($i) => isset($i->metadata['fillable_inherited']) && $i->metadata['fillable_inherited'] === true
+        );
+        $this->assertNotEmpty($inheritedIssues, 'Model with no fillable property or attribute should still get the notice');
+    }
 }

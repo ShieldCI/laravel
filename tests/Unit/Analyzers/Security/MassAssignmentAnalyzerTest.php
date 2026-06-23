@@ -3018,4 +3018,187 @@ PHP;
         );
         $this->assertNotEmpty($protectionIssues, 'Should still flag model when whole chain lacks protection');
     }
+
+    public function test_passes_with_fillable_attribute(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Model;
+
+#[Fillable(['name', 'email'])]
+class User extends Model
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_passes_with_fillable_attribute_variadic(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Model;
+
+#[Fillable('name', 'email')]
+class User extends Model
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_passes_with_guarded_attribute(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Guarded;
+use Illuminate\Database\Eloquent\Model;
+
+#[Guarded(['id'])]
+class User extends Model
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_passes_with_unguarded_attribute(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Unguarded;
+use Illuminate\Database\Eloquent\Model;
+
+#[Unguarded]
+class User extends Model
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        // #[Unguarded] counts as explicit mass-assignment configuration, so the
+        // "lacks protection" issue must not fire.
+        $protectionIssues = array_filter(
+            $analyzer->analyze()->getIssues(),
+            fn ($i) => isset($i->metadata['issue_type']) && $i->metadata['issue_type'] === 'missing_model_protection'
+        );
+        $this->assertEmpty($protectionIssues);
+    }
+
+    public function test_recognizes_hidden_attribute_for_sensitive_fillable_field(): void
+    {
+        // #[Fillable] exposes password, #[Hidden] hides it — must NOT warn that
+        // a sensitive field lacks $hidden (both sides read from attributes).
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Attributes\Hidden;
+use Illuminate\Database\Eloquent\Model;
+
+#[Fillable(['name', 'password'])]
+#[Hidden(['password'])]
+class User extends Model
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $hiddenIssues = array_filter(
+            $analyzer->analyze()->getIssues(),
+            fn ($i) => isset($i->metadata['issue_type'])
+                && in_array($i->metadata['issue_type'], ['missing_hidden_attributes', 'fillable_field_not_hidden'], true)
+        );
+        $this->assertEmpty($hiddenIssues, 'Hidden declared via #[Hidden] should satisfy the hidden-field check');
+    }
+
+    public function test_flags_sensitive_fillable_attribute_without_hidden(): void
+    {
+        // #[Fillable] exposes password but nothing hides it — the existing medium
+        // warning should still fire when fillable is declared via an attribute.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Model;
+
+#[Fillable(['name', 'password'])]
+class User extends Model
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $hiddenIssues = array_filter(
+            $analyzer->analyze()->getIssues(),
+            fn ($i) => isset($i->metadata['issue_type']) && $i->metadata['issue_type'] === 'missing_hidden_attributes'
+        );
+        $this->assertNotEmpty($hiddenIssues, 'Sensitive field in #[Fillable] without $hidden should warn');
+    }
 }

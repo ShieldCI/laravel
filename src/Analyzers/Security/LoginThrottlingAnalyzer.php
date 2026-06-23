@@ -132,10 +132,14 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         $basePath = $this->getBasePath();
         $authFiles = [];
 
-        // Check auth controllers
+        // Check auth controllers and form requests. The official starter kits throttle
+        // login from App\Http\Requests\Auth\LoginRequest (ensureIsNotRateLimited()), so
+        // app/Http/Requests must be scanned too. The filename filter below keeps this to
+        // auth/login/session-named files.
         $authPaths = [
             $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Controllers'.DIRECTORY_SEPARATOR.'Auth',
             $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Controllers',
+            $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Requests',
         ];
 
         foreach ($authPaths as $path) {
@@ -242,7 +246,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     // Check if this is an auth-related method
                     // Note: __invoke is included for single-action controllers (Laravel best practice)
                     // e.g., class LoginController { public function __invoke() {...} }
-                    $authMethods = ['login', 'authenticate', 'attempt', 'postLogin', 'handleLogin', 'store', '__invoke'];
+                    // 'ensureIsNotRateLimited' is the canonical throttling guard in the
+                    // official starter-kit LoginRequest.
+                    $authMethods = ['login', 'authenticate', 'attempt', 'postLogin', 'handleLogin', 'store', '__invoke', 'ensureIsNotRateLimited'];
                     if (! in_array(strtolower($methodName), array_map('strtolower', $authMethods), true)) {
                         continue;
                     }

@@ -15,6 +15,9 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class DebugLogAnalyzerTest extends AnalyzerTestCase
 {
+    /** @var array<int, string> */
+    private array $tempDirs = [];
+
     /**
      * @param  array<string, mixed>  $configValues
      */
@@ -723,8 +726,177 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
+    /**
+     * Build an analyzer whose base path points at a temp directory, optionally seeded with a
+     * config/logging.php fixture so the authored-vs-injected detection resolves deterministically.
+     *
+     * @param  array<string, mixed>  $configValues
+     */
+    private function createAnalyzerWithLoggingFixture(array $configValues, ?string $loggingContents): AnalyzerInterface
+    {
+        $dir = sys_get_temp_dir().'/shieldci_debuglog_'.uniqid();
+        mkdir($dir.'/config', 0777, true);
+        $this->tempDirs[] = $dir;
+
+        if ($loggingContents !== null) {
+            file_put_contents($dir.'/config/logging.php', $loggingContents);
+        }
+
+        /** @var ConfigRepository&MockInterface $config */
+        $config = Mockery::mock(ConfigRepository::class);
+        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
+        $config->shouldReceive('get')
+            ->andReturnUsing(function ($key, $default = null) use ($configValues) {
+                return $configValues[$key] ?? $default;
+            });
+
+        return new class($config, $dir) extends DebugLogAnalyzer
+        {
+            public function __construct(ConfigRepository $config, private string $testBasePath)
+            {
+                parent::__construct($config);
+            }
+
+            protected function getBasePath(): string
+            {
+                return $this->testBasePath;
+            }
+        };
+    }
+
+    private function authoredLoggingFixture(): string
+    {
+        return <<<'PHP'
+            <?php
+
+            return [
+                'default' => env('LOG_CHANNEL', 'stack'),
+                'channels' => [
+                    'stack' => [
+                        'driver' => 'stack',
+                        'channels' => ['single'],
+                    ],
+                    'single' => [
+                        'driver' => 'single',
+                        'level' => env('LOG_LEVEL', 'debug'),
+                    ],
+                ],
+            ];
+            PHP;
+    }
+
+    public function test_injected_channel_at_debug_drops_location_and_names_real_lever(): void
+    {
+        $analyzer = $this->createAnalyzerWithLoggingFixture([
+            'app.env' => 'production',
+            'logging.default' => 'stack',
+            'logging.channels.stack.channels' => ['laravel-cloud-socket'],
+            'logging.channels.laravel-cloud-socket.level' => 'debug',
+        ], $this->authoredLoggingFixture());
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        $issue = $issues[0];
+        $this->assertStringContainsString('laravel-cloud-socket', $issue->message);
+        // No bogus config/logging.php location for a channel that isn't in the file.
+        $this->assertNull($issue->location?->line);
+        $this->assertNull($issue->codeSnippet);
+        $this->assertTrue($issue->metadata['injected'] ?? false);
+        $this->assertEquals('runtime_injected', $issue->metadata['detection_method'] ?? '');
+        $this->assertStringContainsString('LOG_LEVEL', $issue->recommendation);
+        $this->assertStringContainsString('boot()', $issue->recommendation);
+    }
+
+    public function test_authored_channel_at_debug_keeps_location_and_original_recommendation(): void
+    {
+        $analyzer = $this->createAnalyzerWithLoggingFixture([
+            'app.env' => 'production',
+            'logging.default' => 'single',
+            'logging.channels.single.level' => 'debug',
+        ], $this->authoredLoggingFixture());
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        $issue = $issues[0];
+        $this->assertEquals('single', $issue->metadata['channel'] ?? '');
+        $this->assertFalse($issue->metadata['injected'] ?? true);
+        $this->assertEquals('config_repository', $issue->metadata['detection_method'] ?? '');
+        // 'level' for the 'single' channel is on line 12 of the fixture.
+        $this->assertSame(12, $issue->location?->line);
+        $this->assertStringContainsString('LOG_LEVEL environment variable', $issue->recommendation);
+    }
+
+    public function test_nightwatch_injected_at_debug_names_nightwatch_lever(): void
+    {
+        $analyzer = $this->createAnalyzerWithLoggingFixture([
+            'app.env' => 'production',
+            'logging.default' => 'stack',
+            'logging.channels.stack.channels' => ['nightwatch'],
+            'logging.channels.nightwatch.level' => 'debug',
+        ], $this->authoredLoggingFixture());
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        $issue = $issues[0];
+        $this->assertTrue($issue->metadata['injected'] ?? false);
+        $this->assertStringContainsString('NIGHTWATCH_LOG_LEVEL', $issue->recommendation);
+    }
+
+    public function test_injected_channel_at_info_passes(): void
+    {
+        $analyzer = $this->createAnalyzerWithLoggingFixture([
+            'app.env' => 'production',
+            'logging.default' => 'stack',
+            'logging.channels.stack.channels' => ['laravel-cloud-socket'],
+            'logging.channels.laravel-cloud-socket.level' => 'info',
+        ], $this->authoredLoggingFixture());
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_unparseable_config_falls_back_to_legacy_behaviour(): void
+    {
+        // No logging.php on disk → parseConfigArray() returns [] → cannot tell authored from
+        // injected → fall back to the legacy (authored) path rather than mislabel.
+        $analyzer = $this->createAnalyzerWithLoggingFixture([
+            'app.env' => 'production',
+            'logging.default' => 'single',
+            'logging.channels.single.level' => 'debug',
+        ], null);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        $issue = $issues[0];
+        $this->assertFalse($issue->metadata['injected'] ?? true);
+        $this->assertEquals('config_repository', $issue->metadata['detection_method'] ?? '');
+        $this->assertStringContainsString('LOG_LEVEL environment variable', $issue->recommendation);
+    }
+
     protected function tearDown(): void
     {
+        foreach ($this->tempDirs as $dir) {
+            $this->removeDirectory($dir);
+        }
+        $this->tempDirs = [];
+
         Mockery::close();
         parent::tearDown();
     }

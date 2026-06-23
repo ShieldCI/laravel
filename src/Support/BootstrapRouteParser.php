@@ -379,15 +379,54 @@ class BootstrapRouteParser
                 continue;
             }
 
-            // Arg must be base_path('routes/X.php')
-            $routeFile = $this->extractBasePathArgument($firstArg->value);
-            if ($routeFile === null) {
+            // The group must actually carry the middleware we're looking for.
+            if (! $this->chainContainsMiddleware($call->var, $middlewareName)) {
                 continue;
             }
 
-            // Walk the chain to check the specified middleware is present
-            if ($this->chainContainsMiddleware($call->var, $middlewareName)) {
+            // Form 1: ->group(base_path('routes/X.php'))
+            $routeFile = $this->extractBasePathArgument($firstArg->value);
+            if ($routeFile !== null) {
                 $normalized = $this->normalizePath($routeFile);
+                if ($normalized !== null) {
+                    $found[] = $normalized;
+                }
+
+                continue;
+            }
+
+            // Form 2: ->group(function () { require __DIR__.'/auth.php'; })
+            // Files require'd inside the closure inherit the group's middleware.
+            foreach ($this->extractIncludesFromClosure($firstArg->value, dirname($filePath)) as $included) {
+                $found[] = $included;
+            }
+        }
+
+        return $found;
+    }
+
+    /**
+     * Resolves the absolute paths of files require'd/include'd inside a ->group(Closure) body.
+     *
+     * @return array<string>
+     */
+    private function extractIncludesFromClosure(Node $closure, string $dir): array
+    {
+        if (! ($closure instanceof Node\Expr\Closure) && ! ($closure instanceof Node\Expr\ArrowFunction)) {
+            return [];
+        }
+
+        $found = [];
+        $includes = $this->parser->findNodes([$closure], Include_::class);
+
+        foreach ($includes as $include) {
+            if (! ($include instanceof Include_)) {
+                continue;
+            }
+
+            $path = $this->resolveIncludePath($include->expr, $dir);
+            if ($path !== null && file_exists($path)) {
+                $normalized = $this->normalizePath($path);
                 if ($normalized !== null) {
                     $found[] = $normalized;
                 }

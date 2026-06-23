@@ -2096,6 +2096,50 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_skips_route_file_required_inside_web_group_closure_in_bootstrap(): void
+    {
+        // Compass pattern: auth.php is require'd inside a ->group(Closure) on a
+        // Route::domain()->middleware('web') chain (not via ->group(base_path())).
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Support\Facades\Route;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        then: function () {
+            Route::domain(config('app.domain'))
+                ->middleware('web')
+                ->group(function () {
+                    require __DIR__.'/../routes/auth.php';
+                });
+        },
+    )
+    ->create();
+PHP;
+
+        $authPhp = <<<'PHP'
+<?php
+Route::post('/login', [LoginController::class, 'store']);
+Route::post('/register', [RegisterController::class, 'store']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/web.php' => '<?php // main web routes',
+            'routes/auth.php' => $authPhp,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        // Should pass — auth.php inherits 'web' middleware from the enclosing closure group.
+        $this->assertPassed($analyzer->analyze());
+    }
+
     public function test_passes_api_route_file_registered_with_api_middleware_array(): void
     {
         // Platform's exact pattern: ->middleware(['api', 'throttle:api.rest'])->group(base_path('routes/api-v1.php'))

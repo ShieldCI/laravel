@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.8.8
+
+### Fixed
+- `MassAssignmentAnalyzer` and `FillableForeignKeyAnalyzer` no longer false-positive on models that declare mass-assignment config via the Laravel 12+ `#[Fillable]`/`#[Guarded]`/`#[Unguarded]` attributes (used by the official starter kits) — both now read the config from properties or attributes via `EloquentModelHelper` (#242)
+- `CsrfAnalyzer` no longer reports false "missing CSRF protection" for route files `require`d inside a `->group(Closure)` — e.g. `Route::domain()->middleware('web')->group(fn () => require ...)`, the Laravel 11+ skeleton form — which `BootstrapRouteParser` previously treated as unprotected (#243)
+- `LoginThrottlingAnalyzer` no longer reports false "login route lacks rate limiting" when throttling is defined in a FormRequest — it now scans `app/Http/Requests` and recognizes the starter-kit `LoginRequest::ensureIsNotRateLimited()` pattern (#244)
+- `DebugLogAnalyzer` no longer pins runtime-injected log channels (e.g. `laravel-cloud-socket`, `nightwatch`) to a bogus `config/logging.php` location with an unactionable "edit config/logging.php" recommendation — it now drops the location and names the real lever (platform env var / service provider `boot()`) (#245)
+
 ## v1.8.7
 
 ### Fixed

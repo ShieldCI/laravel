@@ -3201,4 +3201,64 @@ PHP;
         );
         $this->assertNotEmpty($hiddenIssues, 'Sensitive field in #[Fillable] without $hidden should warn');
     }
+
+    public function test_does_not_crash_on_skipped_destructuring_and_first_class_callables(): void
+    {
+        // Two AST shapes used to crash the analyzer's walkers:
+        //  - skipped destructuring slots ([, , $x] = ...) produce a List_ with null
+        //    items, which reached getSubNodeNames() on null.
+        //  - first-class callables (Thing::create(...)) put a VariadicPlaceholder where
+        //    an Arg is expected, so $arg->value fed null into a Node-typed parameter.
+        // Neither pattern is a vulnerability, so analysis must complete (not error).
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Thing;
+
+class ThingController
+{
+    public function store()
+    {
+        [, , $next] = $this->steps();
+
+        $factory = Thing::create(...);
+
+        return $next;
+    }
+
+    private function steps(): array
+    {
+        return ['a', 'b', 'c'];
+    }
+}
+PHP;
+
+        $model = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Thing extends Model
+{
+    protected $fillable = ['name'];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Thing.php' => $model,
+            'app/Http/Controllers/ThingController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        // Before the fix this returned Status::Error with a getSubNodeNames()/TypeError
+        // message; the guarded walkers now let analysis finish cleanly.
+        $this->assertPassed($analyzer->analyze());
+    }
 }

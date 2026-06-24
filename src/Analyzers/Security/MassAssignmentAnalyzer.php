@@ -511,6 +511,12 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
         $traverse = function (array $nodes) use (&$traverse, &$calls, $methodName): void {
             foreach ($nodes as $node) {
+                // Sub-node arrays can hold null slots (e.g. skipped destructuring
+                // targets: [, , $x] = ...), which must not reach getSubNodeNames().
+                if (! $node instanceof Node) {
+                    continue;
+                }
+
                 if ($node instanceof Node\Expr\StaticCall) {
                     if ($node->name instanceof Node\Identifier && $node->name->toString() === $methodName) {
                         $calls[] = $node;
@@ -703,6 +709,12 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
         }
 
         foreach ($call->args as $arg) {
+            // First-class callable syntax (foo(...)) yields a VariadicPlaceholder
+            // rather than an Arg, which has no ->value to inspect.
+            if (! $arg instanceof Node\Arg) {
+                continue;
+            }
+
             // Recursively check for blacklist filtering first (except)
             if ($this->containsBlacklistRequestData($arg->value)) {
                 $callTypeLabel = match ($callType) {
@@ -1169,6 +1181,10 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
                 // Check if any argument contains request data
                 foreach ($call->args as $arg) {
+                    if (! $arg instanceof Node\Arg) {
+                        continue;
+                    }
+
                     if ($this->containsRequestData($arg->value)) {
                         $issues[] = $this->createIssueWithSnippet(
                             message: "Relationship {$method}() with unfiltered request data",
@@ -1210,6 +1226,12 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 }
 
                 if (empty($call->args)) {
+                    continue;
+                }
+
+                // First-class callable syntax (foo(...)) puts a VariadicPlaceholder
+                // here instead of an Arg, which has no ->value.
+                if (! $call->args[0] instanceof Node\Arg) {
                     continue;
                 }
 

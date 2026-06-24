@@ -152,22 +152,67 @@ class DebugLogAnalyzer extends AbstractAnalyzer
                 $configPath = $this->buildPath('config', 'logging.php');
             }
 
-            $lineNumber = ConfigFileHelper::findNestedKeyLine($configPath, 'channels', 'level', $channel);
+            // Determine whether the channel is actually authored in config/logging.php.
+            // Channels injected at runtime by a package/framework (e.g. laravel-cloud-socket)
+            // are not present in the file, so reporting a file/line location and a
+            // "update config/logging.php" recommendation would be misleading.
+            // "Injected" only when the channel is absent AND the file genuinely parsed.
+            // parseConfigArray() returns [] for a missing/unreadable/unparseable file, in
+            // which case we cannot tell — fall back to the legacy behaviour rather than
+            // mislabel. The second parse only runs when the channel was not found (&& short-circuits).
+            $authoredLine = ConfigFileHelper::findNestedArrayKeyLine($configPath, 'channels', $channel);
+            $isInjected = $authoredLine === null
+                && ConfigFileHelper::parseConfigArray($configPath) !== [];
+
+            $lineNumber = $isInjected
+                ? null
+                : ConfigFileHelper::findNestedKeyLine($configPath, 'channels', 'level', $channel);
 
             $issues[] = $this->createIssueWithSnippet(
                 message: "Log channel '{$channel}' is set to debug level in {$environment} environment",
                 filePath: $configPath,
                 lineNumber: $lineNumber,
                 severity: $this->metadata()->severity,
-                recommendation: "Set the log level to 'info' or higher in production by updating your logging configuration or setting the LOG_LEVEL environment variable. Debug logging causes significant performance degradation, generates excessive log files that can exhaust disk space, and exposes sensitive data.",
+                recommendation: $isInjected
+                    ? $this->injectedChannelRecommendation($channel)
+                    : "Set the log level to 'info' or higher in production by updating your logging configuration or setting the LOG_LEVEL environment variable. Debug logging causes significant performance degradation, generates excessive log files that can exhaust disk space, and exposes sensitive data.",
                 metadata: [
                     'environment' => $environment,
                     'channel' => $channel,
                     'level' => $level,
-                    'detection_method' => 'config_repository',
+                    'detection_method' => $isInjected ? 'runtime_injected' : 'config_repository',
+                    'injected' => $isInjected,
                     'code' => 'debug-log-level',
                 ]
             );
         }
+    }
+
+    /**
+     * Build a recommendation for a channel that is injected at runtime rather than
+     * authored in config/logging.php. Such channels cannot be fixed by editing that
+     * file (the framework/package overwrites the entry after config load), so the
+     * guidance must name the real lever per known channel, with a generic fallback.
+     */
+    private function injectedChannelRecommendation(string $channel): string
+    {
+        $known = [
+            'laravel-cloud-socket' => "Channel '{$channel}' is injected at runtime by Laravel "
+                .'(Illuminate\\Foundation\\Cloud::configureCloudLogging) and reads LOG_LEVEL from the '
+                .'process environment, not config/logging.php. Under config:cache a .env value is not '
+                .'enough — set LOG_LEVEL as a real platform environment variable, or re-assert the level '
+                ."in a service provider boot() (e.g. config(['logging.channels.{$channel}.level' => 'info'])). "
+                .'Debug logging causes performance degradation, excessive log volume, and can expose sensitive data.',
+            'nightwatch' => "Channel '{$channel}' is injected at runtime by Laravel Nightwatch. Set "
+                .'NIGHTWATCH_LOG_LEVEL (or nightwatch.filtering.log_level) to info or higher; it inherits '
+                .'LOG_LEVEL by default. Debug logging causes performance degradation, excessive log volume, '
+                .'and can expose sensitive data.',
+        ];
+
+        return $known[$channel] ?? "Channel '{$channel}' is not defined in config/logging.php; it is "
+            .'registered at runtime by a package or the framework. Configure its level via that package\'s '
+            .'documented environment variable/config, or override it to info or higher in a service provider '
+            ."boot() (e.g. config(['logging.channels.{$channel}.level' => 'info'])). Debug logging causes "
+            .'performance degradation, excessive log volume, and can expose sensitive data.';
     }
 }

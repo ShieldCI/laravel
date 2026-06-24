@@ -3120,7 +3120,52 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertHasIssueContaining('never rehashes passwords', $result);
+        // On Laravel 11+, rehash_on_login defaults to true and Auth::attempt() rehashes
+        // automatically, so an unset config should not be flagged. On Laravel 9/10 there is
+        // no auto-rehash, so the missing-rehash issue remains legitimate.
+        if (version_compare(app()->version(), '11.0.0', '>=')) {
+            $this->assertNoRehashIssue($result);
+        } else {
+            $this->assertHasIssueContaining('never rehashes passwords', $result);
+        }
+    }
+
+    public function test_no_missing_rehash_when_hashing_config_unpublished_on_laravel_11(): void
+    {
+        if (version_compare(app()->version(), '11.0.0', '<')) {
+            $this->markTestSkipped('Running on Laravel '.app()->version().' — rehash-on-login is not automatic before Laravel 11.');
+        }
+
+        // Reproduces the real-world false positive: a Laravel 11+ app with an Auth::attempt()
+        // login flow and no published config/hashing.php. rehash_on_login defaults to true, so
+        // Auth::attempt() rehashes automatically and the analyzer must not flag it.
+        $loginController = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Auth;
+
+class LoginController
+{
+    public function login($request)
+    {
+        Auth::attempt($request->only('email', 'password'));
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/LoginController.php' => $loginController,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertNoRehashIssue($result);
     }
 
     public function test_passes_when_hash_needs_rehash_is_present(): void
@@ -3313,7 +3358,11 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertHasIssueContaining('never rehashes passwords', $result);
+        if (version_compare(app()->version(), '11.0.0', '>=')) {
+            $this->assertNoRehashIssue($result);
+        } else {
+            $this->assertHasIssueContaining('never rehashes passwords', $result);
+        }
     }
 
     public function test_no_rehash_issue_when_only_auth_login(): void
@@ -3477,7 +3526,11 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertHasIssueContaining('never rehashes passwords', $result);
+        if (version_compare(app()->version(), '11.0.0', '>=')) {
+            $this->assertNoRehashIssue($result);
+        } else {
+            $this->assertHasIssueContaining('never rehashes passwords', $result);
+        }
     }
 
     public function test_no_rehash_issue_when_auth_login_with_hash_needs_rehash(): void
@@ -3620,7 +3673,13 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertHasIssueContaining('never rehashes passwords', $result);
+        // $cache->needsRehash() is not a recognized hasher, so on Laravel 9/10 the missing-rehash
+        // issue is still flagged. On Laravel 11+, the unset config is treated as default-enabled.
+        if (version_compare(app()->version(), '11.0.0', '>=')) {
+            $this->assertNoRehashIssue($result);
+        } else {
+            $this->assertHasIssueContaining('never rehashes passwords', $result);
+        }
     }
 
     // ==================== Validated Array Password Detection (Bug 1 Verification) ====================
@@ -4641,7 +4700,13 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertHasIssueContaining('never rehashes passwords', $result);
+        // $hashmap is not a recognized hasher name, so on Laravel 9/10 the missing-rehash issue
+        // is still flagged. On Laravel 11+, the unset config is treated as default-enabled.
+        if (version_compare(app()->version(), '11.0.0', '>=')) {
+            $this->assertNoRehashIssue($result);
+        } else {
+            $this->assertHasIssueContaining('never rehashes passwords', $result);
+        }
     }
 
     public function test_hasher_variable_needs_rehash_is_valid(): void

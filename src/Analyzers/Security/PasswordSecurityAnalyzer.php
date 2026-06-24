@@ -15,6 +15,7 @@ use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\DetectsLaravelVersion;
 
 /**
  * Validates password security: hashing configuration AND password policies.
@@ -36,6 +37,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 {
+    use DetectsLaravelVersion;
+
     /**
      * Hashing configuration is environment-specific, not applicable in CI.
      */
@@ -1845,7 +1848,13 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        if ($rehashOnLogin === true) {
+        // On Laravel 11+, rehash_on_login defaults to true and Auth::attempt() rehashes the
+        // stored password automatically via EloquentUserProvider::rehashPasswordIfRequired().
+        // So an unset/unpublished config (null) means rehashing is already active there.
+        $rehashEffectivelyEnabled = $rehashOnLogin === true
+            || ($rehashOnLogin === null && $this->isLaravel11OrNewer());
+
+        if ($rehashEffectivelyEnabled) {
             return;
         }
 
@@ -1921,7 +1930,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                     $this->getRelativePath($loginFlowFile)
                 ),
                 severity: Severity::Medium,
-                recommendation: 'Check whether the stored password hash needs rehashing after a successful authentication and update it if so. On Laravel 11 or higher, this can be enabled automatically via the rehash_on_login option in config/hashing.php.',
+                recommendation: 'Check whether the stored password hash needs rehashing after a successful authentication and update it if so.',
                 metadata: ['issue_type' => 'missing_password_rehash']
             );
         }

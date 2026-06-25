@@ -1068,6 +1068,135 @@ PHP;
         $this->assertHasIssueContaining('User::find', $result);
     }
 
+    public function test_does_not_flag_update_or_create_inside_loop(): void
+    {
+        // updateOrCreate() is a deliberate per-row write, not an accidental read N+1.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class CatalogueImporter
+{
+    public function import(array $pillars)
+    {
+        foreach ($pillars as $data) {
+            Pillar::updateOrCreate(['slug' => $data['slug']], $data);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/CatalogueImporter.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_first_or_create_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class TagSyncer
+{
+    public function sync(array $tags)
+    {
+        foreach ($tags as $name) {
+            Tag::firstOrCreate(['name' => $name]);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/TagSyncer.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_upsert_inside_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class PriceWriter
+{
+    public function write(array $batches)
+    {
+        foreach ($batches as $batch) {
+            Price::upsert($batch, ['sku'], ['amount']);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/PriceWriter.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_seeder_files_for_query_in_loop(): void
+    {
+        // A read-per-iteration that WOULD flag under app/ — proves the directory skip
+        // works independently of the write-upsert exclusion.
+        $code = <<<'PHP'
+<?php
+
+namespace Database\Seeders;
+
+class CatalogueSeeder
+{
+    public function run()
+    {
+        $rows = [['code' => 'a'], ['code' => 'b']];
+
+        foreach ($rows as $row) {
+            $lookup = Lookup::where('code', $row['code'])->first();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'database/seeders/CatalogueSeeder.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['database']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_detects_first_inside_loop(): void
     {
         $code = <<<'PHP'

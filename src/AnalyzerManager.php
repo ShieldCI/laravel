@@ -148,8 +148,9 @@ class AnalyzerManager
         // clobbers any runtime override a service provider applied (e.g. Route::aliasMiddleware()).
         // Snapshot the router's middleware maps and restore them afterwards so running the
         // analyzer suite leaves application state untouched.
-        $aliasSnapshot = $this->router?->getMiddleware();
-        $groupSnapshot = $this->router?->getMiddlewareGroups();
+        $router = $this->router;
+        $aliasSnapshot = $router?->getMiddleware();
+        $groupSnapshot = $router?->getMiddlewareGroups();
 
         /** @var Collection<int, AnalyzerInterface> $instances */
         $instances = collect();
@@ -182,8 +183,8 @@ class AnalyzerManager
                 ->filter()
                 ->values();
         } finally {
-            if (is_array($aliasSnapshot) && is_array($groupSnapshot)) {
-                $this->restoreRouterMiddleware($aliasSnapshot, $groupSnapshot);
+            if ($router !== null && is_array($aliasSnapshot) && is_array($groupSnapshot)) {
+                $this->restoreRouterMiddleware($router, $aliasSnapshot, $groupSnapshot);
             }
         }
 
@@ -203,21 +204,17 @@ class AnalyzerManager
      * @param  array<string, mixed>  $aliases
      * @param  array<string, mixed>  $groups
      */
-    private function restoreRouterMiddleware(array $aliases, array $groups): void
+    private function restoreRouterMiddleware(Router $router, array $aliases, array $groups): void
     {
-        if ($this->router === null) {
-            return;
-        }
-
         foreach ($aliases as $name => $class) {
             if (is_string($name) && is_string($class)) {
-                $this->router->aliasMiddleware($name, $class);
+                $router->aliasMiddleware($name, $class);
             }
         }
 
         foreach ($groups as $name => $middleware) {
             if (is_string($name) && is_array($middleware)) {
-                $this->router->middlewareGroup($name, $middleware);
+                $router->middlewareGroup($name, $middleware);
             }
         }
     }

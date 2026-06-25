@@ -83,6 +83,33 @@ class AnalyzerManagerTest extends TestCase
         );
     }
 
+    #[Test]
+    public function it_restores_router_middleware_groups_clobbered_during_instance_resolution(): void
+    {
+        $app = $this->app;
+        assert($app !== null);
+
+        $router = $app->make(Router::class);
+
+        // A provider-applied middleware group override.
+        $router->middlewareGroup('web', [ThrottleRequestsWithRedis::class]);
+
+        $manager = new AnalyzerManager(
+            $app->make(Config::class),
+            [GroupClobberingTestAnalyzer::class],
+            $app,
+            $router,
+        );
+
+        $manager->getAnalyzers();
+
+        $this->assertSame(
+            [ThrottleRequestsWithRedis::class],
+            $router->getMiddlewareGroups()['web'] ?? null,
+            'Resolving analyzers must not leave a middleware group clobbered.'
+        );
+    }
+
     /** @test */
     #[Test]
     public function it_can_get_all_analyzers(): void
@@ -1057,6 +1084,49 @@ class RouterClobberingTestAnalyzer implements AnalyzerInterface
     public function getId(): string
     {
         return 'router-clobbering-test-analyzer';
+    }
+}
+
+/**
+ * Like RouterClobberingTestAnalyzer but mutates a middleware GROUP, exercising the
+ * group branch of the snapshot/restore in AnalyzerManager.
+ */
+class GroupClobberingTestAnalyzer implements AnalyzerInterface
+{
+    public function __construct(Router $router)
+    {
+        $router->middlewareGroup('web', [ThrottleRequests::class]);
+    }
+
+    public function analyze(): ResultInterface
+    {
+        return AnalysisResult::passed('group-clobbering-test-analyzer', 'Test passed');
+    }
+
+    public function getMetadata(): AnalyzerMetadata
+    {
+        return new AnalyzerMetadata(
+            id: 'group-clobbering-test-analyzer',
+            name: 'Group Clobbering Test Analyzer',
+            description: 'Test description',
+            category: Category::Security,
+            severity: Severity::Low,
+        );
+    }
+
+    public function shouldRun(): bool
+    {
+        return true;
+    }
+
+    public function getSkipReason(): string
+    {
+        return 'Not applicable';
+    }
+
+    public function getId(): string
+    {
+        return 'group-clobbering-test-analyzer';
     }
 }
 

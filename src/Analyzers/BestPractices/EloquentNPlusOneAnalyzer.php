@@ -53,6 +53,12 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
         $scanResult = $scanner->scan($allFiles);
 
         foreach ($allFiles as $file) {
+            // N+1 is a request-path concern. One-time DB scaffolding (seeders, migrations,
+            // factories) idiomatically loops upserts/lookups where query count is irrelevant.
+            if ($this->shouldSkipFile($file)) {
+                continue;
+            }
+
             try {
                 $ast = $this->parser->parseFile($file);
 
@@ -112,6 +118,25 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
             "Found {$totalIssues} potential N+1 query issue(s)",
             $issues
         );
+    }
+
+    /**
+     * Skip one-time database scaffolding directories.
+     *
+     * Seeders, migrations, and factories run off the request path, so query count
+     * inside their loops is irrelevant — looping upserts/lookups there is idiomatic.
+     */
+    private function shouldSkipFile(string $file): bool
+    {
+        $normalized = strtolower(str_replace('\\', '/', $file));
+
+        foreach (['/database/migrations/', '/database/seeders/', '/database/factories/'] as $dir) {
+            if (str_contains($normalized, $dir)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1375,15 +1400,17 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             return false;
         }
 
+        // Note: write-upserts (updateOrCreate, firstOrCreate, upsert) are deliberately
+        // excluded. A per-row write inside a loop must reference the loop variable, so the
+        // loop-dependency guard would always fire — but persisting N items inherently needs
+        // N writes; there is no eager-load to add. Reserve N+1 for read-per-iteration.
         $executionMethods = [
             // Retrieval methods
             'get', 'first', 'find', 'findorfail', 'findormany', 'findornew',
-            'firstor', 'firstorfail', 'firstornew', 'firstorcreate', 'firstwhere',
+            'firstor', 'firstorfail', 'firstornew', 'firstwhere',
             'sole', 'all', 'value', 'pluck',
             // Aggregates
             'count', 'sum', 'avg', 'average', 'min', 'max', 'exists', 'doesntexist',
-            // Modification methods that also query
-            'updateorcreate', 'upsert',
         ];
 
         return in_array($lowerMethodName, $executionMethods, true);

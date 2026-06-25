@@ -6,6 +6,9 @@ namespace ShieldCI\Tests\Unit;
 
 use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Contracts\Container\Container;
+use Illuminate\Routing\Middleware\ThrottleRequests;
+use Illuminate\Routing\Middleware\ThrottleRequestsWithRedis;
+use Illuminate\Routing\Router;
 use Mockery;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\AnalyzerManager;
@@ -24,6 +27,60 @@ class AnalyzerManagerTest extends TestCase
     {
         Mockery::close();
         parent::tearDown();
+    }
+
+    #[Test]
+    public function it_restores_router_middleware_clobbered_during_instance_resolution(): void
+    {
+        $app = $this->app;
+        assert($app !== null);
+
+        $router = $app->make(Router::class);
+
+        // The runtime swap a service provider would apply (e.g. gated on Redis).
+        $router->aliasMiddleware('throttle', ThrottleRequestsWithRedis::class);
+
+        $manager = new AnalyzerManager(
+            $app->make(Config::class),
+            [RouterClobberingTestAnalyzer::class],
+            $app,
+            $router,
+        );
+
+        $manager->getAnalyzers();
+
+        $this->assertSame(
+            ThrottleRequestsWithRedis::class,
+            $router->getMiddleware()['throttle'] ?? null,
+            'Resolving analyzers must not leave the throttle alias clobbered.'
+        );
+    }
+
+    #[Test]
+    public function it_leaves_router_middleware_clobbered_when_no_router_is_injected(): void
+    {
+        $app = $this->app;
+        assert($app !== null);
+
+        $router = $app->make(Router::class);
+        $router->aliasMiddleware('throttle', ThrottleRequestsWithRedis::class);
+
+        // No router passed: the manager cannot snapshot/restore, so the clobber persists.
+        // This negative control proves the test exercises a real clobber and that the
+        // restore is what undoes it.
+        $manager = new AnalyzerManager(
+            $app->make(Config::class),
+            [RouterClobberingTestAnalyzer::class],
+            $app,
+        );
+
+        $manager->getAnalyzers();
+
+        $this->assertSame(
+            ThrottleRequests::class,
+            $router->getMiddleware()['throttle'] ?? null,
+            'Without an injected router the clobber is expected to persist (negative control).'
+        );
     }
 
     /** @test */
@@ -954,6 +1011,52 @@ class AnotherTestAnalyzer implements AnalyzerInterface
     public function getId(): string
     {
         return 'another-test-analyzer';
+    }
+}
+
+/**
+ * Simulates a kernel-injecting analyzer: resolving it mutates the router's middleware
+ * alias map the way Laravel's afterResolving(HttpKernel) re-sync does, clobbering a
+ * provider-applied 'throttle' override. The clobber is reproduced deterministically in
+ * the constructor because the real afterResolving fires only on the first kernel
+ * resolution, which is not deterministic under Testbench.
+ */
+class RouterClobberingTestAnalyzer implements AnalyzerInterface
+{
+    public function __construct(Router $router)
+    {
+        $router->aliasMiddleware('throttle', ThrottleRequests::class);
+    }
+
+    public function analyze(): ResultInterface
+    {
+        return AnalysisResult::passed('router-clobbering-test-analyzer', 'Test passed');
+    }
+
+    public function getMetadata(): AnalyzerMetadata
+    {
+        return new AnalyzerMetadata(
+            id: 'router-clobbering-test-analyzer',
+            name: 'Router Clobbering Test Analyzer',
+            description: 'Test description',
+            category: Category::Security,
+            severity: Severity::Low,
+        );
+    }
+
+    public function shouldRun(): bool
+    {
+        return true;
+    }
+
+    public function getSkipReason(): string
+    {
+        return 'Not applicable';
+    }
+
+    public function getId(): string
+    {
+        return 'router-clobbering-test-analyzer';
     }
 }
 

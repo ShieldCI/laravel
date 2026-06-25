@@ -7,6 +7,7 @@ namespace ShieldCI;
 use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
 use Illuminate\Contracts\Config\Repository;
+use Illuminate\Routing\Router;
 use Illuminate\Support\ServiceProvider;
 use Psr\Log\LoggerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -101,7 +102,8 @@ class ShieldCIServiceProvider extends ServiceProvider
             return new AnalyzerManager(
                 $app->make('config'),
                 $this->discoverAnalyzers(),
-                $app
+                $app,
+                $app->make(Router::class)
             );
         });
     }

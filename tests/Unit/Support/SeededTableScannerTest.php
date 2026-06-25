@@ -188,4 +188,130 @@ PHP;
 
         $this->assertContains('business_stages', $this->scanner()->catalogueTables($basePath) ?? []);
     }
+
+    public function test_caches_catalogue_per_base_path(): void
+    {
+        $seeder = <<<'PHP'
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\Plan;
+
+class PlanSeeder
+{
+    public function run(): void
+    {
+        Plan::create(['tier' => 'free']);
+    }
+}
+PHP;
+
+        $basePath = $this->createTempDirectory([
+            'database/seeders/PlanSeeder.php' => $seeder,
+        ]);
+
+        $scanner = $this->scanner();
+        $first = $scanner->catalogueTables($basePath);
+
+        // A second call for the same base path returns the cached result.
+        $this->assertSame($first, $scanner->catalogueTables($basePath));
+    }
+
+    public function test_skips_non_php_files_in_seeders_directory(): void
+    {
+        $seeder = <<<'PHP'
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\Plan;
+
+class PlanSeeder
+{
+    public function run(): void
+    {
+        Plan::create(['tier' => 'free']);
+    }
+}
+PHP;
+
+        $basePath = $this->createTempDirectory([
+            'database/seeders/PlanSeeder.php' => $seeder,
+            'database/seeders/notes.txt' => 'not php',
+        ]);
+
+        // The .txt file is skipped; the real seeder is still scanned.
+        $this->assertContains('plans', $this->scanner()->catalogueTables($basePath) ?? []);
+    }
+
+    public function test_empty_seeder_file_is_skipped(): void
+    {
+        $basePath = $this->createTempDirectory([
+            'database/seeders/EmptySeeder.php' => '<?php',
+        ]);
+
+        // A file that parses to an empty AST contributes nothing; the directory still
+        // exists, so the result is an empty catalogue rather than null.
+        $this->assertSame([], $this->scanner()->catalogueTables($basePath));
+    }
+
+    public function test_resolves_db_table_through_a_chained_builder_write(): void
+    {
+        $seeder = <<<'PHP'
+<?php
+
+namespace Database\Seeders;
+
+use Illuminate\Support\Facades\DB;
+
+class WidgetSeeder
+{
+    public function run(): void
+    {
+        DB::table('widgets')->where('active', true)->insert([
+            ['name' => 'A'],
+        ]);
+    }
+}
+PHP;
+
+        $basePath = $this->createTempDirectory([
+            'database/seeders/WidgetSeeder.php' => $seeder,
+        ]);
+
+        // The DB::table root is reached by walking past the intermediate ->where() call.
+        $this->assertContains('widgets', $this->scanner()->catalogueTables($basePath) ?? []);
+    }
+
+    public function test_builder_write_not_rooted_in_db_table_is_ignored(): void
+    {
+        $seeder = <<<'PHP'
+<?php
+
+namespace Database\Seeders;
+
+class CustomSeeder
+{
+    public function run(): void
+    {
+        $builder = $this->builder();
+        $builder->insert([['name' => 'A']]);
+    }
+
+    private function builder()
+    {
+        return null;
+    }
+}
+PHP;
+
+        $basePath = $this->createTempDirectory([
+            'database/seeders/CustomSeeder.php' => $seeder,
+        ]);
+
+        // $builder->insert(...) has no statically-resolvable DB::table('x') root, so it
+        // registers no catalogue table.
+        $this->assertSame([], $this->scanner()->catalogueTables($basePath));
+    }
 }

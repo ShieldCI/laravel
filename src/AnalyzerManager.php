@@ -6,6 +6,7 @@ namespace ShieldCI;
 
 use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Contracts\Container\Container;
+use Illuminate\Routing\Router;
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -24,6 +25,7 @@ class AnalyzerManager
         protected Config $config,
         protected array $analyzerClasses,
         protected Container $container,
+        protected ?Router $router = null,
     ) {}
 
     /** @var Collection<int, AnalyzerInterface>|null */
@@ -141,36 +143,80 @@ class AnalyzerManager
 
         $this->initConfigCache();
 
+        // Resolving kernel-injecting analyzers triggers Laravel's afterResolving(HttpKernel)
+        // callback, which re-syncs the framework-default middleware maps onto the router and
+        // clobbers any runtime override a service provider applied (e.g. Route::aliasMiddleware()).
+        // Snapshot the router's middleware maps and restore them afterwards so running the
+        // analyzer suite leaves application state untouched.
+        $router = $this->router;
+        $aliasSnapshot = $router?->getMiddleware();
+        $groupSnapshot = $router?->getMiddlewareGroups();
+
         /** @var Collection<int, AnalyzerInterface> $instances */
-        $instances = collect($this->analyzerClasses)
-            ->map(function (string $class): ?AnalyzerInterface {
-                try {
-                    /** @var AnalyzerInterface $analyzer */
-                    $analyzer = $this->container->make($class);
+        $instances = collect();
 
-                    if (method_exists($analyzer, 'setBasePath')) {
-                        $analyzer->setBasePath(base_path());
+        try {
+            /** @var Collection<int, AnalyzerInterface> $instances */
+            $instances = collect($this->analyzerClasses)
+                ->map(function (string $class): ?AnalyzerInterface {
+                    try {
+                        /** @var AnalyzerInterface $analyzer */
+                        $analyzer = $this->container->make($class);
+
+                        if (method_exists($analyzer, 'setBasePath')) {
+                            $analyzer->setBasePath(base_path());
+                        }
+
+                        if (method_exists($analyzer, 'setPaths') && ! empty($this->cachedPathsToAnalyze)) {
+                            $analyzer->setPaths($this->cachedPathsToAnalyze);
+                        }
+
+                        if (method_exists($analyzer, 'setExcludePatterns')) {
+                            $analyzer->setExcludePatterns($this->cachedExcludedPaths);
+                        }
+
+                        return $analyzer;
+                    } catch (\Throwable $e) {
+                        return null;
                     }
-
-                    if (method_exists($analyzer, 'setPaths') && ! empty($this->cachedPathsToAnalyze)) {
-                        $analyzer->setPaths($this->cachedPathsToAnalyze);
-                    }
-
-                    if (method_exists($analyzer, 'setExcludePatterns')) {
-                        $analyzer->setExcludePatterns($this->cachedExcludedPaths);
-                    }
-
-                    return $analyzer;
-                } catch (\Throwable $e) {
-                    return null;
-                }
-            })
-            ->filter()
-            ->values();
+                })
+                ->filter()
+                ->values();
+        } finally {
+            if ($router !== null && is_array($aliasSnapshot) && is_array($groupSnapshot)) {
+                $this->restoreRouterMiddleware($router, $aliasSnapshot, $groupSnapshot);
+            }
+        }
 
         $this->cachedAllInstances = $instances;
 
         return $this->cachedAllInstances;
+    }
+
+    /**
+     * Restore the router's middleware alias and group maps to a prior snapshot,
+     * undoing the re-sync Laravel performs when the HTTP kernel is first resolved.
+     *
+     * Re-applies each snapshot entry via the public router API (overwrite restore);
+     * this faithfully undoes a provider overriding an existing alias/group, which is
+     * the only mutation that occurs in a booted application.
+     *
+     * @param  array<string, mixed>  $aliases
+     * @param  array<string, mixed>  $groups
+     */
+    private function restoreRouterMiddleware(Router $router, array $aliases, array $groups): void
+    {
+        foreach ($aliases as $name => $class) {
+            if (is_string($name) && is_string($class)) {
+                $router->aliasMiddleware($name, $class);
+            }
+        }
+
+        foreach ($groups as $name => $middleware) {
+            if (is_string($name) && is_array($middleware)) {
+                $router->middlewareGroup($name, $middleware);
+            }
+        }
     }
 
     /**

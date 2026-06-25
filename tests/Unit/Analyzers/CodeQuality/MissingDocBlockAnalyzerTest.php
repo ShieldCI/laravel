@@ -7,6 +7,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\CodeQuality;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Analyzers\CodeQuality\MissingDocBlockAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class MissingDocBlockAnalyzerTest extends AnalyzerTestCase
@@ -1489,5 +1490,1346 @@ PHP;
 
         // Seeders are scaffolding/test-support files
         $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_mailable_contract_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Mail;
+
+use Illuminate\Mail\Mailable;
+
+class OrderShipped extends Mailable
+{
+    public function envelope(): Envelope
+    {
+        return new Envelope(subject: 'Order Shipped');
+    }
+
+    public function content(): Content
+    {
+        return new Content(view: 'emails.orders.shipped');
+    }
+
+    public function attachments(): array
+    {
+        return [];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Mail/OrderShipped.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // envelope/content/attachments are Mailable framework contracts
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_form_request_contract_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class StorePostRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    public function rules(): array
+    {
+        return ['title' => 'required'];
+    }
+
+    public function prepareForValidation(): void
+    {
+        $this->merge(['slug' => 'x']);
+    }
+
+    public function withValidator($validator): void
+    {
+        //
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Requests/StorePostRequest.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // authorize/rules/prepareForValidation/withValidator are FormRequest contracts
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_all_public_controller_methods(): void
+    {
+        // Controllers are exempt wholesale — both REST-named actions (store) and
+        // app-specific actions (switch) are route handlers with typed signatures.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Support\ActiveBusiness;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+
+class BusinessSwitcherController
+{
+    public function store(Request $request, ActiveBusiness $active): RedirectResponse
+    {
+        $business = $this->persist($request);
+        $active->set($business->id);
+
+        return redirect()->route('dashboard');
+    }
+
+    public function switch(Request $request, ActiveBusiness $active): RedirectResponse
+    {
+        $data = $request->validate(['business_id' => ['required', 'integer']]);
+        abort_unless($request->user() !== null, 403);
+        $active->set((int) $data['business_id']);
+
+        return redirect()->back();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/BusinessSwitcherController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // store (REST name) and switch (custom name) are both controller actions
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_job_contract_methods_via_should_queue(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Jobs;
+
+use Illuminate\Contracts\Queue\ShouldQueue;
+
+class ProcessPodcast implements ShouldQueue
+{
+    public function handle(): void
+    {
+        //
+    }
+
+    public function failed($exception): void
+    {
+        //
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Jobs/ProcessPodcast.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // handle/failed are queued-job framework contracts
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_listener_contract_methods_via_namespace(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Listeners;
+
+class SendShipmentNotification
+{
+    public function handle($event): void
+    {
+        //
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Listeners/SendShipmentNotification.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // handle is a listener framework contract (gated by namespace/path)
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_still_flags_store_update_in_repository(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+class PostRepository
+{
+    public function store($data)
+    {
+        return $data;
+    }
+
+    public function update($id, $data)
+    {
+        return $id;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Repositories/PostRepository.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // store/update in a repository are NOT controller actions — still flagged
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('store', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_still_flags_handle_in_plain_service(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class PaymentService
+{
+    public function handle($payment)
+    {
+        return $payment;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/PaymentService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // handle() in a plain service is not a job/listener — still flagged
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('handle', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_still_flags_rules_in_plain_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Support;
+
+class RuleEngine
+{
+    public function rules()
+    {
+        return [];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Support/RuleEngine.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // rules() in a plain class is not a FormRequest — still flagged
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('rules', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_still_flags_build_in_non_mailable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Builders;
+
+class QueryBuilder
+{
+    public function build()
+    {
+        return [];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Builders/QueryBuilder.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // build() in a non-Mailable class is still flagged
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('build', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_even_helper_methods_in_controller(): void
+    {
+        // Consequence of the whole-file controller exemption: even a public helper that
+        // is not an action is exempt. Public helpers on controllers are an anti-pattern
+        // (they should be private/protected, which the analyzer never checks anyway).
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class PostController
+{
+    public function recalculateStats($rows)
+    {
+        return $rows;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_still_flags_store_in_non_controller_path(): void
+    {
+        // A 'store' method in a class that is NOT a controller (path/filename) stays flagged
+        // — the exemption is the controller location, not the method name.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+class PostStore
+{
+    public function store($data)
+    {
+        $saved = $this->persist($data);
+
+        return $saved;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Repositories/PostStore.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('store', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_suppresses_trivially_self_documenting_enum_method(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Enums;
+
+enum FounderBand: string
+{
+    case Emerging = 'emerging';
+    case Strong = 'strong';
+
+    public function label(): string
+    {
+        return match ($this) {
+            self::Emerging => 'Emerging',
+            self::Strong => 'Strong',
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Enums/FounderBand.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // label(): string is single-statement, self-documenting return, no params, no throws
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_suppresses_self_documenting_value_object_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Support;
+
+class Plan
+{
+    public function tier(): PlanTier
+    {
+        return $this->tier;
+    }
+
+    public function id(): ?int
+    {
+        return $this->id;
+    }
+
+    public function clear(): void
+    {
+        $this->items = [];
+    }
+
+    public function can(Capability $capability): bool
+    {
+        return $this->capabilities->contains($capability);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Support/Plan.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // All four are single-statement, fully-typed, non-throwing — self-documenting
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_still_flags_self_documenting_signature_with_control_flow(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class OrderService
+{
+    public function process(Order $order): Receipt
+    {
+        if ($order->isEmpty()) {
+            return Receipt::empty();
+        }
+
+        return new Receipt($order->total());
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/OrderService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // A branching body is not "trivial" even with concrete types — still nudged, but
+        // the recommendation should only ask for a summary (no @param/@return/@throws).
+        $this->assertWarning($result);
+        $recommendation = $this->recommendationFor('process', $result);
+        $this->assertStringContainsString('short description', $recommendation);
+        $this->assertStringNotContainsString('@param', $recommendation);
+        $this->assertStringNotContainsString('@return', $recommendation);
+        $this->assertStringNotContainsString('@throws', $recommendation);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_suppresses_assign_then_return_with_self_documenting_signature(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Support;
+
+class ActiveBusiness
+{
+    public function id(): ?int
+    {
+        $value = $this->session->get('active_business_id');
+
+        return is_numeric($value) ? (int) $value : null;
+    }
+
+    public function owner(): ?User
+    {
+        $owner = User::query()->where('role', 'owner')->first();
+
+        return $owner;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Support/ActiveBusiness.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Local assignments feeding a single return, with self-documenting signatures
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_still_flags_assign_then_return_when_variable_does_not_feed_return(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class Auditor
+{
+    public function record(): int
+    {
+        $logged = $this->writeAuditLog();
+
+        return 42;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/Auditor.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // $logged is a side-effecting statement that never feeds the return — not trivial
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('record', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_still_flags_when_statement_before_return_is_not_assignment(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ReportService
+{
+    public function assemble(): Report
+    {
+        $this->prepare();
+
+        return new Report();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/ReportService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // A side-effecting call before the return makes the body non-trivial
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('assemble', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_missing_docblock_recommendation_includes_only_needed_tags(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class Transformer
+{
+    public function transform($input): array
+    {
+        $output = (array) $input;
+
+        return $output;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/Transformer.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $recommendation = $this->recommendationFor('transform', $result);
+        // Untyped param needs @param; generic array return needs @return; nothing thrown.
+        $this->assertStringContainsString('@param', $recommendation);
+        $this->assertStringContainsString('@return', $recommendation);
+        $this->assertStringNotContainsString('@throws', $recommendation);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_enum_method_issue_reports_enum_name_not_unknown(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Enums;
+
+enum Palette: string
+{
+    case Warm = 'warm';
+    case Cool = 'cool';
+
+    public function swatches(): array
+    {
+        $base = ['#fff'];
+
+        return $base;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Enums/Palette.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // swatches(): array is generic, multi-statement — flagged. Its class context must
+        // resolve to the enum name now that Stmt\Enum_ is tracked.
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('swatches', $result);
+
+        $issue = $result->getIssues()[0];
+        $this->assertSame('Palette', $issue->metadata['class'] ?? null);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_middleware_contract_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
+
+class EnsureActiveBusiness
+{
+    public function handle(Request $request, Closure $next): Response
+    {
+        if ($request->user() === null) {
+            abort(403);
+        }
+
+        return $next($request);
+    }
+
+    public function terminate(Request $request, Response $response): void
+    {
+        $this->log($request, $response);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Middleware/EnsureActiveBusiness.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // handle/terminate are fixed by the Laravel middleware contract, even with real logic
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_still_flags_custom_method_in_middleware(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
+
+class CheckRole
+{
+    public function handle(Request $request, Closure $next): Response
+    {
+        return $next($request);
+    }
+
+    public function resolveRole($user)
+    {
+        return $user->role;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Middleware/CheckRole.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // handle is skipped, but a custom middleware method is still flagged
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('resolveRole', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_eloquent_scope_apply_method(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Scopes;
+
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Scope;
+
+class BusinessScope implements Scope
+{
+    public function apply(Builder $builder, Model $model): void
+    {
+        $businessId = app('active')->id();
+
+        $builder->where($model->qualifyColumn('business_id'), $businessId ?? 0);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Scopes/BusinessScope.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // apply() is mandated by the Illuminate\Database\Eloquent\Scope interface
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_still_flags_apply_method_in_non_scope_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DiscountApplier
+{
+    public function apply(Order $order): void
+    {
+        if ($order->isEmpty()) {
+            return;
+        }
+
+        $order->discount(0.1);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/DiscountApplier.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // apply() in a class that does not implement Scope is not a contract method
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('apply', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_validation_rule_contract_method(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Rules;
+
+use Closure;
+use Illuminate\Contracts\Validation\ValidationRule;
+
+class Lowercase implements ValidationRule
+{
+    public function validate(string $attribute, mixed $value, Closure $fail): void
+    {
+        $normalized = strtolower((string) $value);
+
+        if ($normalized !== $value) {
+            $fail('The :attribute must be lowercase.');
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Rules/Lowercase.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // validate() is mandated by the ValidationRule interface
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_legacy_validation_rule_contract_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Rules;
+
+use Illuminate\Contracts\Validation\Rule;
+
+class NonEmpty implements Rule
+{
+    public function passes($attribute, $value): bool
+    {
+        $clean = trim((string) $value);
+
+        return $clean !== '';
+    }
+
+    public function message(): array
+    {
+        return ['en' => 'Required', 'es' => 'Requerido'];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Rules/NonEmpty.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // passes/message are the legacy Rule contract
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_responsable_contract_method(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Responses;
+
+use Illuminate\Contracts\Support\Responsable;
+use Symfony\Component\HttpFoundation\Response;
+
+class CheckoutResponse implements Responsable
+{
+    public function toResponse($request): Response
+    {
+        if ($this->failed) {
+            return response('error', 500);
+        }
+
+        return response('ok');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Responses/CheckoutResponse.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // toResponse() is mandated by the Responsable interface
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_console_command_handle(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Console\Commands;
+
+use Illuminate\Console\Command;
+
+class SyncReports extends Command
+{
+    public function handle(): int
+    {
+        $this->info('Syncing...');
+
+        return self::SUCCESS;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Console/Commands/SyncReports.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // handle() is the console command framework contract
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_notification_channel_methods(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Notifications;
+
+use Illuminate\Notifications\Notification;
+
+class InvoicePaid extends Notification
+{
+    public function via($notifiable): array
+    {
+        return ['mail', 'database'];
+    }
+
+    public function toArray($notifiable): array
+    {
+        $data = ['amount' => 100];
+
+        return $data;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Notifications/InvoicePaid.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // via/toArray are Notification channel contracts
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_json_resource_to_array(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Resources;
+
+use Illuminate\Http\Resources\Json\JsonResource;
+
+class UserResource extends JsonResource
+{
+    public function toArray($request): array
+    {
+        return [
+            'id' => $this->id,
+            'name' => $this->name,
+        ];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Resources/UserResource.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // toArray() is the JsonResource framework contract
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_still_flags_to_array_in_plain_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Support;
+
+class Payload
+{
+    public function toArray($data): array
+    {
+        $out = (array) $data;
+
+        return $out;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Support/Payload.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // toArray() in a class that is neither a Resource nor a Notification is still flagged
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('toArray', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_still_flags_message_on_non_illuminate_rule_interface(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Validation;
+
+use App\Contracts\Rule;
+
+class PricingRule implements Rule
+{
+    public function message(): array
+    {
+        return ['price' => 'invalid'];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Validation/PricingRule.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // A non-Illuminate interface ending in \Rule must NOT be suffix-matched (exact-only)
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('message', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_fully_typed_interface_method(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services\ActionPlan\Contracts;
+
+use App\Support\ActionPlan\ActionPlanContent;
+use App\Support\ActionPlan\PlanInput;
+
+interface PlanGenerator
+{
+    public function generate(PlanInput $input): ActionPlanContent;
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/ActionPlan/Contracts/PlanGenerator.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // A bodyless declaration with a fully-typed signature is the entire contract
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_still_flags_interface_method_with_generic_signature(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Contracts;
+
+interface Transformer
+{
+    public function transform(array $payload): array;
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Contracts/Transformer.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // array param and array return are ambiguous — a docblock still adds value
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('transform', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_excludes_fully_typed_abstract_method(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use Illuminate\Database\Eloquent\Model;
+
+abstract class Repository
+{
+    abstract public function find(int $id): ?Model;
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Repositories/Repository.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Fully-typed abstract declaration carries nothing beyond its signature
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_still_flags_abstract_method_with_ambiguous_return(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+abstract class Aggregator
+{
+    abstract public function summarize(int $id): array;
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/Aggregator.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // array return is ambiguous — a @return documenting the shape still adds value
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('summarize', $result);
+    }
+
+    /**
+     * Find the recommendation for the issue raised against the named method.
+     */
+    private function recommendationFor(string $method, ResultInterface $result): string
+    {
+        foreach ($result->getIssues() as $issue) {
+            if (str_contains($issue->message, "'{$method}'")) {
+                return $issue->recommendation;
+            }
+        }
+
+        $this->fail("No issue found for method '{$method}'");
     }
 }

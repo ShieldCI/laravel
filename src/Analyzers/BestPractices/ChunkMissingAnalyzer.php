@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\BestPractices;
 
+use Illuminate\Support\Str;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
@@ -13,7 +14,10 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Support\ModelTableResolver;
+use ShieldCI\Support\SeededTableScanner;
 
 /**
  * Detects large dataset queries without chunking.
@@ -42,6 +46,13 @@ class ChunkMissingAnalyzer extends AbstractFileAnalyzer
         $issues = [];
         $phpFiles = $this->getPhpFiles();
 
+        // Tiny seeded reference-catalogue tables (plans, pillars, …) are bounded by
+        // construction, so looping over them is not a chunking problem. Scan once; the
+        // set is empty when there is no database/seeders/ directory.
+        $astParser = new AstParser;
+        $catalogueTables = (new SeededTableScanner($astParser))->catalogueTables($this->getBasePath()) ?? [];
+        $tableResolver = new ModelTableResolver($astParser);
+
         foreach ($phpFiles as $file) {
             try {
                 $ast = $this->parser->parseFile($file);
@@ -49,7 +60,7 @@ class ChunkMissingAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $visitor = new ChunkMissingVisitor;
+                $visitor = new ChunkMissingVisitor($catalogueTables, $tableResolver, $this->getBasePath());
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
@@ -90,6 +101,15 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
     /** @var array<string, Node\Expr> Track variable assignments */
     private array $variableAssignments = [];
 
+    /**
+     * @param  array<int, string>  $catalogueTables  Seeded reference tables exempt from the hint
+     */
+    public function __construct(
+        private array $catalogueTables = [],
+        private ?ModelTableResolver $tableResolver = null,
+        private string $basePath = '',
+    ) {}
+
     public function enterNode(Node $node): ?Node
     {
         // Reset variable tracking when entering a new function scope
@@ -117,7 +137,7 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
             $loopIterator = $node->expr;
 
             // Check if iterator is a direct ->all() or ->get() call
-            if ($this->isFetchCollectionCall($loopIterator)) {
+            if ($this->isFetchCollectionCall($loopIterator) && ! $this->isSeededCatalogueChain($loopIterator)) {
                 $this->issues[] = [
                     'message' => 'Looping over ->all() or ->get() without chunk() can cause memory issues on large datasets',
                     'line' => $node->getLine(),
@@ -128,7 +148,8 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
             }
             // Check if iterator is a variable that was assigned with ->all() or ->get()
             elseif ($loopIterator instanceof Node\Expr\Variable && is_string($loopIterator->name)) {
-                if (isset($this->variableAssignments[$loopIterator->name])) {
+                if (isset($this->variableAssignments[$loopIterator->name])
+                    && ! $this->isSeededCatalogueChain($this->variableAssignments[$loopIterator->name])) {
                     $this->issues[] = [
                         'message' => 'Looping over a variable assigned with ->all() or ->get() can cause memory issues on large datasets',
                         'line' => $node->getLine(),
@@ -275,6 +296,63 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         }
 
         return $current instanceof Node\Expr\StaticCall;
+    }
+
+    /**
+     * Return true when the chain reads from a tiny seeded reference-catalogue table —
+     * bounded by construction, so iterating it is not a chunking problem.
+     */
+    private function isSeededCatalogueChain(Node\Expr $expr): bool
+    {
+        if ($this->catalogueTables === [] || $this->tableResolver === null) {
+            return false;
+        }
+
+        $table = $this->resolveChainRootTable($expr);
+
+        return $table !== null && in_array($table, $this->catalogueTables, true);
+    }
+
+    /**
+     * Resolve the table a query chain targets from its StaticCall root, or null when it
+     * cannot be determined statically. DB::table('x') → 'x'; Model::… → the model's
+     * explicit `protected $table` override else the conventional Eloquent table name.
+     */
+    private function resolveChainRootTable(Node\Expr $expr): ?string
+    {
+        $current = $expr;
+        while ($current instanceof Node\Expr\MethodCall) {
+            $current = $current->var;
+        }
+
+        if (! $current instanceof Node\Expr\StaticCall || ! $current->class instanceof Node\Name) {
+            return null;
+        }
+
+        $class = $current->class->getLast();
+
+        if ($class === 'DB') {
+            return $current->name instanceof Node\Identifier && $current->name->toString() === 'table'
+                ? $this->firstStringArg($current)
+                : null;
+        }
+
+        return $this->tableResolver?->tableFor($this->basePath, $class)
+            ?? Str::snake(Str::pluralStudly($class));
+    }
+
+    /**
+     * Return the string value of a call's first argument, or null when it is not a string literal.
+     */
+    private function firstStringArg(Node\Expr\StaticCall $call): ?string
+    {
+        if (! isset($call->args[0]) || ! $call->args[0] instanceof Node\Arg) {
+            return null;
+        }
+
+        $value = $call->args[0]->value;
+
+        return $value instanceof Node\Scalar\String_ ? $value->value : null;
     }
 
     private function getMethodChain(Node\Expr $expr): array

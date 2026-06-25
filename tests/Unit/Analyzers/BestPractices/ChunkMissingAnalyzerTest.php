@@ -1037,4 +1037,162 @@ PHP;
 
         $this->assertStringContainsString('2 queries', $result2->getMessage());
     }
+
+    public function test_passes_when_looping_over_seeded_catalogue_table(): void
+    {
+        // Pillar is a fixed seeded reference catalogue (literal seeding, no factory), so
+        // iterating Pillar::...->get() is bounded by construction — not a chunking problem.
+        $seeder = <<<'PHP'
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\Pillar;
+
+class PillarSeeder
+{
+    public function run(): void
+    {
+        Pillar::create(['slug' => 'governance']);
+        Pillar::create(['slug' => 'risk']);
+    }
+}
+PHP;
+
+        $service = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Pillar;
+
+class AssessmentService
+{
+    public function codes(): void
+    {
+        foreach (Pillar::with('questions')->orderBy('display_order')->get() as $pillar) {
+            // map each pillar's questions
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Services/AssessmentService.php' => $service,
+            'database/seeders/PillarSeeder.php' => $seeder,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_non_catalogue_table_even_when_a_catalogue_exists(): void
+    {
+        // Pillar is a seeded catalogue, but the loop reads users (not seeded). The guard is
+        // table-specific, so the unbounded users loop is still flagged.
+        $seeder = <<<'PHP'
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\Pillar;
+
+class PillarSeeder
+{
+    public function run(): void
+    {
+        Pillar::create(['slug' => 'governance']);
+    }
+}
+PHP;
+
+        $service = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function process(): void
+    {
+        foreach (User::where('active', true)->get() as $user) {
+            // process user
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Services/UserService.php' => $service,
+            'database/seeders/PillarSeeder.php' => $seeder,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('get()', $result);
+    }
+
+    public function test_flags_factory_seeded_table_loop(): void
+    {
+        // A table seeded via factory grows with volume — not a fixed catalogue, still flagged.
+        $seeder = <<<'PHP'
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\User;
+
+class UserSeeder
+{
+    public function run(): void
+    {
+        User::factory()->count(50)->create();
+    }
+}
+PHP;
+
+        $service = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function process(): void
+    {
+        foreach (User::where('active', true)->get() as $user) {
+            // process user
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Services/UserService.php' => $service,
+            'database/seeders/UserSeeder.php' => $seeder,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('get()', $result);
+    }
 }

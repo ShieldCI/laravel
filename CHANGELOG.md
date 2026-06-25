@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.9.0
+
+### Fixed
+- `MassAssignmentAnalyzer` no longer crashes (an error result that wiped out all its findings) on skipped destructuring slots like `[, , $x] = ...` — whose `List_` items contain literal nulls — or on first-class-callable syntax such as `Model::create(...)`; the AST walker now guards against null nodes and non-`Arg` arguments (#247)
+- `PasswordSecurityAnalyzer` no longer reports a false `missing_password_rehash` on Laravel 11+, where `Auth::attempt()` auto-rehashes via `config('hashing.rehash_on_login')` (default `true`) — an unpublished `config/hashing.php` is now treated as default-enabled. Explicit `rehash_on_login = false`, and unset config on Laravel 9/10, still flag as before (#248)
+- `ChunkMissingAnalyzer` no longer flags `foreach` loops over a tiny seeded reference-catalogue table — a fixed, bounded table cannot cause the memory blow-up chunking guards against (#249)
+
+### Added
+- `SeededTableScanner` and `ModelTableResolver` (`ShieldCI\Support`) — shared helpers that identify seeder-only reference/catalogue tables and resolve a model's table (honouring explicit `$table` overrides), so analyzers can exempt bounded catalogue reads from large-dataset hints (#249)
+
 ## v1.8.8
 
 ### Fixed

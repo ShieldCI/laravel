@@ -63,6 +63,19 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  * - Filament Resource/Page/RelationManager: static table()/form() and framework-evaluated action
  *   closures expose no constructor or injectable method, so manual resolution is unavoidable.
  *   Suppressed only inside static methods or closures; binding is still flagged.
+ * - Eloquent Scope classes: A global scope (implements Illuminate\Database\Eloquent\Scope) is
+ *   instantiated with `new` by user code (addGlobalScope(new FooScope)), so constructor DI is
+ *   impossible, and apply(Builder, Model) is a framework-fixed signature. All resolution suppressed.
+ * - Model-event closures: Closures registered to Eloquent events (static::creating(), updating(),
+ *   saving(), etc.) are invoked by the event dispatcher with the model instance, never via DI. This
+ *   covers model traits/concerns (e.g. a boot{Trait}() method) which extend nothing and so aren't
+ *   caught by Eloquent-model detection. Resolution inside any model-event call subtree is suppressed.
+ * - Middleware: Detected by the App\Http\Middleware\ namespace OR a handle(Request, Closure)
+ *   signature, not only the *Middleware class-name suffix. Verb-named middleware (HandleInertiaRequests,
+ *   EnsureSubscribed) resolve per request, so all resolution is suppressed.
+ * - FormRequest::authorize()/rules() (and withValidator/prepareForValidation/passedValidation):
+ *   These framework methods are invoked via $container->call(), so method injection is technically
+ *   possible but awkward. Resolution there is reported at Low severity rather than suppressed.
  *
  * Configuration:
  * - whitelist_dirs: Directories to skip (e.g., tests, database/migrations, routes)
@@ -310,6 +323,9 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             $isEloquentModel = $this->isEloquentModelFromAst($ast);
             $isShouldQueue = $this->isShouldQueueFromAst($ast);
             $isFilamentClass = $this->isFilamentClassFromAst($ast);
+            $isEloquentScope = $this->isEloquentScopeFromAst($ast);
+            $isMiddleware = $this->isMiddlewareFromAst($ast);
+            $isFormRequest = $this->isFormRequestFromAst($ast);
 
             $visitor = new ServiceContainerVisitor(
                 $this->whitelistClasses,
@@ -322,7 +338,10 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
                 $isServiceProvider,
                 $isEloquentModel,
                 $isShouldQueue,
-                $isFilamentClass
+                $isFilamentClass,
+                $isEloquentScope,
+                $isMiddleware,
+                $isFormRequest
             );
             $traverser = new NodeTraverser;
             $traverser->addVisitor($visitor);
@@ -642,6 +661,186 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Check if AST represents an Eloquent global Scope.
+     *
+     * A scope (implements Illuminate\Database\Eloquent\Scope) is instantiated with `new` by user
+     * code and its apply(Builder, Model) signature is framework-fixed, so constructor DI is
+     * impossible. Uses the same CloningVisitor + NameResolver pattern as the other detectors.
+     *
+     * @param  array<Node>  $ast
+     */
+    private function isEloquentScopeFromAst(array $ast): bool
+    {
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor(new CloningVisitor);
+        $traverser->addVisitor(new NameResolver);
+        $resolvedAst = $traverser->traverse($ast);
+
+        foreach ($resolvedAst as $node) {
+            if ($node instanceof Stmt\Namespace_) {
+                foreach ($node->stmts as $stmt) {
+                    if ($stmt instanceof Stmt\Class_ && $this->implementsEloquentScope($stmt)) {
+                        return true;
+                    }
+                }
+            } elseif ($node instanceof Stmt\Class_ && $this->implementsEloquentScope($node)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if class implements the Eloquent Scope contract.
+     *
+     * After NameResolver has been applied, interface names are FQN. Matches the canonical
+     * Illuminate\Database\Eloquent\Scope and any \Scope-suffixed interface inside an Eloquent
+     * namespace (catches re-exported / aliased contracts).
+     */
+    private function implementsEloquentScope(Stmt\Class_ $class): bool
+    {
+        foreach ($class->implements as $interface) {
+            $name = ltrim($interface->toString(), '\\');
+
+            if ($name === 'Illuminate\\Database\\Eloquent\\Scope') {
+                return true;
+            }
+
+            if (str_ends_with($name, '\\Scope') && str_contains($name, 'Eloquent')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if AST represents HTTP middleware.
+     *
+     * Detection is structural rather than suffix-based: a class is middleware when it lives in an
+     * App\Http\Middleware namespace OR declares a handle() method whose second parameter is typed
+     * Closure (Laravel's universal middleware contract: handle(Request $request, Closure $next)).
+     * This catches modern verb-named middleware (HandleInertiaRequests, EnsureSubscribed) that the
+     * *Middleware whitelist pattern misses.
+     *
+     * @param  array<Node>  $ast
+     */
+    private function isMiddlewareFromAst(array $ast): bool
+    {
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor(new CloningVisitor);
+        $traverser->addVisitor(new NameResolver);
+        $resolvedAst = $traverser->traverse($ast);
+
+        foreach ($resolvedAst as $node) {
+            if ($node instanceof Stmt\Namespace_) {
+                $namespace = $node->name?->toString();
+
+                foreach ($node->stmts as $stmt) {
+                    if ($stmt instanceof Stmt\Class_ &&
+                        ($this->isMiddlewareNamespace($namespace) || $this->hasMiddlewareHandleSignature($stmt))) {
+                        return true;
+                    }
+                }
+            } elseif ($node instanceof Stmt\Class_ && $this->hasMiddlewareHandleSignature($node)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a namespace is an HTTP middleware namespace (e.g. App\Http\Middleware).
+     */
+    private function isMiddlewareNamespace(?string $namespace): bool
+    {
+        if ($namespace === null) {
+            return false;
+        }
+
+        return str_contains($namespace, '\\Http\\Middleware')
+            || str_starts_with($namespace, 'Http\\Middleware');
+    }
+
+    /**
+     * Check if a class declares the middleware contract: handle(Request, Closure $next).
+     *
+     * Keys on the second parameter being typed Closure, which is the defining shape of Laravel
+     * middleware regardless of namespace or class-name suffix.
+     */
+    private function hasMiddlewareHandleSignature(Stmt\Class_ $class): bool
+    {
+        foreach ($class->stmts as $stmt) {
+            if (! $stmt instanceof Stmt\ClassMethod || $stmt->name->toString() !== 'handle') {
+                continue;
+            }
+
+            if (count($stmt->params) < 2) {
+                continue;
+            }
+
+            $secondType = $stmt->params[1]->type;
+
+            if ($secondType instanceof Node\Name && str_ends_with(ltrim($secondType->toString(), '\\'), 'Closure')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if AST represents a FormRequest.
+     *
+     * Uses the same CloningVisitor + NameResolver pattern as the other detectors to resolve the
+     * parent class to FQN before checking.
+     *
+     * @param  array<Node>  $ast
+     */
+    private function isFormRequestFromAst(array $ast): bool
+    {
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor(new CloningVisitor);
+        $traverser->addVisitor(new NameResolver);
+        $resolvedAst = $traverser->traverse($ast);
+
+        foreach ($resolvedAst as $node) {
+            if ($node instanceof Stmt\Namespace_) {
+                foreach ($node->stmts as $stmt) {
+                    if ($stmt instanceof Stmt\Class_ && $this->extendsFormRequest($stmt)) {
+                        return true;
+                    }
+                }
+            } elseif ($node instanceof Stmt\Class_ && $this->extendsFormRequest($node)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if class extends FormRequest.
+     *
+     * After NameResolver has been applied, the parent class name is FQN. Matches the canonical
+     * Illuminate\Foundation\Http\FormRequest and any \FormRequest-suffixed base class (catches
+     * project-local intermediate bases such as App\Http\Requests\BaseRequest extending FormRequest).
+     */
+    private function extendsFormRequest(Stmt\Class_ $class): bool
+    {
+        if ($class->extends === null) {
+            return false;
+        }
+
+        $parent = ltrim($class->extends->toString(), '\\');
+
+        return $parent === 'Illuminate\\Foundation\\Http\\FormRequest'
+            || str_ends_with($parent, '\\FormRequest');
+    }
+
+    /**
      * Get recommendation for container resolution.
      */
     private function getRecommendation(string $pattern, string $location, string $argumentType, bool $inClosure = false): string
@@ -724,6 +923,39 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     private bool $currentMethodIsStatic = false;
 
     /**
+     * Depth inside an Eloquent model-event registration call (static::creating(),
+     * updating(), etc.). Closures passed to these events are invoked by the event
+     * dispatcher with the model instance, never via DI, so resolution within the
+     * call subtree is suppressed. Covers model traits/concerns whose boot{Trait}()
+     * methods register events but extend nothing.
+     */
+    private int $modelEventDepth = 0;
+
+    /**
+     * Eloquent model-event method names. Resolution inside a closure registered to
+     * one of these is suppressed.
+     *
+     * @var array<string>
+     */
+    private const MODEL_EVENTS = [
+        'retrieved', 'creating', 'created', 'updating', 'updated',
+        'saving', 'saved', 'deleting', 'deleted', 'trashed',
+        'forceDeleting', 'forceDeleted', 'restoring', 'restored',
+        'replicating', 'booting', 'booted',
+    ];
+
+    /**
+     * FormRequest framework methods invoked via $container->call(). Method injection
+     * is technically possible but awkward, so resolution here is reported at Low
+     * severity rather than suppressed.
+     *
+     * @var array<string>
+     */
+    private const FORM_REQUEST_METHODS = [
+        'authorize', 'rules', 'withValidator', 'prepareForValidation', 'passedValidation',
+    ];
+
+    /**
      * Namespaces where severity should be escalated to High.
      * These classes are fully DI-capable and manual resolution is almost always wrong.
      *
@@ -753,7 +985,10 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         private bool $isServiceProvider = false,
         private bool $isEloquentModel = false,
         private bool $isShouldQueue = false,
-        private bool $isFilamentClass = false
+        private bool $isFilamentClass = false,
+        private bool $isEloquentScope = false,
+        private bool $isMiddleware = false,
+        private bool $isFormRequest = false
     ) {}
 
     public function enterNode(Node $node)
@@ -767,6 +1002,15 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
 
         // Track class entry
         if ($node instanceof Stmt\Class_) {
+            $this->currentClass = $node->name ? $node->name->toString() : 'Anonymous';
+
+            return null;
+        }
+
+        // Track trait entry. Traits mixed into models register model-event closures
+        // in boot{Trait}() methods but extend nothing, so without this their context
+        // would render as 'Unknown'. Tracked exactly like a class.
+        if ($node instanceof Stmt\Trait_) {
             $this->currentClass = $node->name ? $node->name->toString() : 'Anonymous';
 
             return null;
@@ -794,6 +1038,14 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
             return null;
         }
 
+        // Track Eloquent model-event registration (static::creating(fn () => ...), etc.).
+        // Closures passed to these are invoked with the model instance, never via DI.
+        // Must run before the suppression guards below so the depth stays balanced with
+        // the unconditional decrement in leaveNode().
+        if ($this->isModelEventCall($node)) {
+            $this->modelEventDepth++;
+        }
+
         // Skip if class is whitelisted
         if ($this->isWhitelistedClass()) {
             return null;
@@ -814,6 +1066,18 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         // Binding detection (bind/singleton/instance/scoped) outside service providers is
         // still flagged via the ! $this->isServiceProvider guards further below.
         if ($this->isServiceProvider) {
+            return null;
+        }
+
+        // Eloquent global Scope: the scope is instantiated with `new` by user code and
+        // apply(Builder, Model) is a framework-fixed signature, so constructor DI is impossible.
+        if ($this->isEloquentScope) {
+            return null;
+        }
+
+        // Middleware: resolved per request, conditional resolution based on request context.
+        // Detected by namespace or handle(Request, Closure) signature, not just the *Middleware suffix.
+        if ($this->isMiddleware) {
             return null;
         }
 
@@ -1149,8 +1413,8 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
             $this->currentMethodIsStatic = false;
         }
 
-        // Clear class context on exit
-        if ($node instanceof Stmt\Class_) {
+        // Clear class/trait context on exit
+        if ($node instanceof Stmt\Class_ || $node instanceof Stmt\Trait_) {
             $this->currentClass = null;
         }
 
@@ -1162,6 +1426,11 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         // Track closure exit
         if ($node instanceof Expr\Closure || $node instanceof Expr\ArrowFunction) {
             $this->closureDepth--;
+        }
+
+        // Track Eloquent model-event call exit
+        if ($this->isModelEventCall($node)) {
+            $this->modelEventDepth--;
         }
 
         return null;
@@ -1182,6 +1451,22 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         // ('binding') are always wrong outside a provider, so keep flagging them.
         if ($this->functionDepth > 0 && $argumentType !== 'binding') {
             return;
+        }
+
+        // Eloquent model-event closures (static::creating(fn () => ...)) are invoked by
+        // the event dispatcher with the model instance, never via DI. This covers model
+        // traits/concerns. Bindings stay flagged.
+        if ($this->modelEventDepth > 0 && $argumentType !== 'binding') {
+            return;
+        }
+
+        // FormRequest framework methods (authorize/rules/...) are invoked via
+        // $container->call(), so method injection is technically possible but awkward.
+        // Report at Low severity rather than suppressing. Bindings stay High.
+        if ($this->isFormRequest
+            && $argumentType !== 'binding'
+            && in_array($this->currentMethod, self::FORM_REQUEST_METHODS, true)) {
+            $severity = Severity::Low;
         }
 
         // Filament Resource/Page/RelationManager: static table()/form() and
@@ -1270,6 +1555,20 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         $regex = '/^'.$pattern.'$/i';
 
         return (bool) preg_match($regex, $className);
+    }
+
+    /**
+     * Check if a node is an Eloquent model-event registration call.
+     *
+     * Keys on static calls (static::creating(), self::saving(), Model::deleting(), ...) whose
+     * method name is a known Eloquent event. Event registration is always static, so this avoids
+     * false matches on arbitrary instance method calls that happen to share an event name.
+     */
+    private function isModelEventCall(Node $node): bool
+    {
+        return $node instanceof Expr\StaticCall
+            && $node->name instanceof Node\Identifier
+            && in_array($node->name->toString(), self::MODEL_EVENTS, true);
     }
 
     /**

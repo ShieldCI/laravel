@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.9.1
+
+### Fixed
+- `EloquentNPlusOneAnalyzer` no longer flags loops of `updateOrCreate`/`firstOrCreate`/`upsert` — deliberate per-row writes rather than accidental read N+1 — nor `database/seeders`, migrations, or factories, where looping upserts is the idiomatic idempotent-seeding pattern (#252)
+- `MissingDocBlockAnalyzer` no longer flags framework-contract methods (Mailable, FormRequest, queued Job/Listener, Middleware, Eloquent `Scope`, `ValidationRule`, `Responsable`, Console Command, Notification, `JsonResource`, Filament — each gated to its base class/interface so identically-named plain-class methods stay flagged), trivially self-documenting methods (single statement, or typed assignments feeding one return), or controller methods (every public method is a route action); recommendations now name only the tags a method actually needs (#253)
+- `ServiceContainerResolutionAnalyzer` no longer false-positives on `app()`/container use in framework-fixed contexts it previously missed — Eloquent global `Scope` classes, model-event closures (including trait `boot{Trait}()` methods), and middleware detected by the `App\Http\Middleware` namespace or a `handle(Request, Closure)` signature — and downgrades `FormRequest::authorize()`/`rules()` to Low since method injection there is possible via `$container->call()`; bindings stay flagged at High (#254)
+
 ## v1.9.0
 
 ### Fixed

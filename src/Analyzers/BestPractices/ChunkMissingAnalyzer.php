@@ -141,7 +141,7 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
                 $this->issues[] = [
                     'message' => 'Looping over ->all() or ->get() without chunk() can cause memory issues on large datasets',
                     'line' => $node->getLine(),
-                    'severity' => Severity::High,
+                    'severity' => $this->severityFor($loopIterator),
                     'recommendation' => 'Use the chunk method to process records in batches of a fixed size, or the cursor or lazy methods for generator-based iteration. All three avoid loading the entire result set into memory at once.',
                     'code' => $this->getCodeSnippet($loopIterator),
                 ];
@@ -153,7 +153,7 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
                     $this->issues[] = [
                         'message' => 'Looping over a variable assigned with ->all() or ->get() can cause memory issues on large datasets',
                         'line' => $node->getLine(),
-                        'severity' => Severity::High,
+                        'severity' => $this->severityFor($this->variableAssignments[$loopIterator->name]),
                         'recommendation' => 'Use the chunk method to process records in batches, or the cursor or lazy methods for generator-based iteration, to avoid loading the entire dataset into memory.',
                         'code' => $this->getCodeSnippet($loopIterator),
                     ];
@@ -281,6 +281,18 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         }
 
         return false;
+    }
+
+    /**
+     * Pick a severity for a flagged fetch chain by how strong the memory-risk signal is.
+     *
+     * A table-wide scan (Model::…/DB::table()) is the high-confidence risk and stays High. A read
+     * rooted at an instance accessor ($model->relation()->get(), $builder->get()) reads one parent's
+     * children — far more often bounded than a table-wide scan — so it is a warning, not a failure.
+     */
+    private function severityFor(Node\Expr $expr): Severity
+    {
+        return $this->isStaticCallChain($expr) ? Severity::High : Severity::Medium;
     }
 
     /**

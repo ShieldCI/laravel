@@ -1195,4 +1195,112 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('get()', $result);
     }
+
+    public function test_downgrades_relationship_accessor_read_to_warning(): void
+    {
+        // A read rooted at an instance relationship accessor ($order->lineItems()) reads one
+        // parent's children — far more often bounded than a table-wide scan — so it is a warning,
+        // not a hard failure.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Order;
+
+class OrderService
+{
+    public function totals(Order $order): void
+    {
+        foreach ($order->lineItems()->get() as $line) {
+            // sum each line
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('get()', $result);
+    }
+
+    public function test_downgrades_variable_assigned_relationship_read_to_warning(): void
+    {
+        // Same downgrade applies when the relationship read is assigned to a variable first.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Order;
+
+class OrderService
+{
+    public function totals(Order $order): void
+    {
+        $lines = $order->lineItems()->get();
+        foreach ($lines as $line) {
+            // sum each line
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('variable', $result);
+    }
+
+    public function test_static_scan_still_fails_when_mixed_with_relationship_read(): void
+    {
+        // A table-wide Model::all() scan stays High, so a file mixing it with a downgraded
+        // relationship read still fails overall (High dominates).
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Order;
+use App\Models\User;
+
+class ReportService
+{
+    public function build(Order $order): void
+    {
+        foreach (User::all() as $user) {
+            // process user
+        }
+
+        foreach ($order->lineItems()->get() as $line) {
+            // sum each line
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ReportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertCount(2, $result->getIssues());
+    }
 }

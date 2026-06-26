@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.9.2
+
+### Fixed
+- `ChunkMissingAnalyzer` now downgrades single-parent relationship-accessor reads (`$model->relation()->get()`) from a failure to a warning, since one parent's child set is far more often bounded than a table-wide `Model::`/`DB::table()` scan (#256)
+
 ## v1.9.1
 
 ### Fixed

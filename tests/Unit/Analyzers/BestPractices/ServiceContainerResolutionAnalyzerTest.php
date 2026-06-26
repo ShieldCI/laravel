@@ -2912,4 +2912,301 @@ PHP;
         $this->assertSame(Severity::High, $issues[0]->severity);
         $this->assertHasIssueContaining('app()->bind()', $result);
     }
+
+    public function test_eloquent_scope_apply_resolution_is_suppressed(): void
+    {
+        // A global scope is instantiated with `new` by user code and apply(Builder, Model)
+        // is a framework-fixed signature, so constructor DI is impossible.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models\Scopes;
+
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Scope;
+
+class TenantScope implements Scope
+{
+    public function apply(Builder $builder, Model $model): void
+    {
+        $tenant = app(TenantContext::class);
+
+        $builder->where('tenant_id', $tenant->id());
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Scopes/TenantScope.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_model_event_closure_in_trait_is_suppressed(): void
+    {
+        // A trait mixed into models registers model-event closures in boot{Trait}().
+        // The closure is invoked by the event dispatcher with the model, never via DI.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+trait BelongsToTenant
+{
+    public static function bootBelongsToTenant(): void
+    {
+        static::creating(function ($model) {
+            $tenant = app(TenantContext::class);
+
+            $model->tenant_id = $tenant->id();
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/BelongsToTenant.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_trait_non_event_resolution_is_flagged_with_trait_location(): void
+    {
+        // Resolution outside a model-event closure is still flagged, but the trait is now
+        // tracked as the enclosing context, so the location is the trait (not 'Unknown').
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+trait BelongsToTenant
+{
+    public function resolveTenant()
+    {
+        return app(TenantContext::class);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/BelongsToTenant.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('App\\Models\\Concerns\\BelongsToTenant::resolveTenant', $issues[0]->metadata['location']);
+        $this->assertSame('BelongsToTenant', $issues[0]->metadata['class']);
+    }
+
+    public function test_middleware_by_namespace_is_suppressed(): void
+    {
+        // Verb-named middleware (no *Middleware suffix) is detected by the
+        // App\Http\Middleware namespace and suppressed.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+use Illuminate\Http\Request;
+
+class HandleInertiaRequests
+{
+    public function share(Request $request): array
+    {
+        $tenant = app(TenantContext::class);
+
+        return ['tenant' => $tenant->id()];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Middleware/HandleInertiaRequests.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_middleware_by_handle_signature_is_suppressed(): void
+    {
+        // A class outside the conventional middleware namespace is still recognised as
+        // middleware via the handle(Request, Closure $next) contract.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Support;
+
+use Closure;
+use Illuminate\Http\Request;
+
+class EnsureSubscribed
+{
+    public function handle(Request $request, Closure $next)
+    {
+        $entitlements = app(EntitlementService::class);
+
+        if (! $entitlements->active($request->user())) {
+            abort(403);
+        }
+
+        return $next($request);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Support/EnsureSubscribed.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_form_request_authorize_resolution_is_downgraded_to_low(): void
+    {
+        // authorize()/rules() are invoked via $container->call(), so method injection is
+        // technically possible but awkward. Resolution is reported at Low severity, not suppressed.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class StorePlanRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        $tenant = app(TenantContext::class);
+
+        return $tenant->canManagePlans();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Requests/StorePlanRequest.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::Low, $issues[0]->severity);
+        $this->assertHasIssueContaining('app()', $result);
+    }
+
+    public function test_form_request_binding_is_still_flagged_high(): void
+    {
+        // The FormRequest downgrade lowers resolution to Low but never bindings: registering a
+        // binding outside a service provider is always wrong, so it stays High even in authorize().
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class StorePlanRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        app()->bind(EntitlementService::class, RemoteEntitlementService::class);
+
+        return true;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Requests/StorePlanRequest.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::High, $issues[0]->severity);
+        $this->assertHasIssueContaining('app()->bind()', $result);
+    }
+
+    public function test_model_event_binding_is_still_flagged_high(): void
+    {
+        // Model-event closures suppress resolution but not bindings. A binding registered inside
+        // a static::creating() closure (always wrong) stays High.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+trait BelongsToTenant
+{
+    public static function bootBelongsToTenant(): void
+    {
+        static::creating(function ($model) {
+            app()->bind(TenantContext::class, RemoteTenantContext::class);
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/BelongsToTenant.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::High, $issues[0]->severity);
+        $this->assertHasIssueContaining('app()->bind()', $result);
+    }
 }

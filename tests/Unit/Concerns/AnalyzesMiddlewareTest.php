@@ -316,6 +316,52 @@ class AnalyzesMiddlewareTest extends TestCase
         $this->assertTrue($class->publicAppUsesGroupMiddleware(EncryptCookies::class));
     }
 
+    /** @test */
+    #[Test]
+    public function app_uses_group_middleware_returns_false_when_groups_is_not_an_array(): void
+    {
+        // getMiddlewareGroups() is documented `@return array` but is untyped, so the
+        // method guards against a malformed (non-array) value rather than crashing.
+        // Mutate after the wrapper is built so the kernel's middleware sync can't
+        // repopulate the groups before the assertion runs.
+        $class = $this->createMiddlewareAnalyzerClass();
+        $this->setRouterMiddlewareGroups('not-an-array');
+
+        $this->assertFalse($class->publicAppUsesGroupMiddleware(EncryptCookies::class));
+    }
+
+    /** @test */
+    #[Test]
+    public function app_uses_group_middleware_skips_groups_with_a_non_array_value(): void
+    {
+        $class = $this->createMiddlewareAnalyzerClass();
+        $this->setRouterMiddlewareGroups(['web' => 'not-an-array']);
+
+        $this->assertFalse($class->publicAppUsesGroupMiddleware(EncryptCookies::class));
+    }
+
+    /** @test */
+    #[Test]
+    public function app_uses_group_middleware_skips_non_string_group_members(): void
+    {
+        // A non-string member (here an int) is skipped — proving the guard continues
+        // instead of crashing on Str::before() — and a real class after it still matches.
+        $class = $this->createMiddlewareAnalyzerClass();
+        $this->setRouterMiddlewareGroups(['web' => [123, EncryptCookies::class]]);
+
+        $this->assertTrue($class->publicAppUsesGroupMiddleware(EncryptCookies::class));
+    }
+
+    /**
+     * Overwrite the router singleton's middleware groups with arbitrary (possibly
+     * malformed) data to exercise the defensive guards in appUsesGroupMiddleware().
+     */
+    private function setRouterMiddlewareGroups(mixed $groups): void
+    {
+        $router = $this->getRouter();
+        (new \ReflectionProperty($router, 'middlewareGroups'))->setValue($router, $groups);
+    }
+
     // =========================================================================
     // hasSessionInGlobalMiddleware()
     // =========================================================================

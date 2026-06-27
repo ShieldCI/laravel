@@ -3,7 +3,7 @@
 ## v1.9.4
 
 ### Fixed
-- `CookieSecurityAnalyzer` no longer reports a false EncryptCookies "not registered" on Laravel 11+ apps that keep it in the default `web` middleware group when running the full analyzer suite — middleware-group detection now reads the HTTP kernel's groups, which the framework retains even when the router's are reset mid-run (#259)
+- `CookieSecurityAnalyzer`: completes the v1.9.3 `web`-group fix, which still misfired during a full `shield:analyze` run — group detection now reads the HTTP kernel's middleware groups instead of the router's, which the analyzer suite resets mid-run (#259)
 
 ## v1.9.3
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.9.4
+
+### Fixed
+- `CookieSecurityAnalyzer`: completes the v1.9.3 `web`-group fix, which still misfired during a full `shield:analyze` run — group detection now reads the HTTP kernel's middleware groups instead of the router's, which the analyzer suite resets mid-run (#259)
+
 ## v1.9.3
 
 ### Fixed

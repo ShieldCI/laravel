@@ -141,22 +141,8 @@ trait AnalyzesMiddleware
      */
     protected function appUsesGroupMiddleware(string $middlewareClass): bool
     {
-        $groups = $this->router->getMiddlewareGroups();
-
-        if (! is_array($groups)) {
-            return false;
-        }
-
-        foreach ($groups as $middlewareList) {
-            if (! is_array($middlewareList)) {
-                continue;
-            }
-
+        foreach ($this->getMiddlewareGroups() as $middlewareList) {
             foreach ($middlewareList as $middleware) {
-                if (! is_string($middleware)) {
-                    continue;
-                }
-
                 $name = Str::before($middleware, ':');
 
                 if ($name === $middlewareClass
@@ -167,6 +153,58 @@ trait AnalyzesMiddleware
         }
 
         return false;
+    }
+
+    /**
+     * Get the application's middleware groups, preferring the HTTP kernel's view and
+     * merging in the router's.
+     *
+     * Laravel 11+ attaches the framework-default web/api middleware (EncryptCookies,
+     * StartSession, …) to the router lazily, via the one-time afterResolving(HttpKernel)
+     * callback. A runner that snapshots and restores the router's middleware maps — to
+     * keep provider overrides intact — can revert the router to a pre-resolution state
+     * missing those defaults, so the router alone is unreliable. The kernel keeps the
+     * defaults regardless, while the router still contributes any Route::middlewareGroup()
+     * registrations; a middleware present in either source counts.
+     *
+     * @return array<string, array<int, string>>
+     */
+    protected function getMiddlewareGroups(): array
+    {
+        $groups = $this->normalizeMiddlewareGroups($this->router->getMiddlewareGroups());
+
+        if (method_exists($this->kernel, 'getMiddlewareGroups')) {
+            /** @phpstan-ignore-next-line method.notFound */
+            foreach ($this->normalizeMiddlewareGroups($this->kernel->getMiddlewareGroups()) as $name => $list) {
+                $merged = array_merge($groups[$name] ?? [], $list);
+                $groups[$name] = array_values(array_unique($merged));
+            }
+        }
+
+        return $groups;
+    }
+
+    /**
+     * Coerce a raw middleware-group map into <string group name, list<string middleware>>,
+     * dropping malformed entries so callers can iterate without per-element guards.
+     *
+     * @return array<string, array<int, string>>
+     */
+    private function normalizeMiddlewareGroups(mixed $groups): array
+    {
+        if (! is_array($groups)) {
+            return [];
+        }
+
+        $normalized = [];
+
+        foreach ($groups as $name => $list) {
+            if (is_string($name) && is_array($list)) {
+                $normalized[$name] = array_values(array_filter($list, 'is_string'));
+            }
+        }
+
+        return $normalized;
     }
 
     /**
@@ -330,24 +368,10 @@ trait AnalyzesMiddleware
      */
     protected function getGroupsContainingSession(): array
     {
-        $groups = $this->router->getMiddlewareGroups();
-
-        if (! is_array($groups)) {
-            return [];
-        }
-
         $sessionGroups = [];
 
-        foreach ($groups as $groupName => $middlewareList) {
-            if (! is_string($groupName) || ! is_array($middlewareList)) {
-                continue;
-            }
-
+        foreach ($this->getMiddlewareGroups() as $groupName => $middlewareList) {
             foreach ($middlewareList as $middleware) {
-                if (! is_string($middleware)) {
-                    continue;
-                }
-
                 if ($this->isStartSessionMiddleware(Str::before($middleware, ':'))) {
                     $sessionGroups[] = $groupName;
                     break;

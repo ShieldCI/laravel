@@ -321,13 +321,13 @@ class AnalyzesMiddlewareTest extends TestCase
     public function app_uses_group_middleware_returns_false_when_groups_is_not_an_array(): void
     {
         // getMiddlewareGroups() is documented `@return array` but is untyped, so the
-        // method guards against a malformed (non-array) value rather than crashing.
-        // Mutate after the wrapper is built so the kernel's middleware sync can't
-        // repopulate the groups before the assertion runs.
+        // normalizer guards against a malformed (non-array) router value rather than
+        // crashing. Query a class registered in no group (the kernel's real groups are
+        // still merged in) to assert the malformed router input is simply ignored.
         $class = $this->createMiddlewareAnalyzerClass();
         $this->setRouterMiddlewareGroups('not-an-array');
 
-        $this->assertFalse($class->publicAppUsesGroupMiddleware(EncryptCookies::class));
+        $this->assertFalse($class->publicAppUsesGroupMiddleware('App\Http\Middleware\NeverRegisteredMiddleware'));
     }
 
     /** @test */
@@ -337,7 +337,7 @@ class AnalyzesMiddlewareTest extends TestCase
         $class = $this->createMiddlewareAnalyzerClass();
         $this->setRouterMiddlewareGroups(['web' => 'not-an-array']);
 
-        $this->assertFalse($class->publicAppUsesGroupMiddleware(EncryptCookies::class));
+        $this->assertFalse($class->publicAppUsesGroupMiddleware('App\Http\Middleware\NeverRegisteredMiddleware'));
     }
 
     /** @test */
@@ -360,6 +360,120 @@ class AnalyzesMiddlewareTest extends TestCase
     {
         $router = $this->getRouter();
         (new \ReflectionProperty($router, 'middlewareGroups'))->setValue($router, $groups);
+    }
+
+    /** @test */
+    #[Test]
+    public function app_uses_group_middleware_reads_from_kernel_when_router_groups_are_wiped(): void
+    {
+        // Regression: a runner that snapshots/restores the router's middleware maps can
+        // leave the web group without its lazily-attached framework defaults. The kernel
+        // retains them, so group detection must consult the kernel — not the router alone.
+        $kernel = new class
+        {
+            /** @return array<string, array<int, string>> */
+            public function getMiddlewareGroups(): array
+            {
+                return ['web' => [EncryptCookies::class]];
+            }
+        };
+
+        $class = $this->createMiddlewareAnalyzerClassWithKernel($kernel);
+        $this->setRouterMiddlewareGroups([]); // router has no web group at all
+
+        $this->assertTrue($class->publicAppUsesGroupMiddleware(EncryptCookies::class));
+    }
+
+    /** @test */
+    #[Test]
+    public function app_uses_group_middleware_falls_back_to_router_when_kernel_lacks_method(): void
+    {
+        // Older Laravel HTTP kernels expose no getMiddlewareGroups(); detection then
+        // relies solely on the router's groups.
+        $kernel = new class
+        {
+            // intentionally no getMiddlewareGroups()
+        };
+
+        $class = $this->createMiddlewareAnalyzerClassWithKernel($kernel);
+        $this->setRouterMiddlewareGroups(['web' => [EncryptCookies::class]]);
+
+        $this->assertTrue($class->publicAppUsesGroupMiddleware(EncryptCookies::class));
+    }
+
+    /** @test */
+    #[Test]
+    public function get_middleware_groups_skips_non_string_group_names(): void
+    {
+        // Numeric/empty keys (possible in a raw, untyped group map) are dropped so callers
+        // that key on the group name — e.g. getGroupsContainingSession() — stay well-typed.
+        $kernel = new class
+        {
+            /** @return array<int, array<int, string>> */
+            public function getMiddlewareGroups(): array
+            {
+                return [0 => [StartSession::class]];
+            }
+        };
+
+        $class = $this->createMiddlewareAnalyzerClassWithKernel($kernel);
+        $this->setRouterMiddlewareGroups([]);
+
+        $this->assertSame([], $class->publicGetMiddlewareGroups());
+    }
+
+    /** @test */
+    #[Test]
+    public function get_groups_containing_session_reads_from_kernel(): void
+    {
+        // The session-group path uses the same kernel-preferred source, so a kernel-only
+        // web group (router wiped) is still recognized as session-bearing.
+        $kernel = new class
+        {
+            /** @return array<string, array<int, string>> */
+            public function getMiddlewareGroups(): array
+            {
+                return ['web' => [StartSession::class]];
+            }
+        };
+
+        $class = $this->createMiddlewareAnalyzerClassWithKernel($kernel);
+        $this->setRouterMiddlewareGroups([]);
+
+        $this->assertSame(['web'], $class->publicGetGroupsContainingSession());
+    }
+
+    /**
+     * Build the middleware-analyzer wrapper with a caller-supplied kernel, so tests can
+     * control kernel->getMiddlewareGroups() independently of the router (including a kernel
+     * without that method, which exercises the older-Laravel router-only path).
+     */
+    private function createMiddlewareAnalyzerClassWithKernel(object $kernel): object
+    {
+        $router = $this->getRouter();
+
+        return new class($router, $kernel)
+        {
+            use AnalyzesMiddleware;
+
+            public function __construct(protected Router $router, protected $kernel) {}
+
+            public function publicAppUsesGroupMiddleware(string $class): bool
+            {
+                return $this->appUsesGroupMiddleware($class);
+            }
+
+            public function publicGetGroupsContainingSession(): array
+            {
+                return $this->getGroupsContainingSession();
+            }
+
+            /** @return array<string, array<int, string>> */
+            public function publicGetMiddlewareGroups(): array
+            {
+                return $this->getMiddlewareGroups();
+            }
+        };
     }
 
     // =========================================================================

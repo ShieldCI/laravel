@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Concerns;
 
 use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Auth\User;
 use Illuminate\Routing\Route;
 use Illuminate\Routing\Router;
@@ -263,6 +264,56 @@ class AnalyzesMiddlewareTest extends TestCase
 
         $this->assertIsArray($groups);
         $this->assertNotContains('custom-api', $groups);
+    }
+
+    // =========================================================================
+    // appUsesGroupMiddleware()
+    // =========================================================================
+
+    /** @test */
+    #[Test]
+    public function app_uses_group_middleware_detects_middleware_in_a_group(): void
+    {
+        // Laravel 11+ ships EncryptCookies in the default `web` group, not the
+        // global stack — this is the registration the analyzer must detect.
+        $router = $this->getRouter();
+        $router->middlewareGroup('web', [EncryptCookies::class]);
+
+        $class = $this->createMiddlewareAnalyzerClass();
+
+        $this->assertTrue($class->publicAppUsesGroupMiddleware(EncryptCookies::class));
+    }
+
+    /** @test */
+    #[Test]
+    public function app_uses_group_middleware_returns_false_when_absent_from_all_groups(): void
+    {
+        $router = $this->getRouter();
+        $router->middlewareGroup('web', [StartSession::class]);
+
+        $class = $this->createMiddlewareAnalyzerClass();
+
+        // A middleware registered in no group must not be reported as present.
+        $this->assertFalse($class->publicAppUsesGroupMiddleware('App\Http\Middleware\NeverRegisteredMiddleware'));
+    }
+
+    /** @test */
+    #[Test]
+    public function app_uses_group_middleware_matches_a_subclass(): void
+    {
+        // A custom App\Http\Middleware\EncryptCookies extending the framework one
+        // should still be detected when queried by the parent class.
+        $subclass = new class extends EncryptCookies
+        {
+            public function __construct() {} // avoid DI requirements
+        };
+
+        $router = $this->getRouter();
+        $router->middlewareGroup('web', [$subclass::class]);
+
+        $class = $this->createMiddlewareAnalyzerClass();
+
+        $this->assertTrue($class->publicAppUsesGroupMiddleware(EncryptCookies::class));
     }
 
     // =========================================================================
@@ -545,6 +596,11 @@ class AnalyzesMiddlewareTest extends TestCase
             public function publicAppUsesGlobalMiddleware(string $class): bool
             {
                 return $this->appUsesGlobalMiddleware($class);
+            }
+
+            public function publicAppUsesGroupMiddleware(string $class): bool
+            {
+                return $this->appUsesGroupMiddleware($class);
             }
 
             public function publicGetMiddleware(Route $route): array

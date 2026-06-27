@@ -667,8 +667,11 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_warns_when_laravel_11_encrypt_cookies_missing(): void
+    public function test_passes_when_laravel_11_bootstrap_app_omits_encrypt_cookies(): void
     {
+        // A standard Laravel 11+ app never references EncryptCookies in bootstrap/app.php:
+        // it ships in the framework-default `web` middleware group. Absence of a static
+        // reference is the normal, secure state, not a missing-middleware problem.
         $bootstrapApp = <<<'PHP'
 <?php
 
@@ -688,8 +691,29 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('EncryptCookies middleware may not be properly configured', $result);
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_at_runtime_when_encrypt_cookies_is_in_web_group_only(): void
+    {
+        // Regression: Laravel 11+ registers EncryptCookies in the framework-default
+        // `web` middleware group, not the global stack. Pointing the analyzer at the
+        // real booted app (base paths match, so the runtime check actually runs) must
+        // NOT report "not registered" — group registration counts as registered.
+        $app = $this->app;
+        $this->assertNotNull($app);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($app->basePath());
+
+        $result = $analyzer->analyze();
+
+        // The runtime check finds EncryptCookies in the `web` group, so no
+        // cookie-encryption issue is raised.
+        $this->assertPassed($result);
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringNotContainsString('EncryptCookies', $issue->message);
+        }
     }
 
     // ==================== EDGE CASES ====================

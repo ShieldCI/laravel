@@ -133,6 +133,43 @@ trait AnalyzesMiddleware
     }
 
     /**
+     * Determine if the application registers the given middleware in any middleware group.
+     *
+     * Laravel 11+ ships EncryptCookies (and the rest of the web stack) inside the
+     * default `web` middleware group rather than the global stack, so detecting such
+     * middleware requires inspecting groups, not just global/route middleware.
+     */
+    protected function appUsesGroupMiddleware(string $middlewareClass): bool
+    {
+        $groups = $this->router->getMiddlewareGroups();
+
+        if (! is_array($groups)) {
+            return false;
+        }
+
+        foreach ($groups as $middlewareList) {
+            if (! is_array($middlewareList)) {
+                continue;
+            }
+
+            foreach ($middlewareList as $middleware) {
+                if (! is_string($middleware)) {
+                    continue;
+                }
+
+                $name = Str::before($middleware, ':');
+
+                if ($name === $middlewareClass
+                    || (class_exists($middlewareClass) && is_subclass_of($name, $middlewareClass))) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Determine if the route uses the provided middleware.
      *
      * @param  Route  $route

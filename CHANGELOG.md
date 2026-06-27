@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.9.3
+
+### Fixed
+- `CookieSecurityAnalyzer` no longer reports EncryptCookies as "not registered" when it's in the Laravel 11+ default `web` middleware group (#258)
+
 ## v1.9.2
 
 ### Fixed

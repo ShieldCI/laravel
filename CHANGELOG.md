@@ -3,7 +3,7 @@
 ## v1.9.3
 
 ### Fixed
-- `CookieSecurityAnalyzer` no longer reports EncryptCookies as "not registered" when it lives in the Laravel 11+ default `web` middleware group — the runtime check now inspects middleware groups (via `appUsesGroupMiddleware`), not just the global stack and route middleware — and no longer flags a `bootstrap/app.php` that omits an explicit EncryptCookies reference, which is the framework's normal secure default (#258)
+- `CookieSecurityAnalyzer` no longer reports EncryptCookies as "not registered" when it's in the Laravel 11+ default `web` middleware group (#258)
 
 ## v1.9.2
 

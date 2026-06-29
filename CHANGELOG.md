@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.9.5
+
+### Fixed
+- `MissingDatabaseTransactionsAnalyzer` no longer flags writes in a private/protected helper that is protected by a caller's `DB::transaction()` only transitively — transaction-delegation now resolves through the whole intra-class call graph, not just one hop (#260)
+
 ## v1.9.4
 
 ### Fixed

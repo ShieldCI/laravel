@@ -925,11 +925,20 @@ class TransactionVisitor extends NodeVisitorAbstract
 }
 
 /**
- * Pre-scan visitor that identifies private/protected methods exclusively called
- * from within DB::transaction() closures in the same class.
+ * Pre-scan visitor that identifies methods whose every execution path runs
+ * inside a DB::transaction() — and which therefore should not be flagged for
+ * missing transaction protection.
  *
- * These "transaction-delegated" methods should not be flagged for missing
- * transaction protection because every execution path runs inside a transaction.
+ * Protection is resolved transitively over the intra-class `$this->method()`
+ * call graph. A method is "delegated" when, for every call site:
+ *   - the call sits lexically inside a DB::transaction() closure, OR
+ *   - the caller is itself a delegated *private/protected* method (so it has
+ *     no externally-reachable entry point that could bypass the transaction).
+ *
+ * The visibility gate matters only for transitive propagation: a public
+ * intermediary may be invoked externally without a transaction, so protection
+ * never flows *through* it. A method whose call sites are *all* directly inside
+ * transaction closures is delegated regardless of its own visibility.
  */
 class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
 {
@@ -938,14 +947,26 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
 
     private int $transactionDepth = 0;
 
-    /** @var array<string, true> Method names called from within a transaction closure. */
-    private array $calledInsideTransaction = [];
+    private ?string $currentMethodName = null;
 
-    /** @var array<string, true> Method names called outside any transaction closure. */
-    private array $calledOutsideTransaction = [];
+    /** @var array<string, bool> Method name → whether it is declared private or protected. */
+    private array $methodIsHidden = [];
+
+    /**
+     * Intra-class call edges keyed by callee method name.
+     *
+     * @var array<string, list<array{caller: string|null, inTx: bool}>>
+     */
+    private array $edgesByCallee = [];
 
     public function enterNode(Node $node): ?Node
     {
+        // Track the method we are currently inside (and its visibility).
+        if ($node instanceof Node\Stmt\ClassMethod) {
+            $this->currentMethodName = $node->name->toString();
+            $this->methodIsHidden[$this->currentMethodName] = $node->isPrivate() || $node->isProtected();
+        }
+
         // Record closures passed directly to DB::transaction().
         if ($node instanceof Node\Expr\StaticCall
             && $node->class instanceof Node\Name
@@ -967,19 +988,17 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
             }
         }
 
-        // Collect $this->method() calls and partition by transaction context.
+        // Record each $this->method() call edge with its caller and transaction context.
         if (
             $node instanceof Node\Expr\MethodCall
             && $node->var instanceof Node\Expr\Variable
             && $node->var->name === 'this'
             && $node->name instanceof Node\Identifier
         ) {
-            $methodName = $node->name->toString();
-            if ($this->transactionDepth > 0) {
-                $this->calledInsideTransaction[$methodName] = true;
-            } else {
-                $this->calledOutsideTransaction[$methodName] = true;
-            }
+            $this->edgesByCallee[$node->name->toString()][] = [
+                'caller' => $this->currentMethodName,
+                'inTx' => $this->transactionDepth > 0,
+            ];
         }
 
         return null;
@@ -987,6 +1006,10 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
 
     public function leaveNode(Node $node): ?Node
     {
+        if ($node instanceof Node\Stmt\ClassMethod) {
+            $this->currentMethodName = null;
+        }
+
         if ($node instanceof Node\Expr\Closure || $node instanceof Node\Expr\ArrowFunction) {
             if (isset($this->transactionClosurePositions[$node->getStartFilePos()]) && $this->transactionDepth > 0) {
                 $this->transactionDepth--;
@@ -997,13 +1020,57 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
     }
 
     /**
-     * Returns method names that are called exclusively from within DB::transaction() closures.
+     * Returns method names whose every call path runs inside a transaction,
+     * resolved to a fixed point over the intra-class call graph.
      *
      * @return array<string, true>
      */
     public function getDelegatedMethods(): array
     {
-        return array_diff_key($this->calledInsideTransaction, $this->calledOutsideTransaction);
+        /** @var array<string, true> $delegated */
+        $delegated = [];
+
+        do {
+            $changed = false;
+
+            foreach ($this->edgesByCallee as $callee => $edges) {
+                if (isset($delegated[$callee])) {
+                    continue;
+                }
+
+                $allInTx = true;
+                $allProtected = true;
+
+                foreach ($edges as $edge) {
+                    if ($edge['inTx']) {
+                        continue;
+                    }
+                    $allInTx = false;
+
+                    // A non-transaction edge is only protected when the caller is
+                    // itself a delegated private/protected method (no external entry).
+                    $caller = $edge['caller'];
+                    $safeCaller = $caller !== null
+                        && isset($delegated[$caller])
+                        && ($this->methodIsHidden[$caller] ?? false);
+
+                    if (! $safeCaller) {
+                        $allProtected = false;
+                    }
+                }
+
+                // Direct case: every call site is inside a transaction closure
+                // (preserves prior behavior, regardless of the callee's visibility).
+                // Transitive case: protection only propagates to a private/protected
+                // callee, since a public callee may be reached externally without one.
+                if ($allInTx || ($allProtected && ($this->methodIsHidden[$callee] ?? false))) {
+                    $delegated[$callee] = true;
+                    $changed = true;
+                }
+            }
+        } while ($changed);
+
+        return $delegated;
     }
 }
 

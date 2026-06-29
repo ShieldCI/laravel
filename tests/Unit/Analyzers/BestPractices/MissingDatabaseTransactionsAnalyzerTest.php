@@ -2054,6 +2054,202 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_passes_when_writes_in_transitively_delegated_private_helper(): void
+    {
+        // Two-hop delegation: the public orchestrator opens the transaction and
+        // delegates to a private helper, which in turn delegates the actual writes
+        // to a second private helper. Every path runs inside the transaction.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Account;
+use Illuminate\Support\Facades\DB;
+
+class AccountCloser
+{
+    public function close(Account $account): void
+    {
+        DB::transaction(function () use ($account): void {
+            $this->settleBalances($account);
+            $account->delete();
+        });
+    }
+
+    private function settleBalances(Account $account): void
+    {
+        $this->writeOffLedger($account);
+    }
+
+    private function writeOffLedger(Account $account): void
+    {
+        DB::table('ledgers')->where('account_id', $account->id)->update(['written_off' => true]);
+        $account->entries()->delete();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/AccountCloser.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_writes_in_three_hop_delegated_chain(): void
+    {
+        // a -> b -> c, all private; the transaction is opened only at the public
+        // entry point. Proves the fixed point converges beyond two levels.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Account;
+use Illuminate\Support\Facades\DB;
+
+class AccountCloser
+{
+    public function close(Account $account): void
+    {
+        DB::transaction(function () use ($account): void {
+            $this->stepA($account);
+        });
+    }
+
+    private function stepA(Account $account): void
+    {
+        $this->stepB($account);
+    }
+
+    private function stepB(Account $account): void
+    {
+        $this->stepC($account);
+    }
+
+    private function stepC(Account $account): void
+    {
+        $account->update(['status' => 'closed']);
+        $account->entries()->delete();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/AccountCloser.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_transitively_delegated_helper_also_reached_without_transaction(): void
+    {
+        // The helper is reachable transitively from a transaction AND directly from
+        // a second entry point that has no transaction. The unprotected path must
+        // still be flagged.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Account;
+use Illuminate\Support\Facades\DB;
+
+class AccountService
+{
+    public function closeWithTransaction(Account $account): void
+    {
+        DB::transaction(function () use ($account): void {
+            $this->settle($account);
+        });
+    }
+
+    public function purgeWithoutTransaction(Account $account): void
+    {
+        $this->writeOffLedger($account);
+    }
+
+    private function settle(Account $account): void
+    {
+        $this->writeOffLedger($account);
+    }
+
+    private function writeOffLedger(Account $account): void
+    {
+        $account->update(['written_off' => true]);
+        $account->entries()->delete();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/AccountService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('database write operation(s) outside transaction protection', $result);
+    }
+
+    public function test_flags_helper_delegated_only_through_public_intermediary(): void
+    {
+        // The transaction wraps a call to a PUBLIC intermediary. Because that
+        // intermediary can be invoked externally without a transaction, protection
+        // must not propagate to the private leaf it calls.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Account;
+use Illuminate\Support\Facades\DB;
+
+class AccountService
+{
+    public function entry(Account $account): void
+    {
+        DB::transaction(function () use ($account): void {
+            $this->mid($account);
+        });
+    }
+
+    public function mid(Account $account): void
+    {
+        $this->leaf($account);
+    }
+
+    private function leaf(Account $account): void
+    {
+        $account->update(['status' => 'closed']);
+        $account->entries()->delete();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/AccountService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('database write operation(s) outside transaction protection', $result);
+    }
+
     public function test_passes_with_third_party_static_create_calls(): void
     {
         // Spatie\Sitemap\Tags\Url and Spatie\Sitemap\Sitemap are not Eloquent models.

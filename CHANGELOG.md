@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.9.6
+
+### Fixed
+- `MixedQueryBuilderEloquentAnalyzer` no longer flags a read-only class that mixes `DB::table()` with Eloquent when it explicitly manages global scopes via `withoutGlobalScope()`/`withoutGlobalScopes()` and performs no query-builder writes — a deliberate cross-tenant analytics pattern where the scope bypass is intentional and signalled; query-builder writes (which bypass model events/casts) still flag, and classes that never call `withoutGlobalScope()` are unaffected (#262)
+- `PhpSideFilteringAnalyzer` no longer flags `filter()`/`reject()` whose predicate reads a JSON/array-cast attribute sub-key (e.g. `$q->config['required']`) or a `data_get()`/`Arr::get()` nested lookup — these have no portable SQL equivalent (JSON path operators differ across SQLite and MySQL) so the predicate cannot be pushed into the query; mirrors the existing authorization-predicate skip, and `filter()`/`reject()` on plain columns still flag (#263)
+- `EloquentNPlusOneAnalyzer` no longer flags the generate-until-unique idiom (`while (Model::where('code', $code)->exists()) { $code = ...; }`) as N+1 — an `exists()`/`doesntExist()` query in a `while`/`do-while` condition whose probed variable is reassigned in the loop body is a bounded uniqueness search, not a per-row query; queries in the loop body, non-existence terminals, and per-item existence checks inside a `foreach` still flag (#264)
+
 ## v1.9.5
 
 ### Fixed

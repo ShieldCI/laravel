@@ -393,12 +393,14 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
             return;
         }
 
-        // Filtering by an authorization check (->can(), ->hasRole(), Gate::allows())
-        // cannot be expressed as a SQL where clause, so flagging it as "filter in the
-        // database" is a false positive. Skip filter()/reject() with such closures.
+        // Filtering by an authorization check (->can(), ->hasRole(), Gate::allows()) or by a
+        // JSON/array-cast attribute sub-key ($q->config['required']) cannot be expressed as a
+        // portable SQL where clause, so flagging it as "filter in the database" is a false
+        // positive. Skip filter()/reject() with such closures.
         $methodName = $node->name->toString();
         if (in_array($methodName, ['filter', 'reject'], true)
-            && $this->filterCallbackUsesAuthorization($node)) {
+            && ($this->filterCallbackUsesAuthorization($node)
+                || $this->filterCallbackAccessesJsonAttribute($node))) {
             return;
         }
 
@@ -476,6 +478,54 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
                 if ($inner->name instanceof Node\Identifier) {
                     return in_array($inner->name->toString(), self::AUTHORIZATION_METHODS, true);
                 }
+            }
+
+            return false;
+        });
+
+        return $found !== null;
+    }
+
+    /**
+     * Check whether a filter()/reject() closure filters on a JSON/array-cast attribute.
+     *
+     * Predicates that read a sub-key of a JSON-cast attribute — e.g.
+     * ->filter(fn ($q) => $q->config['required']) — have no portable SQL equivalent
+     * (JSON path operators differ across SQLite and MySQL), so pushing them into the
+     * database is not viable. This is legitimate PHP-side filtering and must not be flagged.
+     */
+    private function filterCallbackAccessesJsonAttribute(Node\Expr\MethodCall $node): bool
+    {
+        $firstArg = $node->args[0] ?? null;
+        if (! ($firstArg instanceof Node\Arg)) {
+            return false;
+        }
+
+        $callback = $firstArg->value;
+        if (! ($callback instanceof Node\Expr\Closure) && ! ($callback instanceof Node\Expr\ArrowFunction)) {
+            return false;
+        }
+
+        $finder = new NodeFinder;
+        $found = $finder->findFirst($callback, function (Node $inner): bool {
+            // Sub-key access on a cast attribute: $model->config['required']
+            if ($inner instanceof Node\Expr\ArrayDimFetch && $inner->var instanceof Node\Expr\PropertyFetch) {
+                return true;
+            }
+
+            // Nested access helpers: data_get($q, 'config.required'), Arr::get($q->config, 'required')
+            if ($inner instanceof Node\Expr\FuncCall
+                && $inner->name instanceof Node\Name
+                && $inner->name->getLast() === 'data_get') {
+                return true;
+            }
+
+            if ($inner instanceof Node\Expr\StaticCall
+                && $inner->class instanceof Node\Name
+                && $inner->class->getLast() === 'Arr'
+                && $inner->name instanceof Node\Identifier
+                && $inner->name->toString() === 'get') {
+                return true;
             }
 
             return false;

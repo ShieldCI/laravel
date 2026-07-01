@@ -162,6 +162,94 @@ PHP;
         $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
     }
 
+    public function test_does_not_flag_readonly_scope_managed_analytics(): void
+    {
+        // Mirrors Compass ConsoleMetricsService: a read-only staff analytics service that
+        // deliberately bypasses the tenant global scope (withoutGlobalScope) and mixes
+        // DB::table() aggregation with Eloquent. The scope bypass is intentional and signalled,
+        // and there are no query-builder writes, so this considered pattern must not be flagged.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services\Console;
+
+use App\Models\User;
+use App\Models\Assessment;
+use App\Scopes\BusinessScope;
+use Illuminate\Support\Facades\DB;
+
+class ConsoleMetricsService
+{
+    public function kpis()
+    {
+        return [
+            'founders' => User::count(),
+            'completed' => Assessment::withoutGlobalScope(BusinessScope::class)->where('status', 'completed')->count(),
+        ];
+    }
+
+    public function signupsByWeek()
+    {
+        return DB::table('users')->whereNotNull('created_at')->get();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Console/ConsoleMetricsService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_flags_mixing_when_class_writes_via_query_builder(): void
+    {
+        // Even when a class manages global scopes, a query-builder WRITE bypasses model
+        // events/casts, so the mixing must still be flagged.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use App\Scopes\BusinessScope;
+use Illuminate\Support\Facades\DB;
+
+class ReportRepository
+{
+    public function summary()
+    {
+        return User::where('active', true)->count();
+    }
+
+    public function crossTenant()
+    {
+        return User::withoutGlobalScope(BusinessScope::class)->where('active', true)->count();
+    }
+
+    public function purge()
+    {
+        return DB::table('users')->where('inactive', true)->delete();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/ReportRepository.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder', $result);
+    }
+
     public function test_detects_significant_mixing(): void
     {
         // Models to register so QB tables count toward threshold

@@ -15,6 +15,127 @@ class EloquentNPlusOneAnalyzerTest extends AnalyzerTestCase
         return new EloquentNPlusOneAnalyzer($this->parser);
     }
 
+    public function test_passes_uniqueness_probe_while_loop(): void
+    {
+        // Generate-until-unique idiom: the exists() query IS the loop condition and the
+        // probed value ($code) is reassigned each iteration. This is a bounded uniqueness
+        // search, not a per-row N+1, and the eager-loading remediation does not apply.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Question;
+use Illuminate\Support\Str;
+
+class CatalogueService
+{
+    private function generateCode($pillar, string $text): string
+    {
+        $base = $pillar->slug.'_'.Str::slug($text, '_');
+        $code = $base;
+        $n = 1;
+        while (Question::where('code', $code)->exists()) {
+            $code = $base.'_'.(++$n);
+        }
+
+        return $code;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/CatalogueService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_uniqueness_probe_do_while_loop(): void
+    {
+        // Same idiom in do-while form: probed value reassigned in the body, exists() in the
+        // condition.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Post;
+use Illuminate\Support\Str;
+
+class SlugGenerator
+{
+    public function unique(string $base): string
+    {
+        $slug = $base;
+        do {
+            $slug = $base.'-'.Str::random(4);
+        } while (Post::where('slug', $slug)->exists());
+
+        return $slug;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/SlugGenerator.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_detects_exists_check_per_item_in_foreach(): void
+    {
+        // A genuine N+1: running an existence check for every item in a fetched collection.
+        // This is NOT a uniqueness-probe condition, so it must remain flagged.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Question;
+
+class Importer
+{
+    public function run(array $codes): array
+    {
+        $existing = [];
+        foreach ($codes as $code) {
+            if (Question::where('code', $code)->exists()) {
+                $existing[] = $code;
+            }
+        }
+
+        return $existing;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/Importer.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+    }
+
     public function test_detects_n_plus_one_queries(): void
     {
         $code = <<<'PHP'
@@ -73,6 +194,116 @@ PHP;
 
         $tempDir = $this->createTempDirectory([
             'app/Http/Controllers/PostController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_inline_foreach_closure_eager_loading(): void
+    {
+        // Mirrors Compass AssessmentService::stageQuestionCodes: eager loading applied inline
+        // in the foreach() expression via a closure-constrained relation.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services\Assessment;
+
+class AssessmentService
+{
+    public function stageQuestionCodes()
+    {
+        $codesByPillar = [];
+        foreach (Pillar::with(['questions' => fn ($q) => $q->where('is_active', true)])->orderBy('display_order')->get() as $pillar) {
+            $questions = $pillar->questions->map(fn ($question) => $question->code)->all();
+            $codesByPillar[$pillar->slug] = $questions;
+        }
+
+        return $codesByPillar;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/Assessment/AssessmentService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_assigned_closure_keyed_eager_loading(): void
+    {
+        // Mirrors Compass CatalogueController::index: closure-keyed eager loading with a
+        // nested ->with() assigned to a variable, then iterated.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Staff;
+
+class CatalogueController
+{
+    public function index()
+    {
+        $pillars = Pillar::with([
+            'questions' => fn ($q) => $q->withoutGlobalScopes()->with('options')->orderBy('display_order'),
+        ])->orderBy('display_order')->get();
+
+        foreach ($pillars as $pillar) {
+            echo $pillar->questions->count();
+        }
+
+        return $pillars;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/Staff/CatalogueController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_standalone_aggregate_not_in_loop(): void
+    {
+        // Mirrors Compass ConsoleMetricsService::kpis: standalone aggregate queries are
+        // not per-row loops and must not be flagged as N+1.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services\Console;
+
+class ConsoleMetricsService
+{
+    public function kpis()
+    {
+        return [
+            'completed' => Assessment::where('status', 'completed')->count(),
+            'total' => Business::count(),
+        ];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/Console/ConsoleMetricsService.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();

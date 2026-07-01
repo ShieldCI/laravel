@@ -7,6 +7,7 @@ namespace ShieldCI\Analyzers\BestPractices;
 use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Stmt;
+use PhpParser\NodeFinder;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
@@ -537,6 +538,14 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     private array $loopStack = [];
 
     /**
+     * spl_object_id() of exists()/doesntExist() query nodes that form a uniqueness-probe
+     * loop condition (generate-until-unique idiom) and must not be flagged as N+1.
+     *
+     * @var array<int, true>
+     */
+    private array $uniquenessProbeNodes = [];
+
+    /**
      * Track variables and their eager loaded relationships.
      *
      * @var array<string, array<string>>
@@ -635,6 +644,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
         if ($node instanceof Stmt\While_) {
             $condVars = $this->extractConditionVariables($node->cond);
+            $this->registerUniquenessProbes($node->cond, $node->stmts);
             $this->loopStack[] = [
                 'variables' => $condVars,
                 'type' => self::LOOP_TYPE_WHILE,
@@ -645,6 +655,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
         if ($node instanceof Stmt\Do_) {
             $condVars = $this->extractConditionVariables($node->cond);
+            $this->registerUniquenessProbes($node->cond, $node->stmts);
             $this->loopStack[] = [
                 'variables' => $condVars,
                 'type' => self::LOOP_TYPE_DO_WHILE,
@@ -793,8 +804,10 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     // Walk up the chain to find if it starts with a static call (Model::)
                     $queryDescription = $this->getQueryChainDescription($node);
                     if ($queryDescription !== null) {
-                        // Only flag if query depends on loop variable (true N+1 pattern)
-                        if ($this->queryDependsOnLoop($node, $currentLoop)) {
+                        // Only flag if query depends on loop variable (true N+1 pattern) and
+                        // is not a uniqueness-probe loop condition (generate-until-unique idiom).
+                        if ($this->queryDependsOnLoop($node, $currentLoop)
+                            && ! isset($this->uniquenessProbeNodes[spl_object_id($node)])) {
                             $this->queryIssues[] = [
                                 'query' => $queryDescription,
                                 'line' => $node->getStartLine(),
@@ -1004,6 +1017,70 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         $this->collectVariables($condition, $variables);
 
         return array_unique($variables);
+    }
+
+    /**
+     * Register uniqueness-probe queries in a while/do-while condition.
+     *
+     * The "generate-until-unique" idiom probes for a free value:
+     *   while (Model::where('code', $code)->exists()) { $code = ...; }
+     * Each iteration tests a DIFFERENT candidate, so the query drives loop termination
+     * rather than running per row — it is a bounded uniqueness search, not an N+1, and the
+     * eager-loading remediation does not apply. We treat an exists()/doesntExist() call in
+     * the loop condition as a probe only when a variable it filters by is reassigned in the
+     * loop body (the signal that each iteration checks a new candidate). Poll loops with a
+     * constant condition have no loop-dependent variable and are already not flagged.
+     *
+     * @param  array<Stmt>  $stmts
+     */
+    private function registerUniquenessProbes(Node $cond, array $stmts): void
+    {
+        $assigned = $this->collectAssignedVariables($stmts);
+        if ($assigned === []) {
+            return;
+        }
+
+        $finder = new NodeFinder;
+        $existsCalls = $finder->find([$cond], fn (Node $n): bool => $n instanceof Expr\MethodCall
+            && $n->name instanceof Node\Identifier
+            && in_array(strtolower($n->name->toString()), ['exists', 'doesntexist'], true));
+
+        foreach ($existsCalls as $existsCall) {
+            $queryVars = [];
+            $this->collectVariables($existsCall, $queryVars);
+            if (array_intersect($queryVars, $assigned) !== []) {
+                $this->uniquenessProbeNodes[spl_object_id($existsCall)] = true;
+            }
+        }
+    }
+
+    /**
+     * Collect names of variables assigned (or in/decremented) anywhere within statements.
+     *
+     * @param  array<Stmt>  $stmts
+     * @return array<string>
+     */
+    private function collectAssignedVariables(array $stmts): array
+    {
+        $names = [];
+        $finder = new NodeFinder;
+
+        $assignments = $finder->find($stmts, fn (Node $n): bool => $n instanceof Expr\Assign
+            || $n instanceof Expr\AssignOp
+            || $n instanceof Expr\PreInc
+            || $n instanceof Expr\PostInc
+            || $n instanceof Expr\PreDec
+            || $n instanceof Expr\PostDec);
+
+        foreach ($assignments as $assignment) {
+            /** @var Expr\Assign|Expr\AssignOp|Expr\PreInc|Expr\PostInc|Expr\PreDec|Expr\PostDec $assignment */
+            $target = $assignment->var;
+            if ($target instanceof Expr\Variable && is_string($target->name)) {
+                $names[] = $target->name;
+            }
+        }
+
+        return array_values(array_unique($names));
     }
 
     /**

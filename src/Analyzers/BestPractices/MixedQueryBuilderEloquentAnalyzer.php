@@ -437,6 +437,19 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
     private ?string $currentClassName = null;
 
+    /** @var bool Whether the current class writes via the query builder (DB::table()->insert/update/delete/...). */
+    private bool $classHasQueryBuilderWrite = false;
+
+    /** @var bool Whether the current class explicitly manages global scopes (withoutGlobalScope[s]()). */
+    private bool $classManagesGlobalScopes = false;
+
+    /** @var array<string> Query-builder write methods that bypass model events/casts. */
+    private const QUERY_BUILDER_WRITE_METHODS = [
+        'insert', 'insertGetId', 'insertOrIgnore', 'insertUsing',
+        'update', 'updateOrInsert', 'upsert',
+        'delete', 'truncate', 'increment', 'decrement',
+    ];
+
     /**
      * @param  array<string>  $whitelist
      * @param  array<string, string|null>  $tableRegistry
@@ -458,11 +471,38 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         // Track current class
         if ($node instanceof Node\Stmt\Class_) {
             $this->currentClassName = $node->name?->toString();
+            $this->classHasQueryBuilderWrite = false;
+            $this->classManagesGlobalScopes = false;
         }
 
         // Reset variable tracking at method boundaries for proper scoping
         if ($node instanceof Node\Stmt\ClassMethod) {
             $this->variableTracking = [];
+        }
+
+        // Detect query-builder writes on a DB::table() chain, and deliberate global-scope
+        // management. A read-only class that explicitly manages scopes is doing intentional
+        // cross-cutting reads (e.g. cross-tenant analytics), not accidental scope bypass.
+        if ($node instanceof Node\Expr\MethodCall && $node->name instanceof Node\Identifier) {
+            $method = $node->name->toString();
+            if (in_array($method, self::QUERY_BUILDER_WRITE_METHODS, true)) {
+                $root = $this->findRootStaticCall($node->var);
+                if ($root !== null
+                    && $root->class instanceof Node\Name
+                    && $this->isDbFacade($root->class)
+                    && $root->name instanceof Node\Identifier
+                    && $root->name->toString() === 'table') {
+                    $this->classHasQueryBuilderWrite = true;
+                }
+            }
+            if (in_array($method, ['withoutGlobalScope', 'withoutGlobalScopes'], true)) {
+                $this->classManagesGlobalScopes = true;
+            }
+        }
+        if ($node instanceof Node\Expr\StaticCall
+            && $node->name instanceof Node\Identifier
+            && in_array($node->name->toString(), ['withoutGlobalScope', 'withoutGlobalScopes'], true)) {
+            $this->classManagesGlobalScopes = true;
         }
 
         // Detect DB::table() calls
@@ -697,6 +737,15 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
     private function checkMixedUsage(): void
     {
+        // A read-only class that explicitly manages global scopes (withoutGlobalScope[s]()) is
+        // performing deliberate cross-cutting reads (e.g. cross-tenant staff analytics). The
+        // scope bypass is intentional and signalled, so mixing Eloquent + Query Builder here is
+        // a considered architectural choice rather than an accidental scope-bypass risk. Writes
+        // via the query builder still bypass model events/casts, so they remain flagged.
+        if ($this->classManagesGlobalScopes && ! $this->classHasQueryBuilderWrite) {
+            return;
+        }
+
         $eloquentTables = [];
         $queryBuilderTables = [];
         $mixedTables = [];

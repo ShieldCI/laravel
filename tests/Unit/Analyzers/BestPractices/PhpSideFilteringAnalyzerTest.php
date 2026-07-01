@@ -242,6 +242,39 @@ PHP;
         $this->assertHasIssueContaining('reject', $result);
     }
 
+    public function test_does_not_flag_filter_on_json_cast_attribute(): void
+    {
+        // Mirrors Compass AssessmentService::requiredStageQuestionCodes: the predicate reads a
+        // sub-key of a JSON-cast attribute ($q->config['required']), which has no portable SQL
+        // equivalent across SQLite and MySQL, so PHP-side filtering here is intentional.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services\Assessment;
+
+class AssessmentService
+{
+    public function requiredStageQuestionCodes()
+    {
+        return \App\Models\Question::all()
+            ->filter(fn ($q) => $q->is_scored || ($q->config['required'] ?? false) === true)
+            ->map(fn ($q) => $q->code)
+            ->all();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Assessment/AssessmentService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_detects_wherein_after_get(): void
     {
         $code = <<<'PHP'

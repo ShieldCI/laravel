@@ -97,6 +97,20 @@ final class EloquentModelDetector
     }
 
     /**
+     * Two-valued verdict. The caller states what `unknown` means for its polarity.
+     *
+     * For an analyzer where "is a model" means *analyze this class*, unknown should be
+     * false (a missed model beats a bogus finding). For one where it means *suppress*,
+     * the caller must still weigh what populates unknown — see the class docblock.
+     *
+     * @param  array<Node>  $fileAst
+     */
+    public function isModel(Stmt\Class_ $class, array $fileAst, string $basePath, bool $unknownIs = false): bool
+    {
+        return $this->verdictFor($class, $fileAst, $basePath) ?? $unknownIs;
+    }
+
+    /**
      * Three-valued verdict for the classes declared in a file, memoized by path.
      */
     private function fileVerdict(string $filePath, string $basePath): ?bool

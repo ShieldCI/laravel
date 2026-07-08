@@ -403,4 +403,38 @@ PHP);
             'the shared cache from the deep-chain call above must not poison a later, shallower lookup'
         );
     }
+
+    public function test_is_model_maps_unknown_to_the_callers_default(): void
+    {
+        [$class, $ast] = $this->parseClass(<<<'PHP'
+<?php
+namespace Domain\Billing;
+use Laravel\Cashier\Subscription;
+class Invoice extends Subscription {}
+PHP);
+
+        $this->assertNull($this->detector->verdictFor($class, $ast, '/nonexistent'));
+        $this->assertFalse($this->detector->isModel($class, $ast, '/nonexistent'));
+        $this->assertFalse($this->detector->isModel($class, $ast, '/nonexistent', unknownIs: false));
+        $this->assertTrue($this->detector->isModel($class, $ast, '/nonexistent', unknownIs: true));
+    }
+
+    public function test_is_model_ignores_the_default_for_definite_verdicts(): void
+    {
+        [$model, $modelAst] = $this->parseClass(<<<'PHP'
+<?php
+namespace App\Models;
+use Illuminate\Database\Eloquent\Model;
+class Post extends Model {}
+PHP);
+
+        [$plain, $plainAst] = $this->parseClass(<<<'PHP'
+<?php
+namespace App\Support;
+class ActiveBusiness {}
+PHP);
+
+        $this->assertTrue($this->detector->isModel($model, $modelAst, '/nonexistent', unknownIs: false));
+        $this->assertFalse($this->detector->isModel($plain, $plainAst, '/nonexistent', unknownIs: true));
+    }
 }

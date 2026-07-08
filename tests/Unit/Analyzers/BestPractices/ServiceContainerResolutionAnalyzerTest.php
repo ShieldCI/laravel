@@ -2825,6 +2825,115 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_eloquent_model_with_custom_project_base_is_suppressed(): void
+    {
+        $base = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+abstract class BaseModel extends Model
+{
+}
+PHP;
+
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Post extends BaseModel
+{
+    public function getSummaryAttribute()
+    {
+        $service = app(SomeService::class);
+
+        return $service->compute($this->value);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/BaseModel.php' => $base,
+            'app/Models/Post.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_eloquent_model_extending_a_vendor_base_is_suppressed(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Spatie\Permission\Models\Role as SpatieRole;
+
+class Role extends SpatieRole
+{
+    public function getLabelAttribute()
+    {
+        $service = app(SomeService::class);
+
+        return $service->compute($this->value);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Role.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_controller_extending_a_vendor_base_is_still_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Routing\Controller as BaseController;
+
+class ReportController extends BaseController
+{
+    public function index()
+    {
+        $service = app(SomeService::class);
+
+        return $service->run();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Controllers/ReportController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Unknown verdict (vendor parent, no Models namespace) must NOT suppress.
+        // App\Http\Controllers is a high-severity namespace, so the unsuppressed
+        // finding escalates to High severity, i.e. Status::Failed.
+        $this->assertFailed($result);
+    }
+
     // ============================================================
     // TESTS FOR SHOULD_QUEUE SUPPRESSION
     // ============================================================

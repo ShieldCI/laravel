@@ -18,6 +18,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Support\EloquentModelDetector;
 
 /**
  * Detects manual service container resolution in application code.
@@ -98,18 +99,6 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
         'Illuminate\\Foundation\\Support\\Providers\\RouteServiceProvider',
         'Illuminate\\Foundation\\Support\\Providers\\EventServiceProvider',
         'Illuminate\\Foundation\\Support\\Providers\\AuthServiceProvider',
-    ];
-
-    /**
-     * Known Eloquent base model FQNs.
-     *
-     * @var array<string>
-     */
-    private const ELOQUENT_MODEL_CLASSES = [
-        'Illuminate\\Database\\Eloquent\\Model',
-        'Illuminate\\Foundation\\Auth\\User',
-        'Illuminate\\Database\\Eloquent\\Relations\\Pivot',
-        'Illuminate\\Database\\Eloquent\\Relations\\MorphPivot',
     ];
 
     /** @var array<string> */
@@ -478,65 +467,22 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if AST represents an Eloquent model by checking class extends.
+     * Whether the file declares an Eloquent model.
      *
-     * Uses the same CloningVisitor + NameResolver pattern as isServiceProviderFromAst
-     * to resolve class names to FQN before checking.
+     * Unknown verdicts (a parent in vendor code, outside any Models namespace) do NOT
+     * suppress: that population is dominated by controllers, providers and commands,
+     * not by models.
      *
      * @param  array<Node>  $ast
      */
     private function isEloquentModelFromAst(array $ast): bool
     {
-        $traverser = new NodeTraverser;
-        $traverser->addVisitor(new CloningVisitor);
-        $traverser->addVisitor(new NameResolver);
-        $resolvedAst = $traverser->traverse($ast);
+        $detector = new EloquentModelDetector($this->parser);
 
-        foreach ($resolvedAst as $node) {
-            if ($node instanceof Stmt\Namespace_) {
-                foreach ($node->stmts as $stmt) {
-                    if ($stmt instanceof Stmt\Class_ && $this->extendsEloquentModel($stmt)) {
-                        return true;
-                    }
-                }
-            } elseif ($node instanceof Stmt\Class_ && $this->extendsEloquentModel($node)) {
+        foreach ($this->parser->findClasses($ast) as $class) {
+            if ($detector->isModel($class, $ast, $this->getBasePath(), unknownIs: false)) {
                 return true;
             }
-        }
-
-        return false;
-    }
-
-    /**
-     * Check if class extends an Eloquent Model.
-     *
-     * After NameResolver has been applied, parent class names should be FQN.
-     * We check against known Eloquent model FQNs and common base model patterns.
-     */
-    private function extendsEloquentModel(Stmt\Class_ $class): bool
-    {
-        if ($class->extends === null) {
-            return false;
-        }
-
-        $parent = ltrim($class->extends->toString(), '\\');
-
-        // Direct FQN match against known Eloquent model classes
-        if (in_array($parent, self::ELOQUENT_MODEL_CLASSES, true)) {
-            return true;
-        }
-
-        // FQN ends with \Model (namespace separator required)
-        // This catches a custom base whose short name is exactly Model, e.g. App\Domain\Model.
-        // A base named App\Models\BaseModel is NOT matched here — resolving that would
-        // require following the extends chain (see ShieldCI/laravel#268).
-        if (str_ends_with($parent, '\\Model')) {
-            return true;
-        }
-
-        // Illuminate namespace models (any Illuminate-based model)
-        if (str_starts_with($parent, 'Illuminate\\') && str_ends_with($parent, 'Model')) {
-            return true;
         }
 
         return false;

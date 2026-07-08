@@ -56,6 +56,9 @@ final class EloquentModelDetector
 
     public function __construct(private readonly ParserInterface $parser) {}
 
+    /** @var array<string, bool|null> File path => Eloquent verdict */
+    private array $fileVerdictCache = [];
+
     /**
      * Whether a namespace denotes Eloquent models.
      *
@@ -90,6 +93,57 @@ final class EloquentModelDetector
      */
     public function verdictFor(Stmt\Class_ $class, array $fileAst, string $basePath): ?bool
     {
+        return $this->classVerdict($class, $fileAst, $basePath);
+    }
+
+    /**
+     * Three-valued verdict for the classes declared in a file, memoized by path.
+     */
+    private function fileVerdict(string $filePath, string $basePath): ?bool
+    {
+        if (array_key_exists($filePath, $this->fileVerdictCache)) {
+            return $this->fileVerdictCache[$filePath];
+        }
+
+        // Reserve the slot before recursing so a cyclic chain resolves to null
+        // instead of looping. This is the sole termination mechanism: acyclic
+        // `extends` chains are finite, and a cycle re-entering a file already
+        // in progress hits this reserved cache entry and returns immediately.
+        $this->fileVerdictCache[$filePath] = null;
+
+        $fileAst = $this->parser->parseFile($filePath);
+        if ($fileAst === []) {
+            return null;
+        }
+
+        $verdict = false;
+
+        foreach ($this->parser->findClasses($fileAst) as $class) {
+            $classVerdict = $this->classVerdict($class, $fileAst, $basePath);
+
+            if ($classVerdict === true) {
+                $verdict = true;
+
+                break;
+            }
+
+            if ($classVerdict === null) {
+                $verdict = null;
+            }
+        }
+
+        $this->fileVerdictCache[$filePath] = $verdict;
+
+        return $verdict;
+    }
+
+    /**
+     * The step 1-7 algorithm for one class.
+     *
+     * @param  array<Node>  $fileAst
+     */
+    private function classVerdict(Stmt\Class_ $class, array $fileAst, string $basePath): ?bool
+    {
         // Step 1: a class that extends nothing is never an Eloquent model.
         if ($class->extends === null) {
             return false;
@@ -98,8 +152,7 @@ final class EloquentModelDetector
         $parentName = $class->extends->toString();
 
         // Step 2: the parent's short name is a known Eloquent base.
-        $parentShort = $this->shortName($parentName);
-        if (in_array($parentShort, self::ELOQUENT_BASE_CLASSES, true)) {
+        if (in_array($this->shortName($parentName), self::ELOQUENT_BASE_CLASSES, true)) {
             return true;
         }
 
@@ -116,7 +169,53 @@ final class EloquentModelDetector
             return true;
         }
 
+        // Step 4: the parent itself lives in a Models namespace.
+        if ($this->namespaceLooksLikeModels($this->namespaceOf($parentFqn))) {
+            return true;
+        }
+
+        // Step 5: follow the chain into a project class we can read.
+        //         A definite verdict from the chain outranks the convention below.
+        $parentPath = $this->fqnToFilePath($parentFqn, $basePath);
+        if ($parentPath !== null) {
+            $chainVerdict = $this->fileVerdict($parentPath, $basePath);
+            if ($chainVerdict !== null) {
+                return $chainVerdict;
+            }
+        }
+
+        // Step 6: the analyzed class's own namespace is a Models namespace.
+        if ($this->namespaceLooksLikeModels($namespace)) {
+            return true;
+        }
+
+        // Step 7: unknown.
         return null;
+    }
+
+    /**
+     * Map an App\ FQN to a file under app/. Null when outside App\ or the file is absent.
+     */
+    private function fqnToFilePath(string $fqn, string $basePath): ?string
+    {
+        if (! str_starts_with($fqn, 'App\\')) {
+            return null;
+        }
+
+        $relative = substr($fqn, 4);
+        $path = rtrim($basePath, '/').'/app/'.str_replace('\\', '/', $relative).'.php';
+
+        return file_exists($path) ? $path : null;
+    }
+
+    /**
+     * The namespace portion of a fully-qualified class name ('' for a global class).
+     */
+    private function namespaceOf(string $fqn): string
+    {
+        $pos = strrpos($fqn, '\\');
+
+        return $pos !== false ? substr($fqn, 0, $pos) : '';
     }
 
     private function shortName(string $fqn): string

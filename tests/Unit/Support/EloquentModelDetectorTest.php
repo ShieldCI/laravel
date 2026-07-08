@@ -14,10 +14,66 @@ class EloquentModelDetectorTest extends TestCase
 {
     private EloquentModelDetector $detector;
 
+    /** @var array<int, string> */
+    private array $tempDirs = [];
+
     protected function setUp(): void
     {
         parent::setUp();
         $this->detector = new EloquentModelDetector(new AstParser);
+    }
+
+    protected function tearDown(): void
+    {
+        foreach ($this->tempDirs as $dir) {
+            $this->removeDir($dir);
+        }
+        $this->tempDirs = [];
+
+        parent::tearDown();
+    }
+
+    /**
+     * @param  array<string, string>  $files  relative path => contents
+     */
+    private function createTempDir(array $files): string
+    {
+        $dir = sys_get_temp_dir().'/eloquent_model_detector_test_'.uniqid();
+        mkdir($dir, 0755, true);
+        $this->tempDirs[] = $dir;
+
+        foreach ($files as $relative => $contents) {
+            $path = $dir.'/'.$relative;
+            $parent = dirname($path);
+            if (! is_dir($parent)) {
+                mkdir($parent, 0755, true);
+            }
+            file_put_contents($path, $contents);
+        }
+
+        return $dir;
+    }
+
+    private function removeDir(string $dir): void
+    {
+        if (! is_dir($dir)) {
+            return;
+        }
+
+        $entries = scandir($dir);
+        if ($entries === false) {
+            return;
+        }
+
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $path = $dir.'/'.$entry;
+            is_dir($path) ? $this->removeDir($path) : unlink($path);
+        }
+
+        rmdir($dir);
     }
 
     public function test_namespace_looks_like_models_accepts_app_models(): void
@@ -143,5 +199,208 @@ class Admin extends \Illuminate\Foundation\Auth\User {}
 PHP);
 
         $this->assertTrue($this->detector->verdictFor($class, $ast, '/nonexistent'));
+    }
+
+    public function test_parent_in_a_models_namespace_is_a_model(): void
+    {
+        [$class, $ast] = $this->parseClass(<<<'PHP'
+<?php
+namespace App\Models;
+use Spatie\Permission\Models\Role as SpatieRole;
+class Role extends SpatieRole {}
+PHP);
+
+        $this->assertTrue($this->detector->verdictFor($class, $ast, '/nonexistent'));
+    }
+
+    public function test_own_models_namespace_rescues_a_vendor_base(): void
+    {
+        [$class, $ast] = $this->parseClass(<<<'PHP'
+<?php
+namespace App\Models;
+use Laravel\Cashier\Subscription as CashierSubscription;
+class Subscription extends CashierSubscription {}
+PHP);
+
+        $this->assertTrue($this->detector->verdictFor($class, $ast, '/nonexistent'));
+    }
+
+    public function test_modular_models_namespace_is_a_model(): void
+    {
+        [$class, $ast] = $this->parseClass(<<<'PHP'
+<?php
+namespace Modules\Billing\Models;
+use Vendor\Base\Entity;
+class Customer extends Entity {}
+PHP);
+
+        $this->assertTrue($this->detector->verdictFor($class, $ast, '/nonexistent'));
+    }
+
+    public function test_chain_walk_resolves_a_project_base_model(): void
+    {
+        // Both child and parent live OUTSIDE any Models namespace, so neither step 4
+        // (parent's own Models namespace) nor step 6 (analyzed class's own Models
+        // namespace) can produce the verdict. The only way to reach `true` is step 5
+        // actually reading RecordBase.php off disk and finding it extends Model.
+        $base = <<<'PHP'
+<?php
+namespace App\Domain;
+use Illuminate\Database\Eloquent\Model;
+abstract class RecordBase extends Model {}
+PHP;
+
+        $child = <<<'PHP'
+<?php
+namespace App\Domain;
+use App\Domain\RecordBase;
+class Order extends RecordBase {}
+PHP;
+
+        $dir = $this->createTempDir(['app/Domain/RecordBase.php' => $base]);
+        [$class, $ast] = $this->parseClass($child);
+
+        $this->assertTrue($this->detector->verdictFor($class, $ast, $dir));
+    }
+
+    public function test_chain_walk_returns_definitive_false_for_a_view_model_base(): void
+    {
+        $base = <<<'PHP'
+<?php
+namespace App\ViewModels;
+abstract class BaseViewModel {}
+PHP;
+
+        $child = <<<'PHP'
+<?php
+namespace App\ViewModels;
+class ProductPage extends BaseViewModel {}
+PHP;
+
+        $dir = $this->createTempDir(['app/ViewModels/BaseViewModel.php' => $base]);
+        [$class, $ast] = $this->parseClass($child);
+
+        $this->assertFalse($this->detector->verdictFor($class, $ast, $dir));
+    }
+
+    public function test_chain_false_outranks_the_models_namespace_convention(): void
+    {
+        $base = <<<'PHP'
+<?php
+namespace App\Support;
+class Base {}
+PHP;
+
+        $child = <<<'PHP'
+<?php
+namespace App\Models;
+use App\Support\Base;
+class Dto extends Base {}
+PHP;
+
+        $dir = $this->createTempDir(['app/Support/Base.php' => $base]);
+        [$class, $ast] = $this->parseClass($child);
+
+        $this->assertFalse(
+            $this->detector->verdictFor($class, $ast, $dir),
+            'a resolved chain terminating at a non-model must beat the App\Models convention'
+        );
+    }
+
+    public function test_unknown_when_chain_leaves_the_project(): void
+    {
+        [$class, $ast] = $this->parseClass(<<<'PHP'
+<?php
+namespace Domain\Billing;
+use Laravel\Cashier\Subscription;
+class Invoice extends Subscription {}
+PHP);
+
+        $this->assertNull($this->detector->verdictFor($class, $ast, '/nonexistent'));
+    }
+
+    public function test_cyclic_extends_chain_terminates_with_unknown(): void
+    {
+        $a = <<<'PHP'
+<?php
+namespace App\Support;
+class A extends B {}
+PHP;
+
+        $b = <<<'PHP'
+<?php
+namespace App\Support;
+class B extends A {}
+PHP;
+
+        $dir = $this->createTempDir([
+            'app/Support/A.php' => $a,
+            'app/Support/B.php' => $b,
+        ]);
+
+        [$class, $ast] = $this->parseClass($a);
+
+        $this->assertNull($this->detector->verdictFor($class, $ast, $dir));
+    }
+
+    public function test_deep_chain_and_shared_instance_do_not_poison_cache(): void
+    {
+        // Chain of 6 hops to Model (L0->L1->L2->L3->L4->L5->Model), deeper than the old
+        // MAX_INHERITANCE_DEPTH=5 cap. All classes live outside any Models namespace so
+        // only the actual chain walk can produce a verdict, never the namespace convention.
+        $dir = $this->createTempDir([
+            'app/Chain/L1.php' => <<<'PHP'
+<?php
+namespace App\Chain;
+class L1 extends L2 {}
+PHP,
+            'app/Chain/L2.php' => <<<'PHP'
+<?php
+namespace App\Chain;
+class L2 extends L3 {}
+PHP,
+            'app/Chain/L3.php' => <<<'PHP'
+<?php
+namespace App\Chain;
+class L3 extends L4 {}
+PHP,
+            'app/Chain/L4.php' => <<<'PHP'
+<?php
+namespace App\Chain;
+class L4 extends L5 {}
+PHP,
+            'app/Chain/L5.php' => <<<'PHP'
+<?php
+namespace App\Chain;
+use Illuminate\Database\Eloquent\Model;
+class L5 extends Model {}
+PHP,
+        ]);
+
+        [$topClass, $topAst] = $this->parseClass(<<<'PHP'
+<?php
+namespace App\Chain;
+class L0 extends L1 {}
+PHP);
+
+        $this->assertTrue(
+            $this->detector->verdictFor($topClass, $topAst, $dir),
+            'a 6-hop chain to Model must resolve to true now that the depth cap is gone'
+        );
+
+        // Same detector instance, same directory: a fresh class extending a mid-chain
+        // ancestor (L4, two hops from Model) must still resolve to true. Before the fix,
+        // the verdictFor(L0) call above would have poisoned the cache entry for L4's file
+        // with a stale, budget-starved null, and this assertion would wrongly get null.
+        [$midClass, $midAst] = $this->parseClass(<<<'PHP'
+<?php
+namespace App\Chain;
+class M0 extends L4 {}
+PHP);
+
+        $this->assertTrue(
+            $this->detector->verdictFor($midClass, $midAst, $dir),
+            'the shared cache from the deep-chain call above must not poison a later, shallower lookup'
+        );
     }
 }

@@ -28,6 +28,98 @@ class FatModelAnalyzerTest extends AnalyzerTestCase
         return new FatModelAnalyzer($this->parser, $configRepo);
     }
 
+    public function test_does_not_treat_view_model_base_as_eloquent(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\ViewModels;
+
+use App\ViewModels\BaseViewModel;
+
+class ProductPage extends BaseViewModel
+{
+    public function helper1() { return 1; }
+    public function helper2() { return 2; }
+    public function helper3() { return 3; }
+    public function helper4() { return 4; }
+    public function helper5() { return 5; }
+    public function helper6() { return 6; }
+    public function helper7() { return 7; }
+    public function helper8() { return 8; }
+    public function helper9() { return 9; }
+    public function helper10() { return 10; }
+    public function helper11() { return 11; }
+    public function helper12() { return 12; }
+    public function helper13() { return 13; }
+    public function helper14() { return 14; }
+    public function helper15() { return 15; }
+    public function helper16() { return 16; }
+    public function helper17() { return 17; }
+    public function helper18() { return 18; }
+    public function helper19() { return 19; }
+    public function helper20() { return 20; }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['ViewModels/ProductPage.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // BaseViewModel is not an Eloquent base; a fat view model is not a fat *model*
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_fat_model_on_a_custom_models_namespace_base(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use App\Models\BaseModel;
+
+class Post extends BaseModel
+{
+    public function helper1() { return 1; }
+    public function helper2() { return 2; }
+    public function helper3() { return 3; }
+    public function helper4() { return 4; }
+    public function helper5() { return 5; }
+    public function helper6() { return 6; }
+    public function helper7() { return 7; }
+    public function helper8() { return 8; }
+    public function helper9() { return 9; }
+    public function helper10() { return 10; }
+    public function helper11() { return 11; }
+    public function helper12() { return 12; }
+    public function helper13() { return 13; }
+    public function helper14() { return 14; }
+    public function helper15() { return 15; }
+    public function helper16() { return 16; }
+    public function helper17() { return 17; }
+    public function helper18() { return 18; }
+    public function helper19() { return 19; }
+    public function helper20() { return 20; }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Post.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // A custom base inside a Models namespace is still an Eloquent base
+        $this->assertWarning($result);
+    }
+
     public function test_passes_with_small_model(): void
     {
         $code = <<<'PHP'

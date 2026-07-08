@@ -176,13 +176,20 @@ class FatModelVisitor extends NodeVisitorAbstract
                 : $class->extends->toString();
         }
 
-        // Standard Eloquent Model
-        if ($parentClass === 'Illuminate\\Database\\Eloquent\\Model') {
+        $parentShort = ($pos = strrpos($parentClass, '\\')) !== false
+            ? substr($parentClass, $pos + 1)
+            : $parentClass;
+
+        // Standard Eloquent Model, plus any custom base whose short name is exactly "Model"
+        if ($parentShort === 'Model') {
             return true;
         }
 
-        // Any class ending with "Model" is likely a custom base model
-        if (str_ends_with($parentClass, 'Model')) {
+        // A compound custom base (e.g. BaseModel) counts only within a Models namespace.
+        // Without that guard, every App\ViewModels\BaseViewModel — and any *ReadModel or
+        // *DomainModel — would be mistaken for an Eloquent base.
+        if (str_ends_with($parentShort, 'Model')
+            && ($this->inModelsNamespace($parentClass) || $this->inModelsNamespace($this->classFqn($class)))) {
             return true;
         }
 
@@ -205,6 +212,34 @@ class FatModelVisitor extends NodeVisitorAbstract
         }
 
         return false;
+    }
+
+    /**
+     * Whether a fully-qualified class name sits in a namespace with a "Models" segment.
+     *
+     * Matches App\Models, App\Models\Admin, and modular layouts such as
+     * Modules\Billing\Models. Exact segment match, so App\ViewModels does not qualify.
+     */
+    private function inModelsNamespace(?string $fqn): bool
+    {
+        if ($fqn === null) {
+            return false;
+        }
+
+        $segments = explode('\\', $fqn);
+        array_pop($segments);
+
+        return in_array('Models', $segments, true);
+    }
+
+    /**
+     * Fully-qualified name of the analyzed class, resolved by NameResolver.
+     */
+    private function classFqn(Node\Stmt\Class_ $class): ?string
+    {
+        return $class->namespacedName instanceof Node\Name
+            ? $class->namespacedName->toString()
+            : null;
     }
 
     private function analyzeModel(Node\Stmt\Class_ $class): void

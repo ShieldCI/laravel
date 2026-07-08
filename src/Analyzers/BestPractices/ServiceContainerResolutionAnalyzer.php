@@ -109,6 +109,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
         'Illuminate\\Database\\Eloquent\\Model',
         'Illuminate\\Foundation\\Auth\\User',
         'Illuminate\\Database\\Eloquent\\Relations\\Pivot',
+        'Illuminate\\Database\\Eloquent\\Relations\\MorphPivot',
     ];
 
     /** @var array<string> */
@@ -526,7 +527,9 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
         }
 
         // FQN ends with \Model (namespace separator required)
-        // This catches custom base models like App\Models\BaseModel
+        // This catches a custom base whose short name is exactly Model, e.g. App\Domain\Model.
+        // A base named App\Models\BaseModel is NOT matched here — resolving that would
+        // require following the extends chain (see ShieldCI/laravel#268).
         if (str_ends_with($parent, '\\Model')) {
             return true;
         }

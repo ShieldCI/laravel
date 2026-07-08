@@ -2727,6 +2727,71 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_eloquent_morph_pivot_model_is_suppressed(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Relations\MorphPivot;
+
+class Taggable extends MorphPivot
+{
+    public function getLabelAttribute()
+    {
+        $service = app(SomeService::class);
+        return $service->compute($this->value);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Taggable.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // MorphPivot is an Eloquent base and bypasses __construct like any other model
+        $this->assertPassed($result);
+    }
+
+    public function test_eloquent_pivot_model_is_suppressed(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Relations\Pivot;
+
+class Membership extends Pivot
+{
+    public function getRoleAttribute()
+    {
+        $service = app(SomeService::class);
+        return $service->compute($this->value);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Membership.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_eloquent_model_custom_base_class_suppressed(): void
     {
         $code = <<<'PHP'

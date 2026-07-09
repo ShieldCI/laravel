@@ -1797,4 +1797,52 @@ PHP;
         $this->assertWarning($result);
         $this->assertHasIssueContaining('business methods', $result);
     }
+
+    public function test_detects_fat_model_extending_an_out_of_namespace_project_base(): void
+    {
+        $base = <<<'PHP'
+<?php
+
+namespace App\Support;
+
+use Illuminate\Database\Eloquent\Model;
+
+abstract class RecordBase extends Model
+{
+}
+PHP;
+
+        $methods = implode("\n", array_map(
+            static fn (int $i): string => "    public function helper{$i}() { return {$i}; }",
+            range(1, 20)
+        ));
+
+        $code = <<<PHP
+<?php
+
+namespace App\Entities;
+
+use App\Support\RecordBase;
+
+class Post extends RecordBase
+{
+{$methods}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Support/RecordBase.php' => $base,
+            'app/Entities/Post.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Neither the child nor the parent is in a Models namespace, so the
+        // convention (steps 4 and 6) cannot help — only the chain walk finds this.
+        $this->assertWarning($result);
+    }
 }

@@ -16,6 +16,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Support\EloquentModelDetector;
 
 /**
  * Detects mixing Query Builder and Eloquent for the same model.
@@ -376,7 +377,8 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
                     $this->whitelist,
                     $this->treatToBaseAsQueryBuilder,
                     $this->mixingThreshold,
-                    $this->tableRegistry
+                    $this->tableRegistry,
+                    new EloquentModelDetector($this->parser),
                 );
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor(new NameResolver);
@@ -450,20 +452,24 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         'delete', 'truncate', 'increment', 'decrement',
     ];
 
+    private EloquentModelDetector $detector;
+
     /**
      * @param  array<string>  $whitelist
      * @param  array<string, string|null>  $tableRegistry
      */
     public function __construct(
-        array $whitelist = [],
-        bool $treatToBaseAsQueryBuilder = true,
-        int $mixingThreshold = 2,
-        array $tableRegistry = []
+        array $whitelist,
+        bool $treatToBaseAsQueryBuilder,
+        int $mixingThreshold,
+        array $tableRegistry,
+        EloquentModelDetector $detector
     ) {
         $this->whitelist = $whitelist;
         $this->treatToBaseAsQueryBuilder = $treatToBaseAsQueryBuilder;
         $this->mixingThreshold = $mixingThreshold;
         $this->tableRegistry = $tableRegistry;
+        $this->detector = $detector;
     }
 
     public function enterNode(Node $node): ?Node
@@ -872,18 +878,22 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             return true;
         }
 
-        // POSITIVE CHECK 1: Model namespace patterns
-        if (str_starts_with($normalized, 'App\\Models\\') ||
-            str_starts_with($normalized, 'App\\Model\\')) {
+        // POSITIVE CHECK 1: any Models namespace segment — App\Models, App\Models\Admin,
+        // Domain\Users\Models — excluding helper sub-namespaces such as Models\Scopes.
+        $namespace = ($pos = strrpos($normalized, '\\')) !== false ? substr($normalized, 0, $pos) : '';
+        if ($this->detector->namespaceLooksLikeModels($namespace)) {
             return true;
         }
 
-        // POSITIVE CHECK 2: Domain-driven patterns (e.g., Domain\Users\Models\User)
-        if (str_contains($normalized, '\\Models\\')) {
+        // POSITIVE CHECK 2: legacy singular App\Model\ layout, which the shared helper's
+        // exact-segment match on "Models" deliberately does not cover.
+        if (str_starts_with($normalized, 'App\\Model\\')) {
             return true;
         }
 
-        // POSITIVE CHECK 3: Class name ends with "Model" suffix
+        // POSITIVE CHECK 3: class-name suffix. Unbounded on purpose — see issue #267.
+        // Safe here because this classifies a referenced name inside a query chain
+        // (UserModel::query()), not a class declaration.
         if (str_ends_with($shortName, 'Model')) {
             return true;
         }
@@ -1085,22 +1095,6 @@ class TableExtractorVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Get fully qualified class name only if it directly extends a known Eloquent base.
-     *
-     * @deprecated Use getRawClassName() and let the analyzer resolve inheritance.
-     */
-    public function getClassName(): ?string
-    {
-        if (! $this->className || ! $this->isEloquentModel()) {
-            return null;
-        }
-
-        return $this->namespace
-            ? $this->namespace.'\\'.$this->className
-            : $this->className;
-    }
-
-    /**
      * Get fully qualified class name regardless of parent class.
      *
      * This method returns the FQCN without checking if it's a model,
@@ -1146,36 +1140,5 @@ class TableExtractorVisitor extends NodeVisitorAbstract
     public function isAbstract(): bool
     {
         return $this->isAbstract;
-    }
-
-    /**
-     * Check if the class directly extends a known Eloquent model base.
-     *
-     * Note: This method only checks direct inheritance. For resolving
-     * custom base classes (e.g., User extends BaseModel extends Model),
-     * use the multi-pass resolution in MixedQueryBuilderEloquentAnalyzer.
-     */
-    private function isEloquentModel(): bool
-    {
-        if ($this->parentClass === null) {
-            return false;
-        }
-
-        $normalized = ltrim($this->parentClass, '\\');
-
-        // Direct Eloquent Model
-        if ($normalized === 'Model' || str_ends_with($normalized, '\\Model')) {
-            return true;
-        }
-
-        // Common Laravel model base classes
-        $baseModels = ['Authenticatable', 'Pivot', 'MorphPivot'];
-        foreach ($baseModels as $base) {
-            if ($normalized === $base || str_ends_with($normalized, '\\'.$base)) {
-                return true;
-            }
-        }
-
-        return false;
     }
 }

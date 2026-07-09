@@ -13,6 +13,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\EloquentModelHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Support\EloquentModelDetector;
 
 /**
  * Detects mass assignment vulnerabilities in Eloquent models.
@@ -149,6 +150,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
+        $detector = new EloquentModelDetector($this->parser);
 
         foreach ($this->getPhpFiles() as $file) {
             $ast = $this->parser->parseFile($file);
@@ -159,7 +161,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
             // Check models for proper protection
             $classes = $this->parser->findClasses($ast);
             foreach ($classes as $class) {
-                if ($this->isEloquentModel($file, $class)) {
+                if ($detector->isModel($class, $ast, $this->getBasePath())) {
                     $this->checkModelProtection($file, $class, $issues);
                     $this->checkHiddenAttributes($file, $class, $issues);
                     $this->checkRelationshipSecurity($file, $class, $issues);
@@ -184,56 +186,6 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
             : sprintf('Found %d potential mass assignment vulnerabilit%s', count($issues), count($issues) === 1 ? 'y' : 'ies');
 
         return $this->resultBySeverity($summary, $issues);
-    }
-
-    /**
-     * Check if a class is an Eloquent model.
-     */
-    private function isEloquentModel(string $file, Node\Stmt\Class_ $class): bool
-    {
-        // First check the parent class (most reliable). Covers Model plus the other
-        // Eloquent bases that carry mass-assignment behaviour: Authenticatable (the
-        // User model) and Pivot/MorphPivot (join models), which may live outside the
-        // App\Models namespace.
-        if ($class->extends !== null) {
-            $parentClass = $class->extends->toString();
-
-            foreach (['Model', 'Authenticatable', 'Pivot', 'MorphPivot'] as $base) {
-                if ($parentClass === $base || str_ends_with($parentClass, '\\'.$base)) {
-                    return true;
-                }
-            }
-        }
-
-        // Secondary check: namespace
-        $content = FileParser::readFile($file);
-        if ($content === null) {
-            return false;
-        }
-
-        // Check if in App\Models namespace (but NOT subdirectories like Scopes, Observers, Casts)
-        // Match "namespace App\Models;" or "namespace App\Models\{ModelName}"
-        // but exclude "namespace App\Models\Scopes", "namespace App\Models\Observers", etc.
-        if (preg_match('/namespace\s+App\\\\Models\s*;/', $content)) {
-            return true;
-        }
-
-        // Check for specific model subdirectories (e.g., Domain\Users\Models)
-        // but exclude helper subdirectories
-        if (preg_match('/namespace\s+App\\\\Models\\\\Scopes\b/', $content) ||
-            preg_match('/namespace\s+App\\\\Models\\\\Observers\b/', $content) ||
-            preg_match('/namespace\s+App\\\\Models\\\\Casts\b/', $content) ||
-            preg_match('/namespace\s+App\\\\Models\\\\Collections\b/', $content) ||
-            preg_match('/namespace\s+App\\\\Models\\\\Traits\b/', $content)) {
-            return false;
-        }
-
-        // Check for models in subdirectories like "namespace App\Models\Admin"
-        if (preg_match('/namespace\s+App\\\\Models\\\\[A-Z]/', $content)) {
-            return true;
-        }
-
-        return false;
     }
 
     /**

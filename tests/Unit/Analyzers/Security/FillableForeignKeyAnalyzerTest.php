@@ -623,6 +623,32 @@ PHP;
         $this->assertHasIssueContaining('tenant_id', $result);
     }
 
+    public function test_analyzes_a_model_using_an_aliased_eloquent_import(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model as Eloquent;
+
+class Post extends Eloquent
+{
+    protected $fillable = ['title', 'user_id'];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Post.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('impersonate', $result);
+    }
+
     public function test_detects_pivot_model(): void
     {
         $code = <<<'PHP'

@@ -3261,4 +3261,74 @@ PHP;
         // message; the guarded walkers now let analysis finish cleanly.
         $this->assertPassed($analyzer->analyze());
     }
+
+    public function test_analyzes_a_model_extending_a_project_base_model(): void
+    {
+        $base = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+abstract class BaseModel extends Model
+{
+}
+PHP;
+
+        $code = <<<'PHP'
+<?php
+
+namespace App\Entities;
+
+use App\Models\BaseModel;
+
+class Invoice extends BaseModel
+{
+    // No $fillable or $guarded
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/BaseModel.php' => $base,
+            'app/Entities/Invoice.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app/Entities']);
+
+        $result = $analyzer->analyze();
+
+        // The old analyzer skipped Invoice: its parent "BaseModel" matched no
+        // short-name base and App\Entities is not a Models namespace. The detector
+        // now recognizes it via its parent App\Models\BaseModel. Scanning only
+        // app/Entities ensures the finding is Invoice's, not BaseModel's.
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining("Model 'Invoice'", $result);
+    }
+
+    public function test_does_not_treat_a_parentless_class_in_app_models_as_a_model(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Dto
+{
+    // No $fillable or $guarded, and no parent — not an Eloquent model.
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Dto.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

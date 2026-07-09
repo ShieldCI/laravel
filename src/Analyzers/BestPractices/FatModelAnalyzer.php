@@ -15,6 +15,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Support\EloquentModelDetector;
 
 /**
  * Detects models with too much business logic (fat models).
@@ -77,6 +78,11 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
         $modelFiles = $this->getPhpFiles();
         $affectedModels = [];
 
+        // One detector for the whole run: a file's verdict is a pure function of its
+        // on-disk contents, so sharing the instance lets its per-file cache avoid
+        // re-parsing a common project base once per child model.
+        $detector = new EloquentModelDetector($this->parser);
+
         foreach ($modelFiles as $file) {
             try {
                 $ast = $this->parser->parseFile($file);
@@ -84,7 +90,14 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $visitor = new FatModelVisitor($this->methodThreshold, $this->locThreshold, $this->complexityThreshold);
+                $visitor = new FatModelVisitor(
+                    $this->methodThreshold,
+                    $this->locThreshold,
+                    $this->complexityThreshold,
+                    $detector,
+                    $ast,
+                    $this->getBasePath(),
+                );
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor(new NameResolver);
                 $traverser->addVisitor($visitor);
@@ -131,10 +144,16 @@ class FatModelVisitor extends NodeVisitorAbstract
 
     private ?string $currentClassName = null;
 
+    /**
+     * @param  array<Node>  $fileAst
+     */
     public function __construct(
         private readonly int $methodThreshold,
         private readonly int $locThreshold,
-        private readonly int $complexityThreshold
+        private readonly int $complexityThreshold,
+        private readonly EloquentModelDetector $detector,
+        private readonly array $fileAst,
+        private readonly string $basePath,
     ) {}
 
     public function enterNode(Node $node): ?Node
@@ -160,86 +179,7 @@ class FatModelVisitor extends NodeVisitorAbstract
 
     private function extendsModel(Node\Stmt\Class_ $class): bool
     {
-        if ($class->extends === null) {
-            return false;
-        }
-
-        // Get the fully qualified name from NameResolver
-        // - FullyQualified nodes: use toString() directly
-        // - Unresolved names: check namespacedName attribute (namespace-relative)
-        if ($class->extends instanceof Node\Name\FullyQualified) {
-            $parentClass = $class->extends->toString();
-        } else {
-            $namespacedName = $class->extends->getAttribute('namespacedName');
-            $parentClass = $namespacedName instanceof Node\Name
-                ? $namespacedName->toString()
-                : $class->extends->toString();
-        }
-
-        $parentShort = ($pos = strrpos($parentClass, '\\')) !== false
-            ? substr($parentClass, $pos + 1)
-            : $parentClass;
-
-        // Standard Eloquent Model, plus any custom base whose short name is exactly "Model"
-        if ($parentShort === 'Model') {
-            return true;
-        }
-
-        // A compound custom base (e.g. BaseModel) counts only within a Models namespace.
-        // Without that guard, every App\ViewModels\BaseViewModel — and any *ReadModel or
-        // *DomainModel — would be mistaken for an Eloquent base.
-        if (str_ends_with($parentShort, 'Model')
-            && ($this->inModelsNamespace($parentClass) || $this->inModelsNamespace($this->classFqn($class)))) {
-            return true;
-        }
-
-        // Pivot models
-        if ($parentClass === 'Illuminate\\Database\\Eloquent\\Relations\\Pivot'
-            || str_ends_with($parentClass, '\\Pivot')) {
-            return true;
-        }
-
-        // MorphPivot models
-        if ($parentClass === 'Illuminate\\Database\\Eloquent\\Relations\\MorphPivot'
-            || str_ends_with($parentClass, '\\MorphPivot')) {
-            return true;
-        }
-
-        // Authenticatable (User model base)
-        if ($parentClass === 'Illuminate\\Foundation\\Auth\\User'
-            || str_ends_with($parentClass, '\\Authenticatable')) {
-            return true;
-        }
-
-        return false;
-    }
-
-    /**
-     * Whether a fully-qualified class name sits in a namespace with a "Models" segment.
-     *
-     * Matches App\Models, App\Models\Admin, and modular layouts such as
-     * Modules\Billing\Models. Exact segment match, so App\ViewModels does not qualify.
-     */
-    private function inModelsNamespace(?string $fqn): bool
-    {
-        if ($fqn === null) {
-            return false;
-        }
-
-        $segments = explode('\\', $fqn);
-        array_pop($segments);
-
-        return in_array('Models', $segments, true);
-    }
-
-    /**
-     * Fully-qualified name of the analyzed class, resolved by NameResolver.
-     */
-    private function classFqn(Node\Stmt\Class_ $class): ?string
-    {
-        return $class->namespacedName instanceof Node\Name
-            ? $class->namespacedName->toString()
-            : null;
+        return $this->detector->isModel($class, $this->fileAst, $this->basePath);
     }
 
     private function analyzeModel(Node\Stmt\Class_ $class): void

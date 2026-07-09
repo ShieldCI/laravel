@@ -1095,22 +1095,6 @@ class TableExtractorVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Get fully qualified class name only if it directly extends a known Eloquent base.
-     *
-     * @deprecated Use getRawClassName() and let the analyzer resolve inheritance.
-     */
-    public function getClassName(): ?string
-    {
-        if (! $this->className || ! $this->isEloquentModel()) {
-            return null;
-        }
-
-        return $this->namespace
-            ? $this->namespace.'\\'.$this->className
-            : $this->className;
-    }
-
-    /**
      * Get fully qualified class name regardless of parent class.
      *
      * This method returns the FQCN without checking if it's a model,
@@ -1156,36 +1140,5 @@ class TableExtractorVisitor extends NodeVisitorAbstract
     public function isAbstract(): bool
     {
         return $this->isAbstract;
-    }
-
-    /**
-     * Check if the class directly extends a known Eloquent model base.
-     *
-     * Note: This method only checks direct inheritance. For resolving
-     * custom base classes (e.g., User extends BaseModel extends Model),
-     * use the multi-pass resolution in MixedQueryBuilderEloquentAnalyzer.
-     */
-    private function isEloquentModel(): bool
-    {
-        if ($this->parentClass === null) {
-            return false;
-        }
-
-        $normalized = ltrim($this->parentClass, '\\');
-
-        // Direct Eloquent Model
-        if ($normalized === 'Model' || str_ends_with($normalized, '\\Model')) {
-            return true;
-        }
-
-        // Common Laravel model base classes
-        $baseModels = ['Authenticatable', 'Pivot', 'MorphPivot'];
-        foreach ($baseModels as $base) {
-            if ($normalized === $base || str_ends_with($normalized, '\\'.$base)) {
-                return true;
-            }
-        }
-
-        return false;
     }
 }

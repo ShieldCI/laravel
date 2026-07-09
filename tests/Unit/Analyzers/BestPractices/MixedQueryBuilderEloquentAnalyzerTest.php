@@ -2365,4 +2365,41 @@ class OrderService
         $this->assertNotNull($issues[0]->location);
         $this->assertSame(10, $issues[0]->location->line);
     }
+
+    public function test_model_scope_class_is_not_treated_as_a_model(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Scopes\ActiveScope;
+use Illuminate\Support\Facades\DB;
+
+class ReportService
+{
+    public function run()
+    {
+        $a = ActiveScope::where('x', 1)->get();
+        $b = DB::table('active_scopes')->where('y', 2)->get();
+
+        return [$a, $b];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/ReportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Before this change, ActiveScope counted as a model and its inferred table
+        // (active_scopes) collided with the DB::table('active_scopes') call, so this
+        // was flagged as mixing. The helper sub-namespace App\Models\Scopes is now
+        // excluded, so ActiveScope is not treated as a model and there is no mixing.
+        $this->assertPassed($result);
+    }
 }

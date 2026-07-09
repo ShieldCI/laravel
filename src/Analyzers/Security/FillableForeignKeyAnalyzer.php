@@ -14,6 +14,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\EloquentModelHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Support\EloquentModelDetector;
 
 /**
  * Detects ownership/impersonation foreign keys exposed to mass assignment.
@@ -52,6 +53,8 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
+        $detector = new EloquentModelDetector($this->parser);
+
         foreach ($this->getPhpFiles() as $file) {
             $ast = $this->parser->parseFile($file);
             if (empty($ast)) {
@@ -60,7 +63,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 
             $classes = $this->parser->findClasses($ast);
             foreach ($classes as $class) {
-                if ($this->isEloquentModel($class)) {
+                if ($detector->isModel($class, $ast, $this->getBasePath())) {
                     return true;
                 }
             }
@@ -79,6 +82,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
         $this->loadDangerousPatterns();
 
         $issues = [];
+        $detector = new EloquentModelDetector($this->parser);
 
         foreach ($this->getPhpFiles() as $file) {
             $ast = $this->parser->parseFile($file);
@@ -88,7 +92,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 
             $classes = $this->parser->findClasses($ast);
             foreach ($classes as $class) {
-                if ($this->isEloquentModel($class)) {
+                if ($detector->isModel($class, $ast, $this->getBasePath())) {
                     if (! $this->hasLocalFillable($class) && ! $this->hasLocalGuarded($class)) {
                         $issues[] = $this->createIssue(
                             message: sprintf('Model "%s" does not define a local $fillable property; inherited fillable fields cannot be analyzed', $class->name?->toString() ?? 'Unknown'),
@@ -113,38 +117,6 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
             : sprintf('Found %d foreign key%s in fillable arrays', count($issues), count($issues) === 1 ? '' : 's');
 
         return $this->resultBySeverity($summary, $issues);
-    }
-
-    /**
-     * Check if a class is an Eloquent model.
-     */
-    private function isEloquentModel(Node\Stmt\Class_ $class): bool
-    {
-        if ($class->extends === null) {
-            return false;
-        }
-
-        $parentClass = $class->extends->toString();
-
-        // Check for direct Model class or namespaced Model
-        if ($parentClass === 'Model' || str_ends_with($parentClass, '\\Model')) {
-            return true;
-        }
-
-        // Check for common Laravel model base classes
-        $commonModelClasses = [
-            'Authenticatable',
-            'Pivot',
-            'MorphPivot',
-        ];
-
-        foreach ($commonModelClasses as $modelClass) {
-            if ($parentClass === $modelClass || str_ends_with($parentClass, '\\'.$modelClass)) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**

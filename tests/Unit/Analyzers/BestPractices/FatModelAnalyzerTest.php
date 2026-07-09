@@ -1844,5 +1844,6 @@ PHP;
         // Neither the child nor the parent is in a Models namespace, so the
         // convention (steps 4 and 6) cannot help — only the chain walk finds this.
         $this->assertWarning($result);
+        $this->assertHasIssueContaining('business methods', $result);
     }
 }

@@ -78,6 +78,11 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
         $modelFiles = $this->getPhpFiles();
         $affectedModels = [];
 
+        // One detector for the whole run: a file's verdict is a pure function of its
+        // on-disk contents, so sharing the instance lets its per-file cache avoid
+        // re-parsing a common project base once per child model.
+        $detector = new EloquentModelDetector($this->parser);
+
         foreach ($modelFiles as $file) {
             try {
                 $ast = $this->parser->parseFile($file);
@@ -89,7 +94,7 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
                     $this->methodThreshold,
                     $this->locThreshold,
                     $this->complexityThreshold,
-                    new EloquentModelDetector($this->parser),
+                    $detector,
                     $ast,
                     $this->getBasePath(),
                 );

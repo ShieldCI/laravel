@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.10.0
+
+### Fixed
+- `ServiceContainerResolutionAnalyzer` recognizes `MorphPivot` as an Eloquent base, so a model extending it is no longer flagged for manual container resolution — it was the only model detector in the package that omitted `MorphPivot` (#269)
+- `FatModelAnalyzer` now requires a `Models` namespace segment before treating a parent whose name ends in `Model` as a custom base model, so `*ViewModel`/`*ReadModel`/`*DomainModel` subclasses are no longer analyzed as fat models; genuine bases such as `App\Models\BaseModel` and modular `Modules\*\Models` bases still count (#270)
+- Model detection is now unified behind a shared `EloquentModelDetector` across the model-aware analyzers (service-container resolution, fillable foreign keys, mass assignment, fat models, mixed query builder), replacing ten divergent private checks that disagreed on several class shapes; detection now consistently recognizes models extending a project or vendor base (Spatie, Cashier, Sanctum), aliased Eloquent imports (`use Model as Eloquent`), and modular `*\Models\*` namespaces, and no longer treats a parentless class merely sitting in `App\Models` as a model (#271)
+
+### Changed
+- `EloquentModelHelper` (Eloquent mass-assignment config parsing) moved into the package under `ShieldCI\Support` from the framework-agnostic `analyzers-core`, where Laravel-specific knowledge did not belong; no behavior change (#272)
+
 ## v1.9.6
 
 ### Fixed

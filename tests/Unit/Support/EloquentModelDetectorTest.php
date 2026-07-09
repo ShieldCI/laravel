@@ -437,4 +437,52 @@ PHP);
         $this->assertTrue($this->detector->isModel($model, $modelAst, '/nonexistent', unknownIs: false));
         $this->assertFalse($this->detector->isModel($plain, $plainAst, '/nonexistent', unknownIs: true));
     }
+
+    public function test_chain_walk_into_an_empty_parent_file_yields_unknown(): void
+    {
+        // The parent file exists (so the chain walk reads it) but parses to an empty
+        // AST — e.g. a stub containing only the opening tag. fileVerdict() returns null
+        // for that file, and with neither class in a Models namespace the verdict is unknown.
+        $dir = $this->createTempDir([
+            'app/Support/EmptyBase.php' => "<?php\n",
+        ]);
+
+        [$class, $ast] = $this->parseClass(<<<'PHP'
+<?php
+namespace App\Entities;
+use App\Support\EmptyBase;
+class Order extends EmptyBase {}
+PHP);
+
+        $this->assertNull($this->detector->verdictFor($class, $ast, $dir));
+    }
+
+    public function test_global_class_extending_an_unresolvable_bare_name_is_unknown(): void
+    {
+        // No namespace, no import: the parent name "Bar" cannot be resolved to an FQN
+        // (not qualified, absent from the use map, no enclosing namespace to prefix with),
+        // so the verdict is unknown rather than a guess. Also exercises extractNamespace()
+        // returning null for a file that declares no namespace.
+        [$class, $ast] = $this->parseClass(<<<'PHP'
+<?php
+class Foo extends Bar {}
+PHP);
+
+        $this->assertNull($this->detector->verdictFor($class, $ast, '/nonexistent'));
+    }
+
+    public function test_aliased_eloquent_base_imported_via_group_use_is_a_model(): void
+    {
+        // Group-use syntax `use A\{Model as Eloquent};` — the parent short name "Eloquent"
+        // is not a base, so resolution must go through the grouped import map to reach the
+        // Eloquent base FQN at step 3.
+        [$class, $ast] = $this->parseClass(<<<'PHP'
+<?php
+namespace App\Domain;
+use Illuminate\Database\Eloquent\{Model as Eloquent};
+class Invoice extends Eloquent {}
+PHP);
+
+        $this->assertTrue($this->detector->verdictFor($class, $ast, '/nonexistent'));
+    }
 }

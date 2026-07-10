@@ -66,8 +66,11 @@ final class EloquentModelDetector
      * layouts such as Modules\Billing\Models — while excluding the helper sub-namespaces
      * that live alongside models. `App\ViewModels` never qualifies: the match is on a
      * whole segment, not a suffix.
+     *
+     * Pure string predicate, so it is static: callers that only classify a namespace
+     * (e.g. MixedQueryVisitor) need no parser-bound instance.
      */
-    public function namespaceLooksLikeModels(?string $namespace): bool
+    public static function namespaceLooksLikeModels(?string $namespace): bool
     {
         if ($namespace === null || $namespace === '') {
             return false;
@@ -182,7 +185,7 @@ final class EloquentModelDetector
         }
 
         // Step 4: the parent itself lives in a Models namespace.
-        if ($this->namespaceLooksLikeModels($this->namespaceOf($parentFqn))) {
+        if (self::namespaceLooksLikeModels($this->namespaceOf($parentFqn))) {
             return true;
         }
 
@@ -197,7 +200,7 @@ final class EloquentModelDetector
         }
 
         // Step 6: the analyzed class's own namespace is a Models namespace.
-        if ($this->namespaceLooksLikeModels($namespace)) {
+        if (self::namespaceLooksLikeModels($namespace)) {
             return true;
         }
 

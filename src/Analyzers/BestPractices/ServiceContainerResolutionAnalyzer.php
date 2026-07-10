@@ -101,6 +101,8 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
         'Illuminate\\Foundation\\Support\\Providers\\AuthServiceProvider',
     ];
 
+    private ?EloquentModelDetector $modelDetector = null;
+
     /** @var array<string> */
     private array $whitelistDirs = [];
 
@@ -477,10 +479,13 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
      */
     private function isEloquentModelFromAst(array $ast): bool
     {
-        $detector = new EloquentModelDetector($this->parser);
+        // One detector per run, not per file: its per-file parse cache lets a shared
+        // base class (e.g. App\Models\BaseModel) be parsed once for the whole scan
+        // instead of re-parsed for every file that chain-walks to it.
+        $this->modelDetector ??= new EloquentModelDetector($this->parser);
 
         foreach ($this->parser->findClasses($ast) as $class) {
-            if ($detector->isModel($class, $ast, $this->getBasePath(), unknownIs: false)) {
+            if ($this->modelDetector->isModel($class, $ast, $this->getBasePath(), unknownIs: false)) {
                 return true;
             }
         }

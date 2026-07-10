@@ -550,6 +550,29 @@ PHP);
         $this->assertNull($this->detector->verdictFor($class, $ast, $dir));
     }
 
+    public function test_chain_walk_into_a_file_without_the_named_class_yields_unknown(): void
+    {
+        // The parent resolves to a file that exists and parses to a non-empty AST, but
+        // (a PSR-4 mismatch) declares no class of the expected name. The chain walk finds
+        // no match and returns unknown rather than judging an unrelated class beside it.
+        $dir = $this->createTempDir([
+            'app/Support/Base.php' => <<<'PHP'
+<?php
+namespace App\Support;
+class Renamed {}
+PHP,
+        ]);
+
+        [$class, $ast] = $this->parseClass(<<<'PHP'
+<?php
+namespace App\Entities;
+use App\Support\Base;
+class Order extends Base {}
+PHP);
+
+        $this->assertNull($this->detector->verdictFor($class, $ast, $dir));
+    }
+
     public function test_global_class_extending_an_unresolvable_bare_name_is_unknown(): void
     {
         // No namespace, no import: the parent name "Bar" cannot be resolved to an FQN

@@ -12,7 +12,7 @@
 
 Automated code analysis for Laravel applications — 73 open-source analyzers covering security, performance, reliability, code quality, and best practices.
 
-Built on top of [`shieldci/analyzers-core`](https://github.com/ShieldCI/analyzers-core) (v1.x) - a shared, framework-agnostic foundation for static analysis tools.
+Built on top of [`shieldci/analyzers-core`](https://github.com/ShieldCI/analyzers-core) - a shared, framework-agnostic foundation for static analysis tools.
 
 ## Requirements
 

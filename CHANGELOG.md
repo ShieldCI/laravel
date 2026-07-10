@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.10.1
+
+### Fixed
+- `EloquentModelDetector` now resolves an `extends` chain's parent by class name instead of collapsing the parent's whole file to a single verdict, so a class whose parent shares a file with a sibling or anonymous `class ... extends Model` is no longer detected as an Eloquent model — which produced false `MassAssignmentAnalyzer` and `FillableForeignKeyAnalyzer` findings and wrongly suppressed `ServiceContainerResolutionAnalyzer` ones (#274)
+
 ## v1.10.0
 
 ### Fixed

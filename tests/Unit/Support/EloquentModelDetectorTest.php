@@ -319,6 +319,99 @@ PHP);
         $this->assertNull($this->detector->verdictFor($class, $ast, '/nonexistent'));
     }
 
+    public function test_chain_walk_ignores_a_sibling_model_in_the_parent_file(): void
+    {
+        // The parent file declares two classes: the actual parent Bundle (a plain class)
+        // and an unrelated sibling that extends Model. The chain walk must judge Bundle,
+        // not the sibling — otherwise a class merely file-sharing with a model is misread
+        // as a model. PSR-4 makes such a file non-conformant, but ShieldCI runs on exactly
+        // the messy/legacy code that produces it.
+        $base = <<<'PHP'
+<?php
+namespace App\Support;
+use Illuminate\Database\Eloquent\Model;
+class Bundle {}
+class LegacyRow extends Model {}
+PHP;
+
+        $child = <<<'PHP'
+<?php
+namespace App\Reports;
+use App\Support\Bundle;
+class SalesReport extends Bundle {}
+PHP;
+
+        $dir = $this->createTempDir(['app/Support/Bundle.php' => $base]);
+        [$class, $ast] = $this->parseClass($child);
+
+        $this->assertFalse(
+            $this->detector->verdictFor($class, $ast, $dir),
+            'a sibling model in the parent file must not make the parent read as a model'
+        );
+    }
+
+    public function test_chain_walk_ignores_an_anonymous_model_in_the_parent_file(): void
+    {
+        // findClasses() also returns anonymous classes, so a plain parent whose method
+        // body returns `new class extends Model {}` must not read as a model. Anonymous
+        // Eloquent classes are idiomatic in tests and package code.
+        $base = <<<'PHP'
+<?php
+namespace App\Support;
+use Illuminate\Database\Eloquent\Model;
+class AnonHost
+{
+    public function make()
+    {
+        return new class extends Model {};
+    }
+}
+PHP;
+
+        $child = <<<'PHP'
+<?php
+namespace App\Reports;
+use App\Support\AnonHost;
+class SalesReport extends AnonHost {}
+PHP;
+
+        $dir = $this->createTempDir(['app/Support/AnonHost.php' => $base]);
+        [$class, $ast] = $this->parseClass($child);
+
+        $this->assertFalse(
+            $this->detector->verdictFor($class, $ast, $dir),
+            'an anonymous model in the parent file must not make the parent read as a model'
+        );
+    }
+
+    public function test_chain_walk_selects_the_parent_by_name_among_siblings(): void
+    {
+        // The positive counterpart: when the file-sharing sibling is the actual model
+        // base, selecting the parent by name still resolves it correctly.
+        $base = <<<'PHP'
+<?php
+namespace App\Support;
+use Illuminate\Database\Eloquent\Model;
+class UnrelatedHelper {}
+class RecordBase extends Model {}
+PHP;
+
+        $child = <<<'PHP'
+<?php
+namespace App\Reports;
+use App\Support\RecordBase;
+class Invoice extends RecordBase {}
+PHP;
+
+        $dir = $this->createTempDir(['app/Support/RecordBase.php' => $base]);
+        [$class, $ast] = $this->parseClass($child);
+
+        $this->assertTrue(
+            $this->detector->verdictFor($class, $ast, $dir),
+            'the named parent still resolves through a file it shares with a non-model'
+        );
+    }
+
     public function test_cyclic_extends_chain_terminates_with_unknown(): void
     {
         $a = <<<'PHP'
@@ -441,8 +534,8 @@ PHP);
     public function test_chain_walk_into_an_empty_parent_file_yields_unknown(): void
     {
         // The parent file exists (so the chain walk reads it) but parses to an empty
-        // AST — e.g. a stub containing only the opening tag. fileVerdict() returns null
-        // for that file, and with neither class in a Models namespace the verdict is unknown.
+        // AST — e.g. a stub containing only the opening tag. The chain walk finds no
+        // class of that name, and with neither class in a Models namespace the verdict is unknown.
         $dir = $this->createTempDir([
             'app/Support/EmptyBase.php' => "<?php\n",
         ]);

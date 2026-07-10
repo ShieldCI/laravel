@@ -378,7 +378,6 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
                     $this->treatToBaseAsQueryBuilder,
                     $this->mixingThreshold,
                     $this->tableRegistry,
-                    new EloquentModelDetector($this->parser),
                 );
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor(new NameResolver);
@@ -452,8 +451,6 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         'delete', 'truncate', 'increment', 'decrement',
     ];
 
-    private EloquentModelDetector $detector;
-
     /**
      * @param  array<string>  $whitelist
      * @param  array<string, string|null>  $tableRegistry
@@ -462,14 +459,12 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         array $whitelist,
         bool $treatToBaseAsQueryBuilder,
         int $mixingThreshold,
-        array $tableRegistry,
-        EloquentModelDetector $detector
+        array $tableRegistry
     ) {
         $this->whitelist = $whitelist;
         $this->treatToBaseAsQueryBuilder = $treatToBaseAsQueryBuilder;
         $this->mixingThreshold = $mixingThreshold;
         $this->tableRegistry = $tableRegistry;
-        $this->detector = $detector;
     }
 
     public function enterNode(Node $node): ?Node
@@ -881,7 +876,7 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         // POSITIVE CHECK 1: any Models namespace segment — App\Models, App\Models\Admin,
         // Domain\Users\Models — excluding helper sub-namespaces such as Models\Scopes.
         $namespace = ($pos = strrpos($normalized, '\\')) !== false ? substr($normalized, 0, $pos) : '';
-        if ($this->detector->namespaceLooksLikeModels($namespace)) {
+        if (EloquentModelDetector::namespaceLooksLikeModels($namespace)) {
             return true;
         }
 

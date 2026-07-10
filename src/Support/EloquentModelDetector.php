@@ -56,8 +56,8 @@ final class EloquentModelDetector
 
     public function __construct(private readonly ParserInterface $parser) {}
 
-    /** @var array<string, bool|null> File path => Eloquent verdict */
-    private array $fileVerdictCache = [];
+    /** @var array<string, bool|null> "path::ShortName" => Eloquent verdict */
+    private array $verdictCache = [];
 
     /**
      * Whether a namespace denotes Eloquent models.
@@ -66,8 +66,11 @@ final class EloquentModelDetector
      * layouts such as Modules\Billing\Models — while excluding the helper sub-namespaces
      * that live alongside models. `App\ViewModels` never qualifies: the match is on a
      * whole segment, not a suffix.
+     *
+     * Pure string predicate, so it is static: callers that only classify a namespace
+     * (e.g. MixedQueryVisitor) need no parser-bound instance.
      */
-    public function namespaceLooksLikeModels(?string $namespace): bool
+    public static function namespaceLooksLikeModels(?string $namespace): bool
     {
         if ($namespace === null || $namespace === '') {
             return false;
@@ -111,44 +114,42 @@ final class EloquentModelDetector
     }
 
     /**
-     * Three-valued verdict for the classes declared in a file, memoized by path.
+     * Three-valued verdict for one named class declared in a file, memoized by
+     * path + short name.
+     *
+     * The parent is resolved by matching $shortName against the file's named class
+     * declarations. A sibling class or an anonymous class in the same file — both
+     * returned by findClasses() — is never allowed to stand in for the parent, so a
+     * file whose $shortName class is a plain class does not read as a model merely
+     * because some other class beside it extends an Eloquent base. Returns null when
+     * the file declares no class of that name (parse failure, or a mismatch).
      */
-    private function fileVerdict(string $filePath, string $basePath): ?bool
+    private function classVerdictInFile(string $filePath, string $shortName, string $basePath): ?bool
     {
-        if (array_key_exists($filePath, $this->fileVerdictCache)) {
-            return $this->fileVerdictCache[$filePath];
+        $cacheKey = $filePath.'::'.$shortName;
+
+        if (array_key_exists($cacheKey, $this->verdictCache)) {
+            return $this->verdictCache[$cacheKey];
         }
 
         // Reserve the slot before recursing so a cyclic chain resolves to null
         // instead of looping. This is the sole termination mechanism: acyclic
-        // `extends` chains are finite, and a cycle re-entering a file already
+        // `extends` chains are finite, and a cycle re-entering a class already
         // in progress hits this reserved cache entry and returns immediately.
-        $this->fileVerdictCache[$filePath] = null;
+        $this->verdictCache[$cacheKey] = null;
 
         $fileAst = $this->parser->parseFile($filePath);
         if ($fileAst === []) {
             return null;
         }
 
-        $verdict = false;
-
         foreach ($this->parser->findClasses($fileAst) as $class) {
-            $classVerdict = $this->classVerdict($class, $fileAst, $basePath);
-
-            if ($classVerdict === true) {
-                $verdict = true;
-
-                break;
-            }
-
-            if ($classVerdict === null) {
-                $verdict = null;
+            if ($class->name?->toString() === $shortName) {
+                return $this->verdictCache[$cacheKey] = $this->classVerdict($class, $fileAst, $basePath);
             }
         }
 
-        $this->fileVerdictCache[$filePath] = $verdict;
-
-        return $verdict;
+        return null;
     }
 
     /**
@@ -184,7 +185,7 @@ final class EloquentModelDetector
         }
 
         // Step 4: the parent itself lives in a Models namespace.
-        if ($this->namespaceLooksLikeModels($this->namespaceOf($parentFqn))) {
+        if (self::namespaceLooksLikeModels($this->namespaceOf($parentFqn))) {
             return true;
         }
 
@@ -192,14 +193,14 @@ final class EloquentModelDetector
         //         A definite verdict from the chain outranks the convention below.
         $parentPath = $this->fqnToFilePath($parentFqn, $basePath);
         if ($parentPath !== null) {
-            $chainVerdict = $this->fileVerdict($parentPath, $basePath);
+            $chainVerdict = $this->classVerdictInFile($parentPath, $this->shortName($parentFqn), $basePath);
             if ($chainVerdict !== null) {
                 return $chainVerdict;
             }
         }
 
         // Step 6: the analyzed class's own namespace is a Models namespace.
-        if ($this->namespaceLooksLikeModels($namespace)) {
+        if (self::namespaceLooksLikeModels($namespace)) {
             return true;
         }
 

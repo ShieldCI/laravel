@@ -33,10 +33,21 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
      */
     private array $dangerousPatterns = [];
 
+    private ?EloquentModelDetector $modelDetector = null;
+
     public function __construct(
         private ParserInterface $parser,
         private Config $config
     ) {}
+
+    /**
+     * Shared across shouldRun() and runAnalysis() so the model scan in shouldRun()
+     * warms the per-file parse cache that runAnalysis() then reuses.
+     */
+    private function modelDetector(): EloquentModelDetector
+    {
+        return $this->modelDetector ??= new EloquentModelDetector($this->parser);
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -53,8 +64,6 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        $detector = new EloquentModelDetector($this->parser);
-
         foreach ($this->getPhpFiles() as $file) {
             $ast = $this->parser->parseFile($file);
             if (empty($ast)) {
@@ -63,7 +72,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 
             $classes = $this->parser->findClasses($ast);
             foreach ($classes as $class) {
-                if ($detector->isModel($class, $ast, $this->getBasePath())) {
+                if ($this->modelDetector()->isModel($class, $ast, $this->getBasePath())) {
                     return true;
                 }
             }
@@ -82,7 +91,6 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
         $this->loadDangerousPatterns();
 
         $issues = [];
-        $detector = new EloquentModelDetector($this->parser);
 
         foreach ($this->getPhpFiles() as $file) {
             $ast = $this->parser->parseFile($file);
@@ -92,7 +100,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 
             $classes = $this->parser->findClasses($ast);
             foreach ($classes as $class) {
-                if ($detector->isModel($class, $ast, $this->getBasePath())) {
+                if ($this->modelDetector()->isModel($class, $ast, $this->getBasePath())) {
                     if (! $this->hasLocalFillable($class) && ! $this->hasLocalGuarded($class)) {
                         $issues[] = $this->createIssue(
                             message: sprintf('Model "%s" does not define a local $fillable property; inherited fillable fields cannot be analyzed', $class->name?->toString() ?? 'Unknown'),

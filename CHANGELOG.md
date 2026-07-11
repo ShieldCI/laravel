@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.10.2
+
+### Fixed
+- `blade-nested-foreach` now flags only a nested `@foreach` that scans an unrelated collection to match each outer item, so iterating a group's own members, a lookup keyed by the outer item, or a relation no longer reports a bogus O(n²) finding (#276)
+
+### Added
+- `logic-in-blade` accepts a `max_foreach_depth` option (default 2) (#276)
+
 ## v1.10.1
 
 ### Fixed

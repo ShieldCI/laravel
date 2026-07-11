@@ -10,6 +10,7 @@ use PhpParser\Node\Expr;
 use PhpParser\Node\Identifier;
 use PhpParser\Node\Name;
 use PhpParser\Node\Stmt;
+use PhpParser\NodeFinder;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
@@ -39,9 +40,13 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
 
     public const DEFAULT_MIN_ARITHMETIC_OPERATORS = 2;
 
+    public const DEFAULT_MAX_FOREACH_DEPTH = 2;
+
     private int $maxPhpBlockLines;
 
     private int $minArithmeticOperators;
+
+    private int $maxForeachDepth;
 
     /** @var array<int, true> Track reported lines to avoid duplicates */
     private array $reportedLines = [];
@@ -72,6 +77,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
 
         $this->maxPhpBlockLines = $analyzerConfig['max_php_block_lines'] ?? self::DEFAULT_MAX_PHP_BLOCK_LINES;
         $this->minArithmeticOperators = $analyzerConfig['min_arithmetic_operators'] ?? self::DEFAULT_MIN_ARITHMETIC_OPERATORS;
+        $this->maxForeachDepth = $analyzerConfig['max_foreach_depth'] ?? self::DEFAULT_MAX_FOREACH_DEPTH;
 
         $issues = [];
 
@@ -274,7 +280,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $visitor = new BladeLogicVisitor($this->minArithmeticOperators);
+        $visitor = new BladeLogicVisitor($this->minArithmeticOperators, $this->maxForeachDepth);
         $traverser = new NodeTraverser;
         $traverser->addVisitor($visitor);
         $traverser->traverse($ast);
@@ -321,18 +327,32 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
  * - Complex @if conditions (4+ boolean operators)
  * - Expensive computation (toArray, toJson, regex in loops)
  * - Complex calculations (multiple arithmetic operators, compound assignment)
- * - Nested @foreach loops
+ * - Nested @foreach loops that linearly search a collection per outer item
  * - Collection manipulation in @foreach expressions
  */
 class BladeLogicVisitor extends NodeVisitorAbstract
 {
-    private int $foreachDepth = 0;
+    /**
+     * Enclosing @foreach loops, outermost first. Populated on enter, popped on leave.
+     *
+     * @var list<array{value: string|null, key: string|null}>
+     */
+    private array $loopStack = [];
+
+    /**
+     * Right-hand side of the most recent $__currentLoopData assignment.
+     *
+     * Blade compiles @foreach($expr as $v) to `$__currentLoopData = $expr; foreach ($__currentLoopData as $v)`,
+     * so a loop's real source expression lives in the assignment immediately preceding it.
+     */
+    private ?Expr $lastLoopSource = null;
 
     /** @var list<array{message: string, severity: Severity, recommendation: string, code: string, line: int, metadata: array<string, mixed>}> */
     private array $issues = [];
 
     public function __construct(
         private int $minArithmeticOperators = LogicInBladeAnalyzer::DEFAULT_MIN_ARITHMETIC_OPERATORS,
+        private int $maxForeachDepth = LogicInBladeAnalyzer::DEFAULT_MAX_FOREACH_DEPTH,
     ) {}
 
     /** @var array<string> Non-Eloquent classes with DB-like method names */
@@ -425,24 +445,11 @@ class BladeLogicVisitor extends NodeVisitorAbstract
 
     public function enterNode(Node $node): ?int
     {
-        // Track foreach depth
         if ($node instanceof Stmt\Foreach_) {
-            $this->foreachDepth++;
-
-            // Check for nested @foreach (depth >= 2)
-            if ($this->foreachDepth >= 2) {
-                $this->addIssue(
-                    line: $node->getStartLine(),
-                    message: sprintf('Nested @foreach detected (depth: %d) - potential performance issue', $this->foreachDepth),
-                    severity: Severity::Medium,
-                    recommendation: 'Flatten nested data in the controller using eager loading or collection methods. Deeply nested loops in Blade can cause O(n²) or worse rendering performance',
-                    code: 'blade-nested-foreach',
-                    metadata: ['depth' => $this->foreachDepth],
-                );
-            }
-
-            // Check for collection manipulation in foreach expression
+            // Classify before pushing, so the stack holds only the *enclosing* loops.
+            $this->checkNestedLoop($node);
             $this->checkForeachExpression($node);
+            $this->pushLoop($node);
         }
 
         // Detect $__currentLoopData = $expr->collectionMethod() pattern
@@ -468,7 +475,7 @@ class BladeLogicVisitor extends NodeVisitorAbstract
         if ($node instanceof Expr\FuncCall) {
             $this->checkApiFuncCall($node);
             $this->checkBusinessLogicFunction($node);
-            if ($this->foreachDepth >= 1) {
+            if ($this->loopStack !== []) {
                 $this->checkExpensiveStringFunction($node);
             }
         }
@@ -494,10 +501,158 @@ class BladeLogicVisitor extends NodeVisitorAbstract
     public function leaveNode(Node $node): ?int
     {
         if ($node instanceof Stmt\Foreach_) {
-            $this->foreachDepth = max(0, $this->foreachDepth - 1);
+            array_pop($this->loopStack);
         }
 
         return null;
+    }
+
+    /**
+     * Record a loop's key/value variable names as the enclosing scope for any nested loop.
+     */
+    private function pushLoop(Stmt\Foreach_ $node): void
+    {
+        $this->loopStack[] = [
+            'value' => $this->variableName($node->valueVar),
+            'key' => $node->keyVar !== null ? $this->variableName($node->keyVar) : null,
+        ];
+    }
+
+    /**
+     * Report a nested @foreach only when it linearly searches a collection for each outer item.
+     *
+     * Nesting depth on its own measures nothing: iterating a partition ($groups as $k => $items /
+     * $items as $i), a relation ($category->products) or a keyed lookup ($data[$row->id]) visits each
+     * item exactly once — the sum of the group sizes is the total item count, so it is O(n), not O(n²).
+     * The wasteful shape is an inner loop that scans an *unrelated* collection to find the rows matching
+     * the outer item: O(n×m) work for O(n) of output, which a keyed lookup built in the controller removes.
+     */
+    private function checkNestedLoop(Stmt\Foreach_ $node): void
+    {
+        $depth = count($this->loopStack) + 1;
+
+        if ($depth < 2 || $depth < $this->maxForeachDepth) {
+            return;
+        }
+
+        $source = $this->resolveLoopSource($node);
+        if ($source === null) {
+            return;
+        }
+
+        // Source derived from an enclosing loop — each item is visited once. Not quadratic.
+        $enclosing = $this->enclosingLoopVariables();
+        if ($this->referencesAny($source, $enclosing)) {
+            return;
+        }
+
+        // An unrelated source is only wasteful if the body scans it for the outer item. Rendering
+        // every combination (a grid of rows × columns) costs what it outputs, so it is left alone.
+        $innerValue = $this->variableName($node->valueVar);
+        if ($innerValue === null || ! $this->searchesForEnclosingItem($node, $innerValue, $enclosing)) {
+            return;
+        }
+
+        $this->addIssue(
+            line: $node->getStartLine(),
+            message: sprintf('Nested @foreach scans a collection for each outer item (depth: %d) - O(n×m) rendering', $depth),
+            severity: Severity::Medium,
+            recommendation: 'Group the inner collection by the key it is matched on in the controller, then pass the grouped structure to the view so each outer item reads only its own rows instead of scanning the whole collection. Only the data shaping moves — the markup stays in Blade.',
+            code: 'blade-nested-foreach',
+            metadata: ['depth' => $depth],
+        );
+    }
+
+    /**
+     * Resolve the expression a loop actually iterates.
+     *
+     * Compiled Blade always iterates $__currentLoopData, so the real source is the assignment that
+     * precedes it. A raw `foreach` inside an @php block iterates its own expression directly.
+     */
+    private function resolveLoopSource(Stmt\Foreach_ $node): ?Expr
+    {
+        if ($node->expr instanceof Expr\Variable && $node->expr->name === '__currentLoopData') {
+            return $this->lastLoopSource;
+        }
+
+        return $node->expr;
+    }
+
+    /**
+     * @return list<string> Key and value variable names of every enclosing loop.
+     */
+    private function enclosingLoopVariables(): array
+    {
+        $names = [];
+
+        foreach ($this->loopStack as $loop) {
+            foreach ([$loop['value'], $loop['key']] as $name) {
+                if ($name !== null) {
+                    $names[] = $name;
+                }
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Does the inner loop compare one of its own values against an enclosing loop's value?
+     *
+     * This is the linear-search signature: a loop over every post nested inside a loop over every
+     * user, keeping only the posts where $post->user_id === $user->id.
+     *
+     * @param  list<string>  $enclosing
+     */
+    private function searchesForEnclosingItem(Stmt\Foreach_ $node, string $innerValue, array $enclosing): bool
+    {
+        $comparisons = (new NodeFinder)->find($node->stmts, fn (Node $found): bool => $found instanceof Expr\BinaryOp\Equal
+            || $found instanceof Expr\BinaryOp\Identical
+            || $found instanceof Expr\BinaryOp\NotEqual
+            || $found instanceof Expr\BinaryOp\NotIdentical);
+
+        foreach ($comparisons as $comparison) {
+            if (! $comparison instanceof Expr\BinaryOp) {
+                continue;
+            }
+
+            $matchesInner = fn (Expr $side): bool => $this->referencesAny($side, [$innerValue]);
+            $matchesOuter = fn (Expr $side): bool => $this->referencesAny($side, $enclosing);
+
+            if (($matchesInner($comparison->left) && $matchesOuter($comparison->right))
+                || ($matchesInner($comparison->right) && $matchesOuter($comparison->left))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Does any variable in this expression tree carry one of the given names?
+     *
+     * A whole-subtree scan (not just the root) so that a lookup keyed by the outer item —
+     * $cityData[$city->id]['rows'] — counts as derived from that item.
+     *
+     * @param  list<string>  $names
+     */
+    private function referencesAny(Node $node, array $names): bool
+    {
+        if ($names === []) {
+            return false;
+        }
+
+        return (new NodeFinder)->findFirst(
+            [$node],
+            fn (Node $found): bool => $found instanceof Expr\Variable
+                && is_string($found->name)
+                && in_array($found->name, $names, true)
+        ) !== null;
+    }
+
+    private function variableName(Node $node): ?string
+    {
+        return $node instanceof Expr\Variable && is_string($node->name) ? $node->name : null;
     }
 
     private function checkDbStaticCall(Expr\StaticCall $node): void
@@ -840,6 +995,10 @@ class BladeLogicVisitor extends NodeVisitorAbstract
             || $node->var->name !== '__currentLoopData') {
             return;
         }
+
+        // Remember what the upcoming foreach really iterates — the compiled loop itself only
+        // ever names $__currentLoopData. checkNestedLoop() reads this back.
+        $this->lastLoopSource = $node->expr;
 
         // Check if RHS is a method call with a collection manipulation method
         $rhs = $node->expr;

@@ -7,6 +7,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\BestPractices\LogicInBladeAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class LogicInBladeAnalyzerTest extends AnalyzerTestCase
@@ -2289,8 +2290,130 @@ BLADE;
     // COMPUTATION COST TESTS (NEW)
     // =========================================================================
 
-    public function test_detects_nested_foreach(): void
+    /**
+     * Run the analyzer over a single Blade template and return only its nested-loop findings.
+     *
+     * Filtering by code (rather than asserting on the whole result) keeps these cases honest:
+     * an unrelated rule firing inside a fixture cannot make a "no nested-loop issue" test pass or fail.
+     *
+     * @param  array<string, mixed>  $config
+     * @return list<Issue>
+     */
+    private function nestedForeachIssues(string $blade, array $config = []): array
     {
+        $tempDir = $this->createTempDirectory(['views/nested.blade.php' => $blade]);
+
+        $analyzer = new LogicInBladeAnalyzer(new Repository([
+            'shieldci' => ['analyzers' => ['best-practices' => ['logic-in-blade' => $config]]],
+        ]));
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        return array_values(array_filter(
+            $analyzer->analyze()->getIssues(),
+            fn ($issue): bool => ($issue->metadata['code'] ?? null) === 'blade-nested-foreach'
+        ));
+    }
+
+    public function test_detects_nested_foreach_that_searches_for_the_outer_item(): void
+    {
+        // The inner loop scans every post to find the ones belonging to the current user:
+        // O(n×m) work for O(n) of output. Grouping posts by user_id in the controller removes it.
+        $blade = <<<'BLADE'
+<div>
+    @foreach($users as $user)
+        <h2>{{ $user->name }}</h2>
+        @foreach($allPosts as $post)
+            @if($post->user_id === $user->id)
+                <p>{{ $post->title }}</p>
+            @endif
+        @endforeach
+    @endforeach
+</div>
+BLADE;
+
+        $issues = $this->nestedForeachIssues($blade);
+
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('scans a collection for each outer item', $issues[0]->message);
+    }
+
+    public function test_nested_foreach_has_medium_severity(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @foreach($users as $user)
+        @foreach($allPosts as $post)
+            @if($post->user_id == $user->id)
+                <p>{{ $post->title }}</p>
+            @endif
+        @endforeach
+    @endforeach
+</div>
+BLADE;
+
+        $issues = $this->nestedForeachIssues($blade);
+
+        $this->assertCount(1, $issues);
+        $this->assertEquals('medium', $issues[0]->severity->value);
+    }
+
+    public function test_ignores_partition_iteration_over_a_grouped_array(): void
+    {
+        // The regression test for issue #276. Every option is rendered exactly once — the sum of the
+        // group sizes is the total option count — so this is O(n), not O(n²).
+        $blade = <<<'BLADE'
+<select name="city">
+    @foreach($cityOptions as $country => $options)
+        <optgroup label="{{ $country }}">
+            @foreach($options as $option)
+                <option value="{{ $option['value'] }}">{{ $option['label'] }}</option>
+            @endforeach
+        </optgroup>
+    @endforeach
+</select>
+BLADE;
+
+        $this->assertSame([], $this->nestedForeachIssues($blade));
+    }
+
+    public function test_ignores_iteration_over_an_array_key_of_the_outer_item(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @foreach($records as $record)
+        @foreach($record['users'] as $user)
+            <p>{{ $user['name'] }}</p>
+        @endforeach
+    @endforeach
+</div>
+BLADE;
+
+        $this->assertSame([], $this->nestedForeachIssues($blade));
+    }
+
+    public function test_ignores_lookup_keyed_by_the_outer_item(): void
+    {
+        // An O(1) hash lookup returning only this city's own rows — per-item, so still O(n) overall.
+        $blade = <<<'BLADE'
+<div>
+    @foreach($cities as $city)
+        @forelse($membershipData[$city->id]['items'] as $item)
+            <p>{{ $item['label'] }}</p>
+        @empty
+            <p>None</p>
+        @endforelse
+    @endforeach
+</div>
+BLADE;
+
+        $this->assertSame([], $this->nestedForeachIssues($blade));
+    }
+
+    public function test_ignores_relationship_access_on_the_outer_item(): void
+    {
+        // Iterating a relation renders each product once. Whether it lazy-loads depends on the
+        // controller's with() call, which a Blade template cannot see — so this stays silent.
         $blade = <<<'BLADE'
 <div>
     @foreach($categories as $category)
@@ -2302,49 +2425,61 @@ BLADE;
 </div>
 BLADE;
 
-        $tempDir = $this->createTempDirectory(['views/nested.blade.php' => $blade]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['views']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('Nested @foreach', $result);
+        $this->assertSame([], $this->nestedForeachIssues($blade));
     }
 
-    public function test_nested_foreach_has_medium_severity(): void
+    public function test_ignores_grid_rendering(): void
+    {
+        // The inner collection is unrelated to the outer one, but nothing is searched: the loop
+        // renders one cell per row/column pair, so its cost is the size of its own output.
+        $blade = <<<'BLADE'
+<table>
+    @foreach($rows as $row)
+        <tr>
+            @foreach($columns as $column)
+                <td>{{ $row[$column] }}</td>
+            @endforeach
+        </tr>
+    @endforeach
+</table>
+BLADE;
+
+        $this->assertSame([], $this->nestedForeachIssues($blade));
+    }
+
+    public function test_ignores_triple_nested_partition_iteration(): void
     {
         $blade = <<<'BLADE'
 <div>
-    @foreach($categories as $category)
-        @foreach($category->products as $product)
-            <p>{{ $product->name }}</p>
+    @foreach($continents as $continent => $countries)
+        @foreach($countries as $country => $cities)
+            @foreach($cities as $city)
+                <p>{{ $city['name'] }}</p>
+            @endforeach
         @endforeach
     @endforeach
 </div>
 BLADE;
 
-        $tempDir = $this->createTempDirectory(['views/nested-sev.blade.php' => $blade]);
+        $this->assertSame([], $this->nestedForeachIssues($blade));
+    }
 
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['views']);
+    public function test_max_foreach_depth_is_configurable(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @foreach($users as $user)
+        @foreach($allPosts as $post)
+            @if($post->user_id === $user->id)
+                <p>{{ $post->title }}</p>
+            @endif
+        @endforeach
+    @endforeach
+</div>
+BLADE;
 
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $issues = $result->getIssues();
-        $nestedIssue = null;
-        foreach ($issues as $issue) {
-            if (($issue->metadata['code'] ?? null) === 'blade-nested-foreach') {
-                $nestedIssue = $issue;
-                break;
-            }
-        }
-        $this->assertNotNull($nestedIssue);
-        $this->assertEquals('medium', $nestedIssue->severity->value);
+        $this->assertCount(1, $this->nestedForeachIssues($blade));
+        $this->assertSame([], $this->nestedForeachIssues($blade, ['max_foreach_depth' => 3]));
     }
 
     public function test_passes_with_single_foreach(): void
@@ -2536,32 +2671,21 @@ BLADE;
     {
         $blade = <<<'BLADE'
 <div>
-    @foreach($categories as $category)
-        @foreach($category->products as $product)
-            <p>{{ $product->name }}</p>
+    @foreach($users as $user)
+        @foreach($allPosts as $post)
+            @if($post->user_id === $user->id)
+                <p>{{ $post->title }}</p>
+            @endif
         @endforeach
     @endforeach
 </div>
 BLADE;
 
-        $tempDir = $this->createTempDirectory(['views/nested-meta.blade.php' => $blade]);
+        $issues = $this->nestedForeachIssues($blade);
 
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['views']);
-
-        $result = $analyzer->analyze();
-
-        $nestedIssue = null;
-        foreach ($result->getIssues() as $issue) {
-            if (($issue->metadata['code'] ?? null) === 'blade-nested-foreach') {
-                $nestedIssue = $issue;
-                break;
-            }
-        }
-        $this->assertNotNull($nestedIssue);
-        $this->assertArrayHasKey('depth', $nestedIssue->metadata);
-        $this->assertEquals(2, $nestedIssue->metadata['depth']);
+        $this->assertCount(1, $issues);
+        $this->assertArrayHasKey('depth', $issues[0]->metadata);
+        $this->assertEquals(2, $issues[0]->metadata['depth']);
     }
 
     // =========================================================================

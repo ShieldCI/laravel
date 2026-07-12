@@ -22,13 +22,28 @@ class ModelVariableScanner extends NodeVisitorAbstract
     /** @var array<string, list<string>> */
     private array $eagerLoads = [];
 
+    /**
+     * Maps a variable to the name of the render-bound variable it ultimately derives from
+     * (itself, for a directly seeded variable). Lets a Blade N+1 finding on a loop variable
+     * trace back to the controller-passed variable a `ViewBindingRegistry` binding is keyed by.
+     *
+     * @var array<string, string>
+     */
+    private array $origins = [];
+
     public function enterNode(Node $node): ?int
     {
         if ($node instanceof Expr\Assign
             && $node->var instanceof Expr\Variable
             && is_string($node->var->name)) {
-            $this->trackEagerLoading($node->expr, $node->var->name);
+            $varName = $node->var->name;
+            $this->trackEagerLoading($node->expr, $varName);
             $this->detectModelQuery($node);
+
+            $expr = $node->expr;
+            if ($expr instanceof Expr\Variable && is_string($expr->name)) {
+                $this->aliasVariable($expr->name, $varName);
+            }
 
             return null;
         }
@@ -64,6 +79,7 @@ class ModelVariableScanner extends NodeVisitorAbstract
         if ($eagerLoads !== []) {
             $this->eagerLoads[$var] = array_values($eagerLoads);
         }
+        $this->origins[$var] = $var;
     }
 
     public function typeOf(string $var): ?string
@@ -92,6 +108,15 @@ class ModelVariableScanner extends NodeVisitorAbstract
     }
 
     /**
+     * The render-bound variable name a variable ultimately derives from (see `$origins`), or
+     * `null` if it was never seeded or aliased from a seeded variable.
+     */
+    public function originOf(string $var): ?string
+    {
+        return $this->origins[$var] ?? null;
+    }
+
+    /**
      * Copy inferred model type and eager-loaded relationships from one variable to another.
      *
      * Used when a variable's context derives from another (e.g. a `foreach` loop variable
@@ -110,6 +135,36 @@ class ModelVariableScanner extends NodeVisitorAbstract
 
         if (isset($this->eagerLoads[$from])) {
             $this->eagerLoads[$to] = $this->eagerLoads[$from];
+        }
+
+        if (isset($this->origins[$from])) {
+            $this->origins[$to] = $this->origins[$from];
+        }
+    }
+
+    /**
+     * Propagate a variable's type and eager loads, unchanged, to a plain alias of it
+     * (`$to = $from;`).
+     *
+     * Compiled Blade `@foreach` rewrites `foreach ($cities as $city)` into
+     * `$__currentLoopData = $cities; foreach ($__currentLoopData as $city): ...` — without this,
+     * the loop's actual source variable (`$__currentLoopData`) never resolves back to the
+     * seeded/inferred type on `$cities`, so `copyContext()` on the loop var has nothing to read.
+     * Unlike `copyContext()`, this keeps a `Collection<Model>` type as-is (an alias holds the
+     * same value, not its element).
+     */
+    private function aliasVariable(string $from, string $to): void
+    {
+        if (isset($this->types[$from])) {
+            $this->types[$to] = $this->types[$from];
+        }
+
+        if (isset($this->eagerLoads[$from])) {
+            $this->eagerLoads[$to] = $this->eagerLoads[$from];
+        }
+
+        if (isset($this->origins[$from])) {
+            $this->origins[$to] = $this->origins[$from];
         }
     }
 

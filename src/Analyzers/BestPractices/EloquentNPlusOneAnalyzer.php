@@ -15,8 +15,13 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\Support\BladeCompilerFactory;
 use ShieldCI\Support\ModelVariableScanner;
+use ShieldCI\Support\ViewBindingRegistry;
+use ShieldCI\Support\ViewRenderScanner;
 
 /**
  * Identifies missing eager loading that causes N+1 query problems.
@@ -54,10 +59,19 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
         $scanner = new EloquentModelRelationshipScanner($this->parser);
         $scanResult = $scanner->scan($allFiles);
 
+        $viewsBase = rtrim((string) $this->basePath, '/').'/resources/views';
+        $bindingRegistry = (new ViewRenderScanner($this->parser))->scan(array_values($allFiles), $viewsBase);
+
         foreach ($allFiles as $file) {
             // N+1 is a request-path concern. One-time DB scaffolding (seeders, migrations,
             // factories) idiomatically loops upserts/lookups where query count is irrelevant.
             if ($this->shouldSkipFile($file)) {
+                continue;
+            }
+
+            if (str_ends_with($file, '.blade.php')) {
+                $this->analyzeBladeFile($file, $bindingRegistry, $scanResult, $issues);
+
                 continue;
             }
 
@@ -155,6 +169,73 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
     private function getQueryRecommendation(string $query, string $loopType): string
     {
         return "Executing '{$query}' inside a {$loopType} triggers a separate database query for each iteration. Consider fetching all required data before the loop using whereIn() or eager loading, then filter in-memory.";
+    }
+
+    /**
+     * Analyze a single Blade view, seeded with the controller-bound variable types and eager
+     * loads that a template cannot derive on its own.
+     *
+     * @param  array<int, Issue>  $issues
+     */
+    private function analyzeBladeFile(string $file, ViewBindingRegistry $bindingRegistry, ModelScanResult $scanResult, array &$issues): void
+    {
+        $normalized = strtolower(str_replace('\\', '/', $file));
+        if (str_contains($normalized, '/vendor/')) {
+            return;
+        }
+
+        $bindings = $bindingRegistry->resolve($file);
+        if ($bindings === null) {
+            return; // no resolvable render site → skip the view
+        }
+
+        $content = FileParser::readFile($file);
+        if ($content === null) {
+            return;
+        }
+        $compiled = BladeCompilerFactory::compile($content);
+        if ($compiled === null) {
+            return;
+        }
+
+        $ast = $this->parser->parseCode($compiled['compiledPhp']);
+        if ($ast === []) {
+            return;
+        }
+
+        $seed = [];
+        foreach ($bindings as $var => $binding) {
+            $seed[$var] = ['type' => $binding['type'], 'eagerLoads' => $binding['eagerLoads']];
+        }
+
+        $visitor = new NPlusOneVisitor($scanResult, $seed);
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor($visitor);
+        $traverser->traverse($ast);
+
+        foreach ($visitor->getIssues() as $issue) {
+            $bladeLine = $compiled['lineMap'][$issue['line']] ?? null;
+            if ($bladeLine === null) {
+                continue;
+            }
+            // The visitor reports the loop variable (e.g. 'city'), but bindings are keyed by
+            // the render-bound variable (e.g. 'cities') — trace back through the loop var's
+            // origin to find the binding that actually carries a `source`.
+            $origin = $visitor->originOf($issue['variable']) ?? $issue['variable'];
+            $source = $bindings[$origin]['source'] ?? 'the controller';
+            $issues[] = $this->createIssueWithSnippet(
+                message: "Potential N+1 query: accessing '{$issue['relationship']}' inside loop",
+                filePath: $file,
+                lineNumber: $bladeLine,
+                severity: $this->metadata()->severity,
+                recommendation: "\${$issue['variable']} reaches this view from {$source}. Eager-load the '{$issue['relationship']}' relation there (with()) so the view iterates data already in memory.",
+                metadata: [
+                    'relationship' => $issue['relationship'],
+                    'source' => $source,
+                    'file' => $file,
+                ],
+            );
+        }
     }
 }
 
@@ -1465,5 +1546,15 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         }
 
         return $unique;
+    }
+
+    /**
+     * The render-bound variable name a variable ultimately derives from (e.g. a Blade loop
+     * variable traced back to the controller-passed variable it was seeded from), or `null` if
+     * it was never seeded or aliased from a seeded variable.
+     */
+    public function originOf(string $var): ?string
+    {
+        return $this->modelVars->originOf($var);
     }
 }

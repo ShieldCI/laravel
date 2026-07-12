@@ -57,4 +57,20 @@ class ModelVariableScannerTest extends TestCase
         $this->assertNull($s->modelOf('x'));
         $this->assertSame([], $s->eagerLoadsOf('x'));
     }
+
+    public function test_copy_context_transfers_model_and_eager_loads(): void
+    {
+        $s = $this->scan("\$cities = City::with('airports')->get();");
+        $s->copyContext('cities', 'city');
+        $this->assertSame('City', $s->typeOf('city'));
+        $this->assertEqualsCanonicalizing(['airports'], $s->eagerLoadsOf('city'));
+    }
+
+    public function test_copy_context_does_not_transfer_from_non_collection_type(): void
+    {
+        $s = $this->scan('$city = City::find(1);');
+        $s->copyContext('city', 'other');
+        $this->assertNull($s->typeOf('other'));
+        $this->assertSame([], $s->eagerLoadsOf('other'));
+    }
 }

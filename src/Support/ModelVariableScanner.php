@@ -75,6 +75,28 @@ class ModelVariableScanner extends NodeVisitorAbstract
     }
 
     /**
+     * Copy inferred model type and eager-loaded relationships from one variable to another.
+     *
+     * Used when a variable's context derives from another (e.g. a `foreach` loop variable
+     * inheriting the model type and eager loads of the collection it iterates), rather than
+     * from an assignment the scanner observes directly.
+     */
+    public function copyContext(string $from, string $to): void
+    {
+        $type = $this->types[$from] ?? null;
+        if ($type !== null && str_starts_with($type, 'Collection<')) {
+            $model = $this->modelOf($from);
+            if ($model !== null) {
+                $this->types[$to] = $model;
+            }
+        }
+
+        if (isset($this->eagerLoads[$from])) {
+            $this->eagerLoads[$to] = $this->eagerLoads[$from];
+        }
+    }
+
+    /**
      * Detect model query assignments and record variable types.
      *
      * Handles: $posts = Post::get(), $posts = Post::with('user')->get(), $post = Post::find(1)

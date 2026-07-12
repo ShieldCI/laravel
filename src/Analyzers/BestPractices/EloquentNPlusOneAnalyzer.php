@@ -16,6 +16,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Support\ModelVariableScanner;
 
 /**
  * Identifies missing eager loading that causes N+1 query problems.
@@ -546,13 +547,6 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     private array $uniquenessProbeNodes = [];
 
     /**
-     * Track variables and their eager loaded relationships.
-     *
-     * @var array<string, array<string>>
-     */
-    private array $eagerLoadedRelationships = [];
-
-    /**
      * Track relationships checked with relationLoaded() per loop variable.
      * Key format: "loopVariable:relationship"
      *
@@ -560,7 +554,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      */
     private array $relationLoadedChecks = [];
 
-    private VariableTypeRegistry $variableTypes;
+    private ModelVariableScanner $modelVars;
 
     private RelationshipRegistry $relationshipRegistry;
 
@@ -573,46 +567,14 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         $this->relationshipRegistry = $scanResult->relationships;
         $this->modelAttributesRegistry = $scanResult->attributes;
         $this->accessorRegistry = $scanResult->accessors;
-        $this->variableTypes = new VariableTypeRegistry;
+        $this->modelVars = new ModelVariableScanner;
     }
 
     public function enterNode(Node $node)
     {
-        // Track variable assignments to detect eager loading and model queries
-        if ($node instanceof Expr\Assign) {
-            if ($node->var instanceof Expr\Variable && is_string($node->var->name)) {
-                // Check if the assignment uses with() or load() for eager loading
-                $this->trackEagerLoading($node->expr, $node->var->name);
-                // Infer variable type from model query (e.g. $posts = Post::get())
-                $this->detectModelQuery($node);
-            }
-
-            return null;
-        }
-
-        // Track load() calls on existing variables: $posts->load('user')
-        if ($node instanceof Expr\MethodCall) {
-            if ($node->var instanceof Expr\Variable &&
-                is_string($node->var->name) &&
-                $node->name instanceof Node\Identifier &&
-                in_array($node->name->toString(), ['load', 'loadMissing'], true)) {
-
-                $varName = $node->var->name;
-                $relationships = $this->extractRelationshipsFromEagerLoadCall($node);
-
-                if (! empty($relationships)) {
-                    // Merge with existing eager loaded relationships
-                    if (isset($this->eagerLoadedRelationships[$varName])) {
-                        $this->eagerLoadedRelationships[$varName] = array_values(array_unique(array_merge(
-                            $this->eagerLoadedRelationships[$varName],
-                            $relationships
-                        )));
-                    } else {
-                        $this->eagerLoadedRelationships[$varName] = $relationships;
-                    }
-                }
-            }
-        }
+        // Feed every node to the model-variable scanner so it can infer variable
+        // types (e.g. $posts → Collection<Post>) and eager-loaded relationships.
+        $this->modelVars->enterNode($node);
 
         // Track loop entry
         if ($node instanceof Stmt\Foreach_) {
@@ -856,65 +818,6 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Detect model query assignments and record variable types.
-     *
-     * Handles: $posts = Post::get(), $posts = Post::with('user')->get(), $post = Post::find(1)
-     */
-    private function detectModelQuery(Expr\Assign $node): void
-    {
-        if (! ($node->var instanceof Expr\Variable) || ! is_string($node->var->name)) {
-            return;
-        }
-        $varName = $node->var->name;
-        $expr = $node->expr;
-
-        // Direct static call: Post::all(), Post::get(), Post::find(1)
-        if ($expr instanceof Expr\StaticCall &&
-            $expr->class instanceof Node\Name &&
-            $expr->name instanceof Node\Identifier) {
-            $className = $expr->class->getLast();
-            $lowerMethod = strtolower($expr->name->toString());
-            if (in_array($lowerMethod, ['get', 'all', 'paginate', 'simplepaginate'], true)) {
-                $this->variableTypes->set($varName, "Collection<{$className}>");
-            } elseif (in_array($lowerMethod, ['find', 'first', 'findorfail', 'firstorfail'], true)) {
-                $this->variableTypes->set($varName, $className);
-            }
-
-            return;
-        }
-
-        // Chained method calls: Post::where()->get(), Post::with('user')->get()
-        if ($expr instanceof Expr\MethodCall && $expr->name instanceof Node\Identifier) {
-            $lowerMethod = strtolower($expr->name->toString());
-            $className = $this->resolveModelFromChain($expr);
-            if ($className !== null) {
-                if (in_array($lowerMethod, ['get', 'all', 'paginate', 'simplepaginate'], true)) {
-                    $this->variableTypes->set($varName, "Collection<{$className}>");
-                } elseif (in_array($lowerMethod, ['find', 'first', 'findorfail', 'firstorfail'], true)) {
-                    $this->variableTypes->set($varName, $className);
-                }
-            }
-        }
-    }
-
-    /**
-     * Walk a MethodCall chain to find the root StaticCall class name.
-     */
-    private function resolveModelFromChain(Expr\MethodCall $node): ?string
-    {
-        $current = $node->var;
-        while ($current instanceof Expr\MethodCall) {
-            $current = $current->var;
-        }
-
-        if ($current instanceof Expr\StaticCall && $current->class instanceof Node\Name) {
-            return $current->class->getLast();
-        }
-
-        return null;
-    }
-
-    /**
      * Infer loop variable type from source collection type, and copy eager loading context.
      */
     private function inferLoopVariableType(Stmt\Foreach_ $node): void
@@ -929,17 +832,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         }
         $sourceVar = $node->expr->name;
 
-        // Infer model type from Collection<Model> → Model
-        $collectionType = $this->variableTypes->get($sourceVar);
-        if ($collectionType !== null && str_starts_with($collectionType, 'Collection<')) {
-            $model = trim(str_replace(['Collection<', '>'], '', $collectionType));
-            $this->variableTypes->set($loopVar, $model);
-        }
-
-        // Copy eager loaded relationships from source variable to loop variable context
-        if (isset($this->eagerLoadedRelationships[$sourceVar])) {
-            $this->eagerLoadedRelationships[$loopVar] = $this->eagerLoadedRelationships[$sourceVar];
-        }
+        $this->modelVars->copyContext($sourceVar, $loopVar);
     }
 
     /**
@@ -952,7 +845,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      */
     private function isActualOrProbableRelationship(string $loopVariable, string $name, bool $isMethodCall = false): bool
     {
-        $model = $this->variableTypes->get($loopVariable);
+        $model = $this->modelVars->typeOf($loopVariable);
 
         if ($model !== null && ! str_starts_with($model, 'Collection<')) {
             // Model type known from a static call (Post::get(), Post::all(), etc.)
@@ -1151,144 +1044,13 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Track eager loading from an expression.
-     */
-    private function trackEagerLoading(Node $expr, string $varName): void
-    {
-        // Look for chain like: Post::with(['user', 'comments'])->get()
-        // We need to recursively check the chain for with() calls
-        $relationships = $this->extractEagerLoadedRelationships($expr);
-
-        if (! empty($relationships)) {
-            $this->eagerLoadedRelationships[$varName] = $relationships;
-        }
-    }
-
-    /**
-     * Extract relationships from with() or load() calls in an expression chain.
-     *
-     * @return array<string>
-     */
-    private function extractEagerLoadedRelationships(Node $expr): array
-    {
-        $relationships = [];
-
-        // Check if this is a method call
-        if ($expr instanceof Expr\MethodCall) {
-            $relationships = $this->extractRelationshipsFromEagerLoadCall($expr);
-
-            // Recursively check the chain (e.g., Post::query()->with()->get())
-            $relationships = array_merge(
-                $relationships,
-                $this->extractEagerLoadedRelationships($expr->var)
-            );
-        }
-
-        // Check if this is a static call (e.g., Post::with())
-        if ($expr instanceof Expr\StaticCall) {
-            $relationships = $this->extractRelationshipsFromEagerLoadCall($expr);
-        }
-
-        return $relationships;
-    }
-
-    /**
-     * Extract relationships from a with() or load() method/static call.
-     *
-     * @return array<string>
-     */
-    private function extractRelationshipsFromEagerLoadCall(Expr\MethodCall|Expr\StaticCall $expr): array
-    {
-        // Check if the method is 'with' or 'load'
-        if (! ($expr->name instanceof Node\Identifier)) {
-            return [];
-        }
-
-        $methodName = $expr->name->toString();
-        if (! in_array($methodName, ['with', 'load', 'loadMissing'], true)) {
-            return [];
-        }
-
-        // Extract relationships from all arguments (Laravel supports variadic: with('user', 'comments'))
-        if (empty($expr->args)) {
-            return [];
-        }
-
-        $relationships = [];
-        foreach ($expr->args as $arg) {
-            $relationships = array_merge(
-                $relationships,
-                $this->parseRelationshipArgument($arg->value)
-            );
-        }
-
-        return array_unique($relationships);
-    }
-
-    /**
-     * Parse relationship argument (string or array).
-     *
-     * Expands dot notation so 'user.team' becomes ['user', 'user.team'].
-     *
-     * Handles both simple arrays and closure-keyed arrays:
-     * - with(['user', 'comments']) - relationship names as values
-     * - with(['user' => fn($q) => $q->select('id'), 'comments']) - relationship names as keys
-     *
-     * @return array<string>
-     */
-    private function parseRelationshipArgument(Node $arg): array
-    {
-        $rawRelationships = [];
-
-        // Handle array of relationships: with(['user', 'comments']) or with(['user' => fn() => ...])
-        if ($arg instanceof Expr\Array_) {
-            foreach ($arg->items as $item) {
-                if ($item === null) {
-                    continue;
-                }
-
-                // Check if relationship name is in the key (closure-keyed arrays)
-                // e.g., ['user' => fn($q) => $q->select('id')]
-                if ($item->key instanceof Node\Scalar\String_) {
-                    $rawRelationships[] = $item->key->value;
-                }
-                // Check if relationship name is in the value (simple arrays)
-                // e.g., ['user', 'comments']
-                elseif ($item->value instanceof Node\Scalar\String_) {
-                    $rawRelationships[] = $item->value->value;
-                }
-            }
-        }
-
-        // Handle single relationship: with('user')
-        if ($arg instanceof Node\Scalar\String_) {
-            $rawRelationships[] = $arg->value;
-        }
-
-        // Expand dot notation relationships
-        $expanded = [];
-        foreach ($rawRelationships as $relationship) {
-            // Strip Laravel's column-selection constraint: 'project:id,name' → 'project'
-            // 'comments.author:id,name' → 'comments.author'
-            $relationship = explode(':', $relationship, 2)[0];
-            $expanded = array_merge($expanded, $this->expandDotNotation($relationship));
-        }
-
-        return array_unique($expanded);
-    }
-
-    /**
      * Check if a relationship is eager loaded for a variable.
      *
      * Also matches prefix: if 'user.team' is loaded, then 'user' is considered covered.
      */
     private function isEagerLoaded(string $varName, string $relationship): bool
     {
-        if (! isset($this->eagerLoadedRelationships[$varName])) {
-            return false;
-        }
-
-        foreach ($this->eagerLoadedRelationships[$varName] as $loaded) {
+        foreach ($this->modelVars->eagerLoadsOf($varName) as $loaded) {
             if ($relationship === $loaded || str_starts_with($loaded, $relationship.'.')) {
                 return true;
             }
@@ -1338,27 +1100,6 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         }
 
         return null;
-    }
-
-    /**
-     * Expand dot notation relationship into all intermediate paths.
-     *
-     * Example: 'user.team.company' returns ['user', 'user.team', 'user.team.company']
-     *
-     * @return array<string>
-     */
-    private function expandDotNotation(string $relationship): array
-    {
-        $parts = explode('.', $relationship);
-        $expanded = [];
-        $path = '';
-
-        foreach ($parts as $part) {
-            $path = $path === '' ? $part : $path.'.'.$part;
-            $expanded[] = $path;
-        }
-
-        return $expanded;
     }
 
     /**

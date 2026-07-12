@@ -562,12 +562,22 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
     private AccessorRegistry $accessorRegistry;
 
-    public function __construct(ModelScanResult $scanResult)
+    /**
+     * Pre-known variable bindings (e.g. controller context carried into a Blade view) are
+     * applied to the model-variable scanner before traversal begins.
+     *
+     * @param  array<string, array{type: ?string, eagerLoads: list<string>}>  $seedBindings
+     */
+    public function __construct(ModelScanResult $scanResult, array $seedBindings = [])
     {
         $this->relationshipRegistry = $scanResult->relationships;
         $this->modelAttributesRegistry = $scanResult->attributes;
         $this->accessorRegistry = $scanResult->accessors;
         $this->modelVars = new ModelVariableScanner;
+
+        foreach ($seedBindings as $var => $binding) {
+            $this->modelVars->seed($var, $binding['type'], $binding['eagerLoads']);
+        }
     }
 
     public function enterNode(Node $node)

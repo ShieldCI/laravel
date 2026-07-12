@@ -4,8 +4,15 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
+use PhpParser\NodeTraverser;
+use ShieldCI\Analyzers\BestPractices\AccessorRegistry;
 use ShieldCI\Analyzers\BestPractices\EloquentNPlusOneAnalyzer;
+use ShieldCI\Analyzers\BestPractices\ModelAttributesRegistry;
+use ShieldCI\Analyzers\BestPractices\ModelScanResult;
+use ShieldCI\Analyzers\BestPractices\NPlusOneVisitor;
+use ShieldCI\Analyzers\BestPractices\RelationshipRegistry;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class EloquentNPlusOneAnalyzerTest extends AnalyzerTestCase
@@ -13,6 +20,63 @@ class EloquentNPlusOneAnalyzerTest extends AnalyzerTestCase
     protected function createAnalyzer(): AnalyzerInterface
     {
         return new EloquentNPlusOneAnalyzer($this->parser);
+    }
+
+    public function test_seeded_binding_flags_lazy_relation_in_a_loop(): void
+    {
+        // Force-load EloquentNPlusOneAnalyzer.php: ModelScanResult, RelationshipRegistry, etc.
+        // live in that file but aren't individually PSR-4 addressable, so referencing them
+        // directly (without ever instantiating the analyzer) needs an explicit autoload nudge.
+        class_exists(EloquentNPlusOneAnalyzer::class);
+
+        // A view-shaped snippet: $cities has no query assignment here — its type/eager-loads
+        // must come from the seed, exactly as a Blade template would receive them.
+        $code = <<<'PHP'
+        <?php
+        foreach ($cities as $city) {
+            echo $city->airports->count();
+        }
+        PHP;
+
+        $ast = (new AstParser)->parseCode($code);
+        $scanResult = new ModelScanResult(new RelationshipRegistry, new ModelAttributesRegistry, new AccessorRegistry);
+        // Register 'airports' as a real relationship on City so registry lookup succeeds.
+        $scanResult->relationships->add('City', 'airports');
+
+        $visitor = new NPlusOneVisitor($scanResult, [
+            'cities' => ['type' => 'Collection<City>', 'eagerLoads' => []],
+        ]);
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor($visitor);
+        $traverser->traverse($ast);
+
+        $this->assertNotEmpty($visitor->getIssues());
+        $this->assertSame('airports', $visitor->getIssues()[0]['relationship']);
+    }
+
+    public function test_seeded_eager_load_suppresses_the_finding(): void
+    {
+        class_exists(EloquentNPlusOneAnalyzer::class);
+
+        $code = <<<'PHP'
+        <?php
+        foreach ($cities as $city) {
+            echo $city->airports->count();
+        }
+        PHP;
+
+        $ast = (new AstParser)->parseCode($code);
+        $scanResult = new ModelScanResult(new RelationshipRegistry, new ModelAttributesRegistry, new AccessorRegistry);
+        $scanResult->relationships->add('City', 'airports');
+
+        $visitor = new NPlusOneVisitor($scanResult, [
+            'cities' => ['type' => 'Collection<City>', 'eagerLoads' => ['airports']],
+        ]);
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor($visitor);
+        $traverser->traverse($ast);
+
+        $this->assertSame([], $visitor->getIssues());
     }
 
     public function test_passes_uniqueness_probe_while_loop(): void

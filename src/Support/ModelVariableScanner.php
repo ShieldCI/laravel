@@ -49,6 +49,23 @@ class ModelVariableScanner extends NodeVisitorAbstract
         return null;
     }
 
+    /**
+     * Pre-populate a variable's model type and eager loads from outside the scanner's own
+     * AST walk (e.g. controller context passed into a Blade view, which has no query
+     * assignment of its own to infer from).
+     *
+     * @param  list<string>  $eagerLoads
+     */
+    public function seed(string $var, ?string $type, array $eagerLoads): void
+    {
+        if ($type !== null) {
+            $this->types[$var] = $type;
+        }
+        if ($eagerLoads !== []) {
+            $this->eagerLoads[$var] = array_values($eagerLoads);
+        }
+    }
+
     public function typeOf(string $var): ?string
     {
         return $this->types[$var] ?? null;

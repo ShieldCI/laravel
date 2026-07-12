@@ -16,6 +16,16 @@ use PhpParser\NodeVisitorAbstract;
  */
 class ModelVariableScanner extends NodeVisitorAbstract
 {
+    /**
+     * Compiled Blade rewrites `@foreach($cities as $city)` into
+     * `$__currentLoopData = $cities; foreach ($__currentLoopData as $city): ...`. This is the
+     * only bare `$to = $from;` assignment `enterNode()` treats as an alias — a plain user-level
+     * `$renamed = $posts;` in ordinary PHP must NOT propagate type/eager-load info, since this
+     * scanner also runs over plain `.php` files where no such synthetic variable exists and
+     * broadening detection there is out of scope for Blade support.
+     */
+    private const BLADE_LOOP_SOURCE = '__currentLoopData';
+
     /** @var array<string, string> */
     private array $types = [];
 
@@ -41,7 +51,9 @@ class ModelVariableScanner extends NodeVisitorAbstract
             $this->detectModelQuery($node);
 
             $expr = $node->expr;
-            if ($expr instanceof Expr\Variable && is_string($expr->name)) {
+            if ($varName === self::BLADE_LOOP_SOURCE
+                && $expr instanceof Expr\Variable
+                && is_string($expr->name)) {
                 $this->aliasVariable($expr->name, $varName);
             }
 
@@ -143,13 +155,16 @@ class ModelVariableScanner extends NodeVisitorAbstract
     }
 
     /**
-     * Propagate a variable's type and eager loads, unchanged, to a plain alias of it
-     * (`$to = $from;`).
+     * Propagate a variable's type and eager loads, unchanged, to the compiled Blade loop
+     * variable that aliases it (`$__currentLoopData = $from;`).
      *
      * Compiled Blade `@foreach` rewrites `foreach ($cities as $city)` into
      * `$__currentLoopData = $cities; foreach ($__currentLoopData as $city): ...` — without this,
      * the loop's actual source variable (`$__currentLoopData`) never resolves back to the
      * seeded/inferred type on `$cities`, so `copyContext()` on the loop var has nothing to read.
+     * The caller restricts this to that one synthetic target (see `BLADE_LOOP_SOURCE`) precisely
+     * because a real user assignment like `$renamed = $posts;` is not an alias in the same sense —
+     * propagating through it would widen plain-`.php` N+1 detection, which is unchanged by design.
      * Unlike `copyContext()`, this keeps a `Collection<Model>` type as-is (an alias holds the
      * same value, not its element).
      */

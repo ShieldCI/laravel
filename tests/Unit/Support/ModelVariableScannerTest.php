@@ -73,4 +73,18 @@ class ModelVariableScannerTest extends TestCase
         $this->assertNull($s->typeOf('other'));
         $this->assertSame([], $s->eagerLoadsOf('other'));
     }
+
+    public function test_blade_synthetic_loop_alias_propagates_type_and_eager_loads(): void
+    {
+        $s = $this->scan("\$cities = City::with('airports')->get();\n\$__currentLoopData = \$cities;");
+        $this->assertSame('Collection<City>', $s->typeOf('__currentLoopData'));
+        $this->assertEqualsCanonicalizing(['airports'], $s->eagerLoadsOf('__currentLoopData'));
+    }
+
+    public function test_plain_user_alias_does_not_propagate(): void
+    {
+        $s = $this->scan("\$posts = Post::all();\n\$renamed = \$posts;");
+        $this->assertNull($s->typeOf('renamed'));
+        $this->assertSame([], $s->eagerLoadsOf('renamed'));
+    }
 }

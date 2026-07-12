@@ -265,30 +265,6 @@ class RelationshipRegistry
 }
 
 /**
- * Tracks inferred variable types (e.g. $posts → Collection<Post>, $post → Post).
- */
-class VariableTypeRegistry
-{
-    /** @var array<string, string> */
-    private array $types = [];
-
-    public function set(string $var, string $type): void
-    {
-        $this->types[$var] = $type;
-    }
-
-    public function get(string $var): ?string
-    {
-        return $this->types[$var] ?? null;
-    }
-
-    public function has(string $var): bool
-    {
-        return isset($this->types[$var]);
-    }
-}
-
-/**
  * Tracks model attributes (from $fillable, $casts, $appends) per model class.
  *
  * Used to distinguish regular column access from relationship access.

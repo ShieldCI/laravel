@@ -59,6 +59,7 @@ class ViewRenderScannerTest extends TestCase
             ->scan([$controller], $dir.'/resources/views')
             ->resolve($dir.'/resources/views/cities/show.blade.php');
 
+        $this->assertNotNull($resolved);
         $this->assertSame('City', $resolved['city']['type']);
     }
 

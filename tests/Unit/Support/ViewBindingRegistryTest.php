@@ -20,6 +20,7 @@ class ViewBindingRegistryTest extends TestCase
         $r = new ViewBindingRegistry;
         $r->add('/v/index.blade.php', 'cities', new ViewBinding('Collection<City>', [], 'CityController::index'));
         $resolved = $r->resolve('/v/index.blade.php');
+        $this->assertNotNull($resolved);
         $this->assertSame('Collection<City>', $resolved['cities']['type']);
         $this->assertSame('CityController::index', $resolved['cities']['source']);
     }
@@ -29,7 +30,9 @@ class ViewBindingRegistryTest extends TestCase
         $r = new ViewBindingRegistry;
         $r->add('/v/i.blade.php', 'cities', new ViewBinding('Collection<City>', ['airports'], 'A::index'));
         $r->add('/v/i.blade.php', 'cities', new ViewBinding('Collection<City>', [], 'B::index'));
-        $this->assertEqualsCanonicalizing(['airports'], $r->resolve('/v/i.blade.php')['cities']['eagerLoads']);
+        $resolved = $r->resolve('/v/i.blade.php');
+        $this->assertNotNull($resolved);
+        $this->assertEqualsCanonicalizing(['airports'], $resolved['cities']['eagerLoads']);
     }
 
     public function test_unknown_type_at_any_site_drops_the_variable(): void
@@ -37,6 +40,8 @@ class ViewBindingRegistryTest extends TestCase
         $r = new ViewBindingRegistry;
         $r->add('/v/i.blade.php', 'cities', new ViewBinding('Collection<City>', [], 'A::index'));
         $r->add('/v/i.blade.php', 'cities', new ViewBinding(null, [], 'B::index'));
-        $this->assertArrayNotHasKey('cities', $r->resolve('/v/i.blade.php'));
+        $resolved = $r->resolve('/v/i.blade.php');
+        $this->assertNotNull($resolved);
+        $this->assertArrayNotHasKey('cities', $resolved);
     }
 }

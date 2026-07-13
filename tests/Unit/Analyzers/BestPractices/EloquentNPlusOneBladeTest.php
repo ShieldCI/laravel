@@ -251,4 +251,22 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
 
         $this->assertSame([], $this->airportIssues($result));
     }
+
+    /**
+     * Regression test for the real-corpus false positive: Config defines zero
+     * relationships, so it never enters the relationship registry and previously fell
+     * through to the property-name heuristic, which has no accessor awareness and flagged
+     * `value_preview` (a `getValuePreviewAttribute()` accessor) as a probable relationship.
+     */
+    public function test_silent_when_property_is_an_accessor_on_a_model_with_no_relationships(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Config.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Config extends Model { public function getValuePreviewAttribute(): string { return str(\$this->value)->limit(50)->toString(); } }",
+            'app/Http/Controllers/ConfigController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Config;\nclass ConfigController { public function index(){ \$configs = Config::all(); return view('configs.index', compact('configs')); } }",
+            'resources/views/configs/index.blade.php' => "@foreach(\$configs as \$config)\n  {{ \$config->value_preview }}\n@endforeach",
+        ]);
+
+        $issues = array_values(array_filter($result->getIssues(), fn (Issue $i): bool => str_contains($i->message, 'value_preview')));
+        $this->assertSame([], $issues);
+    }
 }

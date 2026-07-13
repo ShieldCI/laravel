@@ -927,6 +927,10 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     /**
      * Determine if a property/method name is a real or probable relationship.
      *
+     * An accessor or declared model attribute is never a relationship, so that check
+     * applies regardless of whether the model defines any relationships at all — it runs
+     * before the registry-membership gate, on both the precise-lookup and heuristic paths.
+     *
      * When the loop variable's model type is known (via registry), uses precise registry
      * lookup. Otherwise falls back to heuristics. Method-call context uses
      * looksLikeRelationshipMethod (stricter exclusions) to avoid false positives
@@ -937,17 +941,18 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         $model = $this->modelVars->typeOf($loopVariable);
 
         if ($model !== null && ! str_starts_with($model, 'Collection<')) {
+            // An accessor or declared attribute is never a relationship — check this
+            // regardless of whether the model defines any relationships at all.
+            if ($this->modelAttributesRegistry->has($model, $name)) {
+                return false;
+            }
+            if ($this->accessorRegistry->has($model, $name)) {
+                return false;
+            }
+
             // Model type known from a static call (Post::get(), Post::all(), etc.)
             if (array_key_exists($model, $this->relationshipRegistry->all())) {
                 // Model IS in the registry — precise lookup only, no heuristics.
-                // Also exclude properties declared as attributes or accessors.
-                if ($this->modelAttributesRegistry->has($model, $name)) {
-                    return false;
-                }
-                if ($this->accessorRegistry->has($model, $name)) {
-                    return false;
-                }
-
                 return $this->relationshipRegistry->has($model, $name);
             }
 

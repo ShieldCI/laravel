@@ -3165,4 +3165,62 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    public function test_does_not_flag_accessor_property_when_model_has_no_relationships(): void
+    {
+        // Regression test: Config defines zero relationships, so it never enters the
+        // relationshipRegistry (which is keyed only by models that define at least one
+        // relationship). That used to make isActualOrProbableRelationship() fall through
+        // to the heuristic path, which has no accessor/attribute awareness and flagged
+        // 'value_preview' as a probable relationship. Accessors must be suppressed
+        // regardless of whether their model defines any relationships.
+        $modelCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Config extends Model
+{
+    public function getValuePreviewAttribute(): string
+    {
+        return str($this->value)->limit(50)->toString();
+    }
+}
+PHP;
+
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Config;
+
+class ConfigController
+{
+    public function index()
+    {
+        $configs = Config::all();
+
+        foreach ($configs as $config) {
+            echo $config->value_preview;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Config.php' => $modelCode,
+            'app/Http/Controllers/ConfigController.php' => $controllerCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

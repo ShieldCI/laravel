@@ -87,4 +87,40 @@ class ModelVariableScannerTest extends TestCase
         $this->assertNull($s->typeOf('renamed'));
         $this->assertSame([], $s->eagerLoadsOf('renamed'));
     }
+
+    public function test_chained_query_ending_in_first_infers_single_model(): void
+    {
+        $s = $this->scan("\$post = Post::where('id', 1)->first();");
+        $this->assertSame('Post', $s->typeOf('post'));
+    }
+
+    public function test_deep_chain_resolves_model_through_multiple_method_calls(): void
+    {
+        $s = $this->scan("\$posts = Post::query()->where('a', 1)->orderBy('b')->get();");
+        $this->assertSame('Collection<Post>', $s->typeOf('posts'));
+    }
+
+    public function test_with_call_with_no_arguments_yields_no_eager_loads(): void
+    {
+        $s = $this->scan('$posts = Post::with()->get();');
+        $this->assertSame([], $s->eagerLoadsOf('posts'));
+    }
+
+    public function test_dynamic_method_name_on_eager_load_chain_is_ignored(): void
+    {
+        // A standalone `$posts->$m('author');` statement never reaches
+        // extractRelationshipsFromEagerLoadCall(), because enterNode()'s load/loadMissing
+        // branch already requires `$node->name instanceof Node\Identifier` before calling it.
+        // The dynamic-name guard inside extractRelationshipsFromEagerLoadCall is only reachable
+        // via trackEagerLoading()'s chain walk, which checks `instanceof Expr\MethodCall` without
+        // that extra Identifier check — so the dynamic call must be the assigned expression itself.
+        $s = $this->scan("\$m = 'with';\n\$posts = Post::all()->\$m('author');");
+        $this->assertSame([], $s->eagerLoadsOf('posts'));
+    }
+
+    public function test_closure_keyed_eager_load_array_reads_relationship_from_key(): void
+    {
+        $s = $this->scan("\$posts = Post::with(['author' => fn (\$q) => \$q->select('id'), 'comments'])->get();");
+        $this->assertEqualsCanonicalizing(['author', 'comments'], $s->eagerLoadsOf('posts'));
+    }
 }

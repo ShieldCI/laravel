@@ -60,7 +60,7 @@ class ModelVariableScanner extends NodeVisitorAbstract
             }
 
             $this->trackEagerLoading($expr, $varName);
-            $this->detectModelQuery($node);
+            $this->detectModelQuery($expr, $varName);
 
             if ($varName === self::BLADE_LOOP_SOURCE
                 && $expr instanceof Expr\Variable
@@ -203,14 +203,8 @@ class ModelVariableScanner extends NodeVisitorAbstract
      *
      * Handles: $posts = Post::get(), $posts = Post::with('user')->get(), $post = Post::find(1)
      */
-    private function detectModelQuery(Expr\Assign $node): void
+    private function detectModelQuery(Expr $expr, string $varName): void
     {
-        if (! ($node->var instanceof Expr\Variable) || ! is_string($node->var->name)) {
-            return;
-        }
-        $varName = $node->var->name;
-        $expr = $node->expr;
-
         // Direct static call: Post::all(), Post::get(), Post::find(1)
         if ($expr instanceof Expr\StaticCall &&
             $expr->class instanceof Node\Name &&
@@ -350,10 +344,6 @@ class ModelVariableScanner extends NodeVisitorAbstract
         // Handle array of relationships: with(['user', 'comments']) or with(['user' => fn() => ...])
         if ($arg instanceof Expr\Array_) {
             foreach ($arg->items as $item) {
-                if ($item === null) {
-                    continue;
-                }
-
                 // Check if relationship name is in the key (closure-keyed arrays)
                 // e.g., ['user' => fn($q) => $q->select('id')]
                 if ($item->key instanceof Node\Scalar\String_) {

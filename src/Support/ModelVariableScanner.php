@@ -148,6 +148,10 @@ class ModelVariableScanner extends NodeVisitorAbstract
      */
     public function copyContext(string $from, string $to): void
     {
+        // Assignment, not merge: compiled Blade copies every loop from the same synthetic key, so a
+        // reused loop-variable name must not inherit the previous loop's type, eager loads, or origin.
+        unset($this->types[$to], $this->eagerLoads[$to], $this->origins[$to]);
+
         $type = $this->types[$from] ?? null;
         if ($type !== null && str_starts_with($type, 'Collection<')) {
             $model = $this->modelOf($from);

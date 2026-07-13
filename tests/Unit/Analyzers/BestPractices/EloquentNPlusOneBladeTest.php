@@ -316,4 +316,111 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
         $issues = array_values(array_filter($result->getIssues(), fn (Issue $i): bool => str_contains($i->message, 'mayor')));
         $this->assertSame([], $issues);
     }
+
+    /**
+     * Regression for `ModelVariableScanner::copyContext()`'s merge-vs-assignment bug: compiled
+     * Blade copies every `@foreach` from the SAME synthetic `$__currentLoopData` key, so when a
+     * template reuses a loop-variable name (`$item`) across two loops and the second loop's
+     * source is a relation property fetch (`$user->posts`, not type-inferable), the freshly
+     * cleared `$__currentLoopData` has nothing to copy — `copyContext()` must still clear
+     * `$item`'s OWN previous (first-loop) type/eager-loads/origin rather than leaving them in
+     * place. `User` declares its own `author()` relation purely so the stale `User` type — if
+     * it leaks through — passes the registry's precise-lookup check exactly like the real
+     * `Post::author()` would, making the false positive this test guards against reproducible:
+     * pre-fix, `$item` keeps loop one's `User` type and its eager-load list (`['posts',
+     * 'posts.author']`), which does not contain the bare `'author'` entry, so `$item->author`
+     * (really a `Post`, reached via `$user->posts`, and genuinely eager-loaded through
+     * `posts.author`) is wrongly flagged.
+     */
+    public function test_reused_loop_variable_name_across_two_loops_stays_silent_when_eager_loaded(): void
+    {
+        $result = $this->analyze([
+            'app/Models/User.php' => <<<'PHP'
+                <?php
+                namespace App\Models;
+                use Illuminate\Database\Eloquent\Model;
+                class User extends Model
+                {
+                    public function posts(){ return $this->hasMany(Post::class); }
+                    public function author(){ return $this->belongsTo(User::class, 'created_by'); }
+                }
+                PHP,
+            'app/Models/Post.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Post extends Model { public function author(){ return \$this->belongsTo(User::class); } }",
+            'app/Http/Controllers/FeedController.php' => <<<'PHP'
+                <?php
+                namespace App\Http\Controllers;
+                use App\Models\User;
+                class FeedController
+                {
+                    public function index()
+                    {
+                        $users = User::with('posts.author')->get();
+
+                        return view('feed.index', compact('users'));
+                    }
+                }
+                PHP,
+            'resources/views/feed/index.blade.php' => <<<'BLADE'
+                @foreach($users as $item)
+                  {{ $item->name }}
+                @endforeach
+
+                @foreach($users as $user)
+                  @foreach($user->posts as $item)
+                    {{ $item->author->name }}
+                  @endforeach
+                @endforeach
+                BLADE,
+        ]);
+
+        $issues = array_values(array_filter($result->getIssues(), fn (Issue $i): bool => str_contains($i->message, 'author')));
+        $this->assertSame([], $issues);
+    }
+
+    /**
+     * The other side of the merge-vs-assignment bug: a stale eager-load list must not
+     * SUPPRESS a genuine finding either. Loop one's `$item` (`User::with('author')`) leaves
+     * eager loads `['author']` behind; loop two reuses `$item` for a DIFFERENT, non-eager-loaded
+     * `Post` collection. Pre-fix, `$item`'s type is correctly overwritten to `Post` (its source,
+     * `$posts`, IS a bare, type-inferable variable), but the STALE `['author']` eager-load list
+     * survives because `copyContext()` only overwrites `eagerLoads[$to]` when the source has an
+     * entry — and here the source (`$posts`, never eager-loaded) has none. That stale, coincidentally
+     * matching list wrongly suppresses a real N+1 on `$item->author`.
+     */
+    public function test_reused_loop_variable_name_flags_genuine_lazy_relation_not_masked_by_stale_eager_loads(): void
+    {
+        $result = $this->analyze([
+            'app/Models/User.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass User extends Model { public function author(){ return \$this->belongsTo(User::class, 'created_by'); } }",
+            'app/Models/Post.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Post extends Model { public function author(){ return \$this->belongsTo(User::class); } }",
+            'app/Http/Controllers/FeedController.php' => <<<'PHP'
+                <?php
+                namespace App\Http\Controllers;
+                use App\Models\User;
+                use App\Models\Post;
+                class FeedController
+                {
+                    public function index()
+                    {
+                        $users = User::with('author')->get();
+                        $posts = Post::all();
+
+                        return view('feed.mixed', compact('users', 'posts'));
+                    }
+                }
+                PHP,
+            'resources/views/feed/mixed.blade.php' => <<<'BLADE'
+                @foreach($users as $item)
+                  {{ $item->name }}
+                @endforeach
+
+                @foreach($posts as $item)
+                  {{ $item->author->name }}
+                @endforeach
+                BLADE,
+        ]);
+
+        $issues = array_values(array_filter($result->getIssues(), fn (Issue $i): bool => str_contains($i->message, 'author')));
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('FeedController::index', $issues[0]->recommendation);
+    }
 }

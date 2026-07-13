@@ -4,16 +4,6 @@ declare(strict_types=1);
 
 namespace ShieldCI\Support;
 
-final class ViewBinding
-{
-    /** @param list<string> $eagerLoads */
-    public function __construct(
-        public readonly ?string $type,
-        public readonly array $eagerLoads,
-        public readonly string $source,
-    ) {}
-}
-
 /**
  * Per-view, per-variable render bindings, with the merge policy that keeps Blade N+1 findings
  * conservative: a variable is analyzable only when every render site agrees on a known type, and

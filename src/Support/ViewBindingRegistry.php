@@ -36,7 +36,12 @@ class ViewBindingRegistry
             $unknown = false;
 
             foreach ($bindings as $binding) {
-                if ($binding->type === null) {
+                if ($binding->type === null || $binding->type !== $type) {
+                    // Either this site's type is unknown, or it disagrees with the first
+                    // site's type (e.g. two render sites bind the same view variable to
+                    // different models). Either way the variable can't be analyzed safely —
+                    // a wrong model type would drive a precise registry lookup that produces
+                    // confident false positives or negatives.
                     $unknown = true;
                     break;
                 }

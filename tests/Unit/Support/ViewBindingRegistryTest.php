@@ -44,4 +44,20 @@ class ViewBindingRegistryTest extends TestCase
         $this->assertNotNull($resolved);
         $this->assertArrayNotHasKey('cities', $resolved);
     }
+
+    /**
+     * Merge policy: two render sites bind the same view variable to DIFFERENT models (e.g.
+     * one passes a Collection<City>, another a Collection<Airport>). Picking either type
+     * would be a guess that drives a precise registry lookup — the variable must be dropped
+     * entirely, exactly like the unknown-type case.
+     */
+    public function test_disagreeing_types_across_sites_drops_the_variable(): void
+    {
+        $r = new ViewBindingRegistry;
+        $r->add('/v/i.blade.php', 'items', new ViewBinding('Collection<City>', [], 'A::index'));
+        $r->add('/v/i.blade.php', 'items', new ViewBinding('Collection<Airport>', [], 'B::index'));
+        $resolved = $r->resolve('/v/i.blade.php');
+        $this->assertNotNull($resolved);
+        $this->assertArrayNotHasKey('items', $resolved);
+    }
 }

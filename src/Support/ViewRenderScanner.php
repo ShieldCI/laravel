@@ -82,9 +82,11 @@ class ViewRenderScanner
      */
     private function scanScope(array $stmts, string $source, string $viewsBasePath, ViewBindingRegistry $registry, NodeFinder $finder): void
     {
-        $viewCalls = $finder->find($stmts, static fn (Node $n): bool => $n instanceof Expr\FuncCall
-            && $n->name instanceof Node\Name
-            && $n->name->toString() === 'view');
+        $viewCalls = array_filter(
+            $finder->findInstanceOf($stmts, Expr\FuncCall::class),
+            static fn (Expr\FuncCall $n): bool => $n->name instanceof Node\Name
+                && $n->name->toString() === 'view',
+        );
 
         if ($viewCalls === []) {
             return;
@@ -96,10 +98,6 @@ class ViewRenderScanner
         $traverser->traverse($stmts);
 
         foreach ($viewCalls as $viewCall) {
-            if (! $viewCall instanceof Expr\FuncCall) {
-                continue; // @codeCoverageIgnore — guaranteed by the finder predicate above
-            }
-
             $this->handleViewCall($viewCall, $stmts, $source, $viewsBasePath, $registry, $finder, $scanner);
         }
     }
@@ -132,16 +130,14 @@ class ViewRenderScanner
             $bindings = $this->extractBindings($viewCall->args[1]->value);
         }
 
-        $withCalls = $finder->find($scopeStmts, fn (Node $n): bool => $n instanceof Expr\MethodCall
-            && $n->name instanceof Node\Identifier
-            && $n->name->toString() === 'with'
-            && $this->chainRoot($n) === $viewCall);
+        $withCalls = array_filter(
+            $finder->findInstanceOf($scopeStmts, Expr\MethodCall::class),
+            fn (Expr\MethodCall $n): bool => $n->name instanceof Node\Identifier
+                && $n->name->toString() === 'with'
+                && $this->chainRoot($n) === $viewCall,
+        );
 
         foreach ($withCalls as $withCall) {
-            if (! $withCall instanceof Expr\MethodCall) {
-                continue; // @codeCoverageIgnore — guaranteed by the finder predicate above
-            }
-
             $bindings = array_merge($bindings, $this->extractWithBindings($withCall->args));
         }
 

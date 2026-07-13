@@ -236,6 +236,28 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
                 ],
             );
         }
+
+        // Process query-inside-loop issues (an actual query executed per iteration, as
+        // opposed to a lazy relationship access above) — the most severe N+1 shape, and it
+        // must be reported from a Blade template exactly like the plain-PHP path does.
+        foreach ($visitor->getQueryIssues() as $issue) {
+            $bladeLine = $compiled['lineMap'][$issue['line']] ?? null;
+            if ($bladeLine === null) {
+                continue;
+            }
+            $issues[] = $this->createIssueWithSnippet(
+                message: "N+1 query: executing '{$issue['query']}' inside loop",
+                filePath: $file,
+                lineNumber: $bladeLine,
+                severity: $this->metadata()->severity,
+                recommendation: $this->getQueryRecommendation($issue['query'], $issue['loop_type']),
+                metadata: [
+                    'query' => $issue['query'],
+                    'loop_type' => $issue['loop_type'],
+                    'file' => $file,
+                ]
+            );
+        }
     }
 }
 

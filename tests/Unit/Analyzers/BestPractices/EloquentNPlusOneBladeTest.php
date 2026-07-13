@@ -39,6 +39,18 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
         return array_values(array_filter($result->getIssues(), fn (Issue $i): bool => str_contains($i->message, 'airports')));
     }
 
+    /**
+     * Findings produced from `NPlusOneVisitor::getQueryIssues()` — an actual query executed
+     * per loop iteration, as opposed to a lazy relationship access. Filtered by the `query`
+     * metadata key rather than message content, since it is set only on this finding kind.
+     *
+     * @return list<Issue>
+     */
+    private function queryExecutionIssues(ResultInterface $result): array
+    {
+        return array_values(array_filter($result->getIssues(), fn (Issue $i): bool => array_key_exists('query', $i->metadata)));
+    }
+
     public function test_flags_lazy_relation_when_controller_does_not_eager_load(): void
     {
         $result = $this->analyze([
@@ -137,8 +149,10 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
     /**
      * A relationship accessed via an explicit method call chain ending in a query-execution
      * method (`$city->airports()->count()`, as opposed to the lazy-loading property access
-     * `$city->airports->count()` in the other fixtures) is caught by a distinct branch of
-     * the visitor and must be flagged the same way once the render-bound type is known.
+     * `$city->airports->count()` in the other fixtures) is caught by two distinct branches of
+     * the visitor once the render-bound type is known: the inner `airports()` call itself
+     * reads as a lazy relationship access (`getIssues()`), and the full `->count()` chain
+     * reads as an executed query (`getQueryIssues()`) — both now surface from a Blade view.
      */
     public function test_flags_method_call_query_chain_inside_view_loop(): void
     {
@@ -149,28 +163,35 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
         ]);
 
         $issues = $this->airportIssues($result);
-        $this->assertCount(1, $issues);
+        $this->assertCount(2, $issues);
         $this->assertStringContainsString('MethodChainController::index', $issues[0]->recommendation);
     }
 
     /**
-     * Pins CURRENT behavior for a bare `view('cities.bare')` call that passes no data at
-     * all: no controller ever binds a type to `$cities` for this view, so the merge policy
-     * has nothing to seed and the variable is never analyzable — silent, not flagged. This
-     * differs from the task brief's expectation that this case is "flagged regardless of
-     * bindings" via the existing query-issue logic; see the task report for why that
-     * doesn't hold today (`analyzeBladeFile()` never reads `NPlusOneVisitor::getQueryIssues()`,
-     * and even the relationship-issue path requires a known type to fire).
+     * A query executed inside a Blade loop (`$city->airports()->count()`) is the most severe
+     * shape of N+1 — an actual query per iteration, not just a lazy access — and must be
+     * flagged from a Blade view exactly like the plain-PHP path already does. This requires
+     * the controller to actually bind `$cities` (`compact('cities')`): a bare `view('x')` call
+     * with no data leaves the render-bound variable's type unknown, and `analyzeBladeFile()`
+     * skips a view with no resolvable render site entirely — neither `getIssues()` nor
+     * `getQueryIssues()` can fire without a known type, so that variant would stay silent
+     * regardless of this wiring.
      */
-    public function test_silent_when_view_call_passes_no_data(): void
+    public function test_flags_query_executed_inside_blade_loop(): void
     {
         $result = $this->analyze([
             'app/Models/City.php' => self::CITY_MODEL,
-            'app/Http/Controllers/BareViewController.php' => "<?php\nnamespace App\\Http\\Controllers;\nclass BareViewController { public function index(){ return view('cities.bare'); } }",
-            'resources/views/cities/bare.blade.php' => "@foreach(\$cities as \$city)\n  {{ \$city->airports()->count() }}\n@endforeach",
+            'app/Http/Controllers/CityController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\City;\nclass CityController { public function index(){ \$cities = City::all(); return view('cities.index', compact('cities')); } }",
+            'resources/views/cities/index.blade.php' => "@foreach(\$cities as \$city)\n  {{ \$city->airports()->count() }}\n@endforeach",
         ]);
 
-        $this->assertSame([], $this->airportIssues($result));
+        $issues = $this->queryExecutionIssues($result);
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('executing', $issues[0]->message);
+        $this->assertSame('$city->airports()->count()', $issues[0]->metadata['query']);
+        $location = $issues[0]->location;
+        $this->assertNotNull($location);
+        $this->assertStringEndsWith('index.blade.php', $location->file);
     }
 
     /**

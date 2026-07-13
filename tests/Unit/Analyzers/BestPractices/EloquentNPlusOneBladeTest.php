@@ -269,4 +269,51 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
         $issues = array_values(array_filter($result->getIssues(), fn (Issue $i): bool => str_contains($i->message, 'value_preview')));
         $this->assertSame([], $issues);
     }
+
+    /**
+     * FP-A (critical, real-corpus false positive): Blade compiles nested `@foreach` by
+     * reassigning the SAME synthetic `$__currentLoopData` variable at each nesting level. The
+     * inner reassignment (`$__currentLoopData = $post->comments;`) is a PropertyFetch, not a
+     * bare Variable, so before the fix it failed to invalidate the stale entry the OUTER loop
+     * left behind — `$comment` inherited `$post`'s type (`Post`) and eager-loaded relations
+     * (`['comments', 'comments.author']`). `Post` happens to declare its own `author()`
+     * relation, so the mistaken type made `$comment->author` look like an un-eager-loaded
+     * relationship on `Post`, even though `comments.author` IS eager-loaded — on `Comment`,
+     * the correct (but never-inferred, post-fix) model. This is the canonical nested-Blade
+     * shape and exactly the false-positive class this analyzer exists to prevent.
+     */
+    public function test_nested_foreach_relation_eager_loaded_via_dot_notation_is_silent(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Post.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Post extends Model { public function comments(){ return \$this->hasMany(Comment::class); } public function author(){ return \$this->belongsTo(User::class); } }",
+            'app/Models/Comment.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Comment extends Model { public function author(){ return \$this->belongsTo(User::class); } }",
+            'app/Http/Controllers/PostController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Post;\nclass PostController { public function index(){ \$posts = Post::with('comments.author')->get(); return view('posts.index', compact('posts')); } }",
+            'resources/views/posts/index.blade.php' => "@foreach(\$posts as \$post)\n  @foreach(\$post->comments as \$comment)\n    {{ \$comment->author->name }}\n  @endforeach\n@endforeach",
+        ]);
+
+        $issues = array_values(array_filter($result->getIssues(), fn (Issue $i): bool => str_contains($i->message, 'author')));
+        $this->assertSame([], $issues);
+    }
+
+    /**
+     * FP-C: two SEQUENTIAL, non-nested `@foreach` blocks. The first's source is a bare
+     * variable (`$cities`), which sets the synthetic `$__currentLoopData`'s type to `City`.
+     * The second's source is a property fetch (`$region->airports`) rather than a bare
+     * variable, so before the fix `$__currentLoopData` kept its STALE `City` type from the
+     * first loop, and `$airport` wrongly inherited it. `City` alone declares a `mayor()`
+     * relation, so `$airport->mayor` was wrongly flagged as an un-eager-loaded relationship
+     * even though the real (unrelated, never-typed) second-loop variable has nothing to do
+     * with `City` at all.
+     */
+    public function test_sequential_non_nested_foreach_does_not_leak_stale_type_to_second_loop_var(): void
+    {
+        $result = $this->analyze([
+            'app/Models/City.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass City extends Model { public function mayor(){ return \$this->belongsTo(Mayor::class); } }",
+            'app/Http/Controllers/RegionController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\City;\nclass RegionController { public function index(){ \$cities = City::all(); return view('regions.index', compact('cities')); } }",
+            'resources/views/regions/index.blade.php' => "@foreach(\$cities as \$city)\n  {{ \$city->name }}\n@endforeach\n@foreach(\$region->airports as \$airport)\n  {{ \$airport->mayor }}\n@endforeach",
+        ]);
+
+        $issues = array_values(array_filter($result->getIssues(), fn (Issue $i): bool => str_contains($i->message, 'mayor')));
+        $this->assertSame([], $issues);
+    }
 }

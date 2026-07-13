@@ -47,10 +47,21 @@ class ModelVariableScanner extends NodeVisitorAbstract
             && $node->var instanceof Expr\Variable
             && is_string($node->var->name)) {
             $varName = $node->var->name;
-            $this->trackEagerLoading($node->expr, $varName);
+            $expr = $node->expr;
+
+            // Compiled Blade reassigns this same synthetic variable at every nesting level
+            // (`$__currentLoopData = $post->comments;` for the inner loop of a nested
+            // `@foreach`). Clear whatever an earlier (outer) assignment left behind before
+            // reprocessing this one — otherwise, when this assignment's RHS isn't itself a
+            // recognized alias/query shape, the entry is left stale and the inner loop
+            // variable silently inherits the OUTER loop's model type and eager loads.
+            if ($varName === self::BLADE_LOOP_SOURCE) {
+                unset($this->types[$varName], $this->eagerLoads[$varName], $this->origins[$varName]);
+            }
+
+            $this->trackEagerLoading($expr, $varName);
             $this->detectModelQuery($node);
 
-            $expr = $node->expr;
             if ($varName === self::BLADE_LOOP_SOURCE
                 && $expr instanceof Expr\Variable
                 && is_string($expr->name)) {

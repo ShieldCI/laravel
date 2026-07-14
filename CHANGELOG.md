@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.12.0
+
+### Changed
+- Requires `shieldci/analyzers-core ^2.1` (was `^1.5`), which fixes a `TypeError` raised when `shieldci.environment_mapping` maps an environment to a non-string value (#282)
+
 ## v1.11.0
 
 ### Added

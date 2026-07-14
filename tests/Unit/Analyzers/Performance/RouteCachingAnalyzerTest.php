@@ -37,7 +37,6 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
 
         $configMap = array_replace_recursive($defaults, $configValues);
 
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $config->shouldReceive('get')
             ->andReturnUsing(function ($key, $default = null) use ($configMap) {
                 // Handle dotted key access (e.g., 'app.env')
@@ -60,7 +59,6 @@ class RouteCachingAnalyzerTest extends AnalyzerTestCase
             /** @var Application&CachesRoutes&MockInterface $app */
             $app = Mockery::mock(Application::class.', '.CachesRoutes::class);
 
-            /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
             $app->shouldReceive('routesAreCached')
                 ->andReturn($routesAreCached);
         } else {

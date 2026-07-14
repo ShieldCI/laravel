@@ -31,7 +31,6 @@ class StableDependencyAnalyzerTest extends AnalyzerTestCase
         $composer = Mockery::mock(Composer::class);
 
         if ($throwable !== null) {
-            /** @phpstan-ignore-next-line Mockery expectation chaining */
             $composer->shouldReceive('updateDryRun')->andThrow($throwable);
 
             return $composer;

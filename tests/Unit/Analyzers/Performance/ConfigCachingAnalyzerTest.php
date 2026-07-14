@@ -25,7 +25,6 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
         /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('app.env', Mockery::any())
             ->andReturn($environment);
@@ -35,7 +34,6 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
             /** @var Application&CachesConfiguration&MockInterface $app */
             $app = Mockery::mock(Application::class.', '.CachesConfiguration::class);
 
-            /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
             $app->shouldReceive('configurationIsCached')
                 ->andReturn($configIsCached);
         } else {
@@ -113,7 +111,6 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')->andReturn('production');
 
         $analyzer = new ConfigCachingAnalyzer($app, $config);
@@ -240,7 +237,6 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
         /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('app.env', Mockery::any())
             ->andReturn('production');
@@ -248,7 +244,6 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
         /** @var Application&CachesConfiguration&MockInterface $app */
         $app = Mockery::mock(Application::class.', '.CachesConfiguration::class);
 
-        /** @phpstan-ignore-next-line */
         $app->shouldReceive('configurationIsCached')
             ->andThrow(new \RuntimeException('Cache check failed'));
 
@@ -383,7 +378,6 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')->andReturn('production');
 
         $analyzer = new ConfigCachingAnalyzer($app, $config);

@@ -49,10 +49,8 @@ class UpToDateDependencyAnalyzerTest extends AnalyzerTestCase
 
         // Mock installDryRun - now called only ONCE per analysis (performance optimization!)
         if ($installDryRunException !== null) {
-            /** @phpstan-ignore-next-line Mockery expectation chaining */
             $composer->shouldReceive('installDryRun')->andThrow($installDryRunException);
         } elseif ($allDepsOutput !== null) {
-            /** @phpstan-ignore-next-line Mockery's times() is not recognized by PHPStan */
             $composer->shouldReceive('installDryRun')
                 ->once()
                 ->andReturn($allDepsOutput);
@@ -400,7 +398,6 @@ OUTPUT;
 
         // OPTIMIZATION: Verify installDryRun is called only ONCE (not twice)
         // This cuts CI execution time in half for large projects
-        /** @phpstan-ignore-next-line Mockery expectation chaining */
         $composer->shouldReceive('installDryRun')
             ->once()
             ->andReturn("Nothing to install or update\n");
@@ -820,7 +817,6 @@ OUTPUT;
         $composer->shouldReceive('getJsonFile')->andReturn('/path/to/composer.json');
         $composer->shouldReceive('areDevPackagesInstalled')->andReturn(true);
 
-        /** @phpstan-ignore-next-line Mockery expectation chaining */
         $composer->shouldReceive('installDryRun')
             ->with(['--ignore-platform-reqs'])
             ->once()
@@ -844,7 +840,6 @@ OUTPUT;
         $composer->shouldReceive('areDevPackagesInstalled')->andReturn(true);
 
         // Verify that --ignore-platform-reqs is passed when running in Vapor
-        /** @phpstan-ignore-next-line Mockery expectation chaining */
         $composer->shouldReceive('installDryRun')
             ->with(['--ignore-platform-reqs'])
             ->once()
@@ -868,7 +863,6 @@ OUTPUT;
         $composer->shouldReceive('areDevPackagesInstalled')->andReturn(false);
 
         // When --no-dev mode is active, --ignore-platform-reqs is appended after it
-        /** @phpstan-ignore-next-line Mockery expectation chaining */
         $composer->shouldReceive('installDryRun')
             ->with(['--no-dev', '--ignore-platform-reqs'])
             ->once()
@@ -933,7 +927,6 @@ OUTPUT;
 
         // Output with a Lock file operations line but no parseable "- Verb Package" lines
         // so we reach the scope='unknown' branch where $dryRunFlag is recorded.
-        /** @phpstan-ignore-next-line Mockery expectation chaining */
         $composer->shouldReceive('installDryRun')
             ->with(['--ignore-platform-reqs'])
             ->once()

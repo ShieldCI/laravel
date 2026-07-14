@@ -18,7 +18,6 @@ class SqlInjectionAnalyzerTest extends AnalyzerTestCase
         /** @var Config&MockInterface $config */
         $config = Mockery::mock(Config::class);
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')->andReturn(null);
 
         return new SqlInjectionAnalyzer($this->parser, $config);

@@ -48,7 +48,6 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         // Mock config values
         foreach ($configValues as $key => $value) {
-            /** @phpstan-ignore-next-line */
             $config->shouldReceive('get')
                 ->with($key, Mockery::any())
                 ->andReturn($value);
@@ -56,21 +55,18 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
 
         // Set default config values if not provided
         if (! isset($configValues['trustedproxy.proxies'])) {
-            /** @phpstan-ignore-next-line */
             $config->shouldReceive('get')
                 ->with('trustedproxy.proxies')
                 ->andReturn(null);
         }
 
         if (! isset($configValues['cors.paths'])) {
-            /** @phpstan-ignore-next-line */
             $config->shouldReceive('get')
                 ->with('cors.paths', [])
                 ->andReturn([]);
         }
 
         // Mock app->make() for middleware instantiation
-        /** @phpstan-ignore-next-line */
         $app->shouldReceive('make')
             ->andReturnUsing(function ($class) {
                 if ($class === TrustProxies::class) {
@@ -165,12 +161,10 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
             protected $middleware = [];
         };
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
-        /** @phpstan-ignore-next-line Mockery mocks passed to constructor */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -199,7 +193,6 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         };
 
         // Mock the TrustProxies middleware with null proxies
-        /** @phpstan-ignore-next-line */
         $app->shouldReceive('make')
             ->with(TrustProxies::class)
             ->andReturn(new class
@@ -209,17 +202,14 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
             });
 
         // Mock config to return null for trustedproxy.proxies
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('trustedproxy.proxies')
             ->andReturn(null);
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
-        /** @phpstan-ignore-next-line Mockery mocks passed to constructor */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -245,7 +235,6 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         };
 
         // Mock TrustProxies with configured proxies
-        /** @phpstan-ignore-next-line */
         $app->shouldReceive('make')
             ->with(TrustProxies::class)
             ->andReturn(new class
@@ -254,17 +243,14 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
                 protected $proxies = '*';
             });
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('trustedproxy.proxies')
             ->andReturn(null);
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
-        /** @phpstan-ignore-next-line Mockery mocks passed to constructor */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -288,12 +274,10 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
             ];
         };
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
-        /** @phpstan-ignore-next-line Mockery mocks passed to constructor */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -318,12 +302,10 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
             ];
         };
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
-        /** @phpstan-ignore-next-line Mockery mocks passed to constructor */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -350,7 +332,6 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
             ];
         };
 
-        /** @phpstan-ignore-next-line */
         $app->shouldReceive('make')
             ->with(TrustProxies::class)
             ->andReturn(new class
@@ -359,17 +340,14 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
                 protected $proxies = null;
             });
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('trustedproxy.proxies')
             ->andReturn(null);
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
-        /** @phpstan-ignore-next-line Mockery mocks passed to constructor */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -403,17 +381,14 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
             ];
         };
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('trustedproxy.proxies')
             ->andReturn(null);
 
-        /** @phpstan-ignore-next-line Mockery mocks passed to constructor */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -442,12 +417,10 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
             ];
         };
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn(['api/*', 'sanctum/csrf-cookie']);
 
-        /** @phpstan-ignore-next-line Mockery mocks passed to constructor */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -471,7 +444,6 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         };
 
         // Mock TrustProxies with array of IPs
-        /** @phpstan-ignore-next-line */
         $app->shouldReceive('make')
             ->with(TrustProxies::class)
             ->andReturn(new class
@@ -480,17 +452,14 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
                 protected $proxies = ['192.168.1.1', '10.0.0.0/8'];
             });
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('trustedproxy.proxies')
             ->andReturn(null);
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
-        /** @phpstan-ignore-next-line */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -514,7 +483,6 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         };
 
         // TrustProxies middleware has null proxies
-        /** @phpstan-ignore-next-line */
         $app->shouldReceive('make')
             ->with(TrustProxies::class)
             ->andReturn(new class
@@ -524,17 +492,14 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
             });
 
         // But config has proxies configured (Fideloper package pattern)
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('trustedproxy.proxies')
             ->andReturn(['192.168.1.1']);
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
-        /** @phpstan-ignore-next-line */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -558,17 +523,14 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         };
 
         // Mock app->make() to throw exception
-        /** @phpstan-ignore-next-line */
         $app->shouldReceive('make')
             ->with(TrustProxies::class)
             ->andThrow(new \Exception('Cannot instantiate'));
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
-        /** @phpstan-ignore-next-line */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -594,7 +556,6 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
             ];
         };
 
-        /** @phpstan-ignore-next-line */
         $app->shouldReceive('make')
             ->with(TrustProxies::class)
             ->andReturn(new class
@@ -604,17 +565,14 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
             });
 
         // Return invalid types for config values
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('trustedproxy.proxies')
             ->andReturn(12345); // Invalid: should be string, array, or null
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn('not-an-array'); // Invalid: should be array
 
-        /** @phpstan-ignore-next-line */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -641,7 +599,6 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
             ];
         };
 
-        /** @phpstan-ignore-next-line */
         $app->shouldReceive('make')
             ->with(TrustProxies::class)
             ->andReturn(new class
@@ -650,17 +607,14 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
                 protected $proxies = null;
             });
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('trustedproxy.proxies')
             ->andReturn(null);
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
-        /** @phpstan-ignore-next-line */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -689,7 +643,6 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
             ];
         };
 
-        /** @phpstan-ignore-next-line */
         $app->shouldReceive('make')
             ->with(TrustProxies::class)
             ->andReturn(new class
@@ -698,17 +651,14 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
                 protected $proxies = null;
             });
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('trustedproxy.proxies')
             ->andReturn(null);
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
-        /** @phpstan-ignore-next-line */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -740,7 +690,6 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
             ];
         };
 
-        /** @phpstan-ignore-next-line */
         $app->shouldReceive('make')
             ->with(TrustProxies::class)
             ->andReturn(new class
@@ -749,17 +698,14 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
                 protected $proxies = null;
             });
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('trustedproxy.proxies')
             ->andReturn(null);
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
-        /** @phpstan-ignore-next-line */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -790,7 +736,6 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
             ];
         };
 
-        /** @phpstan-ignore-next-line */
         $app->shouldReceive('make')
             ->with(TrustProxies::class)
             ->andReturn(new class
@@ -799,17 +744,14 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
                 protected $proxies = null;
             });
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('trustedproxy.proxies')
             ->andReturn(null);
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
-        /** @phpstan-ignore-next-line */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -845,7 +787,6 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
             ];
         };
 
-        /** @phpstan-ignore-next-line */
         $app->shouldReceive('make')
             ->with(TrustProxies::class)
             ->andReturn(new class
@@ -854,17 +795,14 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
                 protected $proxies = null;
             });
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('trustedproxy.proxies')
             ->andReturn(null);
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
-        /** @phpstan-ignore-next-line */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -888,7 +826,6 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
             ];
         };
 
-        /** @phpstan-ignore-next-line */
         $app->shouldReceive('make')
             ->with(TrustProxies::class)
             ->andReturn(new class
@@ -897,17 +834,14 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
                 protected $proxies = null;
             });
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('trustedproxy.proxies')
             ->andReturn(null);
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
-        /** @phpstan-ignore-next-line */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 
@@ -953,14 +887,12 @@ PHP;
             ];
         };
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
         // Use an anonymous subclass to override getBasePath() since AbstractAnalyzer
         // doesn't expose setBasePath() — only AbstractFileAnalyzer does.
-        /** @phpstan-ignore-next-line Anonymous class with dynamic base path */
         $analyzer = new class($app, $config, $router, $kernel, $tempDir) extends UnusedGlobalMiddlewareAnalyzer
         {
             public function __construct(
@@ -1017,7 +949,6 @@ PHP;
         };
 
         // TrustProxies is configured
-        /** @phpstan-ignore-next-line */
         $app->shouldReceive('make')
             ->with(TrustProxies::class)
             ->andReturn(new class
@@ -1026,18 +957,15 @@ PHP;
                 protected $proxies = '*';
             });
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('trustedproxy.proxies')
             ->andReturn(null);
 
         // CORS is not configured
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->with('cors.paths', [])
             ->andReturn([]);
 
-        /** @phpstan-ignore-next-line */
         $analyzer = new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
         $result = $analyzer->analyze();
 

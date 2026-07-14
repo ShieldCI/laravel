@@ -25,15 +25,12 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $phpStan = Mockery::mock(PHPStan::class);
 
         if ($phpstanResult !== null) {
-            /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
             $phpStan->shouldReceive('setRootPath')
                 ->andReturnSelf();
 
-            /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
             $phpStan->shouldReceive('start')
                 ->andReturnSelf();
 
-            /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
             $phpStan->shouldReceive('pregMatch')
                 ->with('/could\s+have\s+been\s+retrieved\s+as\s+a\s+query|called\s+.*\s+on\s+.*collection/i')
                 ->andReturn($phpstanResult);
@@ -94,11 +91,9 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $phpStan->shouldReceive('setRootPath')
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $phpStan->shouldReceive('start')
             ->andThrow(new \Exception('PHPStan failed'));
 
@@ -135,17 +130,14 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('setRootPath')
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('start')
             ->with(['app'])  // Should default to ['app']
             ->once()
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('pregMatch')
             ->andReturn([]);
 
@@ -163,17 +155,14 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('setRootPath')
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('start')
             ->with(['app'])  // Should default to ['app']
             ->once()
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('pregMatch')
             ->andReturn([]);
 
@@ -193,17 +182,14 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('setRootPath')
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('start')
             ->with($paths)
             ->once()
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('pregMatch')
             ->andReturn([]);
 
@@ -221,15 +207,12 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('setRootPath')
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('start')
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('pregMatch')
             ->andReturn([]);
 
@@ -255,15 +238,12 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('setRootPath')
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('start')
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('pregMatch')
             ->andReturn($phpstanResult);
 
@@ -293,15 +273,12 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('setRootPath')
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('start')
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('pregMatch')
             ->andReturn($phpstanResult);
 
@@ -399,11 +376,9 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('setRootPath')
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('start')
             ->andThrow(new \RuntimeException('PHPStan executable not found'));
 
@@ -422,15 +397,12 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('setRootPath')
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('start')
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('pregMatch')
             ->andThrow(new \RuntimeException('Failed to parse PHPStan output'));
 
@@ -662,18 +634,15 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('setRootPath')
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('start')
             // Should filter out 'config' and 'database', keeping only code directories
             ->with(['app', 'packages', 'modules'])
             ->once()
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('pregMatch')
             ->andReturn([]);
 
@@ -694,18 +663,15 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         /** @var PHPStan&MockInterface $phpStan */
         $phpStan = Mockery::mock(PHPStan::class);
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('setRootPath')
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('start')
             // Should fallback to ['app'] when all config paths are filtered
             ->with(['app'])
             ->once()
             ->andReturnSelf();
 
-        /** @phpstan-ignore-next-line */
         $phpStan->shouldReceive('pregMatch')
             ->andReturn([]);
 

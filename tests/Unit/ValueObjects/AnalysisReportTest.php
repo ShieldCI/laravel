@@ -532,7 +532,7 @@ class AnalysisReportTest extends TestCase
             projectId: 'test-project-id',
             laravelVersion: app()->version(),
             packageVersion: '1.0.0',
-            results: collect([AnalysisResult::passed('analyzer-1', 'Passed')]),
+            results: $this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed')),
             totalExecutionTime: 1.0,
             analyzedAt: new DateTimeImmutable,
             suppressedIssues: [
@@ -582,7 +582,7 @@ class AnalysisReportTest extends TestCase
             projectId: 'test-project-id',
             laravelVersion: app()->version(),
             packageVersion: '1.0.0',
-            results: collect([AnalysisResult::passed('analyzer-1', 'Passed')]),
+            results: $this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed')),
             totalExecutionTime: 1.0,
             analyzedAt: new DateTimeImmutable,
             suppressedIssues: [
@@ -610,7 +610,7 @@ class AnalysisReportTest extends TestCase
             recommendation: 'Use prepared statements',
         );
 
-        $results = collect([AnalysisResult::passed('xss-detection', 'Passed')]);
+        $results = $this->resultsOf(AnalysisResult::passed('xss-detection', 'Passed'));
         $report = new AnalysisReport(
             projectId: 'test-project-id',
             laravelVersion: app()->version(),
@@ -640,7 +640,7 @@ class AnalysisReportTest extends TestCase
     #[Test]
     public function to_array_includes_empty_suppressed_issues_when_none_for_result(): void
     {
-        $results = collect([AnalysisResult::passed('xss-detection', 'Passed')]);
+        $results = $this->resultsOf(AnalysisResult::passed('xss-detection', 'Passed'));
         $report = $this->createReport($results);
 
         $arr = $report->toArray();

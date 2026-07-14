@@ -23,25 +23,21 @@ class SharedCacheLockAnalyzerTest extends AnalyzerTestCase
         $config = Mockery::mock(ConfigRepository::class);
 
         // Mock cache.default
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $config->shouldReceive('get')
             ->with('cache.default')
             ->andReturn($defaultStore);
 
         // Mock cache driver
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $config->shouldReceive('get')
             ->with("cache.stores.$defaultStore.driver")
             ->andReturn($driver);
 
         // Mock lock_connection
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $config->shouldReceive('get')
             ->with("cache.stores.$defaultStore.lock_connection")
             ->andReturn($lockConnection);
 
         // Mock cache connection
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $config->shouldReceive('get')
             ->with("cache.stores.$defaultStore.connection")
             ->andReturn($cacheConnection);
@@ -341,25 +337,21 @@ PHP;
         $config = Mockery::mock(ConfigRepository::class);
 
         // Mock cache.default
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $config->shouldReceive('get')
             ->with('cache.default')
             ->andReturn($defaultStore);
 
         // Mock cache driver for default store
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $config->shouldReceive('get')
             ->with("cache.stores.$defaultStore.driver")
             ->andReturn($driver);
 
         // Mock each store's configuration
         foreach ($stores as $storeName => $storeConfig) {
-            /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
             $config->shouldReceive('get')
                 ->with("cache.stores.$storeName.lock_connection")
                 ->andReturn($storeConfig['lock_connection']);
 
-            /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
             $config->shouldReceive('get')
                 ->with("cache.stores.$storeName.connection")
                 ->andReturn($storeConfig['connection']);

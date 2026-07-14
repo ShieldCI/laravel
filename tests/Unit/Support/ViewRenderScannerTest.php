@@ -63,6 +63,28 @@ class ViewRenderScannerTest extends TestCase
         $this->assertSame('City', $resolved['city']['type']);
     }
 
+    public function test_with_chain_binding_to_a_non_variable_has_no_type(): void
+    {
+        // A literal or expression cannot be traced back to a typed variable, so the binding
+        // records no type — which makes the merge policy drop it rather than guess.
+        $dir = sys_get_temp_dir().'/vrs_'.uniqid();
+        $controller = $this->write($dir, 'C.php', <<<'PHP'
+        <?php
+        class C {
+            public function show() {
+                return view('cities.show')->with('total', 5);
+            }
+        }
+        PHP);
+
+        $resolved = (new ViewRenderScanner(new AstParser))
+            ->scan([$controller], $dir.'/resources/views')
+            ->resolve($dir.'/resources/views/cities/show.blade.php');
+
+        $this->assertNotNull($resolved);
+        $this->assertArrayNotHasKey('total', $resolved);
+    }
+
     public function test_dynamic_view_name_is_skipped(): void
     {
         $dir = sys_get_temp_dir().'/vrs_'.uniqid();

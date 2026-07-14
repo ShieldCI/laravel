@@ -188,7 +188,7 @@ class ViewRenderScanner
     {
         $bindings = [];
         foreach ($array->items as $item) {
-            if ($item === null || ! $item->key instanceof Node\Scalar\String_) {
+            if (! $item->key instanceof Node\Scalar\String_) {
                 continue;
             }
 

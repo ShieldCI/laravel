@@ -6,7 +6,7 @@
 - `eloquent-n-plus-one` now analyzes Blade templates, carrying each variable's model type and eager-loaded relations over from the controller that renders the view, so a relation lazily accessed inside a `@foreach` is reported on the Blade line and names the controller to eager-load it in (#279)
 
 ### Fixed
-- `eloquent-n-plus-one` no longer reports an accessor on a model that defines no relationships as an N+1, so reading a `getValuePreviewAttribute()` accessor inside a loop is not flagged (#279)
+- `eloquent-n-plus-one` no longer reports an accessor on a model that defines no relationships as an N+1, so reading an accessor such as `$user->full_name` inside a loop is not flagged (#279)
 
 ## v1.10.2
 

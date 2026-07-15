@@ -45,7 +45,6 @@ class HorizonSuggestionAnalyzerTest extends AnalyzerTestCase
 
         $configMap = array_replace_recursive($defaults, $configValues);
 
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $config->shouldReceive('get')
             ->andReturnUsing(function ($key, $default = null) use ($configMap) {
                 // Handle dotted key access (e.g., 'queue.connections.redis.driver')

@@ -42,7 +42,6 @@ class MysqlSingleServerAnalyzerTest extends AnalyzerTestCase
 
         $configMap = array_replace_recursive($defaults, $configValues);
 
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $config->shouldReceive('get')
             ->andReturnUsing(function ($key, $default = null) use ($configMap) {
                 // Handle dotted key access (e.g., 'database.connections.mysql.driver')
@@ -1056,7 +1055,7 @@ class MysqlSingleServerAnalyzerTest extends AnalyzerTestCase
                         'host' => '127.0.0.1',
                         'database' => 'laravel',
                         'options' => [
-                            \PDO::MYSQL_ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA', '/path/to/rds-ca.pem'),
+                            \PDO::MYSQL_ATTR_SSL_CA => '/path/to/rds-ca.pem',
                         ],
                     ],
                 ],

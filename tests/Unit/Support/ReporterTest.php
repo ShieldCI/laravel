@@ -31,9 +31,9 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_generates_report_with_default_trigger_source(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
 
@@ -44,9 +44,9 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_generates_report_with_custom_trigger_source(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results, TriggerSource::CiCd);
 
@@ -57,9 +57,9 @@ class ReporterTest extends TestCase
     #[Test]
     public function api_payload_includes_triggered_by(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results, TriggerSource::Scheduled);
         $payload = $this->reporter->toApi($report);
@@ -72,7 +72,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_can_generate_report_from_results(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
             AnalysisResult::failed('analyzer-2', 'Failed', [
                 new Issue(
@@ -82,7 +82,7 @@ class ReporterTest extends TestCase
                     recommendation: 'Fix it',
                 ),
             ]),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
 
@@ -94,9 +94,9 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_can_format_to_console(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('test-analyzer', 'All checks passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $output = $this->reporter->toConsole($report);
@@ -110,9 +110,9 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_can_format_to_json(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('test-analyzer', 'All checks passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $json = $this->reporter->toJson($report);
@@ -132,9 +132,9 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_can_format_to_api(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('test-analyzer', 'All checks passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $apiPayload = $this->reporter->toApi($report);
@@ -152,7 +152,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function console_output_includes_failed_analyzers(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::failed('test-analyzer', 'Found issues', [
                 new Issue(
                     message: 'Security vulnerability detected',
@@ -161,7 +161,7 @@ class ReporterTest extends TestCase
                     recommendation: 'Sanitize user input',
                 ),
             ]),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $output = $this->reporter->toConsole($report);
@@ -175,7 +175,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function console_output_includes_warnings(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::warning('test-analyzer', 'Warning issued', [
                 new Issue(
                     message: 'Potential performance issue',
@@ -184,7 +184,7 @@ class ReporterTest extends TestCase
                     recommendation: 'Consider caching',
                 ),
             ]),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $output = $this->reporter->toConsole($report);
@@ -368,7 +368,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function console_output_includes_report_card_table(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             new AnalysisResult(
                 analyzerId: 'sec-1',
                 status: Status::Passed,
@@ -392,7 +392,7 @@ class ReporterTest extends TestCase
                 executionTime: 0.2,
                 metadata: ['category' => Category::Performance, 'name' => 'Perf 1'],
             ),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $output = $this->reporter->toConsole($report);
@@ -486,10 +486,10 @@ class ReporterTest extends TestCase
     #[Test]
     public function console_output_handles_skipped_analyzers_in_report(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('pass-1', 'OK'),
             AnalysisResult::skipped('skip-1', 'Skipped'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $output = $this->reporter->toConsole($report);
@@ -501,7 +501,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function console_output_shows_time_to_fix_in_report(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             new AnalysisResult(
                 analyzerId: 'test-analyzer',
                 status: Status::Failed,
@@ -521,7 +521,7 @@ class ReporterTest extends TestCase
                     'timeToFix' => 5,
                 ],
             ),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $output = $this->reporter->toConsole($report);
@@ -533,7 +533,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function console_output_shows_docs_url_in_report(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             new AnalysisResult(
                 analyzerId: 'test-analyzer',
                 status: Status::Failed,
@@ -553,7 +553,7 @@ class ReporterTest extends TestCase
                     'docsUrl' => 'https://docs.shieldci.com/test-analyzer',
                 ],
             ),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $output = $this->reporter->toConsole($report);
@@ -704,7 +704,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function console_output_only_shows_categories_with_non_skipped_analyzers(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             new AnalysisResult(
                 analyzerId: 'pass-1',
                 status: Status::Passed,
@@ -717,7 +717,7 @@ class ReporterTest extends TestCase
                 'category' => Category::Performance,
                 'name' => 'Perf Test',
             ]),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $output = $this->reporter->toConsole($report);
@@ -731,7 +731,7 @@ class ReporterTest extends TestCase
     public function console_output_handles_null_location_issues_in_to_console(): void
     {
         // Exercises line 128 (null location in toConsole issue display)
-        $results = collect([
+        $results = $this->resultsOf(
             new AnalysisResult(
                 analyzerId: 'test-analyzer',
                 status: Status::Failed,
@@ -750,7 +750,7 @@ class ReporterTest extends TestCase
                     'category' => Category::Security,
                 ],
             ),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $output = $this->reporter->toConsole($report);
@@ -765,7 +765,7 @@ class ReporterTest extends TestCase
         // Exercises lines 140-141 (truncated issues in toConsole)
         config(['shieldci.report.max_issues_per_check' => 1]);
 
-        $results = collect([
+        $results = $this->resultsOf(
             new AnalysisResult(
                 analyzerId: 'test-analyzer',
                 status: Status::Failed,
@@ -781,7 +781,7 @@ class ReporterTest extends TestCase
                     'category' => Category::Security,
                 ],
             ),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $output = $this->reporter->toConsole($report);
@@ -796,7 +796,7 @@ class ReporterTest extends TestCase
         // Exercises line 216 (italic recommendation in toConsole)
         config(['shieldci.report.show_recommendations' => true]);
 
-        $results = collect([
+        $results = $this->resultsOf(
             new AnalysisResult(
                 analyzerId: 'test-analyzer',
                 status: Status::Failed,
@@ -815,7 +815,7 @@ class ReporterTest extends TestCase
                     'category' => Category::Security,
                 ],
             ),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $output = $this->reporter->toConsole($report);
@@ -828,7 +828,7 @@ class ReporterTest extends TestCase
     public function console_output_shows_docs_url_in_to_console(): void
     {
         // Exercises line 239 (documentation URL in toConsole)
-        $results = collect([
+        $results = $this->resultsOf(
             new AnalysisResult(
                 analyzerId: 'test-analyzer',
                 status: Status::Failed,
@@ -848,7 +848,7 @@ class ReporterTest extends TestCase
                     'docsUrl' => 'https://docs.shieldci.com/test',
                 ],
             ),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $output = $this->reporter->toConsole($report);
@@ -861,12 +861,12 @@ class ReporterTest extends TestCase
     public function console_report_card_falls_back_when_all_skipped(): void
     {
         // Exercises line 377 (all categories only have skipped analyzers)
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::skipped('skip-1', 'Not applicable', 0.0, [
                 'category' => Category::Security,
                 'name' => 'Skipped Analyzer',
             ]),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $output = $this->reporter->toConsole($report);
@@ -879,7 +879,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function json_output_contains_all_required_fields(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             new AnalysisResult(
                 analyzerId: 'test-analyzer',
                 status: Status::Failed,
@@ -895,7 +895,7 @@ class ReporterTest extends TestCase
                 executionTime: 0.5,
                 metadata: ['name' => 'Test Analyzer', 'category' => Category::Security],
             ),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $json = $this->reporter->toJson($report);
@@ -915,7 +915,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function console_output_shows_error_status_label(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             new AnalysisResult(
                 analyzerId: 'test-error-analyzer',
                 status: Status::Error,
@@ -927,7 +927,7 @@ class ReporterTest extends TestCase
                     'category' => Category::Security,
                 ],
             ),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $output = $this->reporter->toConsole($report);
@@ -1000,7 +1000,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function console_output_shows_unknown_category_for_non_string_category(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             new AnalysisResult(
                 analyzerId: 'test-analyzer',
                 status: Status::Passed,
@@ -1009,7 +1009,7 @@ class ReporterTest extends TestCase
                 executionTime: 0.1,
                 metadata: ['name' => 'Test Analyzer', 'category' => 42],
             ),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
         $output = $this->reporter->toConsole($report);
@@ -1021,9 +1021,9 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_generates_analyzed_at_in_utc(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
 
@@ -1035,9 +1035,9 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_populates_auto_collected_metadata(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
 
@@ -1055,9 +1055,9 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_includes_git_context_in_metadata_when_provided(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results, TriggerSource::Manual, [
             'branch' => 'feature/test',
@@ -1072,9 +1072,9 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_excludes_git_context_from_metadata_when_empty(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results, TriggerSource::Manual, []);
 
@@ -1086,9 +1086,9 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_excludes_git_context_when_values_are_empty_strings(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results, TriggerSource::Manual, [
             'branch' => '',
@@ -1103,9 +1103,9 @@ class ReporterTest extends TestCase
     #[Test]
     public function metadata_appears_in_json_output(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results, TriggerSource::Manual, [
             'branch' => 'main',
@@ -1125,9 +1125,9 @@ class ReporterTest extends TestCase
     #[Test]
     public function metadata_appears_in_api_payload(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results, TriggerSource::CiCd, [
             'branch' => 'develop',
@@ -1152,9 +1152,9 @@ class ReporterTest extends TestCase
             'staging-preview' => 'staging',
         ]]);
 
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
 
@@ -1168,9 +1168,9 @@ class ReporterTest extends TestCase
         config(['app.env' => 'staging']);
         config(['shieldci.environment_mapping' => []]);
 
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
 
@@ -1183,9 +1183,9 @@ class ReporterTest extends TestCase
     {
         config(['app.env' => null]);
 
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results);
 
@@ -1196,9 +1196,9 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_includes_ci_provider_in_metadata_when_provided(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results, TriggerSource::CiCd, [
             'branch' => 'main',
@@ -1213,9 +1213,9 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_excludes_ci_provider_from_metadata_when_not_in_context(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results, TriggerSource::Manual, [
             'branch' => 'main',
@@ -1229,9 +1229,9 @@ class ReporterTest extends TestCase
     #[Test]
     public function ci_provider_appears_in_json_output(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results, TriggerSource::CiCd, [
             'ci_provider' => 'gitlab_ci',
@@ -1247,9 +1247,9 @@ class ReporterTest extends TestCase
     #[Test]
     public function ci_provider_appears_in_api_payload(): void
     {
-        $results = collect([
+        $results = $this->resultsOf(
             AnalysisResult::passed('analyzer-1', 'Passed'),
-        ]);
+        );
 
         $report = $this->reporter->generate($results, TriggerSource::CiCd, [
             'branch' => 'develop',
@@ -1268,7 +1268,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_includes_pr_number_in_metadata_when_provided(): void
     {
-        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+        $results = $this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed'));
 
         $report = $this->reporter->generate($results, TriggerSource::Manual, [
             'pr_number' => '42',
@@ -1281,7 +1281,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_includes_repository_in_metadata_when_provided(): void
     {
-        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+        $results = $this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed'));
 
         $report = $this->reporter->generate($results, TriggerSource::Manual, [
             'repository' => 'owner/repo',
@@ -1294,7 +1294,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_includes_base_branch_in_metadata_when_provided(): void
     {
-        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+        $results = $this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed'));
 
         $report = $this->reporter->generate($results, TriggerSource::Manual, [
             'base_branch' => 'main',
@@ -1307,7 +1307,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_excludes_pr_fields_from_metadata_when_not_in_context(): void
     {
-        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+        $results = $this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed'));
 
         $report = $this->reporter->generate($results, TriggerSource::Manual, []);
 
@@ -1320,7 +1320,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function pr_fields_appear_in_json_output(): void
     {
-        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+        $results = $this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed'));
 
         $report = $this->reporter->generate($results, TriggerSource::Manual, [
             'pr_number' => '7',
@@ -1339,7 +1339,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function pr_fields_appear_in_api_payload(): void
     {
-        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+        $results = $this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed'));
 
         $report = $this->reporter->generate($results, TriggerSource::CiCd, [
             'pr_number' => '15',
@@ -1596,7 +1596,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function it_includes_configuration_in_generated_report(): void
     {
-        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+        $results = $this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed'));
 
         $report = $this->reporter->generate($results);
 
@@ -1635,7 +1635,7 @@ class ReporterTest extends TestCase
             'shieldci.fail_threshold' => null,
         ]);
 
-        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+        $results = $this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed'));
         $report = $this->reporter->generate($results);
         $payload = $this->reporter->toApi($report);
 
@@ -1661,7 +1661,7 @@ class ReporterTest extends TestCase
     #[Test]
     public function json_output_includes_configuration(): void
     {
-        $results = collect([AnalysisResult::passed('analyzer-1', 'Passed')]);
+        $results = $this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed'));
         $report = $this->reporter->generate($results);
 
         $decoded = json_decode($this->reporter->toJson($report), true);

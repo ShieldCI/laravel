@@ -1620,24 +1620,19 @@ class AnalyzeCommandTest extends TestCase
             /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getAnalyzers')
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategory')
                 ->with(Mockery::any())
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('runAll')
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
 
@@ -2030,28 +2025,20 @@ PHP);
         // Create a mock ResultInterface that is NOT an AnalysisResult
         /** @var ResultInterface&MockInterface $mockResult */
         $mockResult = Mockery::mock(ResultInterface::class);
-        /** @phpstan-ignore-next-line */
         $mockResult->shouldReceive('getAnalyzerId')->andReturn('mock-analyzer');
-        /** @phpstan-ignore-next-line */
         $mockResult->shouldReceive('getStatus')->andReturn(Status::Failed);
-        /** @phpstan-ignore-next-line */
         $mockResult->shouldReceive('getMessage')->andReturn('Mock failed');
-        /** @phpstan-ignore-next-line */
         $mockResult->shouldReceive('getIssues')->andReturn([]);
-        /** @phpstan-ignore-next-line */
         $mockResult->shouldReceive('getExecutionTime')->andReturn(0.1);
-        /** @phpstan-ignore-next-line */
         $mockResult->shouldReceive('getMetadata')->andReturn([]);
-        /** @phpstan-ignore-next-line */
         $mockResult->shouldReceive('isSuccess')->andReturn(false);
-        /** @phpstan-ignore-next-line */
         $mockResult->shouldReceive('toArray')->andReturn([]);
 
         $report = new AnalysisReport(
             projectId: 'test-project-id',
             laravelVersion: '11.0',
             packageVersion: '1.0.0',
-            results: collect([$mockResult]),
+            results: $this->resultsOf($mockResult),
             totalExecutionTime: 0.1,
             analyzedAt: new \DateTimeImmutable('2026-01-01T00:00:00Z'),
         );
@@ -2328,7 +2315,6 @@ PHP);
         // Mock the ClientInterface to throw an exception
         $this->app->singleton(ClientInterface::class, function () {
             $mock = Mockery::mock(ClientInterface::class);
-            /** @phpstan-ignore-next-line */
             $mock->shouldReceive('sendReport')
                 ->andThrow(new \Exception('Connection timed out'));
 
@@ -2695,34 +2681,27 @@ PHP);
             /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getAnalyzers')
                 ->andReturn(collect([$failedAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategory')
                 ->with(Mockery::any())
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with('test-security-failed')
                 ->andReturn($failedAnalyzer->analyze());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with(Mockery::any())
                 ->andReturn(null);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('runAll')
                 ->andReturn(collect([$failedAnalyzer->analyze()]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
 
@@ -2763,34 +2742,27 @@ PHP);
             /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getAnalyzers')
                 ->andReturn(collect([$failedAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategory')
                 ->with(Mockery::any())
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with('test-multi-issues')
                 ->andReturn($failedAnalyzer->analyze());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with(Mockery::any())
                 ->andReturn(null);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('runAll')
                 ->andReturn(collect([$failedAnalyzer->analyze()]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
 
@@ -2825,34 +2797,27 @@ PHP);
             /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getAnalyzers')
                 ->andReturn(collect([$warningAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategory')
                 ->with(Mockery::any())
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with('test-warning-analyzer')
                 ->andReturn($warningAnalyzer->analyze());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with(Mockery::any())
                 ->andReturn(null);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('runAll')
                 ->andReturn(collect([$warningAnalyzer->analyze()]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
 
@@ -2887,34 +2852,27 @@ PHP);
             /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getAnalyzers')
                 ->andReturn(collect([$failedAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategory')
                 ->with(Mockery::any())
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with('test-severity-failed')
                 ->andReturn($failedAnalyzer->analyze());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with(Mockery::any())
                 ->andReturn(null);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('runAll')
                 ->andReturn(collect([$failedAnalyzer->analyze()]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
 
@@ -2952,72 +2910,58 @@ PHP);
             /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getAnalyzers')
                 ->andReturn(collect([$securityAnalyzer, $performanceAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategory')
                 ->with('security')
                 ->andReturn(collect([$securityAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategory')
                 ->with('performance')
                 ->andReturn(collect([$performanceAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategory')
                 ->with(Mockery::any())
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategories')
                 ->with(['security'])
                 ->andReturn(collect([$securityAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategories')
                 ->with(['performance'])
                 ->andReturn(collect([$performanceAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategories')
                 ->with(['security', 'performance'])
                 ->andReturn(collect([$securityAnalyzer, $performanceAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategories')
                 ->with(Mockery::any())
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with('test-security-analyzer')
                 ->andReturn($securityAnalyzer->analyze());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with('test-performance-analyzer')
                 ->andReturn($performanceAnalyzer->analyze());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with(Mockery::any())
                 ->andReturn(null);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('runAll')
                 ->andReturn(collect([
                     $securityAnalyzer->analyze(),
                     $performanceAnalyzer->analyze(),
                 ]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
 
@@ -3052,34 +2996,27 @@ PHP);
             /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getAnalyzers')
                 ->andReturn(collect([$warningAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategory')
                 ->with(Mockery::any())
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with('test-warning-severity')
                 ->andReturn($warningAnalyzer->analyze());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with(Mockery::any())
                 ->andReturn(null);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('runAll')
                 ->andReturn(collect([$warningAnalyzer->analyze()]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
 
@@ -3120,49 +3057,39 @@ PHP);
             /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getAnalyzers')
                 ->andReturn(collect([$passedAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategory')
                 ->with('security')
                 ->andReturn(collect([$passedAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategory')
                 ->with(Mockery::any())
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategories')
                 ->with(['security'])
                 ->andReturn(collect([$passedAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategories')
                 ->with(Mockery::any())
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')
                 ->andReturn(collect([$skippedResult]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with('test-security-passed')
                 ->andReturn($passedAnalyzer->analyze());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with(Mockery::any())
                 ->andReturn(null);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('runAll')
                 ->andReturn(collect([$passedAnalyzer->analyze()]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
 
@@ -3262,24 +3189,19 @@ PHP);
             /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getAnalyzers')
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategory')
                 ->with(Mockery::any())
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')
                 ->andReturn(collect([$skipped]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('runAll')
                 ->andReturn(collect([$skipped]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
 
@@ -3319,34 +3241,27 @@ PHP);
             /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getAnalyzers')
                 ->andReturn(collect([$passedAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategory')
                 ->with(Mockery::any())
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')
                 ->andReturn(collect([$skippedResult]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with('test-passed-scs')
                 ->andReturn($passedAnalyzer->analyze());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with(Mockery::any())
                 ->andReturn(null);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('runAll')
                 ->andReturn(collect([$passedAnalyzer->analyze()]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
 
@@ -3368,12 +3283,10 @@ PHP);
 
             /** @var AnalyzerInterface&MockInterface $analyzer */
             $analyzer = Mockery::mock(AnalyzerInterface::class);
-            /** @phpstan-ignore-next-line */
             $analyzer->shouldReceive('getId')->andReturn($id);
             $categoryValue = $metadata['category'] ?? null;
             $severityValue = $metadata['severity'] ?? null;
 
-            /** @phpstan-ignore-next-line */
             $analyzer->shouldReceive('getMetadata')->andReturn(new AnalyzerMetadata(
                 id: $id,
                 name: is_string($metadata['name'] ?? null) ? $metadata['name'] : $id,
@@ -3381,11 +3294,8 @@ PHP);
                 category: $categoryValue instanceof Category ? $categoryValue : Category::Security,
                 severity: $severityValue instanceof Severity ? $severityValue : Severity::Low,
             ));
-            /** @phpstan-ignore-next-line */
             $analyzer->shouldReceive('analyze')->andReturn($result);
-            /** @phpstan-ignore-next-line */
             $analyzer->shouldReceive('shouldRun')->andReturn(true);
-            /** @phpstan-ignore-next-line */
             $analyzer->shouldReceive('getSkipReason')->andReturn('');
 
             $analyzers[] = $analyzer;
@@ -3396,36 +3306,29 @@ PHP);
             /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getAnalyzers')
                 ->andReturn(collect($analyzers));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategory')
                 ->with(Mockery::any())
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('runAll')
                 ->andReturn(collect($results));
 
             foreach ($analyzers as $analyzer) {
-                /** @phpstan-ignore-next-line */
                 $manager->shouldReceive('run')
                     ->with($analyzer->getId())
                     ->andReturn($analyzer->analyze());
             }
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('run')
                 ->with(Mockery::any())
                 ->andReturn(null);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
 
@@ -3473,15 +3376,10 @@ PHP);
             ],
         );
 
-        /** @phpstan-ignore-next-line */
         $analyzer->shouldReceive('getId')->andReturn($id);
-        /** @phpstan-ignore-next-line */
         $analyzer->shouldReceive('getMetadata')->andReturn($metadata);
-        /** @phpstan-ignore-next-line */
         $analyzer->shouldReceive('analyze')->andReturn($result);
-        /** @phpstan-ignore-next-line */
         $analyzer->shouldReceive('shouldRun')->andReturn(true);
-        /** @phpstan-ignore-next-line */
         $analyzer->shouldReceive('getSkipReason')->andReturn('');
 
         return $analyzer;
@@ -3565,15 +3463,10 @@ PHP);
             /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getAnalyzers')->andReturn(collect());
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategory')->with(Mockery::any())->andReturn(collect());
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('runAll')->andReturn(collect());
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('clearParserCache')->andReturn(null);
 
             return $manager;
@@ -3599,9 +3492,7 @@ PHP);
         // Create an analyzer mock that throws during analyze()
         /** @var AnalyzerInterface&MockInterface $throwingAnalyzer */
         $throwingAnalyzer = Mockery::mock(AnalyzerInterface::class);
-        /** @phpstan-ignore-next-line */
         $throwingAnalyzer->shouldReceive('getId')->andReturn('throwing-analyzer');
-        /** @phpstan-ignore-next-line */
         $throwingAnalyzer->shouldReceive('getMetadata')->andReturn(new AnalyzerMetadata(
             id: 'throwing-analyzer',
             name: 'Throwing Analyzer',
@@ -3609,11 +3500,8 @@ PHP);
             category: Category::Security,
             severity: Severity::High,
         ));
-        /** @phpstan-ignore-next-line */
         $throwingAnalyzer->shouldReceive('analyze')->andThrow(new \RuntimeException('AST parser crashed'));
-        /** @phpstan-ignore-next-line */
         $throwingAnalyzer->shouldReceive('shouldRun')->andReturn(true);
-        /** @phpstan-ignore-next-line */
         $throwingAnalyzer->shouldReceive('getSkipReason')->andReturn('');
 
         /** @phpstan-ignore-next-line */
@@ -3621,13 +3509,9 @@ PHP);
             /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getAnalyzers')->andReturn(collect([$throwingAnalyzer]));
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getByCategory')->with(Mockery::any())->andReturn(collect());
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('clearParserCache')->andReturn(null);
 
             return $manager;
@@ -3658,7 +3542,6 @@ PHP);
         /** @phpstan-ignore-next-line */
         $this->app->singleton(ClientInterface::class, function () {
             $mock = Mockery::mock(ClientInterface::class);
-            /** @phpstan-ignore-next-line */
             $mock->shouldReceive('sendFailureNotification')
                 ->andThrow(new \Exception('Connection refused'));
 
@@ -4514,19 +4397,12 @@ PHP);
 
         /** @var MockInterface&AnalyzerManager $manager */
         $manager = Mockery::mock(AnalyzerManager::class);
-        /** @phpstan-ignore-next-line */
         $manager->shouldReceive('getAnalyzers')->andReturn(collect([$securityAnalyzer, $performanceAnalyzer]));
-        /** @phpstan-ignore-next-line */
         $manager->shouldReceive('getByCategories')->with(['security'])->andReturn(collect([$securityAnalyzer]));
-        /** @phpstan-ignore-next-line */
         $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
-        /** @phpstan-ignore-next-line */
         $manager->shouldReceive('run')->with('test-security-analyzer')->andReturn($securityAnalyzer->analyze());
-        /** @phpstan-ignore-next-line */
         $manager->shouldReceive('run')->with('test-performance-analyzer')->andReturn($performanceAnalyzer->analyze());
-        /** @phpstan-ignore-next-line */
         $manager->shouldReceive('resolveAnalyzerDisplayName')->andReturn('Test Security Analyzer');
-        /** @phpstan-ignore-next-line */
         $manager->shouldReceive('clearParserCache')->andReturn(null);
 
         return $manager;
@@ -4741,15 +4617,12 @@ PHP);
             /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getAnalyzers')
                 ->andReturn(collect([$astCacheAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
 
@@ -4775,15 +4648,12 @@ PHP);
             /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getAnalyzers')
                 ->andReturn(collect([$astCacheAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
 
@@ -4807,15 +4677,12 @@ PHP);
             /** @var MockInterface&AnalyzerManager $manager */
             $manager = Mockery::mock(AnalyzerManager::class);
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getAnalyzers')
                 ->andReturn(collect([$astCacheAnalyzer]));
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('getSkippedAnalyzers')
                 ->andReturn(collect());
 
-            /** @phpstan-ignore-next-line */
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
 

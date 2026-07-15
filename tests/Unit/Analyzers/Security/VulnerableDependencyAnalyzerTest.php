@@ -79,7 +79,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')
             ->with($dependencies)
             ->andReturn(['vendor/package' => []]);
@@ -105,7 +104,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')
             ->andReturn($analysisOutput);
 
@@ -138,7 +136,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->never();
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
@@ -147,7 +144,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn([]);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -174,7 +170,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')
             ->with($dependencies)
             ->andThrow(new RuntimeException('network error'));
@@ -185,7 +180,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->never();
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -211,17 +205,14 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->never();
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
         $dependencyReader = Mockery::mock(ComposerDependencyReader::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $dependencyReader->shouldReceive('read')->andThrow(new RuntimeException('invalid file'));
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->never();
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -253,7 +244,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->never();
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
@@ -262,7 +252,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn([]);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -295,7 +284,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->never();
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
@@ -304,7 +292,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn([]);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -337,7 +324,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
@@ -364,7 +350,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -410,7 +395,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
@@ -432,7 +416,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -466,7 +449,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
@@ -488,7 +470,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -518,7 +499,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
@@ -539,7 +519,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -572,7 +551,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
@@ -593,7 +571,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -623,12 +600,10 @@ JSON;
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
         $dependencyReader = Mockery::mock(ComposerDependencyReader::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $dependencyReader->shouldReceive('read')->andReturn([]);
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn([]);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -666,7 +641,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->andReturn(['vendor/vulnerable' => []]);
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
@@ -687,7 +661,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -732,7 +705,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
@@ -750,7 +722,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -782,7 +753,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->never();
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
@@ -791,7 +761,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn([]);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -832,7 +801,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
@@ -854,7 +822,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -895,7 +862,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->never();
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
@@ -904,7 +870,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn([]);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -944,7 +909,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->never();
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
@@ -953,7 +917,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn([]);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -985,7 +948,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->never();
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
@@ -994,7 +956,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn([]);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -1024,7 +985,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
@@ -1045,7 +1005,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);
@@ -1073,7 +1032,6 @@ JSON;
 
         /** @var AdvisoryFetcherInterface&MockInterface $fetcher */
         $fetcher = Mockery::mock(AdvisoryFetcherInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $fetcher->shouldReceive('fetch')->andReturn(['vendor/package' => []]);
 
         /** @var ComposerDependencyReader&MockInterface $dependencyReader */
@@ -1091,7 +1049,6 @@ JSON;
 
         /** @var AdvisoryAnalyzerInterface&MockInterface $advisoryAnalyzer */
         $advisoryAnalyzer = Mockery::mock(AdvisoryAnalyzerInterface::class);
-        /** @phpstan-ignore-next-line Mockery fluent interface */
         $advisoryAnalyzer->shouldReceive('analyze')->andReturn($analysisOutput);
 
         $analyzer = $this->createAnalyzer($fetcher, $advisoryAnalyzer, $dependencyReader);

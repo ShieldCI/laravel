@@ -35,7 +35,6 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
 
         $configMap = array_merge($defaults, $configValues);
 
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $config->shouldReceive('get')
             ->andReturnUsing(function ($key, $default = null) use ($configMap) {
                 return $configMap[$key] ?? $default;
@@ -744,7 +743,6 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
 
         /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $config->shouldReceive('get')
             ->andReturnUsing(function ($key, $default = null) use ($configValues) {
                 return $configValues[$key] ?? $default;

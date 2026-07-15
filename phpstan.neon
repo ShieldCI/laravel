@@ -1,3 +1,9 @@
+includes:
+    # Laravel-aware types for facades, config, the container and Eloquent.
+    - vendor/larastan/larastan/extension.neon
+    # Types Mockery's fluent expectation chains, so they need no hand-written ignores.
+    - vendor/phpstan/phpstan-mockery/extension.neon
+
 parameters:
     level: 9
     paths:
@@ -7,9 +13,12 @@ parameters:
         - tests/Fixtures/inspects-code/syntax_error.php
         - tests/Fixtures/inspects-code/sample_functions.php
         - tests/Fixtures/inspects-code-config/syntax_error.php
+        # Stand-in for a consuming app's config/*.php. Its env() calls are the fixture's
+        # whole point, so Larastan's noEnvCallsOutsideOfConfig rule has nothing to say here.
+        - tests/Fixtures/inspects-code-config/config_standard.php
     tmpDir: build/phpstan
     treatPhpDocTypesAsCertain: false
-    reportUnmatchedIgnoredErrors: false
+    reportUnmatchedIgnoredErrors: true
     # Include analyzers-core base classes for proper inheritance analysis
     scanFiles:
         - vendor/shieldci/analyzers-core/src/Abstracts/AbstractFileAnalyzer.php
@@ -26,13 +35,6 @@ parameters:
         -
             message: '#has parameter \$analyzerClasses with no value type specified in iterable type array#'
             path: tests/Unit/AnalyzerManagerTest.php
-
-        # Mockery/PHPUnit test framework issues
-        - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage::andReturn\(\)#'
-        - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage::andReturnUsing\(\)#'
-        - '#Parameter \#[0-9]+ \$(config|container) of class ShieldCI\\AnalyzerManager constructor expects .*, Mockery\\MockInterface given#'
-        - '#Parameter \#2 \$array of method PHPUnit\\Framework\\Assert::assertArrayHasKey\(\) expects array\|ArrayAccess, mixed given#'
-        - '#Parameter \#1 \$array of function array_diff expects array, array<int, string>\|false given#'
 
         # AstParser has extended methods beyond ParserInterface
         - '#Call to an undefined method ShieldCI\\AnalyzersCore\\Contracts\\ParserInterface::findClasses\(\)#'
@@ -63,9 +65,6 @@ parameters:
         - '#Argument of an invalid type .*\|false supplied for foreach#'
         - '#Parameter .* of class .* constructor expects .*, mixed given#'
 
-        # Console command option/argument handling
-        - '#Parameter .* expects string, array\|string\|true given#'
-
         # Collection return types (generic type specifications not needed)
         - '#return type with generic class Illuminate\\Support\\Collection does not specify its types#'
 
@@ -76,13 +75,6 @@ parameters:
 
         # Test file specific ignores - artisan command testing returns int|PendingCommand
         - '#Cannot call method (assertSuccessful|assertFailed|expectsOutput|expectsOutputToContain)\(\) on Illuminate\\Testing\\PendingCommand\|int#'
-
-        # Mockery method chaining in tests
-        - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage::with\(\)#'
-        - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage::andThrow\(\)#'
-        - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage::andReturnSelf\(\)#'
-        - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage::times\(\)#'
-        - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage\|Mockery\\MockInterface::with\(\)#'
 
         # Test files: PHPUnit assertions on already-narrowed types are intentional defensive checks
         - '#Call to method PHPUnit\\Framework\\Assert::(assertIsArray|assertIsString|assertIsBool|assertTrue|assertFalse)\(\) with .* will always evaluate to true#'
@@ -97,17 +89,9 @@ parameters:
         - '#Parameter \#1 \$dependencies of method ShieldCI\\Support\\SecurityAdvisories\\AdvisoryAnalyzer::analyze\(\) expects#'
         - '#Parameter \#2 \$advisories of method ShieldCI\\Support\\SecurityAdvisories\\AdvisoryAnalyzer::analyze\(\) expects#'
 
-        # Mockery mock interfaces
-        - '#Return type \(ShieldCI\\AnalyzersCore\\Contracts\\AnalyzerInterface\) of method .* should be compatible#'
-        - '#Method .* should return ShieldCI\\AnalyzersCore\\Contracts\\AnalyzerInterface but returns Mockery\\MockInterface#'
-
         # Test files: Orchestra Testbench guarantees $this->app is never null during tests
         - '#Cannot call method (make|singleton|forgetInstance|bind|offsetUnset)\(\) on Illuminate\\Foundation\\Application\|null#'
-        - '#Offset .* does not exist on Illuminate\\Foundation\\Application\|null#'
         - '#Parameter \#1 \$app of class ShieldCI\\ShieldCIServiceProvider constructor expects .*, Illuminate\\Foundation\\Application\|null given#'
-
-        # Test files: Mockery mock passed where concrete class expected (type-safe at runtime)
-        - '#Parameter \#1 \$manager of class ShieldCI\\Support\\DatabaseConnectionChecker constructor expects .*, Mockery\\MockInterface given#'
 
         # Test files: file_get_contents returns string|false, json_decode returns mixed (controlled in tests)
         - '#Parameter \#1 \$json of function json_decode expects string, string\|false given#'
@@ -117,19 +101,10 @@ parameters:
         # Test files: anonymous class method params with untyped arrays
         -
             message: '#has parameter \$(headers|options) with no value type specified in iterable type array#'
-            paths:
-                - tests/Unit/Concerns/AnalyzesHeadersTest.php
-                - tests/Unit/Concerns/FindsLoginRouteTest.php
+            path: tests/Unit/Concerns/AnalyzesHeadersTest.php
 
         # Test files: assertStringContainsString with nullable string from result objects
         - '#Parameter \#2 \$haystack of method PHPUnit\\Framework\\Assert::assertStringContainsString\(\) expects string, string\|null given#'
-
-        # Test files: helper methods with untyped arrays
-        -
-            message: '#has parameter .* with no value type specified in iterable type array#'
-            paths:
-                - tests/Unit/Commands/BaselineCommandTest.php
-                - tests/Unit/Concerns/ParsesPHPStanResultsTest.php
 
         # Test files: anonymous class helper methods return 'object' type, PHPStan can't resolve methods
         -
@@ -152,22 +127,10 @@ parameters:
                 - tests/Unit/Concerns/AnalyzesMiddlewareTest.php
                 - tests/Unit/Concerns/ParsesPHPStanAnalysisTest.php
 
-        # Test files: AnalyzesMiddleware trait template resolution in anonymous class context
-        -
-            message: '#Unable to resolve the template type#'
-            path: tests/Unit/Concerns/AnalyzesMiddlewareTest.php
-        -
-            message: '#Cannot cast mixed to string#'
-            path: tests/Unit/Concerns/AnalyzesMiddlewareTest.php
-
         # Test files: array offset access on empty initial array (passes by ref)
         -
             message: '#Offset 0 does not exist on array#'
             path: tests/Unit/Concerns/ParsesPHPStanAnalysisTest.php
-
-        # Test files: Mockery mocks for logger/fetcher constructors
-        - '#Parameter \#2 \$logger of class ShieldCI\\Support\\SecurityAdvisories\\HttpAdvisoryFetcher constructor expects .*, Mockery\\MockInterface given#'
-        - '#Call to an undefined method Mockery\\ExpectationInterface\|Mockery\\HigherOrderMessage::once\(\)#'
 
         # Test files: json_encode returns string|false, passed to Response constructor
         -

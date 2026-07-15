@@ -166,12 +166,10 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
 
         /** @var Mockery\ExpectationInterface $mysqlExpectation */
-        /** @phpstan-ignore-next-line Mockery expectation chaining */
         $mysqlExpectation = $checker->shouldReceive('check')->with('mysql');
         $mysqlExpectation->andReturn(new DatabaseConnectionResult(false, 'Connection refused', 'PDOException'));
 
         /** @var Mockery\ExpectationInterface $sqliteExpectation */
-        /** @phpstan-ignore-next-line Mockery expectation chaining */
         $sqliteExpectation = $checker->shouldReceive('check')->with('sqlite');
         $sqliteExpectation->andReturn(new DatabaseConnectionResult(false, 'Access denied', 'PDOException'));
 
@@ -204,9 +202,7 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $config->set('shieldci.analyzers.reliability.database-status.connections', 'mysql,sqlite');
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
-        /** @phpstan-ignore-next-line */
         $checker->shouldReceive('check')->with('mysql')->andReturn(new DatabaseConnectionResult(true));
-        /** @phpstan-ignore-next-line */
         $checker->shouldReceive('check')->with('sqlite')->andReturn(new DatabaseConnectionResult(true));
 
         $analyzer = $this->createAnalyzer($checker);
@@ -229,9 +225,7 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $config->set('shieldci.analyzers.reliability.database-status.connections', ['mysql', null, 123, '', 'valid']);
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
-        /** @phpstan-ignore-next-line */
         $checker->shouldReceive('check')->with('mysql')->times(1)->andReturn(new DatabaseConnectionResult(true));
-        /** @phpstan-ignore-next-line */
         $checker->shouldReceive('check')->with('valid')->times(1)->andReturn(new DatabaseConnectionResult(true));
 
         $analyzer = $this->createAnalyzer($checker);
@@ -254,9 +248,7 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $config->set('shieldci.analyzers.reliability.database-status.connections', 'mysql , sqlite ');
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
-        /** @phpstan-ignore-next-line */
         $checker->shouldReceive('check')->with('mysql')->andReturn(new DatabaseConnectionResult(true));
-        /** @phpstan-ignore-next-line */
         $checker->shouldReceive('check')->with('sqlite')->andReturn(new DatabaseConnectionResult(true));
 
         $analyzer = $this->createAnalyzer($checker);
@@ -484,7 +476,6 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
         // Should only be called once for mysql (deduplicated)
-        /** @phpstan-ignore-next-line */
         $checker->shouldReceive('check')->with('mysql')->once()->andReturn(new DatabaseConnectionResult(true));
 
         $analyzer = $this->createAnalyzer($checker);
@@ -871,10 +862,8 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $config->set('shieldci.analyzers.reliability.database-status.connections', ['sqlite']);
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
-        /** @phpstan-ignore-next-line */
         $checker->shouldReceive('check')->with('mysql')->andReturn(new DatabaseConnectionResult(true));
         // Persistent error on non-default connection
-        /** @phpstan-ignore-next-line */
         $checker->shouldReceive('check')->with('sqlite')->andReturn(new DatabaseConnectionResult(false, 'Unknown database'));
 
         $analyzer = $this->createAnalyzer($checker);
@@ -910,10 +899,8 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $config->set('shieldci.analyzers.reliability.database-status.connections', ['sqlite']);
 
         $checker = Mockery::mock(DatabaseConnectionChecker::class);
-        /** @phpstan-ignore-next-line */
         $checker->shouldReceive('check')->with('mysql')->andReturn(new DatabaseConnectionResult(true));
         // Transient error on non-default connection
-        /** @phpstan-ignore-next-line */
         $checker->shouldReceive('check')->with('sqlite')->andReturn(new DatabaseConnectionResult(false, 'Connection timed out'));
 
         $analyzer = $this->createAnalyzer($checker);

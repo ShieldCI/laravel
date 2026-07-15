@@ -50,7 +50,6 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
         $configMap = array_replace_recursive($defaults, $configValues);
 
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $config->shouldReceive('get')
             ->andReturnUsing(function ($key, $default = null) use ($configMap) {
                 // Handle dotted key access (e.g., 'session.driver', 'app.env')
@@ -79,7 +78,6 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
         }
 
         // Mock getMiddlewareGroups() for optimized detection
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $router->shouldReceive('getMiddlewareGroups')
             ->andReturn($middlewareGroups);
 
@@ -92,17 +90,14 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
         $mockRoutes = [];
         if ($routeMiddleware !== []) {
             $route = Mockery::mock(Route::class);
-            /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
             $route->shouldReceive('middleware')
                 ->andReturn($routeMiddleware);
             // isVendorRoute() calls getAction('uses') — null means closure = app-defined route
-            /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
             $route->shouldReceive('getAction')
                 ->andReturn(null);
             $mockRoutes[] = $route;
         }
 
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $router->shouldReceive('getRoutes')
             ->andReturn($mockRoutes);
 
@@ -120,7 +115,6 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
             }
         }
 
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $router->shouldReceive('gatherRouteMiddleware')
             ->andReturn($resolvedMiddleware);
 
@@ -131,7 +125,6 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
             $kernel = Mockery::mock(Kernel::class);
 
             // Mock kernel - return provided global middleware
-            /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
             $kernel->shouldReceive('getGlobalMiddleware')
                 ->andReturn($globalMiddleware);
         }
@@ -852,7 +845,6 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
     {
         /** @var Repository&MockInterface $config */
         $config = Mockery::mock(Repository::class);
-        /** @phpstan-ignore-next-line Mockery methods are not recognized by PHPStan */
         $config->shouldReceive('get')->andReturn('redis');
 
         /** @var Router&MockInterface $router */

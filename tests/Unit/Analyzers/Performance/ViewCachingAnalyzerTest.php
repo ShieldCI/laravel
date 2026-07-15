@@ -76,7 +76,6 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
 
         $configMap = array_replace_recursive($defaults, $configValues);
 
-        /** @phpstan-ignore-next-line */
         $config->shouldReceive('get')
             ->andReturnUsing(function ($key, $default = null) use ($configMap) {
                 $keys = explode('.', $key);
@@ -105,7 +104,6 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
             $globReturn = is_array($actualFiles) ? $actualFiles : [];
         }
 
-        /** @phpstan-ignore-next-line */
         $files->allows('glob')
             ->with($compiledPathForGlob.'/*.php')
             ->andReturn($globReturn);

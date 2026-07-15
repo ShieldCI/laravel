@@ -148,9 +148,7 @@ jobs:
           restore-keys: ${{ runner.os }}-phpstan-
 
       - name: Install Composer dependencies
-        run: |
-          composer require --dev "phpstan/phpstan:^1.10" "larastan/larastan:^2.0" --no-interaction --no-update
-          composer update --prefer-dist --no-interaction --no-progress
+        run: composer update --prefer-dist --no-interaction --no-progress
 
       - name: Run PHPStan
         run: vendor/bin/phpstan analyse --no-progress

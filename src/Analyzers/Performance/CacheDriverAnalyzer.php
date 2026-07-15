@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
@@ -137,6 +138,8 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
     /**
      * Assess the 'null' cache driver.
      * The null driver disables caching completely.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function assessNullDriver(array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
     {
@@ -157,6 +160,8 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
     /**
      * Assess the 'array' cache driver.
      * The array driver only caches within a single request.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function assessArrayDriver(array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
     {
@@ -177,6 +182,8 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
     /**
      * Assess the 'file' cache driver.
      * The file driver is only suitable for single-server setups.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function assessFileDriver(array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
     {
@@ -197,6 +204,8 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
     /**
      * Assess the 'database' cache driver.
      * The database driver works but has performance issues in production.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function assessDatabaseDriver(array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
     {
@@ -217,6 +226,8 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
     /**
      * Assess other cache drivers (redis, memcached, dynamodb, etc.).
      * These are generally acceptable.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function assessOtherDriver(string $driver, array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
     {
@@ -229,11 +240,17 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
         );
     }
 
+    /**
+     * @param  array<int, Issue>  &$issues
+     */
     private function assessPreferredDriver(string $driver, array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
     {
         // Redis/Memcached are ideal choices; no action needed.
     }
 
+    /**
+     * @param  array<int, Issue>  &$issues
+     */
     private function assessApcDriver(array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
     {
         if (! $this->isProductionOrStaging($environment)) {
@@ -249,6 +266,9 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
         );
     }
 
+    /**
+     * @param  array<int, Issue>  &$issues
+     */
     private function assessDynamoDbDriver(array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
     {
         $table = $this->config->get("cache.stores.{$defaultStore}.table");
@@ -266,6 +286,9 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
         }
     }
 
+    /**
+     * @param  array<int, Issue>  &$issues
+     */
     private function assessOctaneDriver(array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
     {
         if ($this->hasOctaneSupport()) {

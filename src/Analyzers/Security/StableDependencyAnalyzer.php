@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Support\Composer;
 use Throwable;
@@ -136,6 +137,8 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check composer.json configuration.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkComposerConfiguration(string $composerJson, array &$issues): void
     {
@@ -267,6 +270,9 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
      * Severity is risk-based:
      * - require-dev + stable minimum-stability: Low (isolated to dev environment)
      * - require OR non-stable minimum-stability: Medium (can affect production)
+     *
+     * @param  array<array-key, mixed>  $packages
+     * @param  array<int, Issue>  &$issues
      */
     private function checkVersionConstraints(array $packages, string $section, array &$issues, string $composerJson, string $minimumStability): void
     {
@@ -318,6 +324,8 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check composer.lock for unstable installed versions.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkComposerLock(string $composerLock, array &$issues): void
     {

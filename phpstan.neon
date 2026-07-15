@@ -39,13 +39,6 @@ parameters:
         # AstParser has extended methods beyond ParserInterface
         - '#Call to an undefined method ShieldCI\\AnalyzersCore\\Contracts\\ParserInterface::findClasses\(\)#'
 
-        # Allow untyped arrays in analyzer private helper methods - these are internal implementation
-        - '#has parameter \$issues with no value type specified in iterable type array#'
-        - '#has parameter \$lines with no value type specified in iterable type array#'
-        - '#has parameter \$results with no value type specified in iterable type array#'
-        - '#return type has no value type specified in iterable type array#'
-        - '#Property .* type has no value type specified in iterable type array#'
-
         # PHPParser node property access (false positives)
         - '#Access to an undefined property PhpParser\\Node\\Arg\|PhpParser\\Node\\VariadicPlaceholder::\$value#'
 
@@ -67,11 +60,6 @@ parameters:
 
         # Collection return types (generic type specifications not needed)
         - '#return type with generic class Illuminate\\Support\\Collection does not specify its types#'
-
-        # Private helper methods with untyped arrays (internal implementation details)
-        - '#has parameter \$packages with no value type specified in iterable type array#'
-        - '#has parameter \$metadata with no value type specified in iterable type array#'
-        - '#has parameter \$ast with no value type specified in iterable type array#'
 
         # Test file specific ignores - artisan command testing returns int|PendingCommand
         - '#Cannot call method (assertSuccessful|assertFailed|expectsOutput|expectsOutputToContain)\(\) on Illuminate\\Testing\\PendingCommand\|int#'

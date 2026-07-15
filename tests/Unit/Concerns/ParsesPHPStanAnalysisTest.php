@@ -167,16 +167,25 @@ class ParsesPHPStanAnalysisTest extends TestCase
         {
             use ParsesPHPStanAnalysis;
 
+            /**
+             * @param  array<int, Issue>  &$issues
+             */
             public function publicParsePHPStanAnalysis(PHPStan $phpStan, string|array $search, array &$issues): void
             {
                 $this->parsePHPStanAnalysis($phpStan, $search, $issues);
             }
 
+            /**
+             * @param  array<int, Issue>  &$issues
+             */
             public function publicMatchPHPStanAnalysis(PHPStan $phpStan, string|array $pattern, array &$issues): void
             {
                 $this->matchPHPStanAnalysis($phpStan, $pattern, $issues);
             }
 
+            /**
+             * @param  array<int, Issue>  &$issues
+             */
             public function publicPregMatchPHPStanAnalysis(PHPStan $phpStan, string $pattern, array &$issues): void
             {
                 $this->pregMatchPHPStanAnalysis($phpStan, $pattern, $issues);
@@ -187,6 +196,9 @@ class ParsesPHPStanAnalysisTest extends TestCase
                 return $this->getRecommendationFromMessage($message);
             }
 
+            /**
+             * @param  array<string, mixed>  $metadata
+             */
             protected function createIssueWithSnippet(
                 string $message,
                 string $filePath,

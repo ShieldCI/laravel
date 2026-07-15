@@ -45,6 +45,8 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
 
     /**
      * Sensitive keys that indicate .env file content.
+     *
+     * @var list<string>
      */
     private array $envIndicators = [
         'APP_NAME=',

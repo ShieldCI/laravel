@@ -463,6 +463,7 @@ class AnalyzesMiddlewareTest extends TestCase
                 return $this->appUsesGroupMiddleware($class);
             }
 
+            /** @return array<int, string> */
             public function publicGetGroupsContainingSession(): array
             {
                 return $this->getGroupsContainingSession();
@@ -699,6 +700,7 @@ class AnalyzesMiddlewareTest extends TestCase
                 private array $fixedGlobal,
             ) {}
 
+            /** @return array<int, string> */
             protected function getGlobalMiddleware(): array
             {
                 return $this->fixedGlobal;
@@ -733,6 +735,7 @@ class AnalyzesMiddlewareTest extends TestCase
                 protected $kernel,
             ) {}
 
+            /** @return array<int, string> */
             public function publicGetGlobalMiddleware(): array
             {
                 return $this->getGlobalMiddleware();
@@ -763,6 +766,7 @@ class AnalyzesMiddlewareTest extends TestCase
                 return $this->appUsesGroupMiddleware($class);
             }
 
+            /** @return array<int, string> */
             public function publicGetMiddleware(Route $route): array
             {
                 return $this->getMiddleware($route);
@@ -778,6 +782,7 @@ class AnalyzesMiddlewareTest extends TestCase
                 return $this->routeUsesBasenameMiddleware($route, $class);
             }
 
+            /** @return array<int, string> */
             public function publicGetBasenameMiddlewareClasses(Route $route): array
             {
                 return $this->getBasenameMiddlewareClasses($route);
@@ -798,6 +803,7 @@ class AnalyzesMiddlewareTest extends TestCase
                 return $this->isStartSessionMiddleware($middleware);
             }
 
+            /** @return array<int, string> */
             public function publicGetGroupsContainingSession(): array
             {
                 return $this->getGroupsContainingSession();

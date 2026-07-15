@@ -10,6 +10,7 @@ use Illuminate\Contracts\Config\Repository;
 use Illuminate\Routing\Router;
 use Illuminate\Support\ServiceProvider;
 use Psr\Log\LoggerInterface;
+use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
@@ -129,6 +130,8 @@ class ShieldCIServiceProvider extends ServiceProvider
 
     /**
      * Discover all analyzer classes.
+     *
+     * @return list<class-string<AnalyzerInterface>>
      */
     protected function discoverAnalyzers(): array
     {
@@ -153,7 +156,7 @@ class ShieldCIServiceProvider extends ServiceProvider
             foreach ($files as $file) {
                 $className = $this->getClassFromFile($file);
 
-                if ($className && class_exists($className)) {
+                if ($className && class_exists($className) && is_subclass_of($className, AnalyzerInterface::class)) {
                     $analyzers[] = $className;
                 }
             }

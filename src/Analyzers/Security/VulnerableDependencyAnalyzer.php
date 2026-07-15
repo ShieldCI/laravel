@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryAnalyzerInterface;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryFetcherInterface;
@@ -171,6 +172,8 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check for abandoned packages in composer.lock.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkAbandonedPackages(array &$issues, string $composerLock): void
     {

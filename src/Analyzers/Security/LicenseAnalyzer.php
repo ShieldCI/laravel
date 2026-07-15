@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 
 /**
@@ -23,12 +24,15 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class LicenseAnalyzer extends AbstractFileAnalyzer
 {
+    /** @var list<string> */
     private array $excludedPackages = [
         'shieldci/*',
     ];
 
     /**
      * Default whitelisted licenses for commercial/proprietary use.
+     *
+     * @var list<string>
      */
     private array $whitelistedLicenses = [
         'Apache-2.0',
@@ -50,6 +54,8 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Restrictive licenses that require scrutiny.
+     *
+     * @var list<string>
      */
     private array $restrictiveLicenses = [
         'GPL-2.0',
@@ -106,6 +112,8 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check licenses in composer.lock.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkComposerLicenses(string $composerLock, array &$issues): void
     {
@@ -156,6 +164,7 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
      *
      * @param  array<int, mixed>  $packages
      * @param  array<string, mixed>  $config
+     * @param  array<int, Issue>  $issues
      */
     private function checkPackageLicenses(
         array $packages,

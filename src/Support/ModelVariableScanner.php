@@ -317,10 +317,13 @@ class ModelVariableScanner extends NodeVisitorAbstract
 
         $relationships = [];
         foreach ($expr->args as $arg) {
-            $relationships = array_merge(
-                $relationships,
-                $this->parseRelationshipArgument($arg->value)
-            );
+            // A first-class callable (with(...)) yields a VariadicPlaceholder, which has no value.
+            if ($arg instanceof Node\Arg) {
+                $relationships = array_merge(
+                    $relationships,
+                    $this->parseRelationshipArgument($arg->value)
+                );
+            }
         }
 
         return array_unique($relationships);

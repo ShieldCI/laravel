@@ -9,7 +9,7 @@ use PhpParser\Node\Stmt;
 use PhpParser\Node\Stmt\GroupUse;
 use PhpParser\Node\Stmt\Use_;
 use PhpParser\Node\UseItem;
-use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 
 /**
  * Answers one question: is this class declaration an Eloquent model?
@@ -54,7 +54,7 @@ final class EloquentModelDetector
         'Illuminate\\Database\\Eloquent\\Relations\\MorphPivot',
     ];
 
-    public function __construct(private readonly ParserInterface $parser) {}
+    public function __construct(private readonly AstParser $parser) {}
 
     /** @var array<string, bool|null> "path::ShortName" => Eloquent verdict */
     private array $verdictCache = [];

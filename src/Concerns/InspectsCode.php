@@ -143,7 +143,10 @@ trait InspectsCode
         $args = [];
 
         foreach ($funcCall->args as $index => $arg) {
-            $args[$index] = $this->extractArgumentValue($arg->value);
+            // A first-class callable (env(...)) yields a VariadicPlaceholder, which has no value.
+            if ($arg instanceof Node\Arg) {
+                $args[$index] = $this->extractArgumentValue($arg->value);
+            }
         }
 
         return $args;

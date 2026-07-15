@@ -25,8 +25,12 @@ parameters:
         - vendor/shieldci/analyzers-core/src/Abstracts/AbstractAnalyzer.php
 
     ignoreErrors:
-        # Test files - AnalyzerInterface doesn't have setBasePath/setPaths, but concrete implementations do
-        - '#Call to an undefined method ShieldCI\\AnalyzersCore\\Contracts\\AnalyzerInterface::(setBasePath|setPaths)\(\)#'
+        # Tests type analyzers as AnalyzerInterface but drive them through the setBasePath/
+        # setPaths methods on the concrete implementations. The interface lives in
+        # analyzers-core and must not change, so these stay suppressed in tests.
+        -
+            message: '#Call to an undefined method ShieldCI\\AnalyzersCore\\Contracts\\AnalyzerInterface::(setBasePath|setPaths)\(\)#'
+            path: tests
 
         # Test helper methods with untyped arrays
         -
@@ -35,12 +39,6 @@ parameters:
         -
             message: '#has parameter \$analyzerClasses with no value type specified in iterable type array#'
             path: tests/Unit/AnalyzerManagerTest.php
-
-        # AstParser has extended methods beyond ParserInterface
-        - '#Call to an undefined method ShieldCI\\AnalyzersCore\\Contracts\\ParserInterface::findClasses\(\)#'
-
-        # PHPParser node property access (false positives)
-        - '#Access to an undefined property PhpParser\\Node\\Arg\|PhpParser\\Node\\VariadicPlaceholder::\$value#'
 
         # Collection return types (generic type specifications not needed)
         - '#return type with generic class Illuminate\\Support\\Collection does not specify its types#'

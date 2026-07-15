@@ -217,7 +217,10 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
         $args = [];
 
         foreach ($funcCall->args as $index => $arg) {
-            $args[$index] = $this->extractStaticArgumentValue($arg->value);
+            // A first-class callable yields a VariadicPlaceholder, which has no value.
+            if ($arg instanceof Node\Arg) {
+                $args[$index] = $this->extractStaticArgumentValue($arg->value);
+            }
         }
 
         return $args;
@@ -268,7 +271,10 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
         $args = [];
 
         foreach ($staticCall->args as $index => $arg) {
-            $args[$index] = $this->extractStaticArgumentValue($arg->value);
+            // A first-class callable yields a VariadicPlaceholder, which has no value.
+            if ($arg instanceof Node\Arg) {
+                $args[$index] = $this->extractStaticArgumentValue($arg->value);
+            }
         }
 
         return $args;

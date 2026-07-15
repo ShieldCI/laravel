@@ -728,7 +728,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                 $node->var->name === $loopVariable &&
                 $node->name instanceof Node\Identifier &&
                 $node->name->toString() === 'relationLoaded' &&
-                ! empty($node->args) &&
+                ($node->args[0] ?? null) instanceof Node\Arg &&
                 $node->args[0]->value instanceof Node\Scalar\String_) {
 
                 $relationship = $node->args[0]->value->value;
@@ -1377,7 +1377,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
         while ($current instanceof Expr\MethodCall) {
             foreach ($current->args as $arg) {
-                if ($this->expressionReferencesVariable($arg->value, $varName)) {
+                if ($arg instanceof Node\Arg && $this->expressionReferencesVariable($arg->value, $varName)) {
                     return true;
                 }
             }
@@ -1387,7 +1387,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         // Check static call arguments at the root
         if ($current instanceof Expr\StaticCall) {
             foreach ($current->args as $arg) {
-                if ($this->expressionReferencesVariable($arg->value, $varName)) {
+                if ($arg instanceof Node\Arg && $this->expressionReferencesVariable($arg->value, $varName)) {
                     return true;
                 }
             }
@@ -1418,7 +1418,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             }
             // Check method arguments too
             foreach ($expr->args as $arg) {
-                if ($this->expressionReferencesVariable($arg->value, $varName)) {
+                if ($arg instanceof Node\Arg && $this->expressionReferencesVariable($arg->value, $varName)) {
                     return true;
                 }
             }

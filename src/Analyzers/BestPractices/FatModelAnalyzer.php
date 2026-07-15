@@ -10,10 +10,10 @@ use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
-use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Concerns\ReadsConfigArrays;
 use ShieldCI\Support\EloquentModelDetector;
@@ -43,7 +43,7 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
     private int $complexityThreshold;
 
     public function __construct(
-        private ParserInterface $parser,
+        private AstParser $parser,
         private Config $config
     ) {}
 

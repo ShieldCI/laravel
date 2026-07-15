@@ -372,7 +372,12 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             return ['vulnerable' => false, 'node' => null];
         }
 
-        $firstArg = $call->args[0]->value;
+        $firstArgNode = $call->args[0];
+        if (! $firstArgNode instanceof Node\Arg) {
+            return ['vulnerable' => false, 'node' => null];
+        }
+
+        $firstArg = $firstArgNode->value;
         $hasBindings = count($call->args) >= 2;
 
         // Determine effective strictness:
@@ -432,7 +437,12 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             return ['vulnerable' => false, 'node' => null];
         }
 
-        $sqlArg = $call->args[1]->value;
+        $sqlArgNode = $call->args[1];
+        if (! $sqlArgNode instanceof Node\Arg) {
+            return ['vulnerable' => false, 'node' => null];
+        }
+
+        $sqlArg = $sqlArgNode->value;
 
         // Check for vulnerable patterns and return the specific node
         $vulnerableNode = $this->findVulnerableNode($sqlArg);

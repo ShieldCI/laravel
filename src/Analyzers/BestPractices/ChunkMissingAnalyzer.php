@@ -247,7 +247,8 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
             if ($current->name instanceof Node\Identifier
                 && $current->name->toString() === 'select') {
                 foreach ($current->args as $arg) {
-                    if ($this->containsDbRaw($arg->value)) {
+                    // A first-class callable yields a VariadicPlaceholder, which has no value.
+                    if ($arg instanceof Node\Arg && $this->containsDbRaw($arg->value)) {
                         return true;
                     }
                 }

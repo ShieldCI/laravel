@@ -333,7 +333,9 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
 
         // Check if any argument is a Closure or Arrow function
         foreach ($call->args as $arg) {
-            if ($arg->value instanceof Node\Expr\Closure || $arg->value instanceof Node\Expr\ArrowFunction) {
+            // A first-class callable yields a VariadicPlaceholder, which has no value.
+            if ($arg instanceof Node\Arg
+                && ($arg->value instanceof Node\Expr\Closure || $arg->value instanceof Node\Expr\ArrowFunction)) {
                 return true;
             }
         }

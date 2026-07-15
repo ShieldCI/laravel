@@ -6,10 +6,10 @@ namespace ShieldCI\Analyzers\Security;
 
 use PhpParser\Node;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
-use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
@@ -30,7 +30,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     use DetectsLaravelVersion;
 
     public function __construct(
-        private ParserInterface $parser
+        private AstParser $parser
     ) {}
 
     protected function metadata(): AnalyzerMetadata

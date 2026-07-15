@@ -13,10 +13,10 @@ use PhpParser\NodeVisitor\CloningVisitor;
 use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
-use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Support\EloquentModelDetector;
 
@@ -126,7 +126,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
     private array $manualInstantiationExcludePatterns = [];
 
     public function __construct(
-        private ParserInterface $parser,
+        private AstParser $parser,
         private Config $config
     ) {}
 

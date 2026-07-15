@@ -702,7 +702,7 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         }
 
         $arg = $node->args[0];
-        if ($arg->value instanceof Node\Scalar\String_) {
+        if ($arg instanceof Node\Arg && $arg->value instanceof Node\Scalar\String_) {
             $tableName = $arg->value->value;
             $tableName = explode(' ', $tableName)[0];
             // Check if table already tracked as eloquent

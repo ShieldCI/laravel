@@ -7,10 +7,10 @@ namespace ShieldCI\Analyzers\Security;
 use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
-use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
@@ -37,7 +37,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
     private ?EloquentModelDetector $modelDetector = null;
 
     public function __construct(
-        private ParserInterface $parser,
+        private AstParser $parser,
         private Config $config
     ) {}
 

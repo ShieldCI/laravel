@@ -974,10 +974,12 @@ PHP;
         $this->assertHasIssueContaining('impersonate', $result);
     }
 
-    public function test_still_notices_when_no_property_and_no_attribute(): void
+    public function test_model_without_local_fillable_or_guarded_is_not_flagged(): void
     {
-        // True positive preserved: a model with neither $fillable property nor
-        // #[Fillable] attribute still gets the medium "cannot analyze" notice.
+        // A model with neither a local $fillable/$guarded nor a #[Fillable] attribute
+        // inherits its config from the base Model (default $guarded = ['*'], fully
+        // protected). There is no local array to inspect, so the analyzer stays silent
+        // rather than emitting an evidence-free "cannot analyze" notice.
         $code = <<<'PHP'
 <?php
 
@@ -999,10 +1001,66 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $inheritedIssues = array_filter(
-            $result->getIssues(),
-            fn ($i) => isset($i->metadata['fillable_inherited']) && $i->metadata['fillable_inherited'] === true
-        );
-        $this->assertNotEmpty($inheritedIssues, 'Model with no fillable property or attribute should still get the notice');
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_model_inheriting_fillable_from_vendor_parent_is_not_flagged(): void
+    {
+        // Regression: a model extending an unresolvable (vendor) base class that defines
+        // $fillable/$guarded upstream. The AST analyzer cannot follow inheritance into
+        // vendor/, so it must stay silent instead of flagging the missing local property.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Acme\Package\BaseModel;
+
+class Report extends BaseModel
+{
+    protected $table = 'reports';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Report.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_dynamic_fillable_is_not_flagged(): void
+    {
+        // A $fillable built from a non-array expression has no static array to inspect,
+        // so it is silently skipped (not flagged with a "cannot analyze" notice).
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Post extends Model
+{
+    protected $fillable = self::MASS_FIELDS;
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Post.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
     }
 }

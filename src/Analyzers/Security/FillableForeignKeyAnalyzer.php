@@ -13,7 +13,6 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Support\EloquentModelDetector;
 use ShieldCI\Support\EloquentModelHelper;
 
@@ -26,6 +25,9 @@ use ShieldCI\Support\EloquentModelHelper;
  * Out of scope by design (owned by MassAssignmentAnalyzer): $guarded = [] and untrusted
  * create()/update()/fill() sinks. Generic *_id fields are likewise not flagged — whether
  * a fillable foreign key is exploitable is a data-flow property, not a field-name one.
+ * Models that inherit $fillable/$guarded from a parent class, or build $fillable
+ * dynamically, are silently skipped rather than flagged: there is no local array to
+ * inspect, so a notice would be evidence-free noise.
  */
 class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 {
@@ -102,19 +104,6 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
             $classes = $this->parser->findClasses($ast);
             foreach ($classes as $class) {
                 if ($this->modelDetector()->isModel($class, $ast, $this->getBasePath())) {
-                    if (! $this->hasLocalFillable($class) && ! $this->hasLocalGuarded($class)) {
-                        $issues[] = $this->createIssue(
-                            message: sprintf('Model "%s" does not define a local $fillable property; inherited fillable fields cannot be analyzed', $class->name?->toString() ?? 'Unknown'),
-                            location: new Location($this->getRelativePath($file)),
-                            severity: Severity::Medium,
-                            recommendation: 'Review inherited fillable definitions to ensure foreign key fields are not inadvertently exposed to mass assignment.',
-                            metadata: [
-                                'model_name' => $class->name?->toString(),
-                                'fillable_inherited' => true,
-                            ]
-                        );
-                    }
-
                     $this->checkFillableProperty($file, $class, $issues);
                     $this->checkFillableAttribute($file, $class, $issues);
                 }
@@ -126,22 +115,6 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
             : sprintf('Found %d foreign key%s in fillable arrays', count($issues), count($issues) === 1 ? '' : 's');
 
         return $this->resultBySeverity($summary, $issues);
-    }
-
-    /**
-     * Check if fillable is declared locally, via a $fillable property or a #[Fillable] attribute.
-     */
-    private function hasLocalFillable(Node\Stmt\Class_ $class): bool
-    {
-        return EloquentModelHelper::hasFillable($class);
-    }
-
-    /**
-     * Check if guarded is declared locally, via a $guarded property or a #[Guarded]/#[Unguarded] attribute.
-     */
-    private function hasLocalGuarded(Node\Stmt\Class_ $class): bool
-    {
-        return EloquentModelHelper::hasGuarded($class);
     }
 
     /**
@@ -163,23 +136,11 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
+                // A dynamically-built $fillable (non-array default) has no static
+                // array to inspect, so there is nothing to flag here. Mass-assignment
+                // concerns for such models are owned by MassAssignmentAnalyzer.
                 if (! $prop->default instanceof Node\Expr\Array_) {
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: sprintf(
-                            'Model "%s" defines $fillable dynamically; foreign key exposure cannot be statically analyzed',
-                            $modelName
-                        ),
-                        filePath: $file,
-                        lineNumber: $stmt->getLine(),
-                        severity: Severity::Medium,
-                        recommendation: 'Prefer a static fillable property or manually review which fields are exposed to mass assignment.',
-                        metadata: [
-                            'model_name' => $modelName,
-                            'dynamic_fillable' => true,
-                        ]
-                    );
-
-                    return;
+                    continue;
                 }
 
                 // Check each item in the fillable array

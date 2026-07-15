@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace ShieldCI\Tests;
 
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
-use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Status;
 use ShieldCI\AnalyzersCore\Support\AstParser;
@@ -14,7 +13,7 @@ abstract class AnalyzerTestCase extends TestCase
 {
     protected AnalyzerInterface $analyzer;
 
-    protected ParserInterface $parser;
+    protected AstParser $parser;
 
     protected function setUp(): void
     {

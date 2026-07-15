@@ -301,7 +301,8 @@ class TransactionVisitor extends NodeVisitorAbstract
                         $this->manualTransactionDepth++;
                     } elseif ($methodName === 'transaction' && ! empty($node->args)) {
                         // Track the closure passed to DB::transaction()
-                        $firstArg = $node->args[0]->value;
+                        $firstArgNode = $node->args[0];
+                        $firstArg = $firstArgNode instanceof Node\Arg ? $firstArgNode->value : null;
                         if ($firstArg instanceof Node\Expr\Closure || $firstArg instanceof Node\Expr\ArrowFunction) {
                             $this->transactionClosurePositions[$firstArg->getStartFilePos()] = true;
                         }
@@ -976,7 +977,8 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
             && $node->name->toString() === 'transaction'
             && ! empty($node->args)
         ) {
-            $firstArg = $node->args[0]->value;
+            $firstArgNode = $node->args[0];
+            $firstArg = $firstArgNode instanceof Node\Arg ? $firstArgNode->value : null;
             if ($firstArg instanceof Node\Expr\Closure || $firstArg instanceof Node\Expr\ArrowFunction) {
                 $this->transactionClosurePositions[$firstArg->getStartFilePos()] = true;
             }

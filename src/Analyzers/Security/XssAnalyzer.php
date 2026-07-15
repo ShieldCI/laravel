@@ -9,7 +9,6 @@ use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Routing\Router;
 use Illuminate\Support\Str;
 use PhpParser\Node;
-use PhpParser\Node\Expr;
 use PhpParser\Node\Expr\FuncCall;
 use PhpParser\Node\Expr\StaticCall;
 use PhpParser\Node\Expr\Variable;
@@ -378,12 +377,12 @@ class XssAnalyzer extends AbstractFileAnalyzer
         $responseMakeCalls = $astParser->findStaticCalls($ast, 'Response', 'make');
 
         foreach ($responseMakeCalls as $call) {
-            if (! isset($call->args[0])) {
+            $argNode = $call->args[0] ?? null;
+            if (! $argNode instanceof Node\Arg) {
                 continue;
             }
 
-            /** @var Expr $argExpr */
-            $argExpr = $call->args[0]->value;
+            $argExpr = $argNode->value;
 
             // Skip if the argument is wrapped in an escape function
             if ($this->isEscapedExpressionAst($argExpr)) {
@@ -416,8 +415,9 @@ class XssAnalyzer extends AbstractFileAnalyzer
             }
 
             // response($content) — with direct content argument
-            if (isset($funcCall->args[0])) {
-                $argExpr = $funcCall->args[0]->value;
+            $responseArgNode = $funcCall->args[0] ?? null;
+            if ($responseArgNode instanceof Node\Arg) {
+                $argExpr = $responseArgNode->value;
 
                 if (! $this->isEscapedExpressionAst($argExpr)
                     && ! $this->isJsonResponseAst($argExpr)

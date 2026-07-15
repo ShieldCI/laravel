@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
+use PhpParser\Node\Arg;
 use PhpParser\Node\Expr\ConstFetch;
 use PhpParser\Node\Expr\Exit_;
 use PhpParser\Node\Expr\FuncCall;
@@ -351,11 +352,12 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
      */
     private function checkErrorReportingCall(FuncCall $funcCall, string $file, array &$issues): void
     {
-        if (! isset($funcCall->args[0])) {
+        $argNode = $funcCall->args[0] ?? null;
+        if (! $argNode instanceof Arg) {
             return;
         }
 
-        $arg = $funcCall->args[0]->value;
+        $arg = $argNode->value;
 
         $isVerbose = false;
 
@@ -400,7 +402,12 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $settingArg = $funcCall->args[0]->value;
+        $settingArgNode = $funcCall->args[0];
+        if (! $settingArgNode instanceof Arg) {
+            return;
+        }
+
+        $settingArg = $settingArgNode->value;
 
         if (! $settingArg instanceof String_) {
             return;
@@ -412,7 +419,12 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $valueArg = $funcCall->args[1]->value;
+        $valueArgNode = $funcCall->args[1];
+        if (! $valueArgNode instanceof Arg) {
+            return;
+        }
+
+        $valueArg = $valueArgNode->value;
 
         $isTruthy = false;
 

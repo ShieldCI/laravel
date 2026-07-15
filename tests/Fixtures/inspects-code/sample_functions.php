@@ -11,4 +11,8 @@ function someFunction()
     $flag = config('app.flag', true);
     $result = strlen($name);
     $complex = config(getenv('APP_CONFIG_KEY'));
+
+    // First-class callable syntax: the call's single argument is a
+    // VariadicPlaceholder, not an Arg, so argument extraction must skip it.
+    $callable = strtoupper(...);
 }

@@ -1038,7 +1038,7 @@ class BladeLogicVisitor extends NodeVisitorAbstract
             if ($expr instanceof Expr\FuncCall
                 && $expr->name instanceof Name
                 && $expr->name->toString() === 'e'
-                && count($expr->args) >= 1) {
+                && ($expr->args[0] ?? null) instanceof Node\Arg) {
                 $inner = $expr->args[0]->value;
             }
 

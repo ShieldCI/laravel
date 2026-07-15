@@ -50,6 +50,14 @@ class ModelVariableScannerTest extends TestCase
         $this->assertEqualsCanonicalizing(['airports'], $s->eagerLoadsOf('cities'));
     }
 
+    public function test_skips_variadic_placeholder_in_eager_load_call(): void
+    {
+        // load(...) is a first-class callable — its only "argument" is a
+        // VariadicPlaceholder, which has no value and must be skipped.
+        $s = $this->scan("\$cities = City::all();\n\$cities->load(...);");
+        $this->assertSame([], $s->eagerLoadsOf('cities'));
+    }
+
     public function test_unknown_variable_returns_null(): void
     {
         $s = $this->scan('$x = someHelper();');

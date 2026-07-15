@@ -162,6 +162,21 @@ class InspectsCodeTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_skips_variadic_placeholder_arguments(): void
+    {
+        $inspector = new ConcreteInspectsCode;
+        $inspector->setFixturePath(__DIR__.'/../../Fixtures/inspects-code');
+
+        // strtoupper(...) is a first-class callable — its only "argument" is a
+        // VariadicPlaceholder, which has no value and must be skipped.
+        $results = $inspector->publicFindFunctionCalls('strtoupper');
+
+        $this->assertCount(1, $results);
+        $this->assertSame([], $results[0]['args']);
+    }
+
+    /** @test */
+    #[Test]
     public function it_skips_files_that_throw_during_parsing(): void
     {
         $inspector = new ConcreteInspectsCode;

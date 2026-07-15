@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
+use PhpParser\Node\Arg;
 use PhpParser\Node\Expr\ConstFetch;
 use PhpParser\Node\Expr\StaticCall;
 use PhpParser\Node\Scalar\String_;
@@ -160,7 +161,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
 
         foreach ($forceSchemeCallNodes as $call) {
             /** @var StaticCall $call */
-            if (isset($call->args[0])
+            if (($call->args[0] ?? null) instanceof Arg
                 && $call->args[0]->value instanceof String_
                 && $call->args[0]->value->value === 'https'
             ) {
@@ -180,7 +181,12 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
                 return true;
             }
 
-            $firstArg = $call->args[0]->value;
+            $firstArgNode = $call->args[0];
+            if (! $firstArgNode instanceof Arg) {
+                continue;
+            }
+
+            $firstArg = $firstArgNode->value;
 
             // Explicit false → HTTPS is NOT forced; skip this call
             if ($firstArg instanceof ConstFetch && strtolower((string) $firstArg->name) === 'false') {

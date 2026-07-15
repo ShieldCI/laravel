@@ -11,10 +11,10 @@ use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
-use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
@@ -82,7 +82,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     private array $routeAuthStats = [];
 
     public function __construct(
-        private ParserInterface $parser,
+        private AstParser $parser,
         private Config $config
     ) {}
 
@@ -860,7 +860,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             if ($methodName === 'middleware') {
                 // Extract middleware name from arguments
                 foreach ($currentExpr->args as $arg) {
-                    $value = $arg->value;
+                    // A first-class callable yields a VariadicPlaceholder, which has no value.
+                    $value = $arg instanceof Node\Arg ? $arg->value : null;
                     if ($value instanceof Node\Scalar\String_) {
                         // Check for auth or authorization middleware
                         if ($this->isAuthMiddleware($value->value) || $this->isAuthorizationMiddleware($value->value)) {
@@ -883,7 +884,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 // Extract method names from only/except
                 $methods = [];
                 foreach ($currentExpr->args as $arg) {
-                    $value = $arg->value;
+                    // A first-class callable yields a VariadicPlaceholder, which has no value.
+                    $value = $arg instanceof Node\Arg ? $arg->value : null;
                     if ($value instanceof Node\Expr\Array_) {
                         foreach ($value->items as $item) {
                             if ($item instanceof Node\Expr\ArrayItem && $item->value instanceof Node\Scalar\String_) {

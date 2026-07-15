@@ -331,7 +331,9 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
         // Check each argument for closures
         foreach ($node->args as $arg) {
-            if ($arg->value instanceof Node\Expr\Closure || $arg->value instanceof Node\Expr\ArrowFunction) {
+            // A first-class callable yields a VariadicPlaceholder, which has no value.
+            if ($arg instanceof Node\Arg
+                && ($arg->value instanceof Node\Expr\Closure || $arg->value instanceof Node\Expr\ArrowFunction)) {
                 $this->analyzeClosure($arg->value);
             }
         }

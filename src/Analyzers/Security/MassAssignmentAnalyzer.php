@@ -6,10 +6,10 @@ namespace ShieldCI\Analyzers\Security;
 
 use PhpParser\Node;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
-use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
@@ -120,7 +120,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
     private ?array $composerClassMap = null;
 
     public function __construct(
-        private ParserInterface $parser
+        private AstParser $parser
     ) {}
 
     protected function metadata(): AnalyzerMetadata
@@ -1240,7 +1240,8 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
         if ($node instanceof Node\Expr\MethodCall) {
             if ($node->var instanceof Node\Expr\Variable || $node->var instanceof Node\Expr\FuncCall) {
                 if (! empty($node->args)) {
-                    $arg = $node->args[0]->value;
+                    $argNode = $node->args[0];
+                    $arg = $argNode instanceof Node\Arg ? $argNode->value : null;
                     if ($arg instanceof Node\Scalar\String_) {
                         // Check for dot notation indicating nested data
                         if (str_contains($arg->value, '.')) {

@@ -15,12 +15,15 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\ReadsConfigArrays;
 
 /**
  * Detects hardcoded storage paths instead of Laravel helpers.
  */
 class HardcodedStoragePathsAnalyzer extends AbstractFileAnalyzer
 {
+    use ReadsConfigArrays;
+
     /** @var array<int, string> */
     private array $allowedPaths;
 
@@ -61,10 +64,9 @@ class HardcodedStoragePathsAnalyzer extends AbstractFileAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         // Load configuration
-        $analyzerConfig = $this->config->get('shieldci.analyzers.best-practices.hardcoded-storage-paths', []);
-        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
+        $analyzerConfig = $this->toStringKeyedArray($this->config->get('shieldci.analyzers.best-practices.hardcoded-storage-paths', []));
 
-        $this->allowedPaths = $analyzerConfig['allowed_paths'] ?? [];
+        $this->allowedPaths = $this->configStringList($analyzerConfig, 'allowed_paths', []);
         $additionalPatternsRaw = $analyzerConfig['additional_patterns'] ?? [];
         $additionalPatterns = [];
         if (is_array($additionalPatternsRaw)) {

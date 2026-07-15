@@ -7,6 +7,7 @@ namespace ShieldCI\Support;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
+use ShieldCI\Concerns\ReadsConfigArrays;
 use Symfony\Component\Process\Process;
 
 /**
@@ -14,6 +15,8 @@ use Symfony\Component\Process\Process;
  */
 class PHPStan
 {
+    use ReadsConfigArrays;
+
     /**
      * The PHPStan analysis result.
      *
@@ -145,7 +148,8 @@ class PHPStan
         }
 
         $output = $this->runCommand($options, false);
-        $this->result = json_decode($output, true);
+        $decoded = json_decode($output, true);
+        $this->result = is_array($decoded) ? $this->toStringKeyedArray($decoded) : null;
 
         return $this;
     }

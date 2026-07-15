@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\ReadsConfigArrays;
 
 /**
  * Detects commented-out code that should be removed.
@@ -35,6 +36,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  */
 class CommentedCodeAnalyzer extends AbstractFileAnalyzer
 {
+    use ReadsConfigArrays;
+
     /**
      * Default: Minimum consecutive commented lines to flag.
      */
@@ -125,11 +128,10 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
     {
         // Load configuration from config file (code-quality.commented-code)
         $analyzerConfig = $this->config->get('shieldci.analyzers.code-quality.commented-code', []);
-        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
-        $this->minConsecutiveLines = $analyzerConfig['min_consecutive_lines'] ?? self::MIN_CONSECUTIVE_LINES;
-        $this->maxNeutralLines = $analyzerConfig['max_neutral_lines'] ?? self::MAX_NEUTRAL_LINES;
-        $this->codeScoreThreshold = $analyzerConfig['code_score_threshold'] ?? self::CODE_SCORE_THRESHOLD;
+        $this->minConsecutiveLines = $this->configInt($analyzerConfig, 'min_consecutive_lines', self::MIN_CONSECUTIVE_LINES);
+        $this->maxNeutralLines = $this->configInt($analyzerConfig, 'max_neutral_lines', self::MAX_NEUTRAL_LINES);
+        $this->codeScoreThreshold = $this->configInt($analyzerConfig, 'code_score_threshold', self::CODE_SCORE_THRESHOLD);
 
         $issues = [];
         $minLines = $this->minConsecutiveLines;

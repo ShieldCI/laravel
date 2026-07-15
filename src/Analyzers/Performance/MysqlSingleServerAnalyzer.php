@@ -132,7 +132,8 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
             return "Not relevant in '{$currentEnv}' environment (only relevant in: {$relevantEnvs})";
         }
 
-        $defaultConnection = $this->config->get('database.default', 'unknown');
+        $defaultConnectionValue = $this->config->get('database.default', 'unknown');
+        $defaultConnection = is_string($defaultConnectionValue) ? $defaultConnectionValue : 'unknown';
         $driver = $this->config->get("database.connections.{$defaultConnection}.driver", 'unknown');
 
         if (! is_string($driver)) {

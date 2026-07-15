@@ -151,7 +151,7 @@ class ShieldCIServiceProvider extends ServiceProvider
                 continue;
             }
 
-            $files = glob($directory.'/*Analyzer.php');
+            $files = glob($directory.'/*Analyzer.php') ?: [];
 
             foreach ($files as $file) {
                 $className = $this->getClassFromFile($file);

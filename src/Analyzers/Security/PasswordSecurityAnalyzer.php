@@ -145,11 +145,14 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
 
         $minRounds = $config['bcrypt_min_rounds'];
 
-        if (isset($configArray['bcrypt']['rounds']) && is_int($configArray['bcrypt']['rounds']) && $configArray['bcrypt']['rounds'] < $minRounds) {
+        $bcrypt = $configArray['bcrypt'] ?? null;
+        $bcryptRounds = is_array($bcrypt) ? ($bcrypt['rounds'] ?? null) : null;
+
+        if (is_int($bcryptRounds) && $bcryptRounds < $minRounds) {
             $issues[] = $this->createIssueWithSnippet(
                 message: sprintf(
                     'Bcrypt rounds (%d) is below recommended minimum of %d',
-                    $configArray['bcrypt']['rounds'],
+                    $bcryptRounds,
                     $minRounds
                 ),
                 filePath: $hashingConfig,
@@ -160,7 +163,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
                     $minRounds
                 ),
                 metadata: [
-                    'rounds' => $configArray['bcrypt']['rounds'],
+                    'rounds' => $bcryptRounds,
                     'issue_type' => 'weak_bcrypt_rounds',
                 ]
             );

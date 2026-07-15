@@ -15,6 +15,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\ReadsConfigArrays;
 
 /**
  * Identifies deeply nested code blocks.
@@ -26,6 +27,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  */
 class NestingDepthAnalyzer extends AbstractFileAnalyzer
 {
+    use ReadsConfigArrays;
+
     public const DEFAULT_THRESHOLD = 4;
 
     private int $threshold;
@@ -52,9 +55,8 @@ class NestingDepthAnalyzer extends AbstractFileAnalyzer
     {
         // Load configuration from config file (code-quality.nesting-depth)
         $analyzerConfig = $this->config->get('shieldci.analyzers.code-quality.nesting-depth', []);
-        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
-        $this->threshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;
+        $this->threshold = $this->configInt($analyzerConfig, 'threshold', self::DEFAULT_THRESHOLD);
 
         $issues = [];
         $threshold = $this->threshold;

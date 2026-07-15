@@ -15,6 +15,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Concerns\ClassifiesFiles;
+use ShieldCI\Concerns\ReadsConfigArrays;
 
 /**
  * Detects multiple database write operations without transactions.
@@ -27,6 +28,7 @@ use ShieldCI\Concerns\ClassifiesFiles;
 class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
 {
     use ClassifiesFiles;
+    use ReadsConfigArrays;
 
     /**
      * Minimum number of writes that require full transactional atomicity.
@@ -57,9 +59,8 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
     {
         // Load configuration from config file (best-practices.missing-database-transactions)
         $analyzerConfig = $this->config->get('shieldci.analyzers.best-practices.missing-database-transactions', []);
-        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
-        $this->threshold = $analyzerConfig['threshold'] ?? self::DEFAULT_THRESHOLD;
+        $this->threshold = $this->configInt($analyzerConfig, 'threshold', self::DEFAULT_THRESHOLD);
 
         $issues = [];
 

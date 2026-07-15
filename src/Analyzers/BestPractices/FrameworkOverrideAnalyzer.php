@@ -15,12 +15,15 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\ReadsConfigArrays;
 
 /**
  * Detects overriding standard Laravel framework classes that should use extension points instead.
  */
 class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
 {
+    use ReadsConfigArrays;
+
     // Classes that should NEVER be extended (High severity)
     private const NEVER_EXTEND = [
         // Core Foundation
@@ -102,11 +105,10 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
     {
         // Load configuration from config file (best-practices.framework-override)
         $analyzerConfig = $this->config->get('shieldci.analyzers.best-practices.framework-override', []);
-        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
-        $this->neverExtend = $analyzerConfig['never_extend'] ?? self::NEVER_EXTEND;
-        $this->rarelyExtend = $analyzerConfig['rarely_extend'] ?? self::RARELY_EXTEND;
-        $this->okToExtend = $analyzerConfig['ok_to_extend'] ?? self::OK_TO_EXTEND;
+        $this->neverExtend = $this->configStringList($analyzerConfig, 'never_extend', self::NEVER_EXTEND);
+        $this->rarelyExtend = $this->configStringList($analyzerConfig, 'rarely_extend', self::RARELY_EXTEND);
+        $this->okToExtend = $this->configStringList($analyzerConfig, 'ok_to_extend', self::OK_TO_EXTEND);
 
         $issues = [];
         $phpFiles = $this->getPhpFiles();

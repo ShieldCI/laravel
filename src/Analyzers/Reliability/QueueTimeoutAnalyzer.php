@@ -317,7 +317,8 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
             }
 
             // Check current environment
-            $currentEnv = config('app.env', 'production');
+            $currentEnvValue = config('app.env', 'production');
+            $currentEnv = is_string($currentEnvValue) ? $currentEnvValue : 'production';
             $envConfig = config("horizon.environments.{$currentEnv}", []);
             if (is_array($envConfig)) {
                 /** @var array<string, mixed> $envConfig */

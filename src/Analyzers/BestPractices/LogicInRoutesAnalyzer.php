@@ -15,6 +15,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\ReadsConfigArrays;
 
 /**
  * Detects business logic in route files.
@@ -24,6 +25,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  */
 class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
 {
+    use ReadsConfigArrays;
+
     public const DEFAULT_MAX_CLOSURE_LINES = 5;
 
     public const DEFAULT_ALLOW_SIMPLE_READS = true;
@@ -54,10 +57,9 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
     {
         // Load configuration
         $analyzerConfig = $this->config->get('shieldci.analyzers.best-practices.logic-in-routes', []);
-        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
-        $this->maxClosureLines = $analyzerConfig['max_closure_lines'] ?? self::DEFAULT_MAX_CLOSURE_LINES;
-        $this->allowSimpleReads = $analyzerConfig['allow_simple_reads'] ?? self::DEFAULT_ALLOW_SIMPLE_READS;
+        $this->maxClosureLines = $this->configInt($analyzerConfig, 'max_closure_lines', self::DEFAULT_MAX_CLOSURE_LINES);
+        $this->allowSimpleReads = $this->configBool($analyzerConfig, 'allow_simple_reads', self::DEFAULT_ALLOW_SIMPLE_READS);
 
         $issues = [];
 

@@ -85,8 +85,9 @@ class HorizonSuggestionAnalyzer extends AbstractAnalyzer
         }
 
         $driver = $this->config->get("queue.connections.{$defaultConnection}.driver");
+        $driverLabel = is_scalar($driver) ? (string) $driver : 'unknown';
 
-        return "Queue driver is '{$driver}', not 'redis' (Horizon only works with Redis queues)";
+        return "Queue driver is '{$driverLabel}', not 'redis' (Horizon only works with Redis queues)";
     }
 
     protected function runAnalysis(): ResultInterface

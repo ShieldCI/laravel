@@ -15,6 +15,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\ReadsConfigArrays;
 use ShieldCI\Support\EloquentModelDetector;
 
 /**
@@ -27,6 +28,8 @@ use ShieldCI\Support\EloquentModelDetector;
  */
 class FatModelAnalyzer extends AbstractFileAnalyzer
 {
+    use ReadsConfigArrays;
+
     public const METHOD_THRESHOLD = 15;
 
     public const LOC_THRESHOLD = 300;
@@ -61,11 +64,10 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
     {
         // Load configuration from config file (best-practices.fat-model)
         $analyzerConfig = $this->config->get('shieldci.analyzers.best-practices.fat-model', []);
-        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
-        $this->methodThreshold = $analyzerConfig['method_threshold'] ?? self::METHOD_THRESHOLD;
-        $this->locThreshold = $analyzerConfig['loc_threshold'] ?? self::LOC_THRESHOLD;
-        $this->complexityThreshold = $analyzerConfig['complexity_threshold'] ?? self::COMPLEXITY_THRESHOLD;
+        $this->methodThreshold = $this->configInt($analyzerConfig, 'method_threshold', self::METHOD_THRESHOLD);
+        $this->locThreshold = $this->configInt($analyzerConfig, 'loc_threshold', self::LOC_THRESHOLD);
+        $this->complexityThreshold = $this->configInt($analyzerConfig, 'complexity_threshold', self::COMPLEXITY_THRESHOLD);
 
         $issues = [];
 

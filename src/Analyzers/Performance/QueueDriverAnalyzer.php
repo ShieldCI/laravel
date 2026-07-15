@@ -142,6 +142,8 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
     /**
      * Assess the 'null' queue driver.
      * The null driver silently discards all queued jobs, which is dangerous.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function assessNullDriver(string $driver, array &$issues, string $configFile, string $defaultConnection): void
     {
@@ -164,6 +166,8 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
     /**
      * Assess the 'sync' queue driver.
      * The sync driver processes jobs immediately, blocking the request.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function assessSyncDriver(string $driver, array &$issues, string $configFile, string $defaultConnection): void
     {
@@ -207,6 +211,8 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
     /**
      * Assess the 'database' queue driver.
      * The database driver works but has performance issues in production.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function assessDatabaseDriver(string $driver, array &$issues, string $configFile, string $defaultConnection): void
     {

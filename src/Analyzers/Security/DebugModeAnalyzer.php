@@ -20,6 +20,7 @@ use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\ClassifiesFiles;
 
@@ -39,6 +40,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
     private const HIGH_SEVERITY_FUNCTIONS = ['dd', 'dump', 'var_dump', 'print_r'];
 
+    /** @var list<string> */
     private array $debugFunctions = [
         'dd',
         'dump',
@@ -106,6 +108,8 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check .env files for debug mode enabled.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkEnvFiles(array &$issues): void
     {
@@ -197,6 +201,8 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check config files for debug settings.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkConfigFiles(array &$issues): void
     {
@@ -236,6 +242,8 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check for debug functions and exit/die in code using AST parsing.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkDebugFunctions(array &$issues): void
     {
@@ -338,6 +346,8 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check an error_reporting() call for verbose settings (E_ALL or -1).
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkErrorReportingCall(FuncCall $funcCall, string $file, array &$issues): void
     {
@@ -381,6 +391,8 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check an ini_set() call for display_errors or display_startup_errors with truthy values.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkIniSetCall(FuncCall $funcCall, string $file, array &$issues): void
     {
@@ -438,6 +450,8 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check for debug packages that shouldn't be in production.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkDebugPackages(array &$issues): void
     {

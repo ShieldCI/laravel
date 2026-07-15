@@ -12,6 +12,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Concerns\DetectsLaravelVersion;
 use ShieldCI\Support\BootstrapRouteParser;
 
@@ -618,6 +619,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check route files for login routes without throttling.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkRouteFiles(array &$issues, bool $hasGlobalThrottling): void
     {
@@ -755,6 +758,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if a route has throttling in nearby lines or on the same line (before/after).
+     *
+     * @param  array<int, string>  $lines
      */
     private function checkRouteHasThrottling(array $lines, int $lineNumber): bool
     {
@@ -821,6 +826,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check authentication controllers for throttling logic.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkAuthControllers(array &$issues): void
     {
@@ -899,6 +906,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check Fortify/Breeze/Jetstream configuration for throttling.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkAuthenticationPackages(array &$issues): void
     {
@@ -937,6 +946,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check Fortify-specific throttling configuration.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkFortifyThrottling(array &$issues): void
     {
@@ -1033,6 +1044,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * NOTE: Both Breeze and Jetstream rely on Fortify for authentication by default,
      * and Fortify includes throttling out of the box. This method only flags issues
      * if the default throttling has been explicitly disabled or misconfigured.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkBreezeJetstreamThrottling(array &$issues, bool $hasBreeze, bool $hasJetstream): void
     {

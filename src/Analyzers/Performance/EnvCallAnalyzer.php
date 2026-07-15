@@ -226,11 +226,9 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
     /**
      * Find Env::get() static calls in AST.
      *
-     * @param  array<Node>  $ast
-     * @return array<int, StaticCall>
-     */
-    /**
+     * @param  array<int, Node>  $ast
      * @param  array<int, string>  $envClasses
+     * @return array<int, StaticCall>
      */
     private function findEnvStaticCallsInAst(array $ast, array $envClasses): array
     {
@@ -299,8 +297,7 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if file should be excluded for env() detection.
-     */
-    /**
+     *
      * @param  array<int, string>|null  $excludePaths
      */
     protected function shouldExcludeEnvFile(string $filePath, ?array $excludePaths = null): bool

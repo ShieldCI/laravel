@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\DetectsDeploymentPlatform;
 
@@ -29,6 +30,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 
     public static bool $runInCI = false;
 
+    /** @var list<string> */
     private array $sensitiveKeys = [
         'APP_KEY',
         'DB_PASSWORD',
@@ -46,6 +48,7 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
         'OAUTH_CLIENT_SECRET',
     ];
 
+    /** @var list<string> */
     private array $placeholderKeywords = [
         'null', '""', "''", 'your-', 'change-', 'example',
         // Stripe test key prefixes (test mode only, can't process real payments)
@@ -137,6 +140,8 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check for .env file in public directory.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkPublicEnvFile(array &$issues): void
     {
@@ -162,6 +167,8 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check .env.example for sensitive data.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkEnvExample(array &$issues): void
     {
@@ -248,6 +255,8 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if .env is properly excluded in .gitignore.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkGitignore(array &$issues): void
     {
@@ -287,6 +296,8 @@ class EnvFileSecurityAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if .env file was committed to git.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkIfEnvCommitted(array &$issues): void
     {

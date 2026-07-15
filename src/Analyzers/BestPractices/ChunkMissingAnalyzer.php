@@ -96,6 +96,7 @@ class ChunkMissingAnalyzer extends AbstractFileAnalyzer
 
 class ChunkMissingVisitor extends NodeVisitorAbstract
 {
+    /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
 
     /** @var array<string, Node\Expr> Track variable assignments */
@@ -367,6 +368,9 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         return $value instanceof Node\Scalar\String_ ? $value->value : null;
     }
 
+    /**
+     * @return list<string>
+     */
     private function getMethodChain(Node\Expr $expr): array
     {
         $chain = [];
@@ -404,6 +408,9 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         return $printer->prettyPrintExpr($expr);
     }
 
+    /**
+     * @return array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}>
+     */
     public function getIssues(): array
     {
         return $this->issues;

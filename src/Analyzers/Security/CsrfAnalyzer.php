@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Support\BootstrapRouteParser;
 
 /**
@@ -122,6 +123,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * - <input name="_token" ... /> - Manual token input
      *
      * Scans until </form> is found (no hardcoded line limit).
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkBladeFormsForCsrf(string $file, array &$issues): void
     {
@@ -187,6 +190,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      *
      * Scans until natural boundary (closing parenthesis + semicolon) instead of hardcoded line limit.
      * Uses parenthesis depth tracking to find the end of AJAX call.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkAjaxRequestsForCsrf(string $file, array &$issues): void
     {
@@ -272,6 +277,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * - $.ajax({method: 'POST'}) - checks for method property
      *
      * GET requests (fetch(url) without method, or method: 'GET') are not flagged.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkJavaScriptAjaxForCsrf(string $file, array &$issues): void
     {
@@ -339,6 +346,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     /**
      * Check CSRF middleware for overly broad exceptions.
      * Supports both VerifyCsrfToken (Laravel 10) and ValidateCsrfToken (Laravel 11+).
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkCsrfMiddlewareExceptions(array &$issues): void
     {
@@ -467,6 +476,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     /**
      * Check if CSRF middleware is registered in Kernel.php.
      * Supports both VerifyCsrfToken (Laravel 10) and ValidateCsrfToken (Laravel 11+).
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkCsrfMiddlewareRegistration(array &$issues): void
     {
@@ -541,6 +552,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * Users can:
      * 1. Manually manage middleware with withMiddleware() - check if CSRF is disabled
      * 2. Exclude URIs using validateCsrfTokens() method - check for overly broad patterns
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkBootstrapApp(string $file, array &$issues): void
     {
@@ -564,6 +577,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if CSRF protection is explicitly disabled in bootstrap/app.php.
+     *
+     * @param  array<int, Issue>  &$issues
+     * @param  array<int, string>  $lines
      */
     private function checkCsrfDisabledInBootstrap(array $lines, string $file, array &$issues): void
     {
@@ -684,6 +700,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check for overly broad CSRF exception patterns in validateCsrfTokens() calls.
+     *
+     * @param  array<int, Issue>  &$issues
+     * @param  array<int, string>  $lines
      */
     private function checkBootstrapCsrfExceptions(array $lines, string $file, array &$issues): void
     {
@@ -768,6 +787,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      *
      * @param  array<string>  $webProtectedFiles  Files covered by 'web' middleware via external registration
      * @param  array<string>  $apiRegisteredFiles  Files registered under 'api' middleware via external registration
+     * @param  array<int, Issue>  $issues
      */
     private function checkRoutesForCsrfMiddleware(
         string $file,
@@ -905,6 +925,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Get all Blade template files.
+     *
+     * @return list<string>
      */
     private function getBladeFiles(): array
     {
@@ -921,6 +943,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Get all JavaScript files.
+     *
+     * @return list<string>
      */
     private function getJavaScriptFiles(): array
     {
@@ -937,6 +961,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Get route files.
+     *
+     * @return array<int, string>
      */
     private function getRouteFiles(): array
     {

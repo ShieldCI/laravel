@@ -160,6 +160,7 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
 
 class ConfigHardcodeVisitor extends NodeVisitorAbstract
 {
+    /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
 
     /** @var int Minimum length for API key detection */
@@ -504,6 +505,9 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
         return false;
     }
 
+    /**
+     * @return array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}>
+     */
     public function getIssues(): array
     {
         return $this->issues;

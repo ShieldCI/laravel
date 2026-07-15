@@ -93,6 +93,8 @@ class PathFilter
 
     /**
      * Get paths to analyze.
+     *
+     * @return array<string>
      */
     public function getAnalyzePaths(): array
     {
@@ -101,6 +103,8 @@ class PathFilter
 
     /**
      * Get excluded paths.
+     *
+     * @return array<string>
      */
     public function getExcludedPaths(): array
     {

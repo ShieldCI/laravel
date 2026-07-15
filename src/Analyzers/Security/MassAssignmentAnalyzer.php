@@ -12,6 +12,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Support\EloquentModelDetector;
 use ShieldCI\Support\EloquentModelHelper;
 
@@ -190,6 +191,8 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if model has proper mass assignment protection.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkModelProtection(string $file, Node\Stmt\Class_ $class, array &$issues): void
     {
@@ -255,6 +258,9 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check for dangerous Eloquent method calls with request data.
+     *
+     * @param  array<int, Node>  $ast
+     * @param  array<int, Issue>  &$issues
      */
     private function checkDangerousMethodCalls(string $file, array $ast, array &$issues): void
     {
@@ -438,6 +444,9 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check for dangerous query builder calls with request data.
+     *
+     * @param  array<int, Node>  $ast
+     * @param  array<int, Issue>  &$issues
      */
     private function checkQueryBuilderCalls(string $file, array $ast, array &$issues): void
     {
@@ -456,6 +465,9 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Find static method calls in AST.
+     *
+     * @param  array<int, Node>  $ast
+     * @return array<int, Node\Expr\StaticCall>
      */
     private function findStaticMethodCalls(array $ast, string $methodName): array
     {
@@ -648,6 +660,8 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if a call contains request data in its arguments.
+     *
+     * @param  array<int, Issue>  $issues
      */
     private function checkCallForRequestData(
         Node\Expr\MethodCall|Node\Expr\StaticCall $call,
@@ -1040,6 +1054,8 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if model has proper $hidden attributes for sensitive data.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkHiddenAttributes(string $file, Node\Stmt\Class_ $class, array &$issues): void
     {
@@ -1106,6 +1122,8 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
      * NOTE: This check is intentionally conservative to avoid false positives.
      * It only warns when there's evidence of actual mass assignment usage
      * with relationships in the codebase.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkRelationshipSecurity(string $file, Node\Stmt\Class_ $class, array &$issues): void
     {
@@ -1116,6 +1134,9 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check for dangerous relationship fill operations with request data.
+     *
+     * @param  array<int, Node>  $ast
+     * @param  array<int, Issue>  &$issues
      */
     private function checkRelationshipOperations(string $file, array $ast, array &$issues): void
     {
@@ -1160,6 +1181,9 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
      * Check for nested mass assignment patterns.
      *
      * Detects patterns like: $request->input('user.profile.bio')
+     *
+     * @param  array<int, Node>  $ast
+     * @param  array<int, Issue>  &$issues
      */
     private function checkNestedMassAssignment(string $file, array $ast, array &$issues): void
     {

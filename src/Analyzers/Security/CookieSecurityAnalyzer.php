@@ -14,6 +14,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Concerns\AnalyzesMiddleware;
 use ShieldCI\Concerns\InspectsCode;
 
@@ -80,6 +81,8 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check session configuration file using AST parsing.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkSessionConfig(array &$issues): void
     {
@@ -172,6 +175,8 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check for EncryptCookies middleware.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkEncryptCookiesMiddleware(array &$issues): void
     {
@@ -247,6 +252,8 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
      * This method is conservative - it only uses runtime checks when we're confident
      * the app is fully bootstrapped with the actual application code. In test scenarios
      * or when the app path doesn't match, it falls back to file-based checks.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkRuntimeMiddleware(array &$issues): bool
     {

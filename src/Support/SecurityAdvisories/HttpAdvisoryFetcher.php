@@ -121,6 +121,7 @@ class HttpAdvisoryFetcher implements AdvisoryFetcherInterface
 
     /**
      * @param  array<string, mixed>  $vuln
+     * @return array<string, mixed>
      */
     private function formatVulnerability(array $vuln, string $version): array
     {

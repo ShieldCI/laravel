@@ -12,6 +12,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Support\EloquentModelDetector;
 use ShieldCI\Support\EloquentModelHelper;
@@ -145,6 +146,8 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check fillable property for foreign keys.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkFillableProperty(string $file, Node\Stmt\Class_ $class, array &$issues): void
     {
@@ -195,6 +198,8 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
      *
      * Reuses the same curated-pattern detection (checkField) as the property path so an
      * attribute-based model is analyzed identically to a property-based one.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkFillableAttribute(string $file, Node\Stmt\Class_ $class, array &$issues): void
     {
@@ -231,6 +236,8 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check a single field for foreign key patterns.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkField(string $file, int $itemLine, string $modelName, string $fieldName, array &$issues): void
     {

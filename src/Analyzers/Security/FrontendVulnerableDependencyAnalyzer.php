@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\DetectsDeploymentPlatform;
 
@@ -175,6 +176,8 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Run audit command (npm or yarn) with timeout protection.
+     *
+     * @return array<array-key, mixed>|null
      */
     private function runAuditCommand(string $basePath, string $tool): ?array
     {
@@ -269,6 +272,8 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Parse npm output (JSON or plain text fallback).
+     *
+     * @return array<array-key, mixed>|null
      */
     private function parseNpmOutput(string $output): ?array
     {
@@ -285,6 +290,8 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Parse yarn output (newline-delimited JSON).
+     *
+     * @return array<array-key, mixed>|null
      */
     private function parseYarnOutput(string $output): ?array
     {
@@ -313,6 +320,8 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Parse plain text npm audit output as fallback.
+     *
+     * @return array<array-key, mixed>|null
      */
     private function parseNpmPlainTextAudit(string $output): ?array
     {
@@ -335,6 +344,9 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Parse npm audit results.
+     *
+     * @param  array<int, Issue>  &$issues
+     * @param  array<array-key, mixed>  $results
      */
     private function parseNpmAuditResults(array $results, array &$issues, string $packageLock): void
     {
@@ -415,6 +427,9 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Parse yarn audit results.
+     *
+     * @param  array<int, Issue>  &$issues
+     * @param  array<array-key, mixed>  $results
      */
     private function parseYarnAuditResults(array $results, array &$issues, string $yarnLock): void
     {
@@ -534,6 +549,8 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Create vulnerability issue from advisory data.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function createFrontendVulnerabilityIssue(string $package, mixed $advisory, array &$issues, string $lockFile): void
     {

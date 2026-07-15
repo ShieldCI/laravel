@@ -274,12 +274,17 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
      */
     private function stripInlineComment(string $value): string
     {
-        // Only strip comments outside quotes
-        if (preg_match('/^([\'"])(.*)\1$/', trim($value))) {
-            return trim($value);
+        $value = trim($value);
+
+        // Fully-quoted values are returned verbatim.
+        if (preg_match('/^([\'"]).*\1$/', $value)) {
+            return $value;
         }
 
-        return preg_replace('/\s*(#|\/\/|;).*$/', '', trim($value)) ?? trim($value);
+        // In .env files, only `#` starts an inline comment, and only when preceded
+        // by whitespace. Base64 keys can contain `//`, `+`, and `/`, so those must
+        // never be treated as comment delimiters.
+        return preg_replace('/\s+#.*$/', '', $value) ?? $value;
     }
 
     /**

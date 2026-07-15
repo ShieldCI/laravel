@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.12.1
+
+### Fixed
+- `app-key-security` no longer flags a valid base64 `APP_KEY` containing `//` as malformed (#291)
+
 ## v1.12.0
 
 ### Changed

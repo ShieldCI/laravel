@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.12.2
+
+### Fixed
+- `fillable-foreign-key` no longer flags a model that defines no local `$fillable`/`$guarded` or builds `$fillable` dynamically, so a model inheriting its mass-assignment config from a parent (including a vendor base class the AST cannot follow into) is not reported (#293)
+
 ## v1.12.1
 
 ### Fixed

@@ -48,6 +48,47 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_passes_with_base64_key_containing_double_slash(): void
+    {
+        // A valid 32-byte key whose base64 encoding contains "//" (legal base64).
+        $envContent = <<<'ENV'
+APP_NAME=Laravel
+APP_KEY=base64:2/J40U++LCAOMbcQXVMoijPIbW48//FuI/2ppake6b4=
+APP_DEBUG=false
+ENV;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_strips_trailing_inline_comment(): void
+    {
+        $envContent = <<<'ENV'
+APP_NAME=Laravel
+APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA= # production app key
+APP_DEBUG=false
+ENV;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_fails_when_app_key_is_empty(): void
     {
         $envContent = <<<'ENV'

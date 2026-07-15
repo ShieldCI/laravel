@@ -449,6 +449,8 @@ class BaselineCommandTest extends TestCase
 
     /**
      * Register a mock AnalyzerManager with the given issues.
+     *
+     * @param  array<int, Issue>  $issues
      */
     private function registerMockAnalyzerManager(array $issues): void
     {

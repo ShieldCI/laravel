@@ -627,6 +627,7 @@ class AnalysisReportTest extends TestCase
 
         $arr = $report->toArray();
         $resultArr = $arr['results'][0];
+        $this->assertIsArray($resultArr);
 
         $this->assertArrayHasKey('suppressed_issues', $resultArr);
         $this->assertCount(1, $resultArr['suppressed_issues']);
@@ -645,6 +646,7 @@ class AnalysisReportTest extends TestCase
 
         $arr = $report->toArray();
         $resultArr = $arr['results'][0];
+        $this->assertIsArray($resultArr);
 
         $this->assertArrayHasKey('suppressed_issues', $resultArr);
         $this->assertSame([], $resultArr['suppressed_issues']);

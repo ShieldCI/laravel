@@ -110,6 +110,9 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         );
     }
 
+    /**
+     * @return list<string>
+     */
     private function getBladeFiles(): array
     {
         $files = [];

@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\DetectsDeploymentPlatform;
 
@@ -176,6 +177,9 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         );
     }
 
+    /**
+     * @param  array<int, Issue>  &$issues
+     */
     private function checkStandaloneAssets(string $publicPath, array &$issues): void
     {
         $unminifiedFiles = [];
@@ -223,6 +227,9 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         }
     }
 
+    /**
+     * @param  array<int, Issue>  &$issues
+     */
     private function checkMixAssets(string $publicPath, array &$issues): void
     {
         $manifestPath = $this->joinPaths($publicPath, 'mix-manifest.json');
@@ -302,6 +309,9 @@ class MinificationAnalyzer extends AbstractFileAnalyzer
         }
     }
 
+    /**
+     * @param  array<int, Issue>  &$issues
+     */
     private function checkViteAssets(string $buildPath, array &$issues): void
     {
         if (! is_dir($buildPath)) {

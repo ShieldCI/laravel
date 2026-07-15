@@ -15,6 +15,7 @@ use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\InspectsCode;
 
@@ -195,6 +196,8 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check middleware configuration for HSTS headers.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkMiddlewareConfiguration(array &$issues): void
     {
@@ -269,6 +272,8 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Validate HSTS configuration in middleware.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function validateHSTSConfiguration(string $file, string $content, array &$issues): void
     {
@@ -346,6 +351,8 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check session configuration for HTTPS using AST.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkSessionConfiguration(array &$issues): void
     {

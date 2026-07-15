@@ -144,6 +144,9 @@ final class AnalysisReport
         return $counts;
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function summary(): array
     {
         return [
@@ -160,6 +163,9 @@ final class AnalysisReport
         ];
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function toArray(): array
     {
         return [

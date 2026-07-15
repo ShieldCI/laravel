@@ -34,6 +34,8 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
      * - checkInstance: Check instance calls like ->method()
      * - severity: Severity level (Critical for full query control, High for fragments)
      * - recommendation: Custom recommendation message (optional)
+     *
+     * @var array<string, array{alwaysFlag: bool, checkStatic: bool, checkInstance: bool, strictConcatenation: bool, severity: Severity, recommendation: string}>
      */
     private array $dbMethods = [
         'raw' => [
@@ -121,6 +123,8 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     /**
      * Native MySQLi functions that execute queries (not connection, prepare, or fetch).
      * Only these can have SQL injection vulnerabilities through concatenation.
+     *
+     * @var list<string>
      */
     private array $nativeMysqliFunctions = [
         'mysqli_query',       // Executes a query (most common)
@@ -131,6 +135,8 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     /**
      * Native PostgreSQL functions that execute queries.
      * Only these can have SQL injection vulnerabilities through concatenation.
+     *
+     * @var list<string>
      */
     private array $nativePostgresFunctions = [
         'pg_query',       // Executes a query

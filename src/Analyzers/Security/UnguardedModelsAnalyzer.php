@@ -12,6 +12,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 
 /**
  * Detects Model::unguard() calls that disable mass assignment protection.
@@ -68,6 +69,8 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check a file for unguard() usage.
+     *
+     * @param  array<int, Issue>  &$issues
      */
     private function checkFileForUnguard(string $file, string $relativePath, array &$issues): void
     {
@@ -189,6 +192,10 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
         return str_starts_with($normalized, 'vendor/') || str_contains($normalized, '/vendor/');
     }
 
+    /**
+     * @param  array<int, Node>  $ast
+     * @param  array<int, Issue>  &$issues
+     */
     private function evaluateStaticCalls(array $ast, string $file, string $relativePath, array &$issues): void
     {
         /** @var array<Node\Expr\StaticCall> $staticCalls */
@@ -337,6 +344,7 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
     /**
      * Build a map of all method/function scopes in the AST.
      *
+     * @param  array<int, Node>  $ast
      * @return array<Node\Stmt\ClassMethod|Node\Stmt\Function_|Node\Expr\Closure>
      */
     private function buildMethodScopeMap(array $ast): array

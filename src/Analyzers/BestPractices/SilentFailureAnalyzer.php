@@ -183,6 +183,7 @@ class SilentFailureAnalyzer extends AbstractFileAnalyzer
 
 class SilentFailureVisitor extends NodeVisitorAbstract
 {
+    /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
 
     private ?string $currentClass = null;
@@ -1126,6 +1127,9 @@ class SilentFailureVisitor extends NodeVisitorAbstract
         return 'Error suppression operator (@) hides errors';
     }
 
+    /**
+     * @return array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}>
+     */
     public function getIssues(): array
     {
         return $this->issues;

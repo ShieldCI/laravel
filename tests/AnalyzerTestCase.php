@@ -139,6 +139,8 @@ abstract class AnalyzerTestCase extends TestCase
 
     /**
      * Create a temporary directory with PHP files.
+     *
+     * @param  array<string, string|false>  $files  filename => contents (false, e.g. from a failed json_encode, is written as empty)
      */
     protected function createTempDirectory(array $files): string
     {
@@ -153,7 +155,7 @@ abstract class AnalyzerTestCase extends TestCase
                 mkdir($dirname, 0755, true);
             }
 
-            file_put_contents($filepath, $content);
+            file_put_contents($filepath, $content === false ? '' : $content);
         }
 
         // Register cleanup

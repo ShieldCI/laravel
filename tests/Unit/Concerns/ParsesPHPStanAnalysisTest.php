@@ -168,6 +168,7 @@ class ParsesPHPStanAnalysisTest extends TestCase
             use ParsesPHPStanAnalysis;
 
             /**
+             * @param  string|array<int, string>  $search
              * @param  array<int, Issue>  &$issues
              */
             public function publicParsePHPStanAnalysis(PHPStan $phpStan, string|array $search, array &$issues): void
@@ -176,6 +177,7 @@ class ParsesPHPStanAnalysisTest extends TestCase
             }
 
             /**
+             * @param  string|array<int, string>  $pattern
              * @param  array<int, Issue>  &$issues
              */
             public function publicMatchPHPStanAnalysis(PHPStan $phpStan, string|array $pattern, array &$issues): void

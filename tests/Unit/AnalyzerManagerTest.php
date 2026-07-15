@@ -922,6 +922,9 @@ class AnalyzerManagerTest extends TestCase
         $this->assertTrue($analyzerInstance->clearAstParserCacheCalled);
     }
 
+    /**
+     * @param  array<int, class-string<AnalyzerInterface>>  $analyzerClasses
+     */
     protected function createManager(array $analyzerClasses): AnalyzerManager
     {
         $config = Mockery::mock(Config::class);

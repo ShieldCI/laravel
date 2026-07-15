@@ -456,6 +456,7 @@ class AnalyzesMiddlewareTest extends TestCase
         {
             use AnalyzesMiddleware;
 
+            /** @param object $kernel */
             public function __construct(protected Router $router, protected $kernel) {}
 
             public function publicAppUsesGroupMiddleware(string $class): bool
@@ -693,7 +694,10 @@ class AnalyzesMiddlewareTest extends TestCase
         {
             use AnalyzesMiddleware;
 
-            /** @param array<int, string> $fixedGlobal */
+            /**
+             * @param  object  $kernel
+             * @param  array<int, string>  $fixedGlobal
+             */
             public function __construct(
                 protected Router $router,
                 protected $kernel,
@@ -730,6 +734,7 @@ class AnalyzesMiddlewareTest extends TestCase
         {
             use AnalyzesMiddleware;
 
+            /** @param object $kernel */
             public function __construct(
                 protected Router $router,
                 protected $kernel,
@@ -741,11 +746,13 @@ class AnalyzesMiddlewareTest extends TestCase
                 return $this->getGlobalMiddleware();
             }
 
+            /** @return Collection<int, string> */
             public function publicGetAllRouteMiddleware(): Collection
             {
                 return $this->getAllRouteMiddleware();
             }
 
+            /** @return Collection<int, string> */
             public function publicGetAllMiddleware(): Collection
             {
                 return $this->getAllMiddleware();

@@ -70,6 +70,10 @@ class AnalyzesHeadersTest extends TestCase
         {
             use AnalyzesHeaders;
 
+            /**
+             * @param  string|array<int, string>  $headers
+             * @param  array<string, mixed>  $options
+             */
             public function publicHeaderExistsOnUrl(?string $url, string|array $headers, array $options = []): bool
             {
                 return $this->headerExistsOnUrl($url, $headers, $options);
@@ -96,6 +100,10 @@ class AnalyzesHeadersTest extends TestCase
         {
             use AnalyzesHeaders;
 
+            /**
+             * @param  string|array<int, string>  $headers
+             * @param  array<string, mixed>  $options
+             */
             public function publicHeaderExistsOnUrl(?string $url, string|array $headers, array $options = []): bool
             {
                 return $this->headerExistsOnUrl($url, $headers, $options);
@@ -122,6 +130,10 @@ class AnalyzesHeadersTest extends TestCase
         {
             use AnalyzesHeaders;
 
+            /**
+             * @param  string|array<int, string>  $headers
+             * @param  array<string, mixed>  $options
+             */
             public function publicHeaderExistsOnUrl(?string $url, string|array $headers, array $options = []): bool
             {
                 return $this->headerExistsOnUrl($url, $headers, $options);
@@ -145,6 +157,10 @@ class AnalyzesHeadersTest extends TestCase
         {
             use AnalyzesHeaders;
 
+            /**
+             * @param  string|array<int, string>  $headers
+             * @param  array<string, mixed>  $options
+             */
             public function publicHeaderExistsOnUrl(?string $url, string|array $headers, array $options = []): bool
             {
                 return $this->headerExistsOnUrl($url, $headers, $options);
@@ -170,6 +186,10 @@ class AnalyzesHeadersTest extends TestCase
             use AnalyzesHeaders;
 
             /**
+             * @return array<int, string>
+             */
+            /**
+             * @param  array<string, mixed>  $options
              * @return array<int, string>
              */
             public function publicGetHeadersOnUrl(?string $url, string $header, array $options = []): array
@@ -204,6 +224,10 @@ class AnalyzesHeadersTest extends TestCase
             /**
              * @return array<int, string>
              */
+            /**
+             * @param  array<string, mixed>  $options
+             * @return array<int, string>
+             */
             public function publicGetHeadersOnUrl(?string $url, string $header, array $options = []): array
             {
                 return $this->getHeadersOnUrl($url, $header, $options);
@@ -227,6 +251,10 @@ class AnalyzesHeadersTest extends TestCase
             use AnalyzesHeaders;
 
             /**
+             * @return array<int, string>
+             */
+            /**
+             * @param  array<string, mixed>  $options
              * @return array<int, string>
              */
             public function publicGetHeadersOnUrl(?string $url, string $header, array $options = []): array
@@ -259,6 +287,10 @@ class AnalyzesHeadersTest extends TestCase
         {
             use AnalyzesHeaders;
 
+            /**
+             * @param  string|array<int, string>  $headers
+             * @param  array<string, mixed>  $options
+             */
             public function publicHeaderExistsOnUrl(?string $url, string|array $headers, array $options = []): bool
             {
                 return $this->headerExistsOnUrl($url, $headers, $options);

@@ -238,6 +238,8 @@ class AnalyzeCommand extends Command
 
     /**
      * Run analysis with streaming output (results displayed as they complete).
+     *
+     * @return Collection<int, ResultInterface>
      */
     protected function runAnalysisWithStreaming(AnalyzerManager $manager, ReporterInterface $reporter): Collection
     {
@@ -516,6 +518,9 @@ class AnalyzeCommand extends Command
         return stream_isatty($stderrStream);
     }
 
+    /**
+     * @return Collection<int, ResultInterface>
+     */
     protected function runAnalysis(AnalyzerManager $manager): Collection
     {
         /** @var resource $stderrStream */

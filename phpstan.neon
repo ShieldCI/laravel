@@ -24,68 +24,31 @@ parameters:
         - vendor/shieldci/analyzers-core/src/Abstracts/AbstractFileAnalyzer.php
         - vendor/shieldci/analyzers-core/src/Abstracts/AbstractAnalyzer.php
 
+    # Every remaining ignore is scoped to tests/. They fall into three kinds that cannot be
+    # typed away from this package: framework signatures that are wider than reality, anonymous
+    # test doubles PHPStan cannot resolve members on, and assertions over the deliberately-mixed
+    # analyzer output (Issue::$metadata is array<string, mixed>, JSON is decoded to mixed).
     ignoreErrors:
-        # Tests type analyzers as AnalyzerInterface but drive them through the setBasePath/
-        # setPaths methods on the concrete implementations. The interface lives in
-        # analyzers-core and must not change, so these stay suppressed in tests.
+        # AnalyzerInterface (in analyzers-core, immutable here) lacks setBasePath/setPaths; the
+        # concrete analyzers tests drive have them.
         -
             message: '#Call to an undefined method ShieldCI\\AnalyzersCore\\Contracts\\AnalyzerInterface::(setBasePath|setPaths)\(\)#'
             path: tests
 
-        # Test helper methods with untyped arrays
+        # Framework typing quirks. Testbench types $this->artisan() as PendingCommand|int and
+        # $this->app as Application|null, though both are concrete during a test run.
         -
-            message: '#has parameter \$files with no value type specified in iterable type array#'
-            path: tests/AnalyzerTestCase.php
-        -
-            message: '#has parameter \$analyzerClasses with no value type specified in iterable type array#'
-            path: tests/Unit/AnalyzerManagerTest.php
-
-        # Collection return types (generic type specifications not needed)
-        - '#return type with generic class Illuminate\\Support\\Collection does not specify its types#'
-
-        # Test files: assertions reach into mixed analyzer output (result metadata, decoded
-        # JSON). Scoped to tests and slated for removal once the test suite narrows these.
-        -
-            message: '#Cannot access offset .* on mixed#'
+            message: '#Cannot call method (assertSuccessful|assertFailed|expectsOutput|expectsOutputToContain)\(\) on Illuminate\\Testing\\PendingCommand\|int#'
             path: tests
         -
-            message: '#Part .* \(mixed\) of encapsed string cannot be cast to string#'
+            message: '#Cannot call method (make|singleton|forgetInstance|bind|offsetUnset)\(\) on Illuminate\\Foundation\\Application\|null#'
+            path: tests
+        -
+            message: '#Parameter \#1 \$app of class ShieldCI\\ShieldCIServiceProvider constructor expects .*, Illuminate\\Foundation\\Application\|null given#'
             path: tests
 
-        # Test file specific ignores - artisan command testing returns int|PendingCommand
-        - '#Cannot call method (assertSuccessful|assertFailed|expectsOutput|expectsOutputToContain)\(\) on Illuminate\\Testing\\PendingCommand\|int#'
-
-        # Test files: PHPUnit assertions on already-narrowed types are intentional defensive checks
-        - '#Call to method PHPUnit\\Framework\\Assert::(assertIsArray|assertIsString|assertIsBool|assertTrue|assertFalse)\(\) with .* will always evaluate to true#'
-
-        # Test file singleton/container mock binding
-        - '#Cannot call method singleton\(\) on Illuminate\\Foundation\\Application\|null#'
-
-        # Collection generic types in test helpers
-        - '#has parameter \$results with generic class Illuminate\\Support\\Collection but does not specify its types#'
-
-        # AdvisoryAnalyzer test data - simplified test arrays
-        - '#Parameter \#1 \$dependencies of method ShieldCI\\Support\\SecurityAdvisories\\AdvisoryAnalyzer::analyze\(\) expects#'
-        - '#Parameter \#2 \$advisories of method ShieldCI\\Support\\SecurityAdvisories\\AdvisoryAnalyzer::analyze\(\) expects#'
-
-        # Test files: Orchestra Testbench guarantees $this->app is never null during tests
-        - '#Cannot call method (make|singleton|forgetInstance|bind|offsetUnset)\(\) on Illuminate\\Foundation\\Application\|null#'
-        - '#Parameter \#1 \$app of class ShieldCI\\ShieldCIServiceProvider constructor expects .*, Illuminate\\Foundation\\Application\|null given#'
-
-        # Test files: file_get_contents returns string|false, json_decode returns mixed (controlled in tests)
-        - '#Parameter \#1 \$json of function json_decode expects string, string\|false given#'
-        - '#Parameter \#2 \$data of function hash expects string, string\|false given#'
-        - '#Parameter \#2 \$(haystack|array) of method PHPUnit\\Framework\\Assert::(assertContains|assertArrayNotHasKey|assertCount)\(\) expects .*, mixed given#'
-
-        # Test files: anonymous class method params with untyped arrays
-        -
-            message: '#has parameter \$(headers|options) with no value type specified in iterable type array#'
-            path: tests/Unit/Concerns/AnalyzesHeadersTest.php
-
-        # Test files: assertStringContainsString with nullable string from result objects
-        - '#Parameter \#2 \$haystack of method PHPUnit\\Framework\\Assert::assertStringContainsString\(\) expects string, string\|null given#'
-
-        # Test files: anonymous class helper methods return 'object' type, PHPStan can't resolve methods
+        # Anonymous-class test doubles: helpers return `object`/anonymous types, and Collection
+        # ->first() is nullable, so PHPStan cannot resolve the members the controlled test calls.
         -
             message: '#Call to an undefined method object::#'
             paths:
@@ -93,35 +56,55 @@ parameters:
                 - tests/Unit/Concerns/ParsesPHPStanResultsTest.php
                 - tests/Unit/Concerns/AnalyzesMiddlewareTest.php
                 - tests/Unit/Concerns/ParsesPHPStanAnalysisTest.php
-
-        # Test files: anonymous class parameter type mismatch (convertToString expects specific types)
         -
             message: '#Parameter \#1 \$url of method class@anonymous.*::convertToString\(\) expects#'
             path: tests/Unit/Concerns/FindsLoginRouteTest.php
-
-        # Test files: anonymous class constructor/method type specifications
         -
-            message: '#has parameter \$(router|kernel|search|pattern) with no (type specified|value type specified)#'
-            paths:
-                - tests/Unit/Concerns/AnalyzesMiddlewareTest.php
-                - tests/Unit/Concerns/ParsesPHPStanAnalysisTest.php
-
-        # Test files: array offset access on empty initial array (passes by ref)
+            message: '#has parameter \$results with generic class Illuminate\\Support\\Collection but does not specify its types#'
+            path: tests
         -
             message: '#Offset 0 does not exist on array#'
             path: tests/Unit/Concerns/ParsesPHPStanAnalysisTest.php
+        -
+            message: '#Cannot call method (getId|getAnalyzerId|getMessage)\(\) on ShieldCI\\AnalyzersCore\\Contracts\\(AnalyzerInterface|ResultInterface)\|null#'
+            path: tests/Unit/AnalyzerManagerTest.php
 
-        # Test files: json_encode returns string|false, passed to Response constructor
+        # Assertions over deliberately-mixed analyzer output (result metadata, decoded JSON).
+        # The tests know the concrete shape; PHPStan only sees mixed.
+        -
+            message: '#Cannot access offset .* on mixed#'
+            path: tests
+        -
+            message: '#Part .* \(mixed\) of encapsed string cannot be cast to string#'
+            path: tests
+        -
+            message: '#Call to method PHPUnit\\Framework\\Assert::(assertIsArray|assertIsString|assertIsBool|assertTrue|assertFalse)\(\) with .* will always evaluate to true#'
+            path: tests
+        -
+            message: '#Parameter \#2 \$(haystack|array) of method PHPUnit\\Framework\\Assert::(assertContains|assertArrayNotHasKey|assertCount)\(\) expects .*, mixed given#'
+            path: tests
+        -
+            message: '#Parameter \#2 \$haystack of method PHPUnit\\Framework\\Assert::assertStringContainsString\(\) expects string, string\|null given#'
+            path: tests
+
+        # string|false from json_decode/hash/json_encode on controlled test inputs.
+        -
+            message: '#Parameter \#1 \$json of function json_decode expects string, string\|false given#'
+            path: tests
+        -
+            message: '#Parameter \#2 \$data of function hash expects string, string\|false given#'
+            path: tests
         -
             message: '#Parameter \#3 \$body of class GuzzleHttp\\Psr7\\Response constructor expects .*, string\|false given#'
             path: tests/Unit/Support/SecurityAdvisories/HttpAdvisoryFetcherTest.php
 
-        # Test files: fetch() parameter type for edge case testing
+        # Deliberately-malformed inputs fed to Advisory value objects for edge-case coverage.
+        -
+            message: '#Parameter \#1 \$dependencies of method ShieldCI\\Support\\SecurityAdvisories\\AdvisoryAnalyzer::analyze\(\) expects#'
+            path: tests/Unit/Support/SecurityAdvisories/AdvisoryAnalyzerTest.php
+        -
+            message: '#Parameter \#2 \$advisories of method ShieldCI\\Support\\SecurityAdvisories\\AdvisoryAnalyzer::analyze\(\) expects#'
+            path: tests/Unit/Support/SecurityAdvisories/AdvisoryAnalyzerTest.php
         -
             message: '#Parameter \#1 \$dependencies of method ShieldCI\\Support\\SecurityAdvisories\\HttpAdvisoryFetcher::fetch\(\) expects#'
             path: tests/Unit/Support/SecurityAdvisories/HttpAdvisoryFetcherTest.php
-
-        # Test files: Collection->first() returns nullable but is safe in controlled test context
-        -
-            message: '#Cannot call method (getId|getAnalyzerId|getMessage)\(\) on ShieldCI\\AnalyzersCore\\Contracts\\(AnalyzerInterface|ResultInterface)\|null#'
-            path: tests/Unit/AnalyzerManagerTest.php

@@ -360,7 +360,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
      * Categorize PHPStan issues by matching patterns.
      *
      * @param  array<string>  $activeCategories
-     * @return array<string, Collection>
+     * @return array<string, Collection<int, array{file: string, line: int, message: string}>>
      */
     private function categorizeIssues(PHPStanRunner $runner, array $activeCategories): array
     {

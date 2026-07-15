@@ -109,7 +109,8 @@ class XssAnalyzer extends AbstractFileAnalyzer
         $this->client = new Client;
 
         // Skip HTTP checks in CI mode
-        $this->skipHttpChecks = config('shieldci.ci_mode', false);
+        $ciMode = config('shieldci.ci_mode', false);
+        $this->skipHttpChecks = is_bool($ciMode) ? $ciMode : false;
     }
 
     public function setStatelessOverride(?bool $stateless): void

@@ -106,7 +106,7 @@ class Composer extends BaseComposer
 
         $data = json_decode($content, true);
 
-        return ($data['dev'] ?? true) === true;
+        return (is_array($data) ? ($data['dev'] ?? true) : true) === true;
     }
 
     /**

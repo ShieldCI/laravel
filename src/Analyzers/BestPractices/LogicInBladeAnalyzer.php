@@ -21,6 +21,7 @@ use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\Concerns\ReadsConfigArrays;
 use ShieldCI\Support\BladeCompilerFactory;
 
 /**
@@ -36,6 +37,8 @@ use ShieldCI\Support\BladeCompilerFactory;
  */
 class LogicInBladeAnalyzer extends AbstractFileAnalyzer
 {
+    use ReadsConfigArrays;
+
     public const DEFAULT_MAX_PHP_BLOCK_LINES = 10;
 
     public const DEFAULT_MIN_ARITHMETIC_OPERATORS = 2;
@@ -73,11 +76,10 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
     {
         // Load configuration
         $analyzerConfig = $this->config->get('shieldci.analyzers.best-practices.logic-in-blade', []);
-        $analyzerConfig = is_array($analyzerConfig) ? $analyzerConfig : [];
 
-        $this->maxPhpBlockLines = $analyzerConfig['max_php_block_lines'] ?? self::DEFAULT_MAX_PHP_BLOCK_LINES;
-        $this->minArithmeticOperators = $analyzerConfig['min_arithmetic_operators'] ?? self::DEFAULT_MIN_ARITHMETIC_OPERATORS;
-        $this->maxForeachDepth = $analyzerConfig['max_foreach_depth'] ?? self::DEFAULT_MAX_FOREACH_DEPTH;
+        $this->maxPhpBlockLines = $this->configInt($analyzerConfig, 'max_php_block_lines', self::DEFAULT_MAX_PHP_BLOCK_LINES);
+        $this->minArithmeticOperators = $this->configInt($analyzerConfig, 'min_arithmetic_operators', self::DEFAULT_MIN_ARITHMETIC_OPERATORS);
+        $this->maxForeachDepth = $this->configInt($analyzerConfig, 'max_foreach_depth', self::DEFAULT_MAX_FOREACH_DEPTH);
 
         $issues = [];
 

@@ -226,7 +226,8 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
                 // Check if this file is in ignored list
                 $relativePath = $this->getRelativePath($file->getPathname());
                 $shouldIgnore = false;
-                foreach ($config['ignored_middleware'] as $ignoredPath) {
+                $ignoredMiddleware = $config['ignored_middleware'] ?? [];
+                foreach (is_array($ignoredMiddleware) ? $ignoredMiddleware : [] as $ignoredPath) {
                     if (is_string($ignoredPath) && str_contains($relativePath, $ignoredPath)) {
                         $shouldIgnore = true;
                         break;

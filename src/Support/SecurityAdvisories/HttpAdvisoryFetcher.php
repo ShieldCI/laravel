@@ -95,8 +95,10 @@ class HttpAdvisoryFetcher implements AdvisoryFetcherInterface
                 continue;
             }
 
-            $package = $queries[$index]['package']['name'];
-            $version = $queries[$index]['version'];
+            $query = $queries[$index];
+            $queryPackage = $query['package'] ?? null;
+            $package = is_array($queryPackage) ? ($queryPackage['name'] ?? null) : null;
+            $version = $query['version'] ?? null;
 
             if (! is_string($package) || ! is_string($version)) {
                 continue;
@@ -139,7 +141,7 @@ class HttpAdvisoryFetcher implements AdvisoryFetcherInterface
         $link = null;
         if (isset($vuln['references']) && is_array($vuln['references'])) {
             foreach ($vuln['references'] as $reference) {
-                if (isset($reference['url']) && is_string($reference['url'])) {
+                if (is_array($reference) && isset($reference['url']) && is_string($reference['url'])) {
                     $link = $reference['url'];
                     break;
                 }

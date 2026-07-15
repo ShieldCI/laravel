@@ -307,10 +307,11 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
             $decoded = json_decode($line, true);
 
             if (json_last_error() === JSON_ERROR_NONE && is_array($decoded) && isset($decoded['type']) && is_string($decoded['type'])) {
-                if ($decoded['type'] === 'auditAdvisory' && isset($decoded['data']['advisory']) && is_array($decoded['data']['advisory'])) {
-                    $result['advisories'][] = $decoded['data']['advisory'];
-                } elseif ($decoded['type'] === 'auditSummary' && isset($decoded['data']) && is_array($decoded['data'])) {
-                    $result['summary'] = $decoded['data'];
+                $data = $decoded['data'] ?? null;
+                if ($decoded['type'] === 'auditAdvisory' && is_array($data) && isset($data['advisory']) && is_array($data['advisory'])) {
+                    $result['advisories'][] = $data['advisory'];
+                } elseif ($decoded['type'] === 'auditSummary' && is_array($data)) {
+                    $result['summary'] = $data;
                 }
             }
         }
@@ -402,8 +403,9 @@ class FrontendVulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         }
 
         // Only create summary issue if no detailed issues were created
-        if (! $detailedIssuesCreated && isset($results['metadata']['vulnerabilities']) && is_array($results['metadata']['vulnerabilities'])) {
-            $vulns = $results['metadata']['vulnerabilities'];
+        $metadata = $results['metadata'] ?? null;
+        if (! $detailedIssuesCreated && is_array($metadata) && isset($metadata['vulnerabilities']) && is_array($metadata['vulnerabilities'])) {
+            $vulns = $metadata['vulnerabilities'];
             $total = isset($vulns['total']) && is_numeric($vulns['total']) ? (int) $vulns['total'] : 0;
 
             if ($total > 0) {

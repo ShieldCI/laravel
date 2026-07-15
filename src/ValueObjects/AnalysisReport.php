@@ -49,6 +49,9 @@ final class AnalysisReport
         return (int) round(($passed / $denominator) * 100);
     }
 
+    /**
+     * @return Collection<int, ResultInterface>
+     */
     public function passed(): Collection
     {
         return $this->results->filter(
@@ -56,6 +59,9 @@ final class AnalysisReport
         );
     }
 
+    /**
+     * @return Collection<int, ResultInterface>
+     */
     public function failed(): Collection
     {
         return $this->results->filter(
@@ -63,6 +69,9 @@ final class AnalysisReport
         );
     }
 
+    /**
+     * @return Collection<int, ResultInterface>
+     */
     public function warnings(): Collection
     {
         return $this->results->filter(
@@ -70,6 +79,9 @@ final class AnalysisReport
         );
     }
 
+    /**
+     * @return Collection<int, ResultInterface>
+     */
     public function skipped(): Collection
     {
         return $this->results->filter(
@@ -77,6 +89,9 @@ final class AnalysisReport
         );
     }
 
+    /**
+     * @return Collection<int, ResultInterface>
+     */
     public function errors(): Collection
     {
         return $this->results->filter(

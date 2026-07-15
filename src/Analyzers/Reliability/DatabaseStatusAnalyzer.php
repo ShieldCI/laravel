@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Reliability;
 
-use Illuminate\Support\Facades\DB;
+use Illuminate\Database\DatabaseManager;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -35,7 +35,7 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
 
     public function __construct(?DatabaseConnectionChecker $connectionChecker = null)
     {
-        $this->connectionChecker = $connectionChecker ?? new DatabaseConnectionChecker(DB::getFacadeRoot());
+        $this->connectionChecker = $connectionChecker ?? new DatabaseConnectionChecker(app(DatabaseManager::class));
     }
 
     protected function metadata(): AnalyzerMetadata

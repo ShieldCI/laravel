@@ -102,7 +102,8 @@ class Reporter implements ReporterInterface
                 $metadata = $result->getMetadata();
 
                 // Get name from metadata
-                $name = $metadata['name'] ?? $result->getAnalyzerId();
+                $nameValue = $metadata['name'] ?? null;
+                $name = is_string($nameValue) ? $nameValue : $result->getAnalyzerId();
 
                 // Build status line with optional timeToFix
                 $statusLine = "{$name}. {$status}";
@@ -554,7 +555,7 @@ class Reporter implements ReporterInterface
 
     public function toJson(AnalysisReport $report): string
     {
-        return json_encode($report->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        return json_encode($report->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) ?: '';
     }
 
     public function toApi(AnalysisReport $report): array
@@ -775,7 +776,8 @@ class Reporter implements ReporterInterface
         $metadata = $result->getMetadata();
 
         // Get name from metadata
-        $name = $metadata['name'] ?? $result->getAnalyzerId();
+        $nameValue = $metadata['name'] ?? null;
+        $name = is_string($nameValue) ? $nameValue : $result->getAnalyzerId();
 
         // Build status line with optional timeToFix
         $statusLine = "{$name}. {$status}";

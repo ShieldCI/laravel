@@ -7,6 +7,7 @@ namespace ShieldCI\Support;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use ShieldCI\AnalyzersCore\Support\PlatformDetector;
+use ShieldCI\Concerns\ReadsConfigArrays;
 use Symfony\Component\Process\Process;
 
 /**
@@ -17,6 +18,8 @@ use Symfony\Component\Process\Process;
  */
 class PHPStanRunner
 {
+    use ReadsConfigArrays;
+
     /**
      * Known false positive patterns to suppress.
      *
@@ -91,11 +94,8 @@ class PHPStanRunner
 
             // Parse JSON output
             $output = $process->getOutput();
-            $this->result = json_decode($output, true);
-
-            if (! is_array($this->result)) {
-                $this->result = ['files' => []];
-            }
+            $decoded = json_decode($output, true);
+            $this->result = is_array($decoded) ? $this->toStringKeyedArray($decoded) : ['files' => []];
         } finally {
             // Clean up temp config file
             $this->cleanupTempConfig();
@@ -211,13 +211,15 @@ class PHPStanRunner
      */
     public function getIssues(): Collection
     {
-        if ($this->result === null || ! isset($this->result['files'])) {
+        $files = $this->result['files'] ?? null;
+
+        if (! is_array($files)) {
             return collect();
         }
 
         $issues = [];
 
-        foreach ($this->result['files'] as $file => $fileData) {
+        foreach ($files as $file => $fileData) {
             if (! is_string($file) || ! is_array($fileData) || ! isset($fileData['messages']) || ! is_array($fileData['messages'])) {
                 continue;
             }

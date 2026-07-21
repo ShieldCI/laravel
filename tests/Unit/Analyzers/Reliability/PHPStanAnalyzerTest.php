@@ -585,6 +585,42 @@ PHP;
         $this->assertStringContainsString('exceeded the timeout of 1', $result->getMessage());
     }
 
+    public function test_passes_configured_memory_limit_to_phpstan(): void
+    {
+        $tempDir = $this->createTempDirectory(['app/Services/ValidService.php' => "<?php\nclass ValidService {}"]);
+        $argsFile = $tempDir.'/captured_args.txt';
+
+        @mkdir($tempDir.'/vendor/bin', 0755, true);
+        // Records the arguments PHPStan was invoked with, then returns empty JSON.
+        $script = <<<BASH
+#!/bin/bash
+printf '%s\\n' "\$@" > "{$argsFile}"
+echo '{"files":[]}'
+BASH;
+        file_put_contents($tempDir.'/vendor/bin/phpstan', $script);
+        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+
+        $configRepo = new Repository([
+            'shieldci' => [
+                'memory_limit' => '2048M',
+                'analyzers' => ['reliability' => ['enabled' => true, 'phpstan' => [
+                    'level' => 5, 'paths' => ['app'], 'categories' => ['undefined-variable'], 'disabled_categories' => [],
+                ]]],
+            ],
+        ]);
+
+        $analyzer = new PHPStanAnalyzer($configRepo);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $analyzer->analyze();
+
+        $this->assertFileExists($argsFile);
+        $captured = file_get_contents($argsFile);
+        $this->assertIsString($captured);
+        $this->assertStringContainsString('--memory-limit=2048M', $captured);
+    }
+
     /**
      * Create a mock PHPStan script that returns predefined issues.
      *

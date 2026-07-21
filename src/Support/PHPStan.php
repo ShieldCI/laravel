@@ -238,6 +238,19 @@ class PHPStan
             $result[] = $option;
         }
 
+        // Apply shieldci.memory_limit to the PHPStan subprocess (per-process ceiling,
+        // parallel workers included) unless the user already pinned --memory-limit above.
+        $memoryLimit = config('shieldci.memory_limit');
+
+        $hasMemoryLimit = array_filter(
+            $result,
+            static fn (string $option): bool => str_starts_with($option, '--memory-limit'),
+        ) !== [];
+
+        if (! $hasMemoryLimit && is_string($memoryLimit) && PHPStanRunner::isValidMemoryLimit($memoryLimit)) {
+            $result[] = '--memory-limit='.$memoryLimit;
+        }
+
         return $result;
     }
 

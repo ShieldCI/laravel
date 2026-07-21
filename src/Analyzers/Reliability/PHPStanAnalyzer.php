@@ -309,9 +309,12 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         $timeoutConfig = $this->config->get('shieldci.timeout', 300);
         $timeout = is_int($timeoutConfig) ? $timeoutConfig : (is_numeric($timeoutConfig) ? (int) $timeoutConfig : 300);
 
+        $memoryLimitConfig = $this->config->get('shieldci.memory_limit');
+        $memoryLimit = is_string($memoryLimitConfig) && $memoryLimitConfig !== '' ? $memoryLimitConfig : null;
+
         try {
             // Run PHPStan once on all paths
-            $runner->analyze($paths, $level, $timeout);
+            $runner->analyze($paths, $level, $timeout, $memoryLimit);
 
             // Categorize all issues
             $categorizedIssues = $this->categorizeIssues($runner, $activeCategories);

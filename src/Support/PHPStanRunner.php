@@ -63,7 +63,7 @@ class PHPStanRunner
      * @param  string|array<string>  $paths
      * @return $this
      */
-    public function analyze(string|array $paths, int $level = 5, int $timeout = 300): self
+    public function analyze(string|array $paths, int $level = 5, int $timeout = 300, ?string $memoryLimit = null): self
     {
         $paths = is_array($paths) ? $paths : [$paths];
 
@@ -81,6 +81,13 @@ class PHPStanRunner
                 '--no-progress',
                 '--no-interaction',
             ];
+
+            // Apply the configured memory limit to the PHPStan subprocess. PHPStan's
+            // --memory-limit sets the ceiling per process (including parallel workers),
+            // so shieldci.memory_limit governs static analysis, not just the main process.
+            if ($memoryLimit !== null && self::isValidMemoryLimit($memoryLimit)) {
+                $command[] = '--memory-limit='.$memoryLimit;
+            }
 
             // Add paths
             foreach ($paths as $path) {
@@ -321,5 +328,16 @@ class PHPStanRunner
     public function isAvailable(): bool
     {
         return file_exists($this->basePath.'/vendor/bin/phpstan');
+    }
+
+    /**
+     * Validate a php.ini-style memory limit string (e.g. "512M", "2G", "-1").
+     *
+     * Invalid values are rejected so a misconfigured shieldci.memory_limit falls
+     * back to PHPStan's ambient limit instead of breaking analysis outright.
+     */
+    public static function isValidMemoryLimit(string $value): bool
+    {
+        return preg_match('/^(-1|\d+[KMGkmg]?)$/', $value) === 1;
     }
 }

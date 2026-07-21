@@ -668,6 +668,51 @@ BASH;
         $runner->analyze(['app'], 5, 1); // 1-second timeout
     }
 
+    public function test_analyze_passes_memory_limit_to_phpstan(): void
+    {
+        $this->createMockPHPStanWithArgCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app'], 5, 300, '2048M');
+
+        $this->assertStringContainsString('--memory-limit=2048M', $this->getCapturedArgs());
+    }
+
+    public function test_analyze_omits_memory_limit_when_null(): void
+    {
+        $this->createMockPHPStanWithArgCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app'], 5, 300, null);
+
+        $this->assertStringNotContainsString('--memory-limit', $this->getCapturedArgs());
+    }
+
+    public function test_analyze_omits_invalid_memory_limit(): void
+    {
+        $this->createMockPHPStanWithArgCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app'], 5, 300, 'not-a-size');
+
+        $this->assertStringNotContainsString('--memory-limit', $this->getCapturedArgs());
+    }
+
+    public function test_is_valid_memory_limit_accepts_php_ini_formats(): void
+    {
+        $this->assertTrue(PHPStanRunner::isValidMemoryLimit('512M'));
+        $this->assertTrue(PHPStanRunner::isValidMemoryLimit('2048M'));
+        $this->assertTrue(PHPStanRunner::isValidMemoryLimit('2G'));
+        $this->assertTrue(PHPStanRunner::isValidMemoryLimit('1024k'));
+        $this->assertTrue(PHPStanRunner::isValidMemoryLimit('134217728'));
+        $this->assertTrue(PHPStanRunner::isValidMemoryLimit('-1'));
+
+        $this->assertFalse(PHPStanRunner::isValidMemoryLimit(''));
+        $this->assertFalse(PHPStanRunner::isValidMemoryLimit('not-a-size'));
+        $this->assertFalse(PHPStanRunner::isValidMemoryLimit('512MB'));
+        $this->assertFalse(PHPStanRunner::isValidMemoryLimit('1.5G'));
+    }
+
     /**
      * Create a mock PHPStan script that returns predefined issues.
      *
@@ -769,6 +814,54 @@ BASH;
 
         $content = file_get_contents($path);
         $this->assertIsString($content, 'Captured config file should be readable');
+
+        return $content;
+    }
+
+    /**
+     * Create a mock PHPStan script that records every argument it is invoked with.
+     */
+    private function createMockPHPStanWithArgCapture(): void
+    {
+        $vendorBinDir = $this->tempDir.'/vendor/bin';
+        mkdir($vendorBinDir, 0755, true);
+
+        $output = [
+            'totals' => [
+                'errors' => 0,
+                'file_errors' => 0,
+            ],
+            'files' => [],
+            'errors' => [],
+        ];
+
+        $json = json_encode($output, JSON_PRETTY_PRINT);
+        $capturedArgsPath = $this->tempDir.'/captured_args.txt';
+
+        // Script that records each argument on its own line, then outputs JSON.
+        $script = <<<BASH
+#!/bin/bash
+printf '%s\\n' "\$@" > "{$capturedArgsPath}"
+
+cat <<'EOF'
+{$json}
+EOF
+BASH;
+
+        file_put_contents($vendorBinDir.'/phpstan', $script);
+        chmod($vendorBinDir.'/phpstan', 0755);
+    }
+
+    /**
+     * Read the captured argument list content.
+     */
+    private function getCapturedArgs(): string
+    {
+        $path = $this->tempDir.'/captured_args.txt';
+        $this->assertFileExists($path, 'Captured args file should exist');
+
+        $content = file_get_contents($path);
+        $this->assertIsString($content, 'Captured args file should be readable');
 
         return $content;
     }

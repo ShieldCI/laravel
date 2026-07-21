@@ -289,6 +289,57 @@ class PHPStanTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_appends_memory_limit_from_config_to_options(): void
+    {
+        config(['shieldci.memory_limit' => '2048M']);
+
+        $phpstan = new TestablePHPStan;
+        $options = $phpstan->publicGetPHPStanOptions();
+
+        $this->assertContains('--memory-limit=2048M', $options);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_omits_memory_limit_when_config_value_is_invalid(): void
+    {
+        config(['shieldci.memory_limit' => 'not-a-size']);
+
+        $phpstan = new TestablePHPStan;
+        $options = $phpstan->publicGetPHPStanOptions();
+
+        foreach ($options as $option) {
+            $this->assertStringNotContainsString('--memory-limit', $option);
+        }
+    }
+
+    /** @test */
+    #[Test]
+    public function it_does_not_duplicate_user_provided_memory_limit_option(): void
+    {
+        config([
+            'shieldci.memory_limit' => '2048M',
+            'shieldci.analyzers.reliability.phpstan.options' => [
+                '--error-format' => 'json',
+                '--no-progress' => true,
+                '--memory-limit' => '1G',
+            ],
+        ]);
+
+        $phpstan = new TestablePHPStan;
+        $options = $phpstan->publicGetPHPStanOptions();
+
+        $memoryOptions = array_values(array_filter(
+            $options,
+            static fn (string $option): bool => str_starts_with($option, '--memory-limit'),
+        ));
+
+        $this->assertCount(1, $memoryOptions);
+        $this->assertSame('--memory-limit=1G', $memoryOptions[0]);
+    }
+
+    /** @test */
+    #[Test]
     public function it_gets_default_config_path(): void
     {
         $phpstan = new TestablePHPStan;

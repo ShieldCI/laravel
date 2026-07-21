@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.12.3
+
+### Fixed
+- `shieldci.memory_limit` is now passed to the PHPStan analyzer's subprocess via `--memory-limit`, so analyzing a large project no longer exhausts the ambient PHP memory limit while PHPStan builds ASTs (#295)
+
 ## v1.12.2
 
 ### Fixed

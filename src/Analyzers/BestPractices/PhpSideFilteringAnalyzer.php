@@ -396,10 +396,13 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
         // Filtering by an authorization check (->can(), ->hasRole(), Gate::allows()) or by a
         // JSON/array-cast attribute sub-key ($q->config['required']) cannot be expressed as a
         // portable SQL where clause, so flagging it as "filter in the database" is a false
-        // positive. Skip filter()/reject() with such closures.
+        // positive. The same applies to an argument-less filter()/reject(): with no callback
+        // there is no predicate to translate into SQL — it merely drops falsy elements, such
+        // as the nulls left by a preceding map()/pluck(). Skip these filter()/reject() calls.
         $methodName = $node->name->toString();
         if (in_array($methodName, ['filter', 'reject'], true)
-            && ($this->filterCallbackUsesAuthorization($node)
+            && ($node->args === []
+                || $this->filterCallbackUsesAuthorization($node)
                 || $this->filterCallbackAccessesJsonAttribute($node))) {
             return;
         }

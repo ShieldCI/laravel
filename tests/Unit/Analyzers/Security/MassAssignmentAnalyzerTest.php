@@ -1171,7 +1171,7 @@ PHP;
         $this->assertHasIssueContaining('updateOrInsert()', $result);
     }
 
-    public function test_detects_nested_request_data_in_array(): void
+    public function test_detects_nested_request_data_under_dynamic_array_key(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1184,9 +1184,10 @@ class UserController extends Controller
 {
     public function store()
     {
+        $column = request()->input('column');
+
         return User::create([
-            'name' => request()->all()['name'],
-            'email' => request()->all()['email'],
+            $column => request()->all()['name'],
         ]);
     }
 }
@@ -1208,7 +1209,7 @@ PHP;
         $this->assertHasIssueContaining('unfiltered request data', $result);
     }
 
-    public function test_detects_nested_request_except_in_array(): void
+    public function test_detects_nested_request_except_under_dynamic_array_key(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1221,9 +1222,10 @@ class UserController extends Controller
 {
     public function store()
     {
+        $column = request()->input('column');
+
         return User::create([
-            'name' => request()->except(['password'])['name'],
-            'email' => request()->except(['password'])['email'],
+            $column => request()->except(['password'])['name'],
         ]);
     }
 }
@@ -1274,9 +1276,7 @@ class UserController extends Controller
     public function update()
     {
         $user = User::find(1);
-        $user->update([
-            'name' => request()->input()['name'],
-        ]);
+        $user->update(request()->all()['user']);
     }
 }
 PHP;
@@ -1309,9 +1309,9 @@ class UserController extends Controller
 {
     public function store()
     {
-        return User::create([
-            'name' => true ? request()->all()['name'] : 'default',
-        ]);
+        $useRequest = true;
+
+        return User::create($useRequest ? request()->all() : ['name' => 'default']);
     }
 }
 PHP;
@@ -1331,7 +1331,7 @@ PHP;
         $this->assertHasIssueContaining('create()', $result);
     }
 
-    public function test_detects_request_data_in_string_concatenation(): void
+    public function test_detects_request_data_in_array_union(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1344,9 +1344,9 @@ class UserController extends Controller
 {
     public function store()
     {
-        return User::create([
-            'name' => 'Mr. ' . request()->all()['name'],
-        ]);
+        $defaults = ['role' => 'member'];
+
+        return User::create($defaults + request()->all());
     }
 }
 PHP;
@@ -1379,9 +1379,7 @@ class UserController extends Controller
 {
     public function store()
     {
-        return User::create([
-            'name' => (string) request()->all()['name'],
-        ]);
+        return User::create((array) request()->all());
     }
 }
 PHP;
@@ -1469,6 +1467,175 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    public function test_passes_when_update_uses_only_literal_keys_with_collection_all(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
+
+class ReportController extends Controller
+{
+    public function update(Request $request, $model): void
+    {
+        $days = new Collection([1, 2, 3]);
+        $model->update([
+            'days' => $days->all(),
+            'total' => 5,
+        ]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["days"]; }',
+            'Controllers/ReportController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_request_value_sits_under_a_literal_key(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+
+class ThingController extends Controller
+{
+    public function update(Request $request, $model): void
+    {
+        $model->update(['name' => $request->all()['name']]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/ThingController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_request_data_is_spread_into_a_literal_array(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+
+class ThingController extends Controller
+{
+    public function update(Request $request, $model): void
+    {
+        $model->update(['status' => 'active', ...$request->all()]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["status"]; }',
+            'Controllers/ThingController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('update()', $result);
+    }
+
+    public function test_fails_when_request_data_sits_under_a_dynamic_key(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+
+class ThingController extends Controller
+{
+    public function update(Request $request, $model): void
+    {
+        $key = $request->input('field');
+        $model->update([$key => $request->all()]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/ThingController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('update()', $result);
+    }
+
+    public function test_fails_when_request_row_is_positional_in_insert(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\DB;
+
+class UserController extends Controller
+{
+    public function bulkInsert(): void
+    {
+        DB::table('users')->insert([request()->all()]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/User.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class User extends Model { protected $fillable = ["name"]; }',
+            'Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('insert()', $result);
     }
 
     public function test_detects_fully_qualified_model_class(): void
@@ -2048,7 +2215,7 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_detects_nested_json_without_arguments(): void
+    public function test_detects_nested_json_under_dynamic_array_key(): void
     {
         $code = <<<'PHP'
 <?php
@@ -2061,9 +2228,11 @@ class UserController extends Controller
 {
     public function store()
     {
-        // Nested request()->json() without args in array - should detect
+        $column = request()->input('column');
+
+        // Nested request()->json() without args under a dynamic key - should detect
         return User::create([
-            'data' => request()->json(),
+            $column => request()->json(),
         ]);
     }
 }

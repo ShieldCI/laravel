@@ -3223,9 +3223,8 @@ PHP;
 
     public function test_still_detects_filter_without_inspectable_closure(): void
     {
-        // A variable callback (non-closure) and an argument-less filter() cannot be
-        // inspected for authorization calls, so both are still flagged. This also
-        // exercises the non-closure and missing-argument branches.
+        // A variable callback (non-closure) cannot be inspected for authorization
+        // calls, so it is still flagged. This exercises the non-closure branch.
         $code = <<<'PHP'
 <?php
 
@@ -3236,7 +3235,6 @@ class UserService
     public function process(callable $check)
     {
         \App\Models\User::get()->filter($check);
-        \App\Models\Post::get()->filter();
     }
 }
 PHP;
@@ -3251,6 +3249,95 @@ PHP;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertCount(2, $issues);
+        $this->assertCount(1, $issues);
+    }
+
+    public function test_passes_with_bare_filter_after_map(): void
+    {
+        // An argument-less filter() has no predicate to translate into SQL — it
+        // only drops the nulls the preceding map() produced.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function options(): array
+    {
+        return User::query()->get()
+            ->map(fn ($u) => $u->id > 0 ? ['v' => $u->id] : null)
+            ->filter()
+            ->values()
+            ->all();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_passes_with_bare_filter_after_pluck_on_relationship(): void
+    {
+        // Compacting null plucked pivot keys from an already-loaded relation.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function ids(User $user): array
+    {
+        return $user->deductions->pluck('pivot.id')->filter()->all();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_passes_with_bare_reject_after_get(): void
+    {
+        // An argument-less reject() likewise carries no SQL-translatable predicate.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function truthy()
+    {
+        return User::query()->get()->reject();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
     }
 }

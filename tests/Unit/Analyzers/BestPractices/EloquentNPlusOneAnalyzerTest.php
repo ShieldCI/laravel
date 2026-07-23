@@ -3223,4 +3223,104 @@ PHP;
 
         $this->assertPassed($result);
     }
+
+    public function test_lock_for_update_in_loop_is_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class StockController
+{
+    public function issue(array $items): void
+    {
+        foreach ($items as $item) {
+            // Pessimistic lock is inherently per-row - not an N+1 to fix
+            $stock = StoreItem::lockForUpdate()->whereKey($item['id'])->firstOrFail();
+            $stock->decrement('quantity', $item['qty']);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/StockController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - a lockForUpdate chain cannot be eager-loaded or batched
+        $this->assertPassed($result);
+    }
+
+    public function test_shared_lock_in_loop_is_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class StockController
+{
+    public function read(array $ids): void
+    {
+        foreach ($ids as $id) {
+            $row = StoreItem::where('id', $id)->sharedLock()->first();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/StockController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - sharedLock anywhere in the chain marks it per-row
+        $this->assertPassed($result);
+    }
+
+    public function test_lockless_chain_in_loop_is_still_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class StockController
+{
+    public function issue(array $items): void
+    {
+        foreach ($items as $item) {
+            // Same shape as the lock tests but without a lock - genuine N+1
+            $stock = StoreItem::whereKey($item['id'])->firstOrFail();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/StockController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should flag - loop-dependent query with no lock in the chain
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('StoreItem::whereKey', $result);
+    }
 }

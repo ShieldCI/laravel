@@ -601,6 +601,12 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     ];
 
     /**
+     * @var array<string> Pessimistic-lock builder methods. A query acquiring one is
+     *                    inherently per-row and can neither be eager-loaded nor batched.
+     */
+    private const LOCK_METHODS = ['lockforupdate', 'sharedlock'];
+
+    /**
      * @var array<int, array{relationship: string, line: int, loop_type: string, variable: string}>
      */
     private array $issues = [];
@@ -855,10 +861,12 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     // Walk up the chain to find if it starts with a static call (Model::)
                     $queryDescription = $this->getQueryChainDescription($node);
                     if ($queryDescription !== null) {
-                        // Only flag if query depends on loop variable (true N+1 pattern) and
-                        // is not a uniqueness-probe loop condition (generate-until-unique idiom).
+                        // Only flag if query depends on loop variable (true N+1 pattern), is
+                        // not a uniqueness-probe loop condition (generate-until-unique idiom),
+                        // and does not acquire a pessimistic lock (inherently per-row).
                         if ($this->queryDependsOnLoop($node, $currentLoop)
-                            && ! isset($this->uniquenessProbeNodes[spl_object_id($node)])) {
+                            && ! isset($this->uniquenessProbeNodes[spl_object_id($node)])
+                            && ! $this->chainAcquiresLock($node)) {
                             $this->queryIssues[] = [
                                 'query' => $queryDescription,
                                 'line' => $node->getStartLine(),
@@ -1365,6 +1373,26 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         }
 
         return null;
+    }
+
+    /**
+     * Check if any call in a method chain acquires a pessimistic row lock.
+     */
+    private function chainAcquiresLock(Expr\MethodCall $node): bool
+    {
+        $current = $node;
+
+        while ($current instanceof Expr\MethodCall) {
+            if ($current->name instanceof Node\Identifier
+                && in_array(strtolower($current->name->toString()), self::LOCK_METHODS, true)) {
+                return true;
+            }
+            $current = $current->var;
+        }
+
+        return $current instanceof Expr\StaticCall
+            && $current->name instanceof Node\Identifier
+            && in_array(strtolower($current->name->toString()), self::LOCK_METHODS, true);
     }
 
     /**

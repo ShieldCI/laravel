@@ -681,6 +681,12 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
+            // A column set fixed by literal keys cannot mass-assign
+            // attacker-chosen columns, wherever its values come from.
+            if ($this->isClosedLiteralKeyArray($arg->value)) {
+                continue;
+            }
+
             // Recursively check for blacklist filtering first (except)
             if ($this->containsBlacklistRequestData($arg->value)) {
                 $callTypeLabel = match ($callType) {
@@ -734,6 +740,34 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 break;
             }
         }
+    }
+
+    /**
+     * True when the node is an array literal whose column set is fixed in source:
+     * every element has a literal string key, with no spread (...$data) and no
+     * dynamic/computed key. Such an array cannot mass-assign attacker-chosen
+     * columns regardless of where its values come from.
+     */
+    private function isClosedLiteralKeyArray(Node $node): bool
+    {
+        if (! $node instanceof Node\Expr\Array_) {
+            return false;
+        }
+
+        foreach ($node->items as $item) {
+            // php-parser 4.x leaves null slots for empty array elements.
+            if ($item === null || $item->unpack) {
+                return false;
+            }
+
+            // A positional element or computed key means the column name is
+            // not fixed at author time.
+            if (! $item->key instanceof Node\Scalar\String_) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

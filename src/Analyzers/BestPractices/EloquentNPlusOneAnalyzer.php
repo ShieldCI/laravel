@@ -9,6 +9,7 @@ use PhpParser\Node\Expr;
 use PhpParser\Node\Stmt;
 use PhpParser\NodeFinder;
 use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\ParentConnectingVisitor;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -84,6 +85,7 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
 
                 $visitor = new NPlusOneVisitor($scanResult);
                 $traverser = new NodeTraverser;
+                $traverser->addVisitor(new ParentConnectingVisitor);
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
 
@@ -210,6 +212,7 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
 
         $visitor = new NPlusOneVisitor($scanResult, $seed);
         $traverser = new NodeTraverser;
+        $traverser->addVisitor(new ParentConnectingVisitor);
         $traverser->addVisitor($visitor);
         $traverser->traverse($ast);
 
@@ -842,7 +845,9 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     // Direct query execution methods
                     if ($this->isQueryExecutionMethod($methodName)) {
                         // Only flag if query depends on loop variable (true N+1 pattern)
-                        if ($this->queryDependsOnLoop($node, $currentLoop)) {
+                        // and the loop can actually iterate again after the query runs.
+                        if ($this->queryDependsOnLoop($node, $currentLoop)
+                            && ! $this->loopExitsAfterQuery($node)) {
                             $this->queryIssues[] = [
                                 'query' => "{$className}::{$methodName}()",
                                 'line' => $node->getStartLine(),
@@ -863,10 +868,12 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     if ($queryDescription !== null) {
                         // Only flag if query depends on loop variable (true N+1 pattern), is
                         // not a uniqueness-probe loop condition (generate-until-unique idiom),
-                        // and does not acquire a pessimistic lock (inherently per-row).
+                        // does not acquire a pessimistic lock (inherently per-row), and the
+                        // loop can actually iterate again after the query runs.
                         if ($this->queryDependsOnLoop($node, $currentLoop)
                             && ! isset($this->uniquenessProbeNodes[spl_object_id($node)])
-                            && ! $this->chainAcquiresLock($node)) {
+                            && ! $this->chainAcquiresLock($node)
+                            && ! $this->loopExitsAfterQuery($node)) {
                             $this->queryIssues[] = [
                                 'query' => $queryDescription,
                                 'line' => $node->getStartLine(),
@@ -1393,6 +1400,142 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         return $current instanceof Expr\StaticCall
             && $current->name instanceof Node\Identifier
             && in_array(strtolower($current->name->toString()), self::LOCK_METHODS, true);
+    }
+
+    /**
+     * True if control unconditionally leaves every enclosing loop once the query
+     * statement finishes, so the query executes at most once per method call.
+     *
+     * Walks parent links (set by ParentConnectingVisitor) from the query up to the
+     * innermost loop: the statements following the query — climbing out of
+     * if/elseif/else blocks — must exit via return, throw, or a break when only a
+     * single loop encloses the query. Anything else (conditional exits, try/catch,
+     * switch, closures) is treated as repeatable.
+     */
+    private function loopExitsAfterQuery(Node $queryNode): bool
+    {
+        // Climb from the query expression to its enclosing statement.
+        $current = $queryNode->getAttribute('parent');
+
+        while ($current instanceof Node && ! $current instanceof Stmt) {
+            if ($current instanceof Expr\Closure || $current instanceof Expr\ArrowFunction) {
+                return false; // deferred execution — control flow is unknowable
+            }
+            $current = $current->getAttribute('parent');
+        }
+
+        if ($this->isLoopNode($current)) {
+            // The query sits in a loop header (while/for condition, foreach
+            // iterable) and re-runs as that loop iterates.
+            return false;
+        }
+
+        while ($current instanceof Stmt) {
+            $parent = $current->getAttribute('parent');
+
+            if (! $parent instanceof Node) {
+                return false;
+            }
+
+            $siblings = $this->stmtListContaining($parent, $current);
+
+            if ($siblings === null) {
+                // Unsupported construct (try/catch, switch, ...): a throw may be
+                // caught and the loop resumed, so treat the query as repeatable.
+                return false;
+            }
+
+            $index = array_search($current, $siblings, true);
+
+            if (! is_int($index)) {
+                return false;
+            }
+
+            $suffix = array_slice($siblings, $index + 1);
+
+            if ($suffix !== []) {
+                return $this->stmtsExitEveryLoop($suffix);
+            }
+
+            if ($this->isLoopNode($parent)) {
+                // End of the loop body without an unconditional exit: the next
+                // iteration begins.
+                return false;
+            }
+
+            // Nothing follows at this level: control flows out of the enclosing
+            // construct. Else/elseif branches rejoin after their If_ statement.
+            $current = $parent instanceof Stmt\ElseIf_ || $parent instanceof Stmt\Else_
+                ? $parent->getAttribute('parent')
+                : $parent;
+        }
+
+        return false;
+    }
+
+    /**
+     * True if the node is one of the loop constructs this visitor tracks.
+     */
+    private function isLoopNode(mixed $node): bool
+    {
+        return $node instanceof Stmt\Foreach_ || $node instanceof Stmt\For_
+            || $node instanceof Stmt\While_ || $node instanceof Stmt\Do_;
+    }
+
+    /**
+     * The statement list of $parent that directly contains $child, for constructs
+     * this heuristic can reason about; null for anything else.
+     *
+     * @return array<int, Stmt>|null
+     */
+    private function stmtListContaining(Node $parent, Stmt $child): ?array
+    {
+        $stmts = match (true) {
+            $parent instanceof Stmt\If_,
+            $parent instanceof Stmt\ElseIf_,
+            $parent instanceof Stmt\Else_,
+            $parent instanceof Stmt\Block,
+            $parent instanceof Stmt\Foreach_,
+            $parent instanceof Stmt\For_,
+            $parent instanceof Stmt\While_,
+            $parent instanceof Stmt\Do_ => $parent->stmts,
+            default => null,
+        };
+
+        return $stmts !== null && in_array($child, $stmts, true) ? $stmts : null;
+    }
+
+    /**
+     * True if this statement run unconditionally exits every enclosing loop before
+     * any construct that could let the loop iterate again.
+     *
+     * @param  array<int, Stmt>  $stmts
+     */
+    private function stmtsExitEveryLoop(array $stmts): bool
+    {
+        foreach ($stmts as $stmt) {
+            if ($stmt instanceof Stmt\Return_) {
+                return true;
+            }
+
+            if ($stmt instanceof Stmt\Break_) {
+                // break exits only the innermost loop, so it proves at-most-once
+                // execution only when a single loop encloses the query.
+                return $stmt->num === null && count($this->loopStack) === 1;
+            }
+
+            if ($stmt instanceof Stmt\Expression) {
+                if ($stmt->expr instanceof Expr\Throw_) {
+                    return true;
+                }
+
+                continue; // plain expressions cannot re-enter the loop
+            }
+
+            return false;
+        }
+
+        return false;
     }
 
     /**

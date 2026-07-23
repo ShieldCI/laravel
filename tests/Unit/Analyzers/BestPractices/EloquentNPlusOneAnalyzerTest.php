@@ -3323,4 +3323,441 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('StoreItem::whereKey', $result);
     }
+
+    public function test_find_followed_by_return_in_loop_is_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AssignmentController
+{
+    public function attach(array $incoming): string
+    {
+        foreach ($incoming as $employeeId) {
+            if ($this->deployedElsewhere($employeeId)) {
+                // Runs at most once: the branch unconditionally leaves the loop
+                $employee = Employee::find($employeeId);
+
+                return 'already deployed';
+            }
+        }
+
+        return 'attached';
+    }
+
+    private function deployedElsewhere(int $id): bool
+    {
+        return $id > 100;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/AssignmentController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - the query's branch returns, so it executes at most once
+        $this->assertPassed($result);
+    }
+
+    public function test_chain_query_followed_by_return_in_loop_is_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AssignmentController
+{
+    public function attach(array $ids): ?object
+    {
+        foreach ($ids as $id) {
+            if ($id > 100) {
+                $employee = Employee::where('id', $id)->first();
+
+                return $employee;
+            }
+        }
+
+        return null;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/AssignmentController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - method-chain query followed by an unconditional return
+        $this->assertPassed($result);
+    }
+
+    public function test_query_followed_by_throw_in_loop_is_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class ItemController
+{
+    public function validateAll(array $ids): void
+    {
+        foreach ($ids as $id) {
+            if ($id < 0) {
+                $item = Item::find($id);
+
+                throw new \RuntimeException('invalid item');
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/ItemController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - throw unconditionally exits the loop
+        $this->assertPassed($result);
+    }
+
+    public function test_query_followed_by_break_in_single_loop_is_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class ItemController
+{
+    public function firstMatch(array $ids): void
+    {
+        foreach ($ids as $id) {
+            if ($id > 100) {
+                $match = Item::find($id);
+                break;
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/ItemController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - break exits the only enclosing loop
+        $this->assertPassed($result);
+    }
+
+    public function test_query_followed_by_log_then_return_is_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AssignmentController
+{
+    public function attach(array $ids): string
+    {
+        foreach ($ids as $id) {
+            if ($id > 100) {
+                $employee = Employee::find($id);
+                Log::info('conflict found');
+
+                return 'conflict';
+            }
+        }
+
+        return 'attached';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/AssignmentController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - plain expression statements cannot re-enter the loop
+        $this->assertPassed($result);
+    }
+
+    public function test_query_in_if_with_return_after_if_is_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class ItemController
+{
+    public function firstOnly(array $ids): ?object
+    {
+        foreach ($ids as $id) {
+            if ($id > 0) {
+                $item = Item::find($id);
+            }
+
+            return $item ?? null;
+        }
+
+        return null;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/ItemController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - the loop body unconditionally returns after the if block
+        $this->assertPassed($result);
+    }
+
+    public function test_query_in_elseif_and_else_followed_by_return_is_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class ItemController
+{
+    public function resolve(array $ids): ?object
+    {
+        foreach ($ids as $id) {
+            if ($id === 0) {
+                continue;
+            } elseif ($id < 100) {
+                $a = Item::find($id);
+
+                return $a;
+            } else {
+                $b = Item::find($id);
+
+                return $b;
+            }
+        }
+
+        return null;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/ItemController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should pass - both branches unconditionally return after their query
+        $this->assertPassed($result);
+    }
+
+    public function test_query_with_conditional_return_still_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function firstActive(array $ids): ?object
+    {
+        foreach ($ids as $id) {
+            // The query runs every iteration; only the return is conditional
+            $user = User::find($id);
+            if ($user !== null) {
+                return $user;
+            }
+        }
+
+        return null;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should flag - the loop can iterate again after the query
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('User::find', $result);
+    }
+
+    public function test_query_followed_by_break_in_nested_loop_still_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class ItemController
+{
+    public function scan(array $groups): void
+    {
+        foreach ($groups as $group) {
+            foreach ($group as $id) {
+                if ($id > 5) {
+                    // break only exits the inner loop; the outer loop repeats
+                    $item = Item::find($id);
+                    break;
+                }
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/ItemController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should flag - the query can run once per outer iteration
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Item::find', $result);
+    }
+
+    public function test_query_then_return_inside_try_still_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class ItemController
+{
+    public function firstResolvable(array $ids): ?object
+    {
+        foreach ($ids as $id) {
+            try {
+                $item = Item::find($id);
+
+                return $item;
+            } catch (\Throwable $e) {
+                // A throwing query is caught and the loop resumes
+                continue;
+            }
+        }
+
+        return null;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/ItemController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should flag - inside try, the loop can resume via the catch block
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Item::find', $result);
+    }
+
+    public function test_query_in_while_condition_still_flagged_despite_return_after_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class CategoryController
+{
+    public function rootOf(array $seeds): mixed
+    {
+        foreach ($seeds as $seed) {
+            $currentId = $seed;
+            // The query re-runs on every while iteration - the return below
+            // only exits after the whole chain walk
+            while ($category = Category::find($currentId)) {
+                $currentId = $category->parent_id;
+            }
+
+            return $currentId;
+        }
+
+        return null;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/CategoryController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Should flag - a loop-header query repeats even though the outer
+        // foreach body ends in a return
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Category::find', $result);
+    }
 }

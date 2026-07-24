@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.12.4
+
+### Fixed
+- `eloquent-n-plus-one` no longer flags a loop-dependent query whose chain takes a pessimistic row lock, such as `StoreItem::lockForUpdate()->whereKey($id)->firstOrFail()` inside a `foreach` (#297)
+- `eloquent-n-plus-one` no longer flags a loop-dependent query followed by an unconditional `return`/`throw` (or a `break` when a single loop encloses it), since it runs at most once per call (#298)
+- `mass-assignment` no longer flags an `update()`/`create()`/`fill()` argument that is an array literal whose keys are all string literals, such as `$entry->update(['days' => $collection->all()])` (#299)
+- `php-side-filtering` no longer flags an argument-less `filter()`/`reject()` after an Eloquent fetch (e.g. `get()->map(...)->filter()`), which has no predicate to push into a `WHERE` clause (#300)
+
 ## v1.12.3
 
 ### Fixed

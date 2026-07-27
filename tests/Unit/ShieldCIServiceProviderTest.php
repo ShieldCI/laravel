@@ -7,7 +7,14 @@ namespace ShieldCI\Tests\Unit;
 use PHPUnit\Framework\Attributes\Test;
 use Psr\Log\LoggerInterface;
 use ShieldCI\AnalyzerManager;
+use ShieldCI\Analyzers\BestPractices\FatModelAnalyzer;
+use ShieldCI\Analyzers\BestPractices\ServiceContainerResolutionAnalyzer;
+use ShieldCI\Analyzers\Security\AuthenticationAnalyzer;
+use ShieldCI\Analyzers\Security\FillableForeignKeyAnalyzer;
+use ShieldCI\Analyzers\Security\LoginThrottlingAnalyzer;
+use ShieldCI\Analyzers\Security\MassAssignmentAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\ShieldCIServiceProvider;
 use ShieldCI\Support\Composer;
@@ -29,6 +36,42 @@ class ShieldCIServiceProviderTest extends TestCase
         $parser = $this->app->make(ParserInterface::class);
 
         $this->assertInstanceOf(ParserInterface::class, $parser);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_shares_one_ast_parser_between_concrete_and_interface_resolution(): void
+    {
+        $parser = $this->app->make(AstParser::class);
+
+        $this->assertSame($parser, $this->app->make(AstParser::class));
+        $this->assertSame($parser, $this->app->make(ParserInterface::class));
+    }
+
+    /** @test */
+    #[Test]
+    public function analyzers_type_hinting_the_concrete_parser_receive_the_shared_singleton(): void
+    {
+        $singleton = $this->app->make(ParserInterface::class);
+
+        $analyzerClasses = [
+            AuthenticationAnalyzer::class,
+            MassAssignmentAnalyzer::class,
+            FillableForeignKeyAnalyzer::class,
+            LoginThrottlingAnalyzer::class,
+            FatModelAnalyzer::class,
+            ServiceContainerResolutionAnalyzer::class,
+        ];
+
+        foreach ($analyzerClasses as $class) {
+            $analyzer = $this->app->make($class);
+            $parser = (new \ReflectionProperty($class, 'parser'))->getValue($analyzer);
+
+            $this->assertSame($singleton, $parser, sprintf(
+                '%s must receive the shared AstParser singleton so its AST cache is cleared between analyzers.',
+                $class
+            ));
+        }
     }
 
     /** @test */

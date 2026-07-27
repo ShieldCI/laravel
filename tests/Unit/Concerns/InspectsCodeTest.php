@@ -428,6 +428,27 @@ class InspectsCodeTest extends TestCase
             $this->assertGreaterThan(0, $entry['line']);
         }
     }
+
+    /** @test */
+    #[Test]
+    public function clear_ast_parser_cache_releases_the_parser_and_reinitializes_on_next_use(): void
+    {
+        $inspector = new ConcreteInspectsCode;
+        $inspector->setFixturePath(__DIR__.'/../../Fixtures/inspects-code');
+
+        $before = $inspector->publicFindFunctionCalls('env');
+
+        $property = new \ReflectionProperty(ConcreteInspectsCode::class, 'parser');
+        $this->assertTrue($property->isInitialized($inspector));
+
+        $inspector->clearAstParserCache();
+
+        $this->assertFalse($property->isInitialized($inspector));
+
+        $after = $inspector->publicFindFunctionCalls('env');
+        $this->assertTrue($property->isInitialized($inspector));
+        $this->assertCount(count($before), $after);
+    }
 }
 
 /**

@@ -1054,4 +1054,43 @@ PHP;
         $this->assertNotEmpty($issues);
         $this->assertEquals(Severity::High, $issues[0]->severity);
     }
+
+    public function test_clear_ast_parser_cache_releases_both_parsers(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class TokenService
+{
+    public function getToken()
+    {
+        return env('SERVICE_TOKEN');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/TokenService.php' => $code,
+        ]);
+
+        $analyzer = new EnvCallAnalyzer;
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $analyzer->analyze();
+
+        $staticParser = new \ReflectionProperty(EnvCallAnalyzer::class, 'staticParser');
+        $this->assertNotNull($staticParser->getValue($analyzer));
+
+        $analyzer->clearAstParserCache();
+
+        $this->assertNull($staticParser->getValue($analyzer));
+        $traitParser = new \ReflectionProperty(EnvCallAnalyzer::class, 'parser');
+        $this->assertFalse($traitParser->isInitialized($analyzer));
+
+        // The analyzer must still work after its parsers are released.
+        $result = $analyzer->analyze();
+        $this->assertFailed($result);
+    }
 }

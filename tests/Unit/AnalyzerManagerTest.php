@@ -12,12 +12,15 @@ use Illuminate\Routing\Router;
 use Mockery;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\AnalyzerManager;
+use ShieldCI\Analyzers\Performance\EnvCallAnalyzer;
+use ShieldCI\Analyzers\Security\MassAssignmentAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Results\AnalysisResult;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Tests\TestCase;
 
@@ -920,6 +923,54 @@ class AnalyzerManagerTest extends TestCase
 
         $this->assertNotNull($analyzerInstance);
         $this->assertTrue($analyzerInstance->clearAstParserCacheCalled);
+    }
+
+    /** @test */
+    #[Test]
+    public function run_all_leaves_no_analyzer_holding_a_private_populated_parser(): void
+    {
+        $app = $this->app;
+        assert($app !== null);
+
+        $manager = new AnalyzerManager(
+            $app->make(Config::class),
+            [
+                EnvCallAnalyzer::class,
+                MassAssignmentAnalyzer::class,
+            ],
+            $app,
+        );
+
+        $manager->runAll();
+
+        $singleton = $app->make(ParserInterface::class);
+        $this->assertInstanceOf(AstParser::class, $singleton);
+
+        $astCache = (new \ReflectionProperty(AstParser::class, 'astCache'))
+            ->getValue($singleton);
+        $this->assertSame([], $astCache, 'The shared parser cache must be empty after the run.');
+
+        $sawEnvCall = false;
+        $sawMassAssignment = false;
+
+        foreach ($manager->getAnalyzers() as $analyzer) {
+            if ($analyzer instanceof EnvCallAnalyzer) {
+                $sawEnvCall = true;
+                $staticParser = (new \ReflectionProperty(EnvCallAnalyzer::class, 'staticParser'))
+                    ->getValue($analyzer);
+                $this->assertNull($staticParser, 'EnvCallAnalyzer must release its lazily created parser after analyze().');
+            }
+
+            if ($analyzer instanceof MassAssignmentAnalyzer) {
+                $sawMassAssignment = true;
+                $parser = (new \ReflectionProperty(MassAssignmentAnalyzer::class, 'parser'))
+                    ->getValue($analyzer);
+                $this->assertSame($singleton, $parser, 'Concrete-typed analyzers must hold the shared parser singleton.');
+            }
+        }
+
+        $this->assertTrue($sawEnvCall);
+        $this->assertTrue($sawMassAssignment);
     }
 
     /**

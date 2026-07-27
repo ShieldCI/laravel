@@ -427,6 +427,48 @@ class AnalyzeCommandTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_does_not_lower_memory_limit_when_current_is_higher(): void
+    {
+        $original = ini_get('memory_limit');
+        $this->assertNotFalse($original);
+
+        try {
+            ini_set('memory_limit', '4G');
+            config(['shieldci.memory_limit' => '1G']);
+            $this->registerTestAnalyzers();
+
+            $this->artisan('shield:analyze', ['--format' => 'json'])
+                ->assertSuccessful();
+
+            $this->assertSame('4G', ini_get('memory_limit'));
+        } finally {
+            ini_set('memory_limit', $original);
+        }
+    }
+
+    /** @test */
+    #[Test]
+    public function it_raises_memory_limit_when_current_is_lower(): void
+    {
+        $original = ini_get('memory_limit');
+        $this->assertNotFalse($original);
+
+        try {
+            ini_set('memory_limit', '2G');
+            config(['shieldci.memory_limit' => '3G']);
+            $this->registerTestAnalyzers();
+
+            $this->artisan('shield:analyze', ['--format' => 'json'])
+                ->assertSuccessful();
+
+            $this->assertSame('3G', ini_get('memory_limit'));
+        } finally {
+            ini_set('memory_limit', $original);
+        }
+    }
+
+    /** @test */
+    #[Test]
     public function it_applies_timeout_from_config(): void
     {
         config(['shieldci.timeout' => 300]);

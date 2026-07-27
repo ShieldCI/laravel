@@ -54,7 +54,11 @@ class ShieldCIServiceProvider extends ServiceProvider
             }
         );
 
-        // Register bindings
+        // Register bindings. The concrete AstParser is a singleton too: several
+        // analyzers type-hint the concrete class, and without this they would each
+        // receive a private parser instance whose AST cache survives the whole run,
+        // invisible to AnalyzerManager::clearParserCache().
+        $this->app->singleton(AstParser::class);
         $this->app->singleton(ParserInterface::class, AstParser::class);
         $this->app->singleton(ReporterInterface::class, Reporter::class);
         $this->app->singleton(Contracts\ClientInterface::class, ShieldCIClient::class);

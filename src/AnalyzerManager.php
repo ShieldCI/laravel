@@ -74,6 +74,10 @@ class AnalyzerManager
      * Clear the singleton AstParser's file cache to prevent unbounded heap growth
      * when 73 analyzers each call parseFile() across the same project.
      * Called after every analyze() invocation in runAll() and run().
+     *
+     * Also forces cycle collection: visitors like ParentConnectingVisitor create
+     * child<->parent reference cycles inside cached ASTs, which plain refcounting
+     * cannot reclaim once the cache is dropped.
      */
     public function clearParserCache(): void
     {
@@ -85,6 +89,8 @@ class AnalyzerManager
         } catch (\Throwable) {
             // Parser not bound or doesn't support clearing — silently skip
         }
+
+        gc_collect_cycles();
     }
 
     private function initConfigCache(): void

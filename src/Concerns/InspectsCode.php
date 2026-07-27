@@ -35,6 +35,17 @@ trait InspectsCode
     }
 
     /**
+     * Release the parser (and its AST cache) after an analyzer run.
+     *
+     * Called via method_exists() by AnalyzerManager/AnalyzeCommand between
+     * analyzers; the parser lazily re-initializes on next use.
+     */
+    public function clearAstParserCache(): void
+    {
+        unset($this->parser);
+    }
+
+    /**
      * Find all function calls matching the given name in specified paths.
      *
      * @param  string  $functionName  The function name to search for

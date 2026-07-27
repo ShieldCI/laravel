@@ -141,6 +141,18 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Release both lazily created parsers (and their AST caches) after a run.
+     *
+     * Overrides the InspectsCode implementation to also drop $staticParser;
+     * both re-initialize on next use.
+     */
+    public function clearAstParserCache(): void
+    {
+        unset($this->parser);
+        $this->staticParser = null;
+    }
+
+    /**
      * Find all env() calls (both function and Env::get() static calls) in a single parse pass.
      *
      * Parses each file only once to detect both patterns, avoiding duplicate AST parsing.

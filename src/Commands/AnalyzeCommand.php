@@ -23,6 +23,7 @@ use ShieldCI\Enums\AnalysisFailureReason;
 use ShieldCI\Enums\SuppressionType;
 use ShieldCI\Enums\TriggerSource;
 use ShieldCI\Support\CiEnvironmentDetector;
+use ShieldCI\Support\MemoryLimit;
 use ShieldCI\ValueObjects\AnalysisReport;
 use ShieldCI\ValueObjects\FailureNotification;
 use ShieldCI\ValueObjects\FilterResult;
@@ -96,11 +97,16 @@ class AnalyzeCommand extends Command
         ClientInterface $client,
         TriggerSource $triggeredBy,
     ): int {
-        // Apply memory limit (best-effort: @-suppress the E_WARNING PHP 8.1+ raises when
-        // the current memory usage already exceeds the requested limit)
+        // Apply memory limit as a floor: raise a lower ambient limit, but never lower a
+        // higher one (e.g. Vapor's 2048M runtime default or an unlimited CLI). Best-effort:
+        // @-suppress the E_WARNING PHP 8.1+ raises when the current memory usage already
+        // exceeds the requested limit.
         $memoryLimit = config('shieldci.memory_limit');
         if ($memoryLimit !== null && is_string($memoryLimit)) {
-            @ini_set('memory_limit', $memoryLimit);
+            $currentLimit = ini_get('memory_limit');
+            if ($currentLimit === false || MemoryLimit::shouldRaise($currentLimit, $memoryLimit)) {
+                @ini_set('memory_limit', $memoryLimit);
+            }
         }
 
         // Set timeout (no-op on Lambda — warn instead)

@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.12.5
+
+### Fixed
+- `shield:analyze` no longer exhausts the PHP memory limit on multi-megabyte codebases — analyzers type-hinting the concrete `AstParser` each held a private parser whose AST cache was never cleared between analyzers (#302)
+- Analyzers that created method-local `AstParser` instances (`XssAnalyzer` built one per analyzed file) now reuse the shared parser, avoiding redundant re-parsing and unmanaged AST caches (#303)
+
+### Changed
+- `shieldci.memory_limit` now acts as a floor, so it no longer lowers a higher ambient limit such as Vapor's native runtime default or an unlimited CLI (#302)
+
 ## v1.12.4
 
 ### Fixed

@@ -31,6 +31,10 @@ use ShieldCI\Support\BootstrapRouteParser;
  */
 class CsrfAnalyzer extends AbstractFileAnalyzer
 {
+    public function __construct(
+        private AstParser $parser
+    ) {}
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
@@ -93,7 +97,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         // Compute route files covered by web/API middleware via external registration
         // (require from web.php/api.php, or Route::middleware()->group() in bootstrap/app.php)
-        $bootstrapParser = new BootstrapRouteParser($this->getBasePath(), new AstParser);
+        $bootstrapParser = new BootstrapRouteParser($this->getBasePath(), $this->parser);
         $webProtectedFiles = $bootstrapParser->getWebProtectedRouteFiles();
         $apiRegisteredFiles = $bootstrapParser->getApiRegisteredRouteFiles();
 

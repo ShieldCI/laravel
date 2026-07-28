@@ -101,7 +101,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
      */
     private const SUPERGLOBAL_NAMES = ['_GET', '_POST', '_REQUEST', '_COOKIE', '_FILES'];
 
-    public function __construct(Router $router, Kernel $kernel)
+    public function __construct(Router $router, Kernel $kernel, private AstParser $parser)
     {
         $this->router = $router;
         $this->kernel = $kernel;
@@ -331,8 +331,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
      */
     private function analyzePhpFileWithAst(string $file): array
     {
-        $astParser = new AstParser;
-        $ast = $astParser->parseFile($file);
+        $ast = $this->parser->parseFile($file);
 
         if ($ast === []) {
             return [];
@@ -374,7 +373,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
 
         // 2. Find Response::make() with user input
         /** @var StaticCall[] $responseMakeCalls */
-        $responseMakeCalls = $astParser->findStaticCalls($ast, 'Response', 'make');
+        $responseMakeCalls = $this->parser->findStaticCalls($ast, 'Response', 'make');
 
         foreach ($responseMakeCalls as $call) {
             $argNode = $call->args[0] ?? null;

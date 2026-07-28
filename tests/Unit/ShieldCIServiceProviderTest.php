@@ -7,12 +7,16 @@ namespace ShieldCI\Tests\Unit;
 use PHPUnit\Framework\Attributes\Test;
 use Psr\Log\LoggerInterface;
 use ShieldCI\AnalyzerManager;
+use ShieldCI\Analyzers\BestPractices\ChunkMissingAnalyzer;
 use ShieldCI\Analyzers\BestPractices\FatModelAnalyzer;
 use ShieldCI\Analyzers\BestPractices\ServiceContainerResolutionAnalyzer;
 use ShieldCI\Analyzers\Security\AuthenticationAnalyzer;
+use ShieldCI\Analyzers\Security\CsrfAnalyzer;
+use ShieldCI\Analyzers\Security\DebugModeAnalyzer;
 use ShieldCI\Analyzers\Security\FillableForeignKeyAnalyzer;
 use ShieldCI\Analyzers\Security\LoginThrottlingAnalyzer;
 use ShieldCI\Analyzers\Security\MassAssignmentAnalyzer;
+use ShieldCI\Analyzers\Security\XssAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Contracts\ReporterInterface;
@@ -61,6 +65,10 @@ class ShieldCIServiceProviderTest extends TestCase
             LoginThrottlingAnalyzer::class,
             FatModelAnalyzer::class,
             ServiceContainerResolutionAnalyzer::class,
+            ChunkMissingAnalyzer::class,
+            CsrfAnalyzer::class,
+            DebugModeAnalyzer::class,
+            XssAnalyzer::class,
         ];
 
         foreach ($analyzerClasses as $class) {

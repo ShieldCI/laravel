@@ -13,7 +13,7 @@ class DebugModeAnalyzerTest extends AnalyzerTestCase
 {
     protected function createAnalyzer(): AnalyzerInterface
     {
-        return new DebugModeAnalyzer;
+        return new DebugModeAnalyzer($this->parser);
     }
 
     // =================================================================

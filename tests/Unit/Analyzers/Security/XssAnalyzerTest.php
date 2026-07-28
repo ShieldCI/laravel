@@ -32,7 +32,7 @@ class XssAnalyzerTest extends AnalyzerTestCase
             throw new \RuntimeException('Router or Kernel not available in test application');
         }
 
-        return new XssAnalyzer($router, $kernel);
+        return new XssAnalyzer($router, $kernel, $this->parser);
     }
 
     /**
@@ -63,7 +63,7 @@ class XssAnalyzerTest extends AnalyzerTestCase
             throw new \RuntimeException('Router or Kernel not available in test application');
         }
 
-        $analyzer = new XssAnalyzer($router, $kernel);
+        $analyzer = new XssAnalyzer($router, $kernel, $this->parser);
 
         // Explicitly mark as a web app so the HTTP header check is not skipped.
         // The test environment has no session routes, so without this override

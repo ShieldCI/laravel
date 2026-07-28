@@ -39,6 +39,10 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 {
     use ClassifiesFiles;
 
+    public function __construct(
+        private AstParser $parser
+    ) {}
+
     private const HIGH_SEVERITY_FUNCTIONS = ['dd', 'dump', 'var_dump', 'print_r'];
 
     /** @var list<string> */
@@ -248,7 +252,6 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
      */
     private function checkDebugFunctions(array &$issues): void
     {
-        $astParser = new AstParser;
         $nodeFinder = new NodeFinder;
 
         foreach ($this->getPhpFiles() as $file) {
@@ -257,7 +260,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $ast = $astParser->parseFile($file);
+            $ast = $this->parser->parseFile($file);
 
             if ($ast === []) {
                 continue;

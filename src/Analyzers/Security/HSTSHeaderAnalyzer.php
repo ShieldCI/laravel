@@ -12,7 +12,6 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
@@ -149,15 +148,15 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        $astParser = new AstParser;
-        $ast = $astParser->parseFile($providerPath);
+        $this->initializeParser();
+        $ast = $this->parser->parseFile($providerPath);
 
         if ($ast === []) {
             return false;
         }
 
         // Check for URL::forceScheme('https')
-        $forceSchemeCallNodes = $astParser->findStaticCalls($ast, 'URL', 'forceScheme');
+        $forceSchemeCallNodes = $this->parser->findStaticCalls($ast, 'URL', 'forceScheme');
 
         foreach ($forceSchemeCallNodes as $call) {
             /** @var StaticCall $call */
@@ -171,7 +170,7 @@ class HSTSHeaderAnalyzer extends AbstractFileAnalyzer
 
         // Check for URL::forceHttps() — inspect the $force argument to avoid false positives
         // when forceHttps(false) is used to explicitly disable HTTPS enforcement.
-        $forceHttpsCallNodes = $astParser->findStaticCalls($ast, 'URL', 'forceHttps');
+        $forceHttpsCallNodes = $this->parser->findStaticCalls($ast, 'URL', 'forceHttps');
 
         foreach ($forceHttpsCallNodes as $call) {
             /** @var StaticCall $call */

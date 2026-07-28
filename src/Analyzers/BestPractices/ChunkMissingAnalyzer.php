@@ -10,7 +10,6 @@ use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
 use PhpParser\PrettyPrinter\Standard;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
-use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -25,7 +24,7 @@ use ShieldCI\Support\SeededTableScanner;
 class ChunkMissingAnalyzer extends AbstractFileAnalyzer
 {
     public function __construct(
-        private ParserInterface $parser
+        private AstParser $parser
     ) {}
 
     protected function metadata(): AnalyzerMetadata
@@ -49,9 +48,8 @@ class ChunkMissingAnalyzer extends AbstractFileAnalyzer
         // Tiny seeded reference-catalogue tables (plans, pillars, …) are bounded by
         // construction, so looping over them is not a chunking problem. Scan once; the
         // set is empty when there is no database/seeders/ directory.
-        $astParser = new AstParser;
-        $catalogueTables = (new SeededTableScanner($astParser))->catalogueTables($this->getBasePath()) ?? [];
-        $tableResolver = new ModelTableResolver($astParser);
+        $catalogueTables = (new SeededTableScanner($this->parser))->catalogueTables($this->getBasePath()) ?? [];
+        $tableResolver = new ModelTableResolver($this->parser);
 
         foreach ($phpFiles as $file) {
             try {

@@ -13,7 +13,7 @@ class CsrfAnalyzerTest extends AnalyzerTestCase
 {
     protected function createAnalyzer(): AnalyzerInterface
     {
-        return new CsrfAnalyzer;
+        return new CsrfAnalyzer($this->parser);
     }
 
     // ==================== Blade Form CSRF Tests (10 tests) ====================

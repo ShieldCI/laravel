@@ -326,7 +326,7 @@ class AdvisoryAnalyzerTest extends TestCase
 
     /** @test */
     #[Test]
-    public function it_handles_non_array_non_string_affected_versions(): void
+    public function it_reports_advisory_with_unusable_affected_versions_fail_open(): void
     {
         $dependencies = [
             'test/package' => ['version' => '1.0.0'],
@@ -343,8 +343,78 @@ class AdvisoryAnalyzerTest extends TestCase
 
         $results = $this->analyzer->analyze($dependencies, $advisories);
 
-        // When affected_versions is neither array nor string, it becomes empty array
-        // which means no version constraints match, so no advisory is reported
+        // Fail open: when affected_versions is neither array nor string it normalizes
+        // to an empty range. Rather than silently hide an OSV-confirmed advisory, we
+        // still report it (the matcher can only drop when it has real constraints).
+        $this->assertArrayHasKey('test/package', $results);
+        $this->assertSame([], $results['test/package']['advisories'][0]['affected_versions']);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_reports_advisory_with_empty_affected_versions_fail_open(): void
+    {
+        $dependencies = [
+            'test/package' => ['version' => '1.0.0'],
+        ];
+
+        $advisories = [
+            'test/package' => [
+                [
+                    'title' => 'Advisory whose range could not be resolved',
+                    'affected_versions' => [],
+                ],
+            ],
+        ];
+
+        $results = $this->analyzer->analyze($dependencies, $advisories);
+
+        $this->assertArrayHasKey('test/package', $results);
+        $this->assertCount(1, $results['test/package']['advisories']);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_drops_advisory_when_version_outside_real_range(): void
+    {
+        $dependencies = [
+            'guzzlehttp/guzzle' => ['version' => '7.15.2'],
+        ];
+
+        $advisories = [
+            'guzzlehttp/guzzle' => [
+                [
+                    'title' => 'Fixed before installed version',
+                    'affected_versions' => ['<7.15.1'],
+                ],
+            ],
+        ];
+
+        $results = $this->analyzer->analyze($dependencies, $advisories);
+
         $this->assertEmpty($results);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_reports_advisory_when_version_inside_compound_range(): void
+    {
+        $dependencies = [
+            'guzzlehttp/guzzle' => ['version' => '7.15.0'],
+        ];
+
+        $advisories = [
+            'guzzlehttp/guzzle' => [
+                [
+                    'title' => 'Vulnerable up to the fix',
+                    'affected_versions' => ['>=7.0.0,<7.15.1'],
+                ],
+            ],
+        ];
+
+        $results = $this->analyzer->analyze($dependencies, $advisories);
+
+        $this->assertArrayHasKey('guzzlehttp/guzzle', $results);
+        $this->assertCount(1, $results['guzzlehttp/guzzle']['advisories']);
     }
 }

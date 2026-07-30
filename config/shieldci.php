@@ -73,6 +73,11 @@ return [
 
     'security_advisories' => [
         'source' => env('SHIELDCI_ADVISORY_SOURCE', 'https://api.osv.dev/v1/querybatch'),
+
+        // Endpoint used to resolve full vulnerability details (CVE, links, real
+        // affected ranges) by id, since the batch "source" returns only ids.
+        // Defaults to deriving "/vulns" from the "source" URL when left null.
+        'vulns_source' => env('SHIELDCI_ADVISORY_VULNS_SOURCE'),
     ],
 
     /*

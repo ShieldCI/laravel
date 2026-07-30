@@ -4,14 +4,21 @@ declare(strict_types=1);
 
 namespace ShieldCI\Support\SecurityAdvisories;
 
+use function array_filter;
+use function array_map;
 use function explode;
 use function ltrim;
+use function str_contains;
 use function strpos;
 use function trim;
 
 class VersionConstraintMatcher
 {
     /**
+     * Array elements are combined with OR (any element matching wins), while a
+     * comma inside a single element is combined with AND (every part must match),
+     * so an OSV interval such as ">=1.0,<2.0" is treated as a single range.
+     *
      * @param  array<int, string>|string  $constraints
      */
     public function matches(string $version, array|string $constraints): bool
@@ -19,30 +26,44 @@ class VersionConstraintMatcher
         $constraints = is_array($constraints) ? $constraints : [$constraints];
 
         foreach ($constraints as $constraint) {
-            $constraint = trim((string) $constraint);
-
-            if ($constraint === '' || $constraint === '*') {
-                return true;
-            }
-
-            if ($this->matchOperatorConstraint($version, $constraint)) {
-                return true;
-            }
-
-            if ($this->matchCaretConstraint($version, $constraint)) {
-                return true;
-            }
-
-            if ($this->matchTildeConstraint($version, $constraint)) {
-                return true;
-            }
-
-            if ($this->matchWildcardConstraint($version, $constraint)) {
+            if ($this->matchesSingle($version, trim((string) $constraint))) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    private function matchesSingle(string $version, string $constraint): bool
+    {
+        if ($constraint === '' || $constraint === '*') {
+            return true;
+        }
+
+        // Compound constraint (e.g. ">=1.0,<2.0"): every comma-separated part must match.
+        if (str_contains($constraint, ',')) {
+            $parts = array_filter(
+                array_map('trim', explode(',', $constraint)),
+                static fn (string $part): bool => $part !== ''
+            );
+
+            if ($parts === []) {
+                return true;
+            }
+
+            foreach ($parts as $part) {
+                if (! $this->matchesSingle($version, $part)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        return $this->matchOperatorConstraint($version, $constraint)
+            || $this->matchCaretConstraint($version, $constraint)
+            || $this->matchTildeConstraint($version, $constraint)
+            || $this->matchWildcardConstraint($version, $constraint);
     }
 
     private function matchOperatorConstraint(string $version, string $constraint): bool

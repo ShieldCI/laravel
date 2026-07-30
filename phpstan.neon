@@ -87,16 +87,13 @@ parameters:
             message: '#Parameter \#2 \$haystack of method PHPUnit\\Framework\\Assert::assertStringContainsString\(\) expects string, string\|null given#'
             path: tests
 
-        # string|false from json_decode/hash/json_encode on controlled test inputs.
+        # string|false from json_decode/hash on controlled test inputs.
         -
             message: '#Parameter \#1 \$json of function json_decode expects string, string\|false given#'
             path: tests
         -
             message: '#Parameter \#2 \$data of function hash expects string, string\|false given#'
             path: tests
-        -
-            message: '#Parameter \#3 \$body of class GuzzleHttp\\Psr7\\Response constructor expects .*, string\|false given#'
-            path: tests/Unit/Support/SecurityAdvisories/HttpAdvisoryFetcherTest.php
 
         # Deliberately-malformed inputs fed to Advisory value objects for edge-case coverage.
         -

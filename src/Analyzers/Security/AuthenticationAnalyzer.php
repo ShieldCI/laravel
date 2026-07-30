@@ -81,6 +81,14 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      */
     private array $routeAuthStats = [];
 
+    /**
+     * File-level URI prefixes the framework applies when registering whole route
+     * files (e.g. 'api' for routes/api.php), keyed by route file basename.
+     *
+     * @var array<string, string>
+     */
+    private array $routeFileBasePrefixes = [];
+
     public function __construct(
         private AstParser $parser,
         private Config $config
@@ -120,6 +128,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     {
         // Load public routes from configuration
         $this->loadPublicRoutes();
+
+        // Resolve file-level prefixes the framework applies outside the route files
+        $this->routeFileBasePrefixes = $this->resolveRouteFileBasePrefixes();
 
         $issues = [];
 
@@ -212,6 +223,200 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Determine whether a collected route is public via any of its URI candidates
+     * (full composed path, AST-visible composition, own declared segment).
+     *
+     * @param  array{uri: string, match_uris: list<string>, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, line: int}  $route
+     */
+    private function isRoutePublic(array $route): bool
+    {
+        foreach ($route['match_uris'] as $uri) {
+            if ($this->isPublicRoute($uri)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Resolve file-level URI prefixes the framework applies when registering
+     * whole route files, keyed by route file basename.
+     *
+     * Best-effort, literal-only discovery:
+     * - bootstrap/app.php (Laravel 11+): withRouting(api: ..., apiPrefix: ...)
+     * - app/Providers/RouteServiceProvider.php (Laravel 9/10): registrar chains
+     *   ending ->group(base_path('routes/X.php')), including custom route files
+     * - convention fallback: routes/api.php → 'api'
+     *
+     * A wrong or missing guess is harmless: routes are matched against all
+     * their URI candidates, including the AST-visible composition.
+     *
+     * @return array<string, string>
+     */
+    private function resolveRouteFileBasePrefixes(): array
+    {
+        $map = $this->extractBootstrapRoutePrefixes($this->buildPath('bootstrap/app.php'));
+
+        foreach ($this->extractProviderRoutePrefixes($this->buildPath('app/Providers/RouteServiceProvider.php')) as $basename => $prefix) {
+            $map[$basename] ??= $prefix;
+        }
+
+        $map['api.php'] ??= 'api';
+
+        return $map;
+    }
+
+    /**
+     * Extract the api route file and its prefix from bootstrap/app.php's
+     * withRouting(...) call (Laravel 11+). An api file registered without an
+     * explicit apiPrefix gets the framework default 'api'.
+     *
+     * @return array<string, string>
+     */
+    private function extractBootstrapRoutePrefixes(string $file): array
+    {
+        if (! is_file($file)) {
+            return [];
+        }
+
+        $ast = $this->parser->parseFile($file);
+        if (empty($ast)) {
+            return [];
+        }
+
+        foreach ($this->parser->findMethodCalls($ast, 'withRouting') as $call) {
+            if (! ($call instanceof Node\Expr\MethodCall)) {
+                continue;
+            }
+
+            $apiFile = null;
+            $apiPrefix = null;
+
+            foreach ($call->args as $arg) {
+                if (! ($arg instanceof Node\Arg) || $arg->name === null) {
+                    continue;
+                }
+
+                if ($arg->name->toString() === 'api') {
+                    $apiFile = $this->extractRouteFileBasename($arg->value);
+                } elseif ($arg->name->toString() === 'apiPrefix' && $arg->value instanceof Node\Scalar\String_) {
+                    $apiPrefix = trim($arg->value->value, '/');
+                }
+            }
+
+            if ($apiFile !== null) {
+                return [$apiFile => $apiPrefix ?? 'api'];
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * Extract a route file's basename from a withRouting file argument:
+     * a string literal or a __DIR__.'/../routes/api.php' style concat.
+     */
+    private function extractRouteFileBasename(Node\Expr $expr): ?string
+    {
+        if ($expr instanceof Node\Scalar\String_) {
+            $path = $expr->value;
+        } elseif ($expr instanceof Node\Expr\BinaryOp\Concat && $expr->right instanceof Node\Scalar\String_) {
+            $path = $expr->right->value;
+        } else {
+            return null;
+        }
+
+        return str_ends_with($path, '.php') ? basename($path) : null;
+    }
+
+    /**
+     * Extract per-file prefixes from RouteServiceProvider registrations:
+     * chains ending ->group(base_path('routes/X.php')), lifting prefix('...')
+     * from the same chain.
+     *
+     * @return array<string, string>
+     */
+    private function extractProviderRoutePrefixes(string $file): array
+    {
+        if (! is_file($file)) {
+            return [];
+        }
+
+        $ast = $this->parser->parseFile($file);
+        if (empty($ast)) {
+            return [];
+        }
+
+        $map = [];
+
+        foreach ($this->parser->findMethodCalls($ast, 'group') as $call) {
+            if (! ($call instanceof Node\Expr\MethodCall)) {
+                continue;
+            }
+
+            $basename = $this->extractBasePathRouteFile($call->args[0]->value ?? null);
+            if ($basename === null) {
+                continue;
+            }
+
+            $prefix = $this->extractPrefixFromRegistrarChain($call);
+            if ($prefix !== '') {
+                $map[$basename] = $prefix;
+            }
+        }
+
+        return $map;
+    }
+
+    /**
+     * Extract a route file's basename from a base_path('routes/X.php') argument.
+     */
+    private function extractBasePathRouteFile(?Node\Expr $expr): ?string
+    {
+        if (! ($expr instanceof Node\Expr\FuncCall)
+            || ! ($expr->name instanceof Node\Name)
+            || $expr->name->toString() !== 'base_path') {
+            return null;
+        }
+
+        $arg = $expr->args[0]->value ?? null;
+        if (! ($arg instanceof Node\Scalar\String_) || ! str_ends_with($arg->value, '.php')) {
+            return null;
+        }
+
+        return basename($arg->value);
+    }
+
+    /**
+     * Lift the prefix('...') value from a route registrar chain ending in
+     * ->group(...). Mirrors RouteAuthVisitor::extractGroupPrefix() for
+     * provider-level route file registrations.
+     */
+    private function extractPrefixFromRegistrarChain(Node\Expr\MethodCall $groupCall): string
+    {
+        $current = $groupCall->var;
+
+        while ($current instanceof Node\Expr\MethodCall) {
+            if ($current->name instanceof Node\Identifier
+                && $current->name->toString() === 'prefix'
+                && ($arg = $current->args[0]->value ?? null) instanceof Node\Scalar\String_) {
+                return trim($arg->value, '/');
+            }
+            $current = $current->var;
+        }
+
+        if ($current instanceof Node\Expr\StaticCall
+            && $current->name instanceof Node\Identifier
+            && $current->name->toString() === 'prefix'
+            && ($arg = $current->args[0]->value ?? null) instanceof Node\Scalar\String_) {
+            return trim($arg->value, '/');
+        }
+
+        return '';
+    }
+
+    /**
      * Build route-level authentication statistics per controller method.
      *
      * Uses PHP-Parser AST via RouteAuthVisitor so that all valid PHP formatting
@@ -231,7 +436,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         $nameTraverser->addVisitor(new NameResolver(null, ['replaceNodes' => false]));
         $nameTraverser->traverse($ast);
 
-        $visitor = new RouteAuthVisitor;
+        $visitor = new RouteAuthVisitor($this->routeFileBasePrefixes[basename($file)] ?? '');
         $traverser = new NodeTraverser;
         $traverser->addVisitor($visitor);
         $traverser->traverse($ast);
@@ -246,7 +451,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             $controllerMethods = $this->expandControllerMethods($controller, $route['action'], $route['http_methods']);
 
             $isGuestRoute = in_array('guest', $route['middleware'], true);
-            $isPublicUri = $this->isPublicRoute($route['uri']);
+            $isPublicUri = $this->isRoutePublic($route);
             $hasExplicitAuthRemoval = $this->routeDirectRemoveHasAuth($route['direct_remove']);
 
             foreach ($controllerMethods as $method) {
@@ -355,7 +560,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         $nameTraverser->addVisitor(new NameResolver(null, ['replaceNodes' => false]));
         $nameTraverser->traverse($ast);
 
-        $visitor = new RouteAuthVisitor;
+        $visitor = new RouteAuthVisitor($this->routeFileBasePrefixes[basename($file)] ?? '');
         $traverser = new NodeTraverser;
         $traverser->addVisitor($visitor);
         $traverser->traverse($ast);
@@ -390,7 +595,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         // Check individual routes
         foreach ($visitor->getCollectedRoutes() as $route) {
             // Skip public URIs
-            if ($this->isPublicRoute($route['uri'])) {
+            if ($this->isRoutePublic($route)) {
                 continue;
             }
 
@@ -439,7 +644,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      * non-whitelisted groups continue to be flagged.
      *
      * @param  array{middleware: list<string>, inherited_middleware: list<string>, line: int, end_line: int, has_guest: bool, is_static_group: bool}  $group
-     * @param  list<array{uri: string, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, line: int}>  $routes
+     * @param  list<array{uri: string, match_uris: list<string>, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, line: int}>  $routes
      */
     private function groupContainsOnlyPublicRoutes(array $group, array $routes): bool
     {
@@ -453,7 +658,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
             $found = true;
 
-            $isPublic = $this->isPublicRoute($route['uri'])
+            $isPublic = $this->isRoutePublic($route)
                 || in_array('guest', $route['middleware'], true)
                 || $this->routeDirectRemoveHasAuth($route['direct_remove']);
 
@@ -1444,7 +1649,15 @@ class RouteAuthVisitor extends NodeVisitorAbstract
     private array $middlewareStack = [];
 
     /**
-     * @var list<array{uri: string, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, line: int}>
+     * URI prefix stack — one entry per open group ('' when the group sets none).
+     * Kept in lockstep with $middlewareStack.
+     *
+     * @var list<string>
+     */
+    private array $prefixStack = [];
+
+    /**
+     * @var list<array{uri: string, match_uris: list<string>, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, line: int}>
      */
     private array $collectedRoutes = [];
 
@@ -1456,10 +1669,14 @@ class RouteAuthVisitor extends NodeVisitorAbstract
     /** @var list<string> Supported route HTTP verb method names (lowercase) */
     private const ROUTE_VERBS = ['get', 'post', 'put', 'patch', 'delete', 'resource', 'apiresource'];
 
-    public function __construct() {}
+    /**
+     * @param  string  $basePrefix  File-level URI prefix applied by the framework when
+     *                              registering the whole route file (e.g. 'api' for routes/api.php).
+     */
+    public function __construct(private readonly string $basePrefix = '') {}
 
     /**
-     * @return list<array{uri: string, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, line: int}>
+     * @return list<array{uri: string, match_uris: list<string>, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, line: int}>
      */
     public function getCollectedRoutes(): array
     {
@@ -1481,6 +1698,7 @@ class RouteAuthVisitor extends NodeVisitorAbstract
             $inherited = $this->computeStackMiddleware();
             $own = $this->extractGroupMiddleware($node);
             $this->middlewareStack[] = $own;
+            $this->prefixStack[] = $this->extractGroupPrefix($node);
 
             $this->collectedGroups[] = [
                 'middleware' => $own['add'],
@@ -1499,6 +1717,7 @@ class RouteAuthVisitor extends NodeVisitorAbstract
     {
         if ($this->isGroupNode($node)) {
             array_pop($this->middlewareStack);
+            array_pop($this->prefixStack);
         }
 
         // Process route calls at the Stmt\Expression boundary so we see the
@@ -1625,6 +1844,65 @@ class RouteAuthVisitor extends NodeVisitorAbstract
         return ['add' => $add, 'remove' => $remove];
     }
 
+    /**
+     * Extract the URI prefix this group node contributes, or '' if it sets none.
+     *
+     * For StaticCall Route::group(['prefix' => 'admin'], fn):
+     *   → parses the config array's 'prefix' key.
+     *
+     * For MethodCall ->group() chains (e.g. Route::prefix('admin')->group(fn)):
+     *   → walks the chain for ->prefix() calls (the first one found walking
+     *     outward-in is the last one called, which wins per Laravel's overwrite
+     *     semantics), then checks a Route::prefix() static root.
+     *
+     * Non-literal prefix arguments yield '' (best-effort, like route URIs).
+     */
+    private function extractGroupPrefix(Node $node): string
+    {
+        if ($node instanceof Node\Expr\StaticCall) {
+            // Route::group(['prefix' => ...], fn) — look at first arg
+            $firstArg = $node->args[0]->value ?? null;
+            if ($firstArg instanceof Node\Expr\Array_) {
+                foreach ($firstArg->items as $item) {
+                    if (! ($item instanceof Node\Expr\ArrayItem)) {
+                        continue;
+                    }
+                    if ($item->key instanceof Node\Scalar\String_
+                        && $item->key->value === 'prefix'
+                        && $item->value instanceof Node\Scalar\String_) {
+                        return trim($item->value->value, '/');
+                    }
+                }
+            }
+
+            return '';
+        }
+
+        if ($node instanceof Node\Expr\MethodCall) {
+            // Walk the chain: [MethodCall ->group], [MethodCall ->prefix], ..., StaticCall Route::X
+            $current = $node->var;
+
+            while ($current instanceof Node\Expr\MethodCall) {
+                if ($current->name instanceof Node\Identifier
+                    && $current->name->toString() === 'prefix'
+                    && ($arg = $current->args[0]->value ?? null) instanceof Node\Scalar\String_) {
+                    return trim($arg->value, '/');
+                }
+                $current = $current->var;
+            }
+
+            // Handle the StaticCall root: Route::prefix(...)
+            if ($current instanceof Node\Expr\StaticCall
+                && $current->name instanceof Node\Identifier
+                && $current->name->toString() === 'prefix'
+                && ($arg = $current->args[0]->value ?? null) instanceof Node\Scalar\String_) {
+                return trim($arg->value, '/');
+            }
+        }
+
+        return '';
+    }
+
     // -------------------------------------------------------------------------
     // Route expression processing
     // -------------------------------------------------------------------------
@@ -1670,12 +1948,15 @@ class RouteAuthVisitor extends NodeVisitorAbstract
         $httpMethod = strtoupper($current->name->toString());
 
         // Extract URI and handler from the StaticCall args
-        $uri = $this->extractUri($current);
+        $ownUri = $this->extractUri($current);
         [$controller, $action, $isClosure] = $this->extractHandler($current);
 
-        // Collect direct middleware from the outer chain
+        // Collect direct middleware and ->prefix() calls from the outer chain.
+        // The chain is outermost-first, which for prefixes is framework-true
+        // left-to-right order: each later ->prefix() call prepends to the URI.
         $directAdd = [];
         $directRemove = [];
+        $directPrefixes = [];
         foreach ($chain as $methodCall) {
             if (! ($methodCall->name instanceof Node\Identifier)) {
                 continue;
@@ -1685,8 +1966,13 @@ class RouteAuthVisitor extends NodeVisitorAbstract
                 $directAdd = array_merge($directAdd, $this->extractMiddlewareArgs($methodCall->args));
             } elseif ($name === 'withoutMiddleware') {
                 $directRemove = array_merge($directRemove, $this->extractMiddlewareArgs($methodCall->args));
+            } elseif ($name === 'prefix'
+                && ($arg = $methodCall->args[0]->value ?? null) instanceof Node\Scalar\String_) {
+                $directPrefixes[] = trim($arg->value, '/');
             }
         }
+
+        [$uri, $matchUris] = $this->composeRouteUris($ownUri, $directPrefixes);
 
         // Compute effective middleware: inherited from stack → apply direct
         $effective = $this->computeStackMiddleware();
@@ -1700,6 +1986,7 @@ class RouteAuthVisitor extends NodeVisitorAbstract
 
         $this->collectedRoutes[] = [
             'uri' => $uri,
+            'match_uris' => $matchUris,
             'http_methods' => [$httpMethod],
             'controller' => $controller,
             'action' => $action,
@@ -1729,6 +2016,60 @@ class RouteAuthVisitor extends NodeVisitorAbstract
         }
 
         return '';
+    }
+
+    /**
+     * Compose the route's real URI and its public-route matching candidates from
+     * the file-level base prefix, enclosing group prefixes, direct ->prefix()
+     * calls, and the route's own declared segment.
+     *
+     * Candidates are [full real path, AST-visible composition, own segment]:
+     * patterns written against partial paths keep working, and a wrong
+     * file-level prefix guess can never hide a match.
+     *
+     * @param  list<string>  $directPrefixes
+     * @return array{string, list<string>} [full URI, match candidates]
+     */
+    private function composeRouteUris(string $ownUri, array $directPrefixes): array
+    {
+        if ($ownUri === '') {
+            // Unresolvable route URI — don't fabricate a path from prefixes alone.
+            return ['', ['']];
+        }
+
+        $groupSegments = array_values(array_filter($this->prefixStack, static fn (string $p): bool => $p !== ''));
+
+        $visible = $directPrefixes === [] && $groupSegments === []
+            ? $ownUri
+            : $this->joinUriSegments(array_merge($directPrefixes, $groupSegments, [$ownUri]));
+
+        // Direct ->prefix() calls prepend in front of the already-prefixed URI,
+        // so the framework-true order is direct/base/groups/own.
+        $full = $this->basePrefix === ''
+            ? $visible
+            : $this->joinUriSegments(array_merge($directPrefixes, [$this->basePrefix], $groupSegments, [$ownUri]));
+
+        return [$full, array_values(array_unique([$full, $visible, $ownUri]))];
+    }
+
+    /**
+     * Join URI segments with '/', trimming slashes and dropping empty segments,
+     * so a '/' root route composes to just its prefixes (matching Laravel's
+     * RouteGroup::formatPrefix behaviour).
+     *
+     * @param  list<string>  $segments
+     */
+    private function joinUriSegments(array $segments): string
+    {
+        $parts = [];
+        foreach ($segments as $segment) {
+            $trimmed = trim($segment, '/');
+            if ($trimmed !== '') {
+                $parts[] = $trimmed;
+            }
+        }
+
+        return implode('/', $parts);
     }
 
     /**

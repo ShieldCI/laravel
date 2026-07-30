@@ -4329,4 +4329,285 @@ PHP;
         $this->assertStringNotContainsString('->can(', $issue->recommendation);
         $this->assertStringContainsString('Gate or Policy', $issue->recommendation);
     }
+
+    // ==========================================
+    // Route Prefix Composition (public_routes)
+    // ==========================================
+
+    public function test_public_route_nested_in_fluent_prefix_groups_is_suppressed(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::prefix('api')->group(function () {
+    Route::prefix('webhooks')->middleware('throttle')->group(function () {
+        Route::post('/{provider}/callback', [WebhookController::class, 'handle']);
+    });
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => ['/api/webhooks/*/callback'],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // The route's real path is api/webhooks/{provider}/callback — a full-path
+        // public_routes pattern must suppress it even when nested in prefix() groups.
+        $this->assertPassed($result);
+    }
+
+    public function test_public_route_nested_in_array_prefix_group_is_suppressed(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['prefix' => 'partners'], function () {
+    Route::post('/enrollments/{token}/confirm', [ConfirmEnrollmentController::class, 'store']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => ['/partners/enrollments/*/confirm'],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // Covers both the individual-route finding and the static-group finding
+        // (the group is suppressed only when all inner routes are public).
+        $this->assertPassed($result);
+    }
+
+    public function test_unlisted_route_nested_in_prefix_group_is_still_flagged(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::prefix('admin')->group(function () {
+    Route::post('/users', [AdminUserController::class, 'store']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // A genuinely-unprotected nested route must still be flagged.
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
+    public function test_prefixless_pattern_still_suppresses_nested_route(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::prefix('partners')->group(function () {
+    Route::post('/enrollments/{token}/confirm', [ConfirmEnrollmentController::class, 'store']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => ['/enrollments/*/confirm'],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // A pattern matching only the route's own declared segment keeps working
+        // (backward compat for configs written before prefix composition).
+        $this->assertPassed($result);
+    }
+
+    public function test_sensitive_method_of_nested_public_route_not_flagged(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::prefix('partners')->group(function () {
+    Route::post('/enrollments/{token}/confirm', [EnrollmentController::class, 'store']);
+});
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+namespace App\Http\Controllers;
+
+class EnrollmentController extends Controller
+{
+    public function store()
+    {
+        return response()->json(['status' => 'confirmed']);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+            'app/Http/Controllers/EnrollmentController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => ['/partners/enrollments/*/confirm'],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // The public-routes decision must flow through to the sensitive-method check.
+        $this->assertPassed($result);
+    }
+
+    public function test_route_level_prefix_call_is_composed(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/users', [AdminUserController::class, 'store'])->prefix('admin');
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => ['/admin/users'],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // ->prefix() on the route itself rewrites its URI (real path: admin/users).
+        $this->assertPassed($result);
+    }
+
+    public function test_api_route_file_gets_conventional_api_prefix(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/webhooks/{provider}', [WebhookController::class, 'handle']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => ['/api/webhooks/*'],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // routes/api.php is registered with the 'api' prefix by the framework,
+        // so full-path patterns include it even though the file's AST does not.
+        $this->assertPassed($result);
+    }
+
+    public function test_api_prefix_discovered_from_bootstrap_app(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        api: __DIR__.'/../routes/api.php',
+        apiPrefix: 'v1',
+    )
+    ->create();
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/webhooks/{provider}', [WebhookController::class, 'handle']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrap,
+            'routes/api.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => ['/v1/webhooks/*'],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // A customized apiPrefix in bootstrap/app.php overrides the 'api' convention.
+        $this->assertPassed($result);
+    }
+
+    public function test_custom_route_file_prefix_discovered_from_route_service_provider(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Foundation\Support\Providers\RouteServiceProvider as ServiceProvider;
+use Illuminate\Support\Facades\Route;
+
+class RouteServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        $this->routes(function () {
+            Route::middleware('web')->group(base_path('routes/web.php'));
+            Route::prefix('partners')->middleware('web')->group(base_path('routes/partners.php'));
+        });
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/enrollments/{token}/confirm', [ConfirmEnrollmentController::class, 'store']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/RouteServiceProvider.php' => $provider,
+            'routes/partners.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => ['/partners/enrollments/*/confirm'],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // A custom route file registered with a prefix in the RouteServiceProvider
+        // composes that prefix into its routes' real paths.
+        $this->assertPassed($result);
+    }
 }

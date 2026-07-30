@@ -4007,6 +4007,567 @@ PHP;
         $this->assertHasIssueContaining('POST route without authentication middleware', $result);
     }
 
+    // ==========================================
+    // String middleware alias resolution (#307)
+    // ==========================================
+
+    public function test_passes_route_group_with_string_aliased_custom_auth_middleware_via_bootstrap(): void
+    {
+        // #307 exact repro: a custom auth middleware attached by a STRING ALIAS
+        // registered in bootstrap/app.php (Laravel 11+) must be recognised as
+        // authentication — clearing both the route finding and the dependent
+        // "sensitive method" controller finding.
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Middleware;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->alias([
+            'device.token' => \App\Http\Middleware\EnsureDeviceToken::class,
+        ]);
+    })
+    ->create();
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+use Illuminate\Auth\AuthenticationException;
+
+class EnsureDeviceToken
+{
+    public function handle($request, $next)
+    {
+        $token = $request->bearerToken();
+        if (! $token) {
+            throw new AuthenticationException('Device not registered');
+        }
+        return $next($request);
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\ScanController;
+
+Route::middleware(['device.token', 'throttle:scan'])->prefix('reception/device')->group(function () {
+    Route::post('scan', [ScanController::class, 'store']);
+});
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class ScanController extends Controller
+{
+    public function store()
+    {
+        return response()->json(['ok' => true]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrap,
+            'app/Http/Middleware/EnsureDeviceToken.php' => $middleware,
+            'routes/api.php' => $routes,
+            'app/Http/Controllers/ScanController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_route_with_string_alias_from_kernel_middleware_aliases(): void
+    {
+        // Laravel 10 style: alias declared in app/Http/Kernel.php $middlewareAliases.
+        $kernel = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+
+class Kernel extends HttpKernel
+{
+    protected $middlewareAliases = [
+        'device.token' => \App\Http\Middleware\EnsureDeviceToken::class,
+    ];
+}
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class EnsureDeviceToken
+{
+    public function handle($request, $next)
+    {
+        $token = $request->bearerToken();
+        if (! $token) {
+            abort(401);
+        }
+        return $next($request);
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\ScanController;
+
+Route::post('/reception/scan', [ScanController::class, 'store'])->middleware(['device.token']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Kernel.php' => $kernel,
+            'app/Http/Middleware/EnsureDeviceToken.php' => $middleware,
+            'routes/api.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_route_with_string_alias_from_legacy_route_middleware(): void
+    {
+        // Laravel 8/9 style: alias declared in the older $routeMiddleware property.
+        $kernel = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+
+class Kernel extends HttpKernel
+{
+    protected $routeMiddleware = [
+        'device.token' => \App\Http\Middleware\EnsureDeviceToken::class,
+    ];
+}
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class EnsureDeviceToken
+{
+    public function handle($request, $next)
+    {
+        if (! $request->bearerToken()) {
+            abort(401);
+        }
+        return $next($request);
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\ScanController;
+
+Route::post('/reception/scan', [ScanController::class, 'store'])->middleware(['device.token']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Kernel.php' => $kernel,
+            'app/Http/Middleware/EnsureDeviceToken.php' => $middleware,
+            'routes/api.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_route_with_string_alias_value_as_plain_fqcn_string(): void
+    {
+        // Alias value written as a plain string FQCN (with a leading backslash)
+        // rather than ::class — must be normalised before class introspection.
+        $kernel = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+
+class Kernel extends HttpKernel
+{
+    protected $routeMiddleware = [
+        'device.token' => '\App\Http\Middleware\EnsureDeviceToken',
+    ];
+}
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class EnsureDeviceToken
+{
+    public function handle($request, $next)
+    {
+        if (! $request->bearerToken()) {
+            abort(401);
+        }
+        return $next($request);
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\ScanController;
+
+Route::post('/reception/scan', [ScanController::class, 'store'])->middleware(['device.token']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Kernel.php' => $kernel,
+            'app/Http/Middleware/EnsureDeviceToken.php' => $middleware,
+            'routes/api.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_route_with_string_alias_and_middleware_parameter(): void
+    {
+        // The alias token carries a parameter ('device.token:tenant'); only the
+        // alias name (before the first colon) is used for map resolution.
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Middleware;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->alias([
+            'device.token' => \App\Http\Middleware\EnsureDeviceToken::class,
+        ]);
+    })
+    ->create();
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class EnsureDeviceToken
+{
+    public function handle($request, $next, $tenant = null)
+    {
+        if (! $request->bearerToken()) {
+            abort(401);
+        }
+        return $next($request);
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\ScanController;
+
+Route::post('/reception/scan', [ScanController::class, 'store'])->middleware(['device.token:tenant']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrap,
+            'app/Http/Middleware/EnsureDeviceToken.php' => $middleware,
+            'routes/api.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_route_with_auth_basic_middleware(): void
+    {
+        // The built-in 'auth.basic' alias (HTTP Basic auth) is authentication.
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\InternalController;
+
+Route::post('/internal/sync', [InternalController::class, 'store'])->middleware('auth.basic');
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_route_with_string_alias_to_non_auth_middleware(): void
+    {
+        // Negative control: an alias resolving to a NON-auth middleware must
+        // still be flagged — resolution introspects the target, it does not
+        // trust the alias blindly.
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Middleware;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->alias([
+            'audit.log' => \App\Http\Middleware\LogRequests::class,
+        ]);
+    })
+    ->create();
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class LogRequests
+{
+    public function handle($request, $next)
+    {
+        logger()->info('Request logged: ' . $request->url());
+        return $next($request);
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\ScanController;
+
+Route::post('/reception/scan', [ScanController::class, 'store'])->middleware(['audit.log']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrap,
+            'app/Http/Middleware/LogRequests.php' => $middleware,
+            'routes/api.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
+    public function test_flags_route_with_string_alias_but_no_alias_registration(): void
+    {
+        // Negative control (empty-map safety): a bare alias with no bootstrap or
+        // Kernel registration cannot be resolved, so the route stays flagged.
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\ScanController;
+
+Route::post('/reception/scan', [ScanController::class, 'store'])->middleware(['device.token']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
+    public function test_flags_route_with_unregistered_string_alias(): void
+    {
+        // Negative control: the map resolves 'device.token', but the route uses a
+        // DIFFERENT, unregistered alias — resolution is per-alias, not blanket.
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Middleware;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->alias([
+            'device.token' => \App\Http\Middleware\EnsureDeviceToken::class,
+        ]);
+    })
+    ->create();
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class EnsureDeviceToken
+{
+    public function handle($request, $next)
+    {
+        if (! $request->bearerToken()) {
+            abort(401);
+        }
+        return $next($request);
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\ScanController;
+
+Route::post('/reception/scan', [ScanController::class, 'store'])->middleware(['other.token']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrap,
+            'app/Http/Middleware/EnsureDeviceToken.php' => $middleware,
+            'routes/api.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
+    public function test_flags_route_protected_only_by_throttle_alias(): void
+    {
+        // Negative control: stripping the ':param' for alias lookup must not turn
+        // a non-auth built-in like 'throttle:scan' into authentication.
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\ScanController;
+
+Route::post('/reception/scan', [ScanController::class, 'store'])->middleware(['throttle:scan']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/api.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
+    public function test_resolves_alias_despite_unrelated_alias_call_in_bootstrap(): void
+    {
+        // Robustness: an unrelated non-array ->alias() call elsewhere must not
+        // break parsing; the real string-keyed alias map is still resolved.
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Middleware;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->alias([
+            'device.token' => \App\Http\Middleware\EnsureDeviceToken::class,
+        ]);
+    })
+    ->withExceptions(function ($exceptions): void {
+        $exceptions->alias('legacy', 'modern');
+    })
+    ->create();
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class EnsureDeviceToken
+{
+    public function handle($request, $next)
+    {
+        if (! $request->bearerToken()) {
+            abort(401);
+        }
+        return $next($request);
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\ScanController;
+
+Route::post('/reception/scan', [ScanController::class, 'store'])->middleware(['device.token']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrap,
+            'app/Http/Middleware/EnsureDeviceToken.php' => $middleware,
+            'routes/api.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_passes_routes_in_group_with_intermediate_method_calls(): void
     {
         // Route::prefix()->middleware()->group() — the ->prefix() sits between the StaticCall

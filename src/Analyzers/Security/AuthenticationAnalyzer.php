@@ -59,6 +59,15 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     private array $resolvedAuthMiddleware = [];
 
     /**
+     * Memoized middleware alias => FQCN map, parsed from bootstrap/app.php
+     * (`$middleware->alias([...])`) and app/Http/Kernel.php ($middlewareAliases
+     * / legacy $routeMiddleware). Null until first resolved.
+     *
+     * @var array<string, string>|null
+     */
+    private ?array $middlewareAliasMap = null;
+
+    /**
      * Map of controller methods that are intentionally public.
      * Format: ['ControllerClass::method' => true]
      *
@@ -522,8 +531,10 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     /**
      * Check whether the effective middleware list provides authentication.
      *
-     * Handles: 'auth', 'auth:api', 'can:ability', 'role:admin', 'permission:x',
-     * and fully-qualified custom auth middleware class names.
+     * Handles: 'auth', 'auth:api', 'auth.basic', 'can:ability', 'role:admin',
+     * 'permission:x', fully-qualified custom auth middleware class names, and
+     * bare string aliases that resolve (via bootstrap/app.php or Kernel) to a
+     * custom auth middleware class.
      *
      * @param  list<string>  $middleware
      */
@@ -535,7 +546,21 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             }
 
             // Class-like strings (contain backslash = FQCN from NameResolver)
-            if (str_contains($mw, '\\') && $this->isCustomAuthMiddlewareClass($mw)) {
+            if (str_contains($mw, '\\')) {
+                if ($this->isCustomAuthMiddlewareClass($mw)) {
+                    return true;
+                }
+
+                continue;
+            }
+
+            // Bare string alias (e.g. 'device.token', 'device.token:param') —
+            // resolve via the app's alias map, then introspect the target class
+            // for auth signals. The map is memoized, so common 'auth' routes
+            // never trigger this lookup.
+            $alias = explode(':', $mw, 2)[0];
+            $aliasMap = $this->resolveMiddlewareAliases();
+            if (isset($aliasMap[$alias]) && $this->isCustomAuthMiddlewareClass($aliasMap[$alias])) {
                 return true;
             }
         }
@@ -1459,13 +1484,19 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if a middleware name represents authentication middleware.
-     * Supports: auth, auth:api, auth:sanctum, auth:web, etc.
+     * Supports: auth, auth:api, auth:sanctum, auth:web, and the built-in
+     * HTTP Basic auth alias auth.basic (optionally auth.basic:guard,field).
      */
     private function isAuthMiddleware(string $middleware): bool
     {
+        $middleware = trim($middleware);
+
         // Match 'auth' optionally followed by a colon and guard name
         // Examples: 'auth', 'auth:api', 'auth:sanctum', 'auth:web'
-        return (bool) preg_match('/^auth(?::[a-zA-Z0-9_-]+)?$/i', trim($middleware));
+        // The built-in 'auth.basic' alias challenges and rejects unauthenticated
+        // requests, so it counts as authentication too.
+        return (bool) preg_match('/^auth(?::[a-zA-Z0-9_-]+)?$/i', $middleware)
+            || (bool) preg_match('/^auth\.basic(?::.+)?$/i', $middleware);
     }
 
     /**
@@ -1625,6 +1656,166 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         $this->resolvedAuthMiddleware[$fqcn] = $isAuth;
 
         return $isAuth;
+    }
+
+    /**
+     * Resolve the app's middleware alias => FQCN map, memoized.
+     *
+     * Combines aliases declared in bootstrap/app.php (Laravel 11+
+     * `$middleware->alias([...])`) and app/Http/Kernel.php ($middlewareAliases /
+     * legacy $routeMiddleware). Missing files simply contribute nothing, so an
+     * unresolvable bare alias falls through unchanged.
+     *
+     * @return array<string, string>
+     */
+    private function resolveMiddlewareAliases(): array
+    {
+        if ($this->middlewareAliasMap !== null) {
+            return $this->middlewareAliasMap;
+        }
+
+        return $this->middlewareAliasMap = array_merge(
+            $this->extractKernelAliasMap($this->buildPath('app/Http/Kernel.php')),
+            $this->extractBootstrapAliasMap($this->buildPath('bootstrap/app.php')),
+        );
+    }
+
+    /**
+     * Extract the alias map from bootstrap/app.php's `$middleware->alias([...])`
+     * calls (Laravel 11+).
+     *
+     * @return array<string, string>
+     */
+    private function extractBootstrapAliasMap(string $file): array
+    {
+        if (! is_file($file)) {
+            return [];
+        }
+
+        $ast = $this->parser->parseFile($file);
+        if (empty($ast)) {
+            return [];
+        }
+
+        // Resolve names WITHOUT replacing nodes so ::class values expose a
+        // `resolvedName` attribute (used by resolveClassFqcn) while leaving the
+        // shared, mtime-cached AST untouched for other consumers.
+        $this->parser->resolveNames($ast, ['replaceNodes' => false]);
+
+        $map = [];
+
+        foreach ($this->parser->findMethodCalls($ast, 'alias') as $call) {
+            if (! ($call instanceof Node\Expr\MethodCall)) {
+                continue;
+            }
+
+            // Middleware::alias() takes exactly one array argument; the shape
+            // filter also rejects any unrelated ->alias(...) call.
+            if (count($call->args) !== 1) {
+                continue;
+            }
+
+            $arg = $call->args[0];
+            if (! ($arg instanceof Node\Arg) || ! ($arg->value instanceof Node\Expr\Array_)) {
+                continue;
+            }
+
+            $map = array_merge($map, $this->extractAliasMapFromArray($arg->value));
+        }
+
+        return $map;
+    }
+
+    /**
+     * Extract the alias map from app/Http/Kernel.php's $middlewareAliases
+     * (Laravel 10) or legacy $routeMiddleware (Laravel 8/9) property.
+     *
+     * @return array<string, string>
+     */
+    private function extractKernelAliasMap(string $file): array
+    {
+        if (! is_file($file)) {
+            return [];
+        }
+
+        $ast = $this->parser->parseFile($file);
+        if (empty($ast)) {
+            return [];
+        }
+
+        $this->parser->resolveNames($ast, ['replaceNodes' => false]);
+
+        $map = [];
+
+        foreach ($this->parser->findClasses($ast) as $class) {
+            foreach ($class->stmts as $stmt) {
+                if (! ($stmt instanceof Node\Stmt\Property)) {
+                    continue;
+                }
+
+                $name = $stmt->props[0]->name->toString();
+                if ($name !== 'middlewareAliases' && $name !== 'routeMiddleware') {
+                    continue;
+                }
+
+                $default = $stmt->props[0]->default ?? null;
+                if (! ($default instanceof Node\Expr\Array_)) {
+                    continue;
+                }
+
+                $map = array_merge($map, $this->extractAliasMapFromArray($default));
+            }
+        }
+
+        return $map;
+    }
+
+    /**
+     * Turn an array literal of ['alias' => Class::class | 'Fqcn'] pairs into an
+     * alias => FQCN map. Non-string keys and unrecognised values are skipped.
+     *
+     * @return array<string, string>
+     */
+    private function extractAliasMapFromArray(Node\Expr\Array_ $array): array
+    {
+        $map = [];
+
+        foreach ($array->items as $item) {
+            if (! ($item instanceof Node\Expr\ArrayItem)) {
+                continue;
+            }
+
+            if (! ($item->key instanceof Node\Scalar\String_)) {
+                continue;
+            }
+
+            $alias = $item->key->value;
+
+            if ($item->value instanceof Node\Expr\ClassConstFetch) {
+                // ::class value — read the FQCN from the NameResolver attribute
+                // (populated by resolveNames(..., ['replaceNodes' => false])).
+                $classNode = $item->value->class;
+                if (! ($classNode instanceof Node\Name)) {
+                    continue;
+                }
+                $resolved = $classNode->getAttribute('resolvedName');
+                $fqcn = $resolved instanceof Node\Name\FullyQualified
+                    ? $resolved->toString()
+                    : $classNode->toString();
+            } elseif ($item->value instanceof Node\Scalar\String_) {
+                $fqcn = ltrim($item->value->value, '\\');
+            } else {
+                continue;
+            }
+
+            if ($fqcn === '') {
+                continue;
+            }
+
+            $map[$alias] = $fqcn;
+        }
+
+        return $map;
     }
 }
 

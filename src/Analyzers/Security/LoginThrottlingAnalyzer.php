@@ -81,6 +81,10 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             $hasApiMiddlewareThrottle = $this->hasThrottleInLaravel11Middleware('api');
         }
 
+        // NOTE: web and api throttle signals are collapsed into one flag, so an
+        // api-only throttle (e.g. throttleApi()) also suppresses unthrottled web
+        // /login findings. Pre-existing behaviour; splitting web vs api suppression
+        // would be a separate change.
         $hasGlobalThrottling = $hasLoginRateLimiting || $hasWebMiddlewareThrottle || $hasApiMiddlewareThrottle;
 
         // Check route files for login routes without throttling
@@ -603,6 +607,14 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
+        // Canonical Laravel 11+ helper: $middleware->throttleApi() injects
+        // throttle:api into the api group at runtime (with or without arguments).
+        // It only affects the api group — there is no throttleWeb() equivalent —
+        // and throttleWithRedis() merely swaps the driver, so it must not count.
+        if ($group === 'api' && preg_match('/\$middleware\s*->\s*throttleApi\s*\(/s', $content) === 1) {
+            return true;
+        }
+
         // Look for $middleware->{group}() containing ThrottleRequests or 'throttle'
         // Pattern: $middleware->web(...) or $middleware->api(...)
         $pattern = '/\$middleware\s*->\s*'.preg_quote($group, '/').'\s*\(/s';
@@ -660,43 +672,27 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
                 $lines = FileParser::getLines($filePath);
 
-                // Track route groups for context
-                // NOTE: This uses brace-depth tracking which can drift with string literals containing braces,
-                // heredocs, or complex nested structures. AST-based route group detection would be more robust
-                // but requires parsing route files as PHP AST, which can be complex due to facade calls.
-                // TODO: Consider migrating to AST-based route group detection for better accuracy.
-                $inWebGroup = false;
-                $groupDepth = 0;
-                $braceDepth = 0;
+                // AST-derived line ranges of throttled route groups (fluent and
+                // array forms, nesting-safe) — replaces the former brace-depth
+                // heuristic. A route whose line sits inside a range is covered by
+                // group-level throttling.
+                $throttledRanges = $bootstrapParser->getThrottledGroupLineRanges($filePath);
 
                 foreach ($lines as $lineNumber => $line) {
                     if (! is_string($line)) {
                         continue;
                     }
 
-                    // Track brace depth for group nesting (heuristic - can drift)
-                    $braceDepth += substr_count($line, '{') - substr_count($line, '}');
-
-                    // Detect Route::group with middleware
-                    if (preg_match('/Route::group\s*\(\s*\[/i', $line)) {
-                        $groupDepth = $braceDepth;
-                        // Check if group has throttle middleware
-                        if (preg_match('/["\']middleware["\']\s*=>\s*.*["\']throttle/i', $line)) {
-                            $inWebGroup = true;
-                        }
-                    }
-
-                    // Exit group when braces close
-                    if ($inWebGroup && $braceDepth <= $groupDepth - 1) {
-                        $inWebGroup = false;
-                    }
+                    // FileParser::getLines is 0-based; findings report $lineNumber + 1,
+                    // which is the 1-based scale the AST ranges use.
+                    $inThrottledGroup = $this->lineInRanges($lineNumber + 1, $throttledRanges);
 
                     // Check for Auth::routes() helper
                     if (preg_match('/Auth::routes\s*\(/i', $line)) {
                         // Auth::routes() includes login routes - check if throttled
                         $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber);
 
-                        if (! $hasThrottle && ! $hasGlobalThrottling && ! $inWebGroup) {
+                        if (! $hasThrottle && ! $hasGlobalThrottling && ! $inThrottledGroup) {
                             $issues[] = $this->createIssueWithSnippet(
                                 message: 'Auth::routes() includes login endpoint without explicit rate limiting',
                                 filePath: $filePath,
@@ -730,8 +726,19 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     }
 
                     if ($routeUri !== null) {
+                        // Skip endpoints matched only on the broad 'auth'/'oauth'
+                        // substring whose action segment is a non-credential one
+                        // (token revocation / identity reads). The credential-keyword
+                        // guard ensures a real login/token route is never suppressed.
+                        $segments = explode('/', trim((string) strtok($routeUri, '?'), '/'));
+                        $lastSegment = strtolower((string) end($segments));
+                        $isCredentialUri = preg_match('/login|signin|authenticate|token/i', $routeUri) === 1;
+                        if (! $isCredentialUri && in_array($lastSegment, ['logout', 'signout', 'me'], true)) {
+                            continue;
+                        }
+
                         // Check if this route or surrounding lines have throttle middleware
-                        $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber) || $inWebGroup;
+                        $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber) || $inThrottledGroup;
 
                         if (! $hasThrottle && ! $hasGlobalThrottling) {
                             $routeType = $isApiRoute ? 'API authentication' : 'Login';
@@ -822,6 +829,22 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                preg_match('/->middleware\(\[.*["\']throttle/i', $line) ||  // Array with quotes
                preg_match('/->middleware\(["\'][^"\']*["\'],\s*["\']throttle/i', $line) ||  // Varargs
                preg_match('/ThrottleRequests::class/i', $line);  // Class reference
+    }
+
+    /**
+     * Whether a 1-based line falls within any of the given inclusive ranges.
+     *
+     * @param  array<int, array{start: int, end: int}>  $ranges
+     */
+    private function lineInRanges(int $line, array $ranges): bool
+    {
+        foreach ($ranges as $range) {
+            if ($line >= $range['start'] && $line <= $range['end']) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

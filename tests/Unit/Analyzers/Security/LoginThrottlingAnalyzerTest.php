@@ -440,9 +440,17 @@ return Application::configure(basePath: dirname(__DIR__))
     ->create();
 PHP;
 
+        // A real API login route makes this pass contingent on throttleApi()
+        // detection: the global throttle:api it injects must suppress the finding.
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/login', [ApiAuthController::class, 'login']);
+PHP;
+
         $tempDir = $this->createTempDirectory([
             'bootstrap/app.php' => $bootstrapCode,
-            'routes/web.php' => '<?php // empty routes',
+            'routes/api.php' => $routeCode,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -451,8 +459,398 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Has global RateLimiter usage (from hasRateLimiterUsage check), so should pass
         $this->assertPassed($result);
+    }
+
+    public function test_throttle_api_with_custom_limiter_detected(): void
+    {
+        $bootstrapCode = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Middleware;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function (Middleware $middleware) {
+        $middleware->throttleApi('login');
+    })
+    ->create();
+PHP;
+
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/login', [ApiAuthController::class, 'login']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapCode,
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_throttle_with_redis_alone_does_not_count_as_api_throttle(): void
+    {
+        // throttleWithRedis() only swaps the throttle driver; it does not enable
+        // throttling, so an unthrottled API login route must still be flagged.
+        $bootstrapCode = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Middleware;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function (Middleware $middleware) {
+        $middleware->throttleWithRedis();
+    })
+    ->create();
+PHP;
+
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/login', [ApiAuthController::class, 'login']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapCode,
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('/login', $result);
+    }
+
+    public function test_passes_with_fluent_group_array_throttle(): void
+    {
+        // The exact fluent form from issue #309: throttle:api in the group's
+        // middleware array, applied via Route::middleware([...])->group(...).
+        $routeCode = <<<'PHP'
+<?php
+
+Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
+    Route::post('/login', [ApiAuthController::class, 'login']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_fluent_group_throttle_login_far_from_opener(): void
+    {
+        // Login route sits more than 3 lines below the group opener, so the old
+        // ±3-line look-back could not see the throttle. AST range covers it.
+        $routeCode = <<<'PHP'
+<?php
+
+Route::middleware('throttle:5,1')->group(function () {
+    Route::get('/a', [AController::class, 'index']);
+    Route::get('/b', [BController::class, 'index']);
+    Route::get('/c', [CController::class, 'index']);
+    Route::get('/d', [DController::class, 'index']);
+    Route::post('/login', [LoginController::class, 'login']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fluent_group_without_throttle_still_flags_login(): void
+    {
+        // A fluent group carrying no throttle must not be treated as covered.
+        $routeCode = <<<'PHP'
+<?php
+
+Route::middleware('auth')->prefix('acct')->group(function () {
+    Route::post('/login', [LoginController::class, 'login']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('login', $result);
+    }
+
+    public function test_nested_throttle_group_does_not_leak_coverage(): void
+    {
+        // The login route is after the inner group closes but still inside the
+        // outer throttle group; overlapping AST ranges keep it covered.
+        $routeCode = <<<'PHP'
+<?php
+
+Route::middleware('throttle:5,1')->group(function () {
+    Route::middleware('throttle:5,1')->prefix('inner')->group(function () {
+        Route::get('/ping', [PingController::class, 'index']);
+    });
+
+    Route::post('/login', [LoginController::class, 'login']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fluent_group_with_path_argument_does_not_leak(): void
+    {
+        // ->group(base_path(...)) opens no closure, so it must not mark the
+        // following top-level login route as covered.
+        $routeCode = <<<'PHP'
+<?php
+
+Route::middleware('throttle:5,1')->group(base_path('routes/inner.php'));
+
+Route::post('/login', [LoginController::class, 'login']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('login', $result);
+    }
+
+    public function test_skips_auth_logout_endpoint(): void
+    {
+        // Matches only on the broad 'auth' substring; logout is token revocation,
+        // not a credential brute-force surface.
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/auth/logout', [AuthController::class, 'logout']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_auth_me_endpoint(): void
+    {
+        $routeCode = <<<'PHP'
+<?php
+
+Route::get('/auth/me', [AuthController::class, 'me']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_auth_signout_endpoint(): void
+    {
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/auth/signout', [AuthController::class, 'signout']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_flags_auth_login_despite_denylist(): void
+    {
+        // 'login' is an explicit credential keyword, so the denylist must not
+        // suppress it even though it sits under the /auth prefix.
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/auth/login', [AuthController::class, 'login']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('/auth/login', $result);
+    }
+
+    public function test_still_flags_token_refresh_endpoint(): void
+    {
+        // 'refresh' is intentionally NOT on the denylist: a token-refresh endpoint
+        // accepts a secret and mints tokens, so throttling it is warranted.
+        $routeCode = <<<'PHP'
+<?php
+
+Route::post('/token/refresh', [TokenController::class, 'refresh']);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('token/refresh', $result);
+    }
+
+    public function test_issue_309_repro_global_throttle_api_clears_all(): void
+    {
+        // Exact reproduction from issue #309: a global throttle:api (via
+        // throttleApi()) covers every API route, and logout/me are not
+        // credential surfaces — so there should be no findings.
+        $bootstrapCode = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Middleware;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->throttleApi();
+    })
+    ->create();
+PHP;
+
+        $routeCode = <<<'PHP'
+<?php
+
+Route::middleware('auth:sanctum')->group(function () {
+    Route::post('auth/logout', [StaffLoginController::class, 'logout']);
+    Route::get('auth/me', MeController::class);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapCode,
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_issue_309_repro_without_global_throttle_flags_only_login(): void
+    {
+        // No global throttle and an unthrottled auth:sanctum group: logout/me are
+        // skipped as non-credential endpoints, but the genuine login route is
+        // still flagged. Exactly one finding.
+        $routeCode = <<<'PHP'
+<?php
+
+Route::middleware('auth:sanctum')->group(function () {
+    Route::post('auth/logout', [StaffLoginController::class, 'logout']);
+    Route::get('auth/me', MeController::class);
+    Route::post('login', [StaffLoginController::class, 'login']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => $routeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('login', $result);
     }
 
     public function test_handles_invalid_php_in_route_file(): void

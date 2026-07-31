@@ -143,6 +143,56 @@ class VersionConstraintMatcherTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_matches_compound_comma_constraint(): void
+    {
+        // ">=1.0,<2.0" is a single AND constraint: version must satisfy BOTH parts.
+        $this->assertTrue($this->matcher->matches('1.5.0', ['>=1.0,<2.0']));
+        $this->assertTrue($this->matcher->matches('1.0.0', ['>=1.0,<2.0']));
+        $this->assertFalse($this->matcher->matches('2.1.0', ['>=1.0,<2.0']));
+        $this->assertFalse($this->matcher->matches('0.9.0', ['>=1.0,<2.0']));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_matches_upper_bound_only_compound_constraint(): void
+    {
+        // OSV [introduced:0, fixed:7.15.1] collapses to "<7.15.1".
+        $this->assertTrue($this->matcher->matches('7.15.0', ['<7.15.1']));
+        $this->assertFalse($this->matcher->matches('7.15.1', ['<7.15.1']));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_matches_mixed_or_of_compound_constraints(): void
+    {
+        // Array elements are OR; a comma inside an element is AND.
+        $constraints = ['<1.1.0', '>=2.0.0,<2.1.0'];
+
+        $this->assertTrue($this->matcher->matches('1.0.5', $constraints));  // matches <1.1.0
+        $this->assertTrue($this->matcher->matches('2.0.5', $constraints));  // matches the compound
+        $this->assertFalse($this->matcher->matches('1.5.0', $constraints)); // in neither
+        $this->assertFalse($this->matcher->matches('2.1.0', $constraints)); // above the compound
+    }
+
+    /** @test */
+    #[Test]
+    public function it_handles_whitespace_in_compound_constraint(): void
+    {
+        $this->assertTrue($this->matcher->matches('1.5.0', ['>=1.0, <2.0']));
+        $this->assertFalse($this->matcher->matches('2.1.0', ['>=1.0, <2.0']));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_treats_a_comma_only_constraint_as_wildcard(): void
+    {
+        // A compound constraint that splits to nothing usable matches everything.
+        $this->assertTrue($this->matcher->matches('1.0.0', [',']));
+        $this->assertTrue($this->matcher->matches('9.9.9', [' , ']));
+    }
+
+    /** @test */
+    #[Test]
     public function it_handles_version_with_v_prefix(): void
     {
         $this->assertTrue($this->matcher->matches('1.0.0', 'v1.0.0'));

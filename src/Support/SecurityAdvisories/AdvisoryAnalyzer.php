@@ -40,7 +40,13 @@ class AdvisoryAnalyzer implements AdvisoryAnalyzerInterface
                     $affected = [];
                 }
 
-                if (! $this->matcher->matches($version, $affected)) {
+                // Fail open: only drop an advisory when we have real constraints AND
+                // the installed version is clearly outside them. When no usable range
+                // is available (unparseable/hydration failure), keep the advisory —
+                // OSV already filtered by version server-side, so we must not hide it.
+                $hasConstraints = is_array($affected) ? $affected !== [] : $affected !== '';
+
+                if ($hasConstraints && ! $this->matcher->matches($version, $affected)) {
                     continue;
                 }
 

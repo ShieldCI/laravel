@@ -85,11 +85,13 @@ class ShieldCIServiceProvider extends ServiceProvider
             }
 
             $source = $app['config']->get('shieldci.security_advisories.source', HttpAdvisoryFetcher::DEFAULT_SOURCE);
+            $vulnsSource = $app['config']->get('shieldci.security_advisories.vulns_source');
 
             return new HttpAdvisoryFetcher(
                 $app->make(ClientInterface::class),
                 $logger,
-                $source
+                is_string($source) ? $source : HttpAdvisoryFetcher::DEFAULT_SOURCE,
+                vulnUrl: is_string($vulnsSource) && $vulnsSource !== '' ? $vulnsSource : null,
             );
         });
         $this->app->singleton(ComposerDependencyReader::class);

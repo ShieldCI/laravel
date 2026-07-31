@@ -3159,6 +3159,111 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_container_resolution_in_add_global_scope_closure_in_trait_is_suppressed(): void
+    {
+        // A trait boot method registers a global scope via static::addGlobalScope(). Eloquent
+        // invokes the closure with the Builder — there is no constructor or method injection
+        // point — so container access inside it is unavoidable, exactly like a model-event
+        // closure. This is the standard multi-tenant scoping pattern.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+use Illuminate\Database\Eloquent\Builder;
+
+trait BelongsToBuilding
+{
+    protected static function bootBelongsToBuilding(): void
+    {
+        static::addGlobalScope('building', function (Builder $builder) {
+            $builder->where('building_id', app('current_building_id'));
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/BelongsToBuilding.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_container_resolution_in_resolve_relation_using_closure_is_suppressed(): void
+    {
+        // resolveRelationUsing() stores a Closure Eloquent later invokes with the model to
+        // build a dynamic relation — no DI injection point, so container access is unavoidable.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+trait HasDynamicOrders
+{
+    public static function bootHasDynamicOrders(): void
+    {
+        static::resolveRelationUsing('orders', function ($model) {
+            return app(OrderResolver::class)->for($model);
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/HasDynamicOrders.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_binding_in_add_global_scope_closure_is_still_flagged(): void
+    {
+        // The DI-impossible exemption suppresses resolution, but container *bindings*
+        // (bind/singleton) are always wrong outside a service provider and stay flagged.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+use Illuminate\Database\Eloquent\Builder;
+
+trait BindsInScope
+{
+    protected static function bootBindsInScope(): void
+    {
+        static::addGlobalScope('bad', function (Builder $builder) {
+            app()->singleton('foo', fn () => new \stdClass());
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/BindsInScope.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('singleton', $result);
+    }
+
     public function test_trait_non_event_resolution_is_flagged_with_trait_location(): void
     {
         // Resolution outside a model-event closure is still flagged, but the trait is now

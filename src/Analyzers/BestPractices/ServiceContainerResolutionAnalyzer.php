@@ -67,10 +67,11 @@ use ShieldCI\Support\EloquentModelDetector;
  * - Eloquent Scope classes: A global scope (implements Illuminate\Database\Eloquent\Scope) is
  *   instantiated with `new` by user code (addGlobalScope(new FooScope)), so constructor DI is
  *   impossible, and apply(Builder, Model) is a framework-fixed signature. All resolution suppressed.
- * - Model-event closures: Closures registered to Eloquent events (static::creating(), updating(),
- *   saving(), etc.) are invoked by the event dispatcher with the model instance, never via DI. This
- *   covers model traits/concerns (e.g. a boot{Trait}() method) which extend nothing and so aren't
- *   caught by Eloquent-model detection. Resolution inside any model-event call subtree is suppressed.
+ * - Model-event & scope/relation closures: Closures registered to Eloquent events (static::creating(),
+ *   updating(), saving(), etc.) or to static closure registrations (addGlobalScope(), addGlobalScopes(),
+ *   resolveRelationUsing()) are invoked by Eloquent with the model/builder, never via DI. This covers
+ *   model traits/concerns (e.g. a boot{Trait}() method) which extend nothing and so aren't caught by
+ *   Eloquent-model detection. Resolution inside any such call subtree is suppressed; bindings stay flagged.
  * - Middleware: Detected by the App\Http\Middleware\ namespace OR a handle(Request, Closure)
  *   signature, not only the *Middleware class-name suffix. Verb-named middleware (HandleInertiaRequests,
  *   EnsureSubscribed) resolve per request, so all resolution is suppressed.
@@ -877,11 +878,12 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     private bool $currentMethodIsStatic = false;
 
     /**
-     * Depth inside an Eloquent model-event registration call (static::creating(),
-     * updating(), etc.). Closures passed to these events are invoked by the event
-     * dispatcher with the model instance, never via DI, so resolution within the
-     * call subtree is suppressed. Covers model traits/concerns whose boot{Trait}()
-     * methods register events but extend nothing.
+     * Depth inside an Eloquent closure-registration call — a model-event registration
+     * (static::creating(), updating(), etc.) or a scope/relation registration
+     * (addGlobalScope(), resolveRelationUsing(), see ELOQUENT_CLOSURE_REGISTRATIONS).
+     * Closures passed to these are invoked by Eloquent with the model/builder, never via
+     * DI, so resolution within the call subtree is suppressed. Covers model traits/concerns
+     * whose boot{Trait}() methods register these but extend nothing.
      */
     private int $modelEventDepth = 0;
 
@@ -896,6 +898,18 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         'saving', 'saved', 'deleting', 'deleted', 'trashed',
         'forceDeleting', 'forceDeleted', 'restoring', 'restored',
         'replicating', 'booting', 'booted',
+    ];
+
+    /**
+     * Eloquent static closure registrations (HasGlobalScopes::addGlobalScope / addGlobalScopes,
+     * HasRelationships::resolveRelationUsing). Each takes a Closure that Eloquent later invokes
+     * with the Builder/Model — there is no DI injection point, exactly like a model-event closure —
+     * so resolution inside the closure is suppressed. Bindings stay flagged.
+     *
+     * @var array<string>
+     */
+    private const ELOQUENT_CLOSURE_REGISTRATIONS = [
+        'addGlobalScope', 'addGlobalScopes', 'resolveRelationUsing',
     ];
 
     /**
@@ -992,11 +1006,11 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
             return null;
         }
 
-        // Track Eloquent model-event registration (static::creating(fn () => ...), etc.).
-        // Closures passed to these are invoked with the model instance, never via DI.
-        // Must run before the suppression guards below so the depth stays balanced with
-        // the unconditional decrement in leaveNode().
-        if ($this->isModelEventCall($node)) {
+        // Track Eloquent closure registration (static::creating(fn () => ...), addGlobalScope(),
+        // resolveRelationUsing(), etc.). Closures passed to these are invoked by Eloquent with the
+        // model/builder, never via DI. Must run before the suppression guards below so the depth
+        // stays balanced with the unconditional decrement in leaveNode().
+        if ($this->isDiExemptClosureRegistration($node)) {
             $this->modelEventDepth++;
         }
 
@@ -1382,8 +1396,8 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
             $this->closureDepth--;
         }
 
-        // Track Eloquent model-event call exit
-        if ($this->isModelEventCall($node)) {
+        // Track Eloquent closure-registration call exit
+        if ($this->isDiExemptClosureRegistration($node)) {
             $this->modelEventDepth--;
         }
 
@@ -1512,17 +1526,19 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Check if a node is an Eloquent model-event registration call.
+     * Check if a node is a static call whose closure argument Eloquent invokes without DI.
      *
-     * Keys on static calls (static::creating(), self::saving(), Model::deleting(), ...) whose
-     * method name is a known Eloquent event. Event registration is always static, so this avoids
-     * false matches on arbitrary instance method calls that happen to share an event name.
+     * Covers model-event registrations (static::creating(), self::saving(), Model::deleting(), ...)
+     * and the static closure registrations in ELOQUENT_CLOSURE_REGISTRATIONS (addGlobalScope(),
+     * resolveRelationUsing(), ...). All of these are registered via static calls, so keying on
+     * StaticCall avoids false matches on arbitrary instance method calls that share a name.
      */
-    private function isModelEventCall(Node $node): bool
+    private function isDiExemptClosureRegistration(Node $node): bool
     {
         return $node instanceof Expr\StaticCall
             && $node->name instanceof Node\Identifier
-            && in_array($node->name->toString(), self::MODEL_EVENTS, true);
+            && (in_array($node->name->toString(), self::MODEL_EVENTS, true)
+                || in_array($node->name->toString(), self::ELOQUENT_CLOSURE_REGISTRATIONS, true));
     }
 
     /**

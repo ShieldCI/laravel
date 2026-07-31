@@ -184,6 +184,15 @@ class VersionConstraintMatcherTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_treats_a_comma_only_constraint_as_wildcard(): void
+    {
+        // A compound constraint that splits to nothing usable matches everything.
+        $this->assertTrue($this->matcher->matches('1.0.0', [',']));
+        $this->assertTrue($this->matcher->matches('9.9.9', [' , ']));
+    }
+
+    /** @test */
+    #[Test]
     public function it_handles_version_with_v_prefix(): void
     {
         $this->assertTrue($this->matcher->matches('1.0.0', 'v1.0.0'));

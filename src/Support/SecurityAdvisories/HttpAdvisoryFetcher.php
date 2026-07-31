@@ -67,7 +67,7 @@ class HttpAdvisoryFetcher implements AdvisoryFetcherInterface
 
     /**
      * @param  array<string, array{version: string, time: string|null}>  $dependencies
-     * @return array<int, array<string, mixed>>
+     * @return array<int, array{package: array{name: string, ecosystem: string}, version: string}>
      */
     private function buildQueries(array $dependencies): array
     {
@@ -172,7 +172,7 @@ class HttpAdvisoryFetcher implements AdvisoryFetcherInterface
 
     /**
      * @param  array<int, array<string, mixed>>  $results
-     * @param  array<int, array<string, mixed>>  $queries
+     * @param  array<int, array{package: array{name: string, ecosystem: string}, version: string}>  $queries
      * @param  array<string, array<string, mixed>|null>  $details
      * @return array<string, array<int, array<string, mixed>>>
      */
@@ -185,13 +185,7 @@ class HttpAdvisoryFetcher implements AdvisoryFetcherInterface
                 continue;
             }
 
-            $query = $queries[$index];
-            $queryPackage = $query['package'] ?? null;
-            $package = is_array($queryPackage) ? ($queryPackage['name'] ?? null) : null;
-
-            if (! is_string($package)) {
-                continue;
-            }
+            $package = $queries[$index]['package']['name'];
 
             if (! is_array($result) || ! isset($result['vulns']) || ! is_array($result['vulns'])) {
                 continue;

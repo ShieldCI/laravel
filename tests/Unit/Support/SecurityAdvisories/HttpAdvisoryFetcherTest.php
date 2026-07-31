@@ -447,6 +447,207 @@ class HttpAdvisoryFetcherTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_parses_last_affected_and_open_ended_ranges(): void
+    {
+        $client = $this->clientReturning([
+            new Response(200, [], $this->encode(['results' => [['vulns' => [['id' => 'GHSA-mix']]]]])),
+            new Response(200, [], $this->encode([
+                'id' => 'GHSA-mix',
+                'summary' => 'Mixed events',
+                'affected' => [[
+                    'package' => ['ecosystem' => 'Packagist', 'name' => 'vendor/pkg'],
+                    'ranges' => [['type' => 'SEMVER', 'events' => [
+                        ['introduced' => '1.0.0'],
+                        ['last_affected' => '1.5.0'],
+                        ['introduced' => '2.0.0'],
+                    ]]],
+                ]],
+            ])),
+        ]);
+
+        $fetcher = new HttpAdvisoryFetcher($client);
+
+        $result = $fetcher->fetch(['vendor/pkg' => ['version' => '1.2.0', 'time' => null]]);
+
+        $this->assertEquals(['>=1.0.0,<=1.5.0', '>=2.0.0'], $result['vendor/pkg'][0]['affected_versions']);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_represents_an_unfixed_from_zero_range_as_wildcard(): void
+    {
+        $client = $this->clientReturning([
+            new Response(200, [], $this->encode(['results' => [['vulns' => [['id' => 'GHSA-open']]]]])),
+            new Response(200, [], $this->encode([
+                'id' => 'GHSA-open',
+                'summary' => 'No fix yet',
+                'affected' => [[
+                    'package' => ['ecosystem' => 'Packagist', 'name' => 'vendor/pkg'],
+                    'ranges' => [['type' => 'ECOSYSTEM', 'events' => [['introduced' => '0']]]],
+                ]],
+            ])),
+        ]);
+
+        $fetcher = new HttpAdvisoryFetcher($client);
+
+        $result = $fetcher->fetch(['vendor/pkg' => ['version' => '5.0.0', 'time' => null]]);
+
+        $this->assertEquals(['*'], $result['vendor/pkg'][0]['affected_versions']);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_skips_git_ranges_and_malformed_range_data(): void
+    {
+        $client = $this->clientReturning([
+            new Response(200, [], $this->encode(['results' => [['vulns' => [['id' => 'GHSA-junk']]]]])),
+            new Response(200, [], $this->encode([
+                'id' => 'GHSA-junk',
+                'summary' => 'Ranges with junk',
+                'affected' => [[
+                    'package' => ['ecosystem' => 'Packagist', 'name' => 'vendor/pkg'],
+                    'ranges' => [
+                        'not-a-range-array',
+                        ['type' => 'GIT', 'events' => [['introduced' => '0'], ['fixed' => 'abc123']]],
+                        ['type' => 'SEMVER'], // no events
+                        ['type' => 'SEMVER', 'events' => [
+                            'not-an-event',
+                            ['introduced' => '0'],
+                            ['fixed' => ''],   // empty upper bound is dropped
+                            ['fixed' => '1.0.0'],
+                        ]],
+                    ],
+                ]],
+            ])),
+        ]);
+
+        $fetcher = new HttpAdvisoryFetcher($client);
+
+        $result = $fetcher->fetch(['vendor/pkg' => ['version' => '0.9.0', 'time' => null]]);
+
+        $this->assertEquals(['<1.0.0'], $result['vendor/pkg'][0]['affected_versions']);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_includes_affected_entries_without_a_package_block(): void
+    {
+        $client = $this->clientReturning([
+            new Response(200, [], $this->encode(['results' => [['vulns' => [['id' => 'GHSA-nopkg']]]]])),
+            new Response(200, [], $this->encode([
+                'id' => 'GHSA-nopkg',
+                'summary' => 'No package block',
+                'affected' => [[
+                    'ranges' => [['type' => 'ECOSYSTEM', 'events' => [['introduced' => '0'], ['fixed' => '2.0.0']]]],
+                ]],
+            ])),
+        ]);
+
+        $fetcher = new HttpAdvisoryFetcher($client);
+
+        $result = $fetcher->fetch(['vendor/pkg' => ['version' => '1.0.0', 'time' => null]]);
+
+        $this->assertEquals(['<2.0.0'], $result['vendor/pkg'][0]['affected_versions']);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_excludes_affected_entries_with_a_mismatched_package_name(): void
+    {
+        $client = $this->clientReturning([
+            new Response(200, [], $this->encode(['results' => [['vulns' => [['id' => 'GHSA-name']]]]])),
+            new Response(200, [], $this->encode([
+                'id' => 'GHSA-name',
+                'summary' => 'Same ecosystem, different package',
+                'affected' => [
+                    [
+                        'package' => ['ecosystem' => 'Packagist', 'name' => 'other/pkg'],
+                        'ranges' => [['type' => 'ECOSYSTEM', 'events' => [['introduced' => '0'], ['fixed' => '99.0.0']]]],
+                    ],
+                    [
+                        'package' => ['ecosystem' => 'Packagist', 'name' => 'vendor/pkg'],
+                        'ranges' => [['type' => 'ECOSYSTEM', 'events' => [['introduced' => '0'], ['fixed' => '2.0.0']]]],
+                    ],
+                ],
+            ])),
+        ]);
+
+        $fetcher = new HttpAdvisoryFetcher($client);
+
+        $result = $fetcher->fetch(['vendor/pkg' => ['version' => '1.0.0', 'time' => null]]);
+
+        $this->assertEquals(['<2.0.0'], $result['vendor/pkg'][0]['affected_versions']);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_fails_open_on_non_200_vuln_response(): void
+    {
+        $client = $this->clientReturning([
+            new Response(200, [], $this->encode(['results' => [['vulns' => [['id' => 'GHSA-204']]]]])),
+            new Response(204, [], ''),
+        ]);
+
+        $fetcher = new HttpAdvisoryFetcher($client);
+
+        $result = $fetcher->fetch(['vendor/pkg' => ['version' => '1.0.0', 'time' => null]]);
+
+        $this->assertEquals('GHSA-204', $result['vendor/pkg'][0]['title']);
+        $this->assertSame([], $result['vendor/pkg'][0]['affected_versions']);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_fails_open_on_invalid_vuln_json(): void
+    {
+        $client = $this->clientReturning([
+            new Response(200, [], $this->encode(['results' => [['vulns' => [['id' => 'GHSA-bad']]]]])),
+            new Response(200, [], 'not json'),
+        ]);
+
+        $fetcher = new HttpAdvisoryFetcher($client);
+
+        $result = $fetcher->fetch(['vendor/pkg' => ['version' => '1.0.0', 'time' => null]]);
+
+        $this->assertEquals('GHSA-bad', $result['vendor/pkg'][0]['title']);
+        $this->assertSame([], $result['vendor/pkg'][0]['affected_versions']);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_derives_the_vuln_url_from_a_non_querybatch_source(): void
+    {
+        // A source URL without "querybatch" falls back to the default vulns endpoint.
+        $client = $this->clientReturning([
+            new Response(200, [], $this->encode(['results' => [['vulns' => [['id' => 'GHSA-src']]]]])),
+            new Response(200, [], $this->encode(['id' => 'GHSA-src', 'summary' => 'Derived source'])),
+        ]);
+
+        $fetcher = new HttpAdvisoryFetcher($client, null, 'https://osv.example/scan');
+
+        $result = $fetcher->fetch(['vendor/pkg' => ['version' => '1.0.0', 'time' => null]]);
+
+        $this->assertEquals('Derived source', $result['vendor/pkg'][0]['title']);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_honours_an_explicit_vuln_url(): void
+    {
+        $client = $this->clientReturning([
+            new Response(200, [], $this->encode(['results' => [['vulns' => [['id' => 'GHSA-explicit']]]]])),
+            new Response(200, [], $this->encode(['id' => 'GHSA-explicit', 'summary' => 'Explicit URL'])),
+        ]);
+
+        $fetcher = new HttpAdvisoryFetcher($client, null, HttpAdvisoryFetcher::DEFAULT_SOURCE, 10, 'https://osv.example/vulns');
+
+        $result = $fetcher->fetch(['vendor/pkg' => ['version' => '1.0.0', 'time' => null]]);
+
+        $this->assertEquals('Explicit URL', $result['vendor/pkg'][0]['title']);
+    }
+
+    /** @test */
+    #[Test]
     public function it_handles_multiple_packages(): void
     {
         $client = $this->clientReturning([

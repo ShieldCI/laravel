@@ -23,6 +23,11 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
  *      (inherit that file's middleware group automatically)
  *   2. Files registered via Route::middleware('web|api')->...->group(base_path('...'))
  *      in bootstrap/app.php's withRouting(then: ...) callback or in app/Providers/*.php
+ *
+ * It also exposes {@see self::getThrottledGroupLineRanges()} for the in-file case:
+ * the line spans of throttled Route::...->group(Closure) blocks declared directly
+ * inside a route file (fluent and array forms), used to tell whether a given route
+ * line is covered by group-level throttling.
  */
 class BootstrapRouteParser
 {
@@ -135,6 +140,131 @@ class BootstrapRouteParser
             $this->getFilesRegisteredWithThrottleMiddlewareInBootstrap(),
             $this->getFilesRegisteredWithThrottleMiddlewareInProvidersDir(),
         )));
+    }
+
+    /**
+     * Returns the line ranges of throttled Route::...->group(Closure) blocks
+     * declared inside the given route file. Covers both the fluent form
+     * (Route::middleware([...'throttle'...])->group(fn)) and the array form
+     * (Route::group(['middleware' => 'throttle...'], fn)), and is nesting-safe:
+     * overlapping ranges are returned as-is, so a route line inside any range
+     * is treated as covered. Path-argument groups (->group(base_path(...))) open
+     * no closure and are intentionally ignored here.
+     *
+     * @return array<int, array{start: int, end: int}>
+     */
+    public function getThrottledGroupLineRanges(string $filePath): array
+    {
+        if (! file_exists($filePath)) {
+            return [];
+        }
+
+        $ast = $this->parser->parseFile($filePath);
+        if (empty($ast)) {
+            return [];
+        }
+
+        $ranges = [];
+
+        // Fluent form: Route::middleware([...'throttle'...])->group(function () {...})
+        // Also covers ->group(['middleware' => 'throttle'], function () {...}).
+        foreach ($this->parser->findMethodCalls($ast, 'group') as $call) {
+            if (! ($call instanceof MethodCall)) {
+                continue;
+            }
+            $closure = $this->closureArgument($call->args);
+            if ($closure === null) {
+                continue;
+            }
+            if ($this->chainContainsThrottleMiddleware($call->var)
+                || $this->argsCarryThrottleMiddleware($call->args)) {
+                $ranges[] = ['start' => $closure->getStartLine(), 'end' => $closure->getEndLine()];
+            }
+        }
+
+        // Array form: Route::group(['middleware' => 'throttle...'], function () {...})
+        foreach ($this->parser->findNodes($ast, StaticCall::class) as $call) {
+            if (! ($call instanceof StaticCall)
+                || ! ($call->name instanceof Identifier)
+                || $call->name->name !== 'group') {
+                continue;
+            }
+            $closure = $this->closureArgument($call->args);
+            if ($closure === null) {
+                continue;
+            }
+            if ($this->argsCarryThrottleMiddleware($call->args)) {
+                $ranges[] = ['start' => $closure->getStartLine(), 'end' => $closure->getEndLine()];
+            }
+        }
+
+        return $ranges;
+    }
+
+    /**
+     * Returns the first Closure/ArrowFunction argument of a group() call, if any.
+     *
+     * @param  array<Node\Arg|Node\VariadicPlaceholder>  $args
+     */
+    private function closureArgument(array $args): ?Node
+    {
+        foreach ($args as $arg) {
+            if ($arg instanceof Node\Arg
+                && ($arg->value instanceof Node\Expr\Closure || $arg->value instanceof Node\Expr\ArrowFunction)) {
+                return $arg->value;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Detects the array-config group form: a ['middleware' => 'throttle...'] or
+     * ['middleware' => ['auth', 'throttle...']] entry among the call arguments.
+     *
+     * @param  array<Node\Arg|Node\VariadicPlaceholder>  $args
+     */
+    private function argsCarryThrottleMiddleware(array $args): bool
+    {
+        foreach ($args as $arg) {
+            if (! ($arg instanceof Node\Arg) || ! ($arg->value instanceof Node\Expr\Array_)) {
+                continue;
+            }
+            foreach ($arg->value->items as $item) {
+                if (! ($item instanceof Node\Expr\ArrayItem)
+                    || ! ($item->key instanceof String_)
+                    || $item->key->value !== 'middleware') {
+                    continue;
+                }
+                if ($this->middlewareValueHasThrottle($item->value)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether a 'middleware' value (a string or a list of strings) carries a throttle.
+     */
+    private function middlewareValueHasThrottle(Node $value): bool
+    {
+        if ($value instanceof String_) {
+            return str_starts_with($value->value, 'throttle');
+        }
+
+        if ($value instanceof Node\Expr\Array_) {
+            foreach ($value->items as $item) {
+                if ($item instanceof Node\Expr\ArrayItem
+                    && $item->value instanceof String_
+                    && str_starts_with($item->value->value, 'throttle')) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

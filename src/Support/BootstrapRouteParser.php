@@ -167,38 +167,43 @@ class BootstrapRouteParser
         $ranges = [];
 
         // Fluent form: Route::middleware([...'throttle'...])->group(function () {...})
-        // Also covers ->group(['middleware' => 'throttle'], function () {...}).
+        // (throttle in the method chain) — also handles ->group(['middleware' =>
+        // 'throttle'], function () {...}) via the config-array check.
         foreach ($this->parser->findMethodCalls($ast, 'group') as $call) {
-            if (! ($call instanceof MethodCall)) {
-                continue;
-            }
-            $closure = $this->closureArgument($call->args);
-            if ($closure === null) {
-                continue;
-            }
-            if ($this->chainContainsThrottleMiddleware($call->var)
-                || $this->argsCarryThrottleMiddleware($call->args)) {
-                $ranges[] = ['start' => $closure->getStartLine(), 'end' => $closure->getEndLine()];
+            if ($call instanceof MethodCall) {
+                $this->collectThrottledGroupRange(
+                    $call->args,
+                    $this->chainContainsThrottleMiddleware($call->var),
+                    $ranges,
+                );
             }
         }
 
-        // Array form: Route::group(['middleware' => 'throttle...'], function () {...})
+        // Array form: Route::group(['middleware' => 'throttle...'], function () {...}).
         foreach ($this->parser->findNodes($ast, StaticCall::class) as $call) {
-            if (! ($call instanceof StaticCall)
-                || ! ($call->name instanceof Identifier)
-                || $call->name->name !== 'group') {
-                continue;
-            }
-            $closure = $this->closureArgument($call->args);
-            if ($closure === null) {
-                continue;
-            }
-            if ($this->argsCarryThrottleMiddleware($call->args)) {
-                $ranges[] = ['start' => $closure->getStartLine(), 'end' => $closure->getEndLine()];
+            if ($call instanceof StaticCall
+                && $call->name instanceof Identifier
+                && $call->name->name === 'group') {
+                $this->collectThrottledGroupRange($call->args, false, $ranges);
             }
         }
 
         return $ranges;
+    }
+
+    /**
+     * Records the closure argument's line range when the group is throttled —
+     * either through its method chain ($chainThrottled) or a config-array argument.
+     *
+     * @param  array<Node\Arg|Node\VariadicPlaceholder>  $args
+     * @param  array<int, array{start: int, end: int}>  $ranges
+     */
+    private function collectThrottledGroupRange(array $args, bool $chainThrottled, array &$ranges): void
+    {
+        $closure = $this->closureArgument($args);
+        if ($closure !== null && ($chainThrottled || $this->argsCarryThrottleMiddleware($args))) {
+            $ranges[] = ['start' => $closure->getStartLine(), 'end' => $closure->getEndLine()];
+        }
     }
 
     /**

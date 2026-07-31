@@ -1118,6 +1118,114 @@ PHP;
         }
     }
 
+    public function test_throttled_group_ranges_returns_empty_for_missing_file(): void
+    {
+        $parser = new BootstrapRouteParser('/nonexistent', $this->parser);
+
+        $this->assertSame([], $parser->getThrottledGroupLineRanges('/nonexistent/routes/api.php'));
+    }
+
+    public function test_throttled_group_ranges_returns_empty_when_ast_is_empty(): void
+    {
+        // A file with only an opening tag parses to an empty statement list.
+        $tempDir = $this->createTempDir(['routes/api.php' => '<?php']);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame([], $parser->getThrottledGroupLineRanges($tempDir.'/routes/api.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_throttled_group_ranges_detects_array_list_middleware_throttle(): void
+    {
+        // Array-config form where 'middleware' is itself a list of strings.
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['middleware' => ['auth:sanctum', 'throttle:api']], function () {
+    Route::post('/login', [LoginController::class, 'login']);
+});
+PHP;
+        $tempDir = $this->createTempDir(['routes/api.php' => $routes]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $ranges = $parser->getThrottledGroupLineRanges($tempDir.'/routes/api.php');
+
+            $this->assertCount(1, $ranges);
+            $this->assertSame(3, $ranges[0]['start']);
+            $this->assertSame(5, $ranges[0]['end']);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_throttled_group_ranges_ignores_array_list_middleware_without_throttle(): void
+    {
+        // Array-config 'middleware' list that carries no throttle entry.
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['middleware' => ['auth:sanctum', 'verified']], function () {
+    Route::post('/login', [LoginController::class, 'login']);
+});
+PHP;
+        $tempDir = $this->createTempDir(['routes/api.php' => $routes]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame([], $parser->getThrottledGroupLineRanges($tempDir.'/routes/api.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_throttled_group_ranges_ignores_group_without_closure(): void
+    {
+        // Route::group with no closure argument yields no range.
+        $routes = <<<'PHP'
+<?php
+
+Route::group(['prefix' => 'admin']);
+PHP;
+        $tempDir = $this->createTempDir(['routes/web.php' => $routes]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame([], $parser->getThrottledGroupLineRanges($tempDir.'/routes/web.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_throttled_group_ranges_returns_closure_span_for_fluent_group(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('throttle:5,1')->group(function () {
+    Route::post('/login', [LoginController::class, 'login']);
+});
+PHP;
+        $tempDir = $this->createTempDir(['routes/web.php' => $routes]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $ranges = $parser->getThrottledGroupLineRanges($tempDir.'/routes/web.php');
+
+            $this->assertCount(1, $ranges);
+            $this->assertSame(3, $ranges[0]['start']);
+            $this->assertSame(5, $ranges[0]['end']);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
     /**
      * @param  array<string>  $paths
      */

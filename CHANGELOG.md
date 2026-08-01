@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.12.6
+
+### Fixed
+- `public_routes` now composes route-group prefixes into the full URI before matching the allowlist, so a prefixed nested route is no longer flagged as unprotected (#305)
+- `authentication-authorization` now resolves string middleware aliases (e.g. `['device.token']`) to their class via an alias map from `bootstrap/app.php` and `app/Http/Kernel.php`, so a route guarded by a custom alias is no longer flagged as missing authentication; `auth.basic` is recognised too (#312)
+- `vulnerable-dependencies` now hydrates each OSV advisory (`GET /v1/vulns/{id}`) for its real title, CVE, and affected ranges, matches comma-separated ranges as AND, and fails open when a range can't be resolved (#313)
+- `login-throttling` no longer flags Sanctum-style APIs: it recognises `$middleware->throttleApi()` as global throttling, detects fluent/array throttled route groups via AST line ranges, and skips non-credential endpoints like `auth/logout`, `auth/me`, and `auth/signout` (#314)
+- `service-container-resolution` no longer flags container access inside `addGlobalScope()`, `addGlobalScopes()`, or `resolveRelationUsing()` closures, which Eloquent invokes in a DI-impossible context like the already-exempt model-event closures; service bindings stay flagged (#315)
+
 ## v1.12.5
 
 ### Fixed

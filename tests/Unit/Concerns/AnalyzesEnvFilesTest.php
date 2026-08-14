@@ -29,6 +29,13 @@ class AnalyzesEnvFilesTest extends TestCase
         $this->assertNull($result['error']);
         $this->assertSame([], $result['variables']);
     }
+
+    public function test_vendor_key_harvest_returns_empty_without_base_path(): void
+    {
+        $harness = new ConcreteAnalyzesEnvFiles;
+
+        $this->assertSame([], $harness->publicCollectVendorConfigEnvKeys());
+    }
 }
 
 class ConcreteAnalyzesEnvFiles
@@ -49,6 +56,19 @@ class ConcreteAnalyzesEnvFiles
     public function publicParseCommentedVariablesWithErrors(string $filePath): array
     {
         return $this->parseCommentedVariablesWithErrors($filePath);
+    }
+
+    /**
+     * @return array<string, true>
+     */
+    public function publicCollectVendorConfigEnvKeys(): array
+    {
+        return $this->collectVendorConfigEnvKeys();
+    }
+
+    protected function getBasePath(): string
+    {
+        return '';
     }
 
     /**

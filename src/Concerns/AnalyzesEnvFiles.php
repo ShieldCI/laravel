@@ -20,6 +20,8 @@ trait AnalyzesEnvFiles
 {
     use InspectsCode;
 
+    abstract protected function getBasePath(): string;
+
     /**
      * Parse environment file and return key-value pairs with error tracking.
      *
@@ -152,6 +154,49 @@ trait AnalyzesEnvFiles
         }
 
         return $usages;
+    }
+
+    /**
+     * Harvest the env() key names read by installed packages' own config
+     * files (vendor/{vendor}/{package}/config/*.php, which on Laravel 11+
+     * also covers vendor/laravel/framework/config).
+     *
+     * A published vendor config's keys are vendor-owned: they are not the
+     * application's documentation debt, so completeness checks should never
+     * flag them. Keys the app ADDS to a published copy are absent from the
+     * vendor original and stay visible.
+     *
+     * Uses a regex rather than the AST: only key names are needed here, and
+     * PCRE \s spans newlines so multi-line env() calls are matched.
+     *
+     * @return array<string, true>
+     */
+    protected function collectVendorConfigEnvKeys(): array
+    {
+        $basePath = $this->getBasePath();
+
+        if ($basePath === '') {
+            return [];
+        }
+
+        $keys = [];
+        $files = glob($basePath.'/vendor/*/*/config/*.php') ?: [];
+
+        foreach ($files as $file) {
+            $contents = @file_get_contents($file);
+
+            if ($contents === false) {
+                continue;
+            }
+
+            if (preg_match_all("/env\\(\\s*'([A-Za-z0-9_]+)'/", $contents, $matches) > 0) {
+                foreach ($matches[1] as $key) {
+                    $keys[$key] = true;
+                }
+            }
+        }
+
+        return $keys;
     }
 
     /**

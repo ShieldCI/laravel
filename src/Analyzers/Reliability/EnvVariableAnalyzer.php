@@ -8,21 +8,30 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\AnalyzesEnvFiles;
 use ShieldCI\Concerns\DetectsDeploymentPlatform;
 
 /**
  * Checks that all environment variables from .env.example are defined in .env.
  *
+ * Grading is default-aware: a variable that is absent from .env but whose
+ * env() call in config/ supplies a real default is the lean-.env style
+ * working as intended (config owns defaults, .env owns overrides), so it is
+ * reported through result metadata instead of a High issue. Variables with
+ * no config default (bare env('KEY') or an explicit null default) stay High:
+ * the app reads null when they are unset.
+ *
  * Checks for:
  * - .env file exists
- * - All variables from .env.example are present in .env
- * - No missing required configuration
+ * - Variables from .env.example without a config default are present in .env
+ * - Optional (report_defaulted): variables relying on config defaults
+ * - Optional (report_redundant): .env values restating the config default
  */
 class EnvVariableAnalyzer extends AbstractFileAnalyzer
 {
+    use AnalyzesEnvFiles;
     use DetectsDeploymentPlatform;
 
     public static bool $runInCI = false;
@@ -142,13 +151,62 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
             $missingVars[$key] = $value;
         }
 
-        // All variables are present (either active or commented)
-        if (empty($missingVars) && empty($commentedOnlyVars)) {
+        $reportDefaulted = (bool) config('shieldci.analyzers.reliability.env-variables-complete.report_defaulted', false);
+        $reportRedundant = (bool) config('shieldci.analyzers.reliability.env-variables-complete.report_redundant', false);
+
+        $usages = ($missingVars !== [] || $reportRedundant)
+            ? $this->collectConfigEnvKeyUsages()
+            : [];
+
+        // Split missing variables by whether config supplies a real default
+        $defaultedVars = [];
+        $stillMissing = [];
+
+        foreach ($missingVars as $key => $value) {
+            if (isset($usages[$key]) && $usages[$key]['hasDefault']) {
+                $defaultedVars[$key] = $value;
+            } else {
+                $stillMissing[$key] = $value;
+            }
+        }
+
+        $redundantVars = [];
+
+        if ($reportRedundant) {
+            foreach ($actualResult['values'] as $key => $value) {
+                $default = $usages[$key]['default'] ?? null;
+
+                if ($default !== null && $default === $value) {
+                    $redundantVars[] = $key;
+                }
+            }
+        }
+
+        $resultMetadata = [];
+
+        if ($defaultedVars !== []) {
+            $resultMetadata = [
+                'defaulted_count' => count($defaultedVars),
+                'defaulted_variables' => array_keys($defaultedVars),
+            ];
+        }
+
+        $hasInfoIssues = ($reportDefaulted && $defaultedVars !== []) || $redundantVars !== [];
+
+        // All variables are present, either directly or through config defaults
+        if ($stillMissing === [] && $commentedOnlyVars === [] && ! $hasInfoIssues) {
+            if ($defaultedVars !== []) {
+                return $this->passed(
+                    sprintf('All required environment variables are set (%d using config defaults)', count($defaultedVars)),
+                    $resultMetadata
+                );
+            }
+
             return $this->passed('All environment variables from .env.example are defined and enabled in .env');
         }
 
         // Only commented variables, no truly missing ones
-        if (empty($missingVars) && ! empty($commentedOnlyVars)) {
+        if ($stillMissing === [] && $commentedOnlyVars !== [] && ! $hasInfoIssues) {
             return $this->warning(
                 sprintf('Found %d commented environment variable(s)', count($commentedOnlyVars)),
                 [$this->createIssue(
@@ -161,26 +219,29 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
                         'commented_variables' => array_keys($commentedOnlyVars),
                         'code' => 'commented-variables',
                     ]
-                )]
+                )],
+                $resultMetadata
             );
         }
 
-        // Build issues for missing and/or commented variables
+        // Build issues for missing, commented, and opt-in informational groups
         $issues = [];
 
-        $issues[] = $this->createIssue(
-            message: 'Missing environment variables',
-            location: new Location($this->getRelativePath($envPath)),
-            severity: Severity::High,
-            recommendation: $this->buildMissingVariablesRecommendation($missingVars),
-            metadata: [
-                'missing_count' => count($missingVars),
-                'missing_variables' => array_keys($missingVars),
-                'code' => 'missing-variables',
-            ]
-        );
+        if ($stillMissing !== []) {
+            $issues[] = $this->createIssue(
+                message: 'Missing environment variables',
+                location: new Location($this->getRelativePath($envPath)),
+                severity: Severity::High,
+                recommendation: $this->buildMissingVariablesRecommendation($stillMissing),
+                metadata: [
+                    'missing_count' => count($stillMissing),
+                    'missing_variables' => array_keys($stillMissing),
+                    'code' => 'missing-variables',
+                ]
+            );
+        }
 
-        if (! empty($commentedOnlyVars)) {
+        if ($commentedOnlyVars !== []) {
             $issues[] = $this->createIssue(
                 message: 'Environment variables are commented out',
                 location: new Location($this->getRelativePath($envPath)),
@@ -194,11 +255,42 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        $totalCount = count($missingVars) + count($commentedOnlyVars);
+        if ($reportDefaulted && $defaultedVars !== []) {
+            $issues[] = $this->createIssue(
+                message: 'Environment variables relying on config defaults',
+                location: new Location($this->getRelativePath($envPath)),
+                severity: Severity::Info,
+                recommendation: $this->buildDefaultedVariablesRecommendation($defaultedVars),
+                metadata: [
+                    'defaulted_count' => count($defaultedVars),
+                    'defaulted_variables' => array_keys($defaultedVars),
+                    'code' => 'defaulted-variables',
+                ]
+            );
+        }
+
+        if ($redundantVars !== []) {
+            $issues[] = $this->createIssue(
+                message: 'Environment variables restating config defaults',
+                location: new Location($this->getRelativePath($envPath)),
+                severity: Severity::Info,
+                recommendation: $this->buildRedundantVariablesRecommendation($redundantVars),
+                metadata: [
+                    'redundant_count' => count($redundantVars),
+                    'redundant_variables' => $redundantVars,
+                    'code' => 'redundant-override',
+                ]
+            );
+        }
+
+        $totalCount = count($stillMissing) + count($commentedOnlyVars)
+            + ($reportDefaulted ? count($defaultedVars) : 0)
+            + count($redundantVars);
 
         return $this->resultBySeverity(
             sprintf('Found %d environment variable issue(s)', $totalCount),
-            $issues
+            $issues,
+            $resultMetadata
         );
     }
 
@@ -286,101 +378,38 @@ RECOMMENDATION,
     }
 
     /**
-     * Parse environment file and return key-value pairs with error tracking.
+     * Build recommendation message for variables relying on config defaults.
      *
-     * @return array{variables: array<string, string>, error: string|null}
+     * @param  array<string, string>  $defaultedVars
      */
-    private function parseEnvFileWithErrors(string $filePath): array
+    private function buildDefaultedVariablesRecommendation(array $defaultedVars): string
     {
-        if (! file_exists($filePath)) {
-            return ['variables' => [], 'error' => 'File does not exist'];
-        }
+        $variablesList = implode(', ', array_keys($defaultedVars));
 
-        if (! is_readable($filePath)) {
-            return ['variables' => [], 'error' => 'File is not readable'];
-        }
-
-        try {
-            $lines = FileParser::getLines($filePath);
-        } catch (\Throwable $e) {
-            return ['variables' => [], 'error' => $e->getMessage()];
-        }
-
-        if (empty($lines)) {
-            // Empty file is valid, not an error
-            return ['variables' => [], 'error' => null];
-        }
-
-        $variables = [];
-
-        foreach ($lines as $line) {
-            if (! is_string($line)) {
-                continue;
-            }
-
-            $line = trim($line);
-
-            // Skip empty lines and comments
-            if ($line === '' || str_starts_with($line, '#')) {
-                continue;
-            }
-
-            // Parse KEY=VALUE format
-            if (preg_match('/^([A-Z_][A-Z0-9_]*)\s*=/', $line, $matches)) {
-                $key = $matches[1];
-                $variables[$key] = $line;
-            }
-        }
-
-        return ['variables' => $variables, 'error' => null];
+        return sprintf(
+            <<<'RECOMMENDATION'
+The following environment variables are not set in .env and use the defaults defined in config files: %s
+This is the lean .env style working as intended; set a variable in .env only when this environment needs to override its config default.
+RECOMMENDATION,
+            $variablesList,
+        );
     }
 
     /**
-     * Parse environment file and return commented-out variables with error tracking.
+     * Build recommendation message for redundant environment variable overrides.
      *
-     * Note: Parsing errors for commented variables are non-critical and ignored.
-     *
-     * @return array{variables: array<string, string>, error: string|null}
+     * @param  array<int, string>  $redundantVars
      */
-    private function parseCommentedVariablesWithErrors(string $filePath): array
+    private function buildRedundantVariablesRecommendation(array $redundantVars): string
     {
-        if (! file_exists($filePath) || ! is_readable($filePath)) {
-            // Not an error - file might not exist yet or have permission issues already reported
-            return ['variables' => [], 'error' => null];
-        }
+        $variablesList = implode(', ', $redundantVars);
 
-        try {
-            $lines = FileParser::getLines($filePath);
-        } catch (\Throwable $e) {
-            // Not an error - if we can't read the file for commented vars, it's already reported elsewhere
-            return ['variables' => [], 'error' => null];
-        }
-
-        if (empty($lines)) {
-            return ['variables' => [], 'error' => null];
-        }
-
-        $commentedVars = [];
-
-        foreach ($lines as $line) {
-            if (! is_string($line)) {
-                continue;
-            }
-
-            $line = trim($line);
-
-            // Skip empty lines
-            if ($line === '') {
-                continue;
-            }
-
-            // Look for commented variable definitions: # KEY=VALUE or #KEY=VALUE
-            if (preg_match('/^#\s*([A-Z_][A-Z0-9_]*)\s*=/', $line, $matches)) {
-                $key = $matches[1];
-                $commentedVars[$key] = $line;
-            }
-        }
-
-        return ['variables' => $commentedVars, 'error' => null];
+        return sprintf(
+            <<<'RECOMMENDATION'
+The following environment variables restate the default already defined in config files: %s
+Removing them from .env lets future config default changes take effect without editing every environment.
+RECOMMENDATION,
+            $variablesList,
+        );
     }
 }

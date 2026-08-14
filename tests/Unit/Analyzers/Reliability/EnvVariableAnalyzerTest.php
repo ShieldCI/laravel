@@ -803,4 +803,283 @@ REQUIRED_VAR=',
 
         $this->assertFalse($analyzer->shouldRun());
     }
+
+    // =========================================================================
+    // Default-Aware Grading Tests (lean .env style)
+    // =========================================================================
+
+    public function test_passes_when_missing_variables_have_config_defaults(): void
+    {
+        $configContent = <<<'PHP'
+<?php
+
+return [
+    'max_seats' => env('WIDGET_MAX_SEATS', 1000),
+    'nested' => [
+        'poll_interval' => env('WIDGET_POLL_INTERVAL', 5000),
+    ],
+    'timeout' => env(
+        'WIDGET_TIMEOUT',
+        30
+    ),
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => "APP_NAME=Laravel\nWIDGET_MAX_SEATS=1000\nWIDGET_POLL_INTERVAL=5000\nWIDGET_TIMEOUT=30",
+            '.env' => 'APP_NAME=MyApp',
+            'config/widget.php' => $configContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString('config defaults', $result->getMessage());
+
+        $metadata = $result->getMetadata();
+        $this->assertSame(3, $metadata['defaulted_count']);
+        $this->assertEqualsCanonicalizing(
+            ['WIDGET_MAX_SEATS', 'WIDGET_POLL_INTERVAL', 'WIDGET_TIMEOUT'],
+            $metadata['defaulted_variables']
+        );
+    }
+
+    public function test_reports_defaulted_variables_as_info_when_flag_enabled(): void
+    {
+        config(['shieldci.analyzers.reliability.env-variables-complete.report_defaulted' => true]);
+
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => "APP_NAME=Laravel\nWIDGET_MAX_SEATS=1000",
+            '.env' => 'APP_NAME=MyApp',
+            'config/widget.php' => "<?php\n\nreturn ['max_seats' => env('WIDGET_MAX_SEATS', 1000)];",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('info', $issues[0]->severity->value);
+        $this->assertSame('defaulted-variables', $issues[0]->metadata['code']);
+        $this->assertContains('WIDGET_MAX_SEATS', $issues[0]->metadata['defaulted_variables']);
+    }
+
+    public function test_bare_env_call_in_config_stays_high(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => "APP_NAME=Laravel\nACME_SECRET_KEY=",
+            '.env' => 'APP_NAME=MyApp',
+            'config/services.php' => "<?php\n\nreturn ['acme' => ['key' => env('ACME_SECRET_KEY')]];",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('Missing environment variables', $issues[0]->message);
+        $this->assertSame('missing-variables', $issues[0]->metadata['code']);
+        $this->assertContains('ACME_SECRET_KEY', $issues[0]->metadata['missing_variables']);
+    }
+
+    public function test_null_default_in_config_stays_high(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => "APP_NAME=Laravel\nACME_SECRET_KEY=",
+            '.env' => 'APP_NAME=MyApp',
+            'config/services.php' => "<?php\n\nreturn ['key' => env('ACME_SECRET_KEY', null)];",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertSame('missing-variables', $result->getIssues()[0]->metadata['code']);
+    }
+
+    public function test_empty_string_default_counts_as_default(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => "APP_NAME=Laravel\nWIDGET_LABEL=",
+            '.env' => 'APP_NAME=MyApp',
+            'config/widget.php' => "<?php\n\nreturn ['label' => env('WIDGET_LABEL', '')];",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertContains('WIDGET_LABEL', $result->getMetadata()['defaulted_variables']);
+    }
+
+    public function test_mixed_defaulted_and_bare_missing_variables_partition(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => "APP_NAME=Laravel\nACME_SECRET_KEY=\nWIDGET_MAX_SEATS=1000",
+            '.env' => 'APP_NAME=MyApp',
+            'config/widget.php' => "<?php\n\nreturn ['seats' => env('WIDGET_MAX_SEATS', 1000), 'key' => env('ACME_SECRET_KEY')];",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(1, $issues[0]->metadata['missing_count']);
+        $this->assertSame(['ACME_SECRET_KEY'], $issues[0]->metadata['missing_variables']);
+        $this->assertSame(['WIDGET_MAX_SEATS'], $result->getMetadata()['defaulted_variables']);
+    }
+
+    public function test_missing_variable_not_referenced_in_config_stays_high(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => "APP_NAME=Laravel\nVITE_ACME_KEY=",
+            '.env' => 'APP_NAME=MyApp',
+            'config/widget.php' => "<?php\n\nreturn ['name' => env('APP_NAME', 'Laravel')];",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertContains('VITE_ACME_KEY', $result->getIssues()[0]->metadata['missing_variables']);
+    }
+
+    public function test_bare_call_in_one_file_overrides_default_in_another(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => "APP_NAME=Laravel\nACME_SECRET_KEY=",
+            '.env' => 'APP_NAME=MyApp',
+            'config/widget.php' => "<?php\n\nreturn ['key' => env('ACME_SECRET_KEY', 'fallback')];",
+            'config/services.php' => "<?php\n\nreturn ['key' => env('ACME_SECRET_KEY')];",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertContains('ACME_SECRET_KEY', $result->getIssues()[0]->metadata['missing_variables']);
+    }
+
+    public function test_dynamic_env_key_in_config_is_ignored(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => "APP_NAME=Laravel\nWIDGET_MAX_SEATS=1000",
+            '.env' => 'APP_NAME=MyApp',
+            'config/widget.php' => "<?php\n\nreturn ['seats' => env('WIDGET_MAX_SEATS', 1000), 'other' => env(\$dynamicKey)];",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertContains('WIDGET_MAX_SEATS', $result->getMetadata()['defaulted_variables']);
+    }
+
+    // =========================================================================
+    // Redundant Override Tests (opt-in flag)
+    // =========================================================================
+
+    public function test_redundant_override_not_reported_by_default(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => 'WIDGET_MAX_SEATS=1000',
+            '.env' => 'WIDGET_MAX_SEATS=1000',
+            'config/widget.php' => "<?php\n\nreturn ['seats' => env('WIDGET_MAX_SEATS', 1000)];",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertEmpty($result->getIssues());
+    }
+
+    public function test_redundant_override_reported_when_flag_enabled(): void
+    {
+        config(['shieldci.analyzers.reliability.env-variables-complete.report_redundant' => true]);
+
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => "WIDGET_MAX_SEATS=1000\nWIDGET_LABEL=widgets",
+            '.env' => "WIDGET_MAX_SEATS=1000\nWIDGET_LABEL=\"widgets\"",
+            'config/widget.php' => "<?php\n\nreturn ['seats' => env('WIDGET_MAX_SEATS', 1000), 'label' => env('WIDGET_LABEL', 'widgets')];",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('info', $issues[0]->severity->value);
+        $this->assertSame('redundant-override', $issues[0]->metadata['code']);
+        $this->assertEqualsCanonicalizing(
+            ['WIDGET_MAX_SEATS', 'WIDGET_LABEL'],
+            $issues[0]->metadata['redundant_variables']
+        );
+    }
+
+    public function test_redundant_override_matches_boolean_default_text(): void
+    {
+        config(['shieldci.analyzers.reliability.env-variables-complete.report_redundant' => true]);
+
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => 'WIDGET_ENABLED=false',
+            '.env' => 'WIDGET_ENABLED=false',
+            'config/widget.php' => "<?php\n\nreturn ['enabled' => env('WIDGET_ENABLED', false)];",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertSame('redundant-override', $result->getIssues()[0]->metadata['code']);
+    }
+
+    public function test_redundant_override_ignores_non_literal_defaults_and_differing_values(): void
+    {
+        config(['shieldci.analyzers.reliability.env-variables-complete.report_redundant' => true]);
+
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => "WIDGET_PATH=/tmp/widgets\nWIDGET_MAX_SEATS=1000",
+            '.env' => "WIDGET_PATH=/tmp/widgets\nWIDGET_MAX_SEATS=2000",
+            'config/widget.php' => "<?php\n\nreturn ['path' => env('WIDGET_PATH', storage_path('widgets')), 'seats' => env('WIDGET_MAX_SEATS', 1000)];",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertEmpty($result->getIssues());
+    }
 }

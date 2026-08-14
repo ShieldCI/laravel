@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.13.0
+
+### Added
+- `env-example-documented` now also reports an `env()` key read by the app's own `config/` files but absent from `.env.example`, per key at the config file and line; keys shipped by installed packages' vendor configs and stock Laravel skeleton keys are exempt, and an `ignored_keys` option (wildcards allowed) covers the rest (#318)
+- `env-variables-complete` gains opt-in `report_defaulted` and `report_redundant` options (default off) that report config-defaulted absences and `.env` values restating a config default as Info issues (#317)
+
+### Fixed
+- `env-variables-complete` no longer flags a variable missing from `.env` when its `env()` call in `config/` supplies a real default, so a lean `.env` holding only overrides and secrets passes; a bare `env('KEY')` or explicit `null` default still reports High (#317)
+
 ## v1.12.6
 
 ### Fixed

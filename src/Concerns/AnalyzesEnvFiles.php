@@ -38,11 +38,7 @@ trait AnalyzesEnvFiles
             return ['variables' => [], 'values' => [], 'error' => 'File is not readable'];
         }
 
-        try {
-            $lines = FileParser::getLines($filePath);
-        } catch (\Throwable $e) {
-            return ['variables' => [], 'values' => [], 'error' => $e->getMessage()];
-        }
+        $lines = FileParser::getLines($filePath);
 
         if (empty($lines)) {
             // Empty file is valid, not an error
@@ -53,10 +49,6 @@ trait AnalyzesEnvFiles
         $values = [];
 
         foreach ($lines as $line) {
-            if (! is_string($line)) {
-                continue;
-            }
-
             $line = trim($line);
 
             // Skip empty lines and comments
@@ -89,12 +81,7 @@ trait AnalyzesEnvFiles
             return ['variables' => [], 'error' => null];
         }
 
-        try {
-            $lines = FileParser::getLines($filePath);
-        } catch (\Throwable $e) {
-            // Not an error - if we can't read the file for commented vars, it's already reported elsewhere
-            return ['variables' => [], 'error' => null];
-        }
+        $lines = FileParser::getLines($filePath);
 
         if (empty($lines)) {
             return ['variables' => [], 'error' => null];
@@ -103,10 +90,6 @@ trait AnalyzesEnvFiles
         $commentedVars = [];
 
         foreach ($lines as $line) {
-            if (! is_string($line)) {
-                continue;
-            }
-
             $line = trim($line);
 
             // Skip empty lines

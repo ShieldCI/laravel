@@ -200,6 +200,34 @@ trait AnalyzesEnvFiles
     }
 
     /**
+     * Collect the basenames of installed packages' config files
+     * (vendor/{vendor}/{package}/config/*.php, framework stubs included).
+     *
+     * A key read in an app config file sharing a vendor config's basename
+     * lives in stock-file territory, where skeleton and vendor stubs drift
+     * apart key by key (a skeleton services.php reads keys no framework
+     * stub does), so name-level provenance is the drift-proof signal.
+     *
+     * @return array<string, true>
+     */
+    protected function collectVendorConfigFileNames(): array
+    {
+        $basePath = $this->getBasePath();
+
+        if ($basePath === '') {
+            return [];
+        }
+
+        $names = [];
+
+        foreach (glob($basePath.'/vendor/*/*/config/*.php') ?: [] as $file) {
+            $names[basename($file)] = true;
+        }
+
+        return $names;
+    }
+
+    /**
      * Classify the default argument of an env() call.
      *
      * Works from the raw AST node because InspectsCode extracts both a

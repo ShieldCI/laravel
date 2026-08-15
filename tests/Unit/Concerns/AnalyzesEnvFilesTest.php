@@ -36,6 +36,13 @@ class AnalyzesEnvFilesTest extends TestCase
 
         $this->assertSame([], $harness->publicCollectVendorConfigEnvKeys());
     }
+
+    public function test_vendor_file_name_harvest_returns_empty_without_base_path(): void
+    {
+        $harness = new ConcreteAnalyzesEnvFiles;
+
+        $this->assertSame([], $harness->publicCollectVendorConfigFileNames());
+    }
 }
 
 class ConcreteAnalyzesEnvFiles
@@ -64,6 +71,14 @@ class ConcreteAnalyzesEnvFiles
     public function publicCollectVendorConfigEnvKeys(): array
     {
         return $this->collectVendorConfigEnvKeys();
+    }
+
+    /**
+     * @return array<string, true>
+     */
+    public function publicCollectVendorConfigFileNames(): array
+    {
+        return $this->collectVendorConfigFileNames();
     }
 
     protected function getBasePath(): string

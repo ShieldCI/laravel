@@ -20,16 +20,20 @@ use ShieldCI\Concerns\DetectsDeploymentPlatform;
  *
  * Two directions feed the same documentation goal:
  * - every variable set in .env must appear in .env.example, and
- * - every env() key read by the app's own config/ files must appear in
- *   .env.example (actively or commented out).
+ * - every env() key read by the app's own config/ files WITHOUT a real
+ *   default must appear in .env.example (actively or commented out).
  *
- * Framework- and vendor-owned keys are exempt from the config direction:
- * keys read by any installed package's own vendor config are recognized by
- * provenance, and stock laravel/laravel skeleton keys by a built-in list.
+ * The config direction mirrors the drift analyzer's principle: a key with a
+ * real config default is an optional knob that config owns, so documenting
+ * it stays voluntary; a bare env('KEY') or explicit null default reads null
+ * when unset, making the key a required input worth documenting. Bare keys
+ * that any installed package's own vendor config also reads are
+ * vendor-owned and exempt; the direction is skipped on Laravel 9/10, which
+ * ship no framework config stubs for that comparison.
  *
  * Checks for:
  * - All variables from .env are present in .env.example
- * - env() keys read in config files are documented in .env.example
+ * - env() keys read in config files without a default are documented in .env.example
  * - Ensures .env.example serves as proper documentation
  * - Helps with team onboarding and deployment
  */
@@ -39,173 +43,6 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
     use DetectsDeploymentPlatform;
 
     public static bool $runInCI = false;
-
-    /**
-     * Every config env() key across laravel/laravel skeleton branches
-     * 9.x-13.x. Framework-owned keys are not the application's
-     * documentation debt, and on Laravel 9/10 the framework ships no
-     * vendor config stubs for the provenance check to find.
-     *
-     * Regenerate by fetching each skeleton config file from GitHub,
-     * flattening newlines (multi-line env() calls are real), and taking
-     * the sorted unique key set of:
-     * grep -oE "env\([[:space:]]*'[A-Za-z0-9_]+'"
-     */
-    private const BUILTIN_IGNORED_KEYS = [
-        'ABLY_KEY',
-        'APP_DEBUG',
-        'APP_ENV',
-        'APP_FAKER_LOCALE',
-        'APP_FALLBACK_LOCALE',
-        'APP_KEY',
-        'APP_LOCALE',
-        'APP_MAINTENANCE_DRIVER',
-        'APP_MAINTENANCE_STORE',
-        'APP_NAME',
-        'APP_PREVIOUS_KEYS',
-        'APP_URL',
-        'ASSET_URL',
-        'AUTH_GUARD',
-        'AUTH_MODEL',
-        'AUTH_PASSWORD_BROKER',
-        'AUTH_PASSWORD_RESET_TOKEN_TABLE',
-        'AUTH_PASSWORD_TIMEOUT',
-        'AWS_ACCESS_KEY_ID',
-        'AWS_BUCKET',
-        'AWS_DEFAULT_REGION',
-        'AWS_ENDPOINT',
-        'AWS_SECRET_ACCESS_KEY',
-        'AWS_URL',
-        'AWS_USE_PATH_STYLE_ENDPOINT',
-        'BCRYPT_ROUNDS',
-        'BEANSTALKD_QUEUE',
-        'BEANSTALKD_QUEUE_HOST',
-        'BEANSTALKD_QUEUE_RETRY_AFTER',
-        'BROADCAST_DRIVER',
-        'CACHE_DRIVER',
-        'CACHE_PREFIX',
-        'CACHE_STORAGE_DISK',
-        'CACHE_STORAGE_PATH',
-        'CACHE_STORE',
-        'DATABASE_URL',
-        'DB_CACHE_CONNECTION',
-        'DB_CACHE_LOCK_CONNECTION',
-        'DB_CACHE_LOCK_TABLE',
-        'DB_CACHE_TABLE',
-        'DB_CHARSET',
-        'DB_COLLATION',
-        'DB_CONNECTION',
-        'DB_DATABASE',
-        'DB_ENCRYPT',
-        'DB_FOREIGN_KEYS',
-        'DB_HOST',
-        'DB_PASSWORD',
-        'DB_PORT',
-        'DB_QUEUE',
-        'DB_QUEUE_CONNECTION',
-        'DB_QUEUE_RETRY_AFTER',
-        'DB_QUEUE_TABLE',
-        'DB_SOCKET',
-        'DB_SSLMODE',
-        'DB_TRUST_SERVER_CERTIFICATE',
-        'DB_URL',
-        'DB_USERNAME',
-        'DYNAMODB_CACHE_TABLE',
-        'DYNAMODB_ENDPOINT',
-        'FILESYSTEM_DISK',
-        'LOG_CHANNEL',
-        'LOG_DAILY_DAYS',
-        'LOG_DEPRECATIONS_CHANNEL',
-        'LOG_DEPRECATIONS_TRACE',
-        'LOG_LEVEL',
-        'LOG_PAPERTRAIL_HANDLER',
-        'LOG_SLACK_EMOJI',
-        'LOG_SLACK_USERNAME',
-        'LOG_SLACK_WEBHOOK_URL',
-        'LOG_STACK',
-        'LOG_STDERR_FORMATTER',
-        'LOG_SYSLOG_FACILITY',
-        'MAILGUN_DOMAIN',
-        'MAILGUN_ENDPOINT',
-        'MAILGUN_SECRET',
-        'MAIL_EHLO_DOMAIN',
-        'MAIL_ENCRYPTION',
-        'MAIL_FROM_ADDRESS',
-        'MAIL_FROM_NAME',
-        'MAIL_HOST',
-        'MAIL_LOG_CHANNEL',
-        'MAIL_MAILER',
-        'MAIL_PASSWORD',
-        'MAIL_PORT',
-        'MAIL_SCHEME',
-        'MAIL_SENDMAIL_PATH',
-        'MAIL_URL',
-        'MAIL_USERNAME',
-        'MEMCACHED_HOST',
-        'MEMCACHED_PASSWORD',
-        'MEMCACHED_PERSISTENT_ID',
-        'MEMCACHED_PORT',
-        'MEMCACHED_USERNAME',
-        'MYSQL_ATTR_SSL_CA',
-        'PAPERTRAIL_PORT',
-        'PAPERTRAIL_URL',
-        'POSTMARK_API_KEY',
-        'POSTMARK_MESSAGE_STREAM_ID',
-        'POSTMARK_TOKEN',
-        'PUSHER_APP_CLUSTER',
-        'PUSHER_APP_ID',
-        'PUSHER_APP_KEY',
-        'PUSHER_APP_SECRET',
-        'PUSHER_HOST',
-        'PUSHER_PORT',
-        'PUSHER_SCHEME',
-        'QUEUE_CONNECTION',
-        'QUEUE_FAILED_DRIVER',
-        'REDIS_BACKOFF_ALGORITHM',
-        'REDIS_BACKOFF_BASE',
-        'REDIS_BACKOFF_CAP',
-        'REDIS_CACHE_CONNECTION',
-        'REDIS_CACHE_DB',
-        'REDIS_CACHE_LOCK_CONNECTION',
-        'REDIS_CLIENT',
-        'REDIS_CLUSTER',
-        'REDIS_DB',
-        'REDIS_HOST',
-        'REDIS_MAX_RETRIES',
-        'REDIS_PASSWORD',
-        'REDIS_PERSISTENT',
-        'REDIS_PORT',
-        'REDIS_PREFIX',
-        'REDIS_QUEUE',
-        'REDIS_QUEUE_CONNECTION',
-        'REDIS_QUEUE_RETRY_AFTER',
-        'REDIS_URL',
-        'REDIS_USERNAME',
-        'RESEND_API_KEY',
-        'RESEND_KEY',
-        'SANCTUM_STATEFUL_DOMAINS',
-        'SANCTUM_TOKEN_PREFIX',
-        'SESSION_CONNECTION',
-        'SESSION_COOKIE',
-        'SESSION_DOMAIN',
-        'SESSION_DRIVER',
-        'SESSION_ENCRYPT',
-        'SESSION_EXPIRE_ON_CLOSE',
-        'SESSION_HTTP_ONLY',
-        'SESSION_LIFETIME',
-        'SESSION_PARTITIONED_COOKIE',
-        'SESSION_PATH',
-        'SESSION_SAME_SITE',
-        'SESSION_SECURE_COOKIE',
-        'SESSION_STORE',
-        'SESSION_TABLE',
-        'SLACK_BOT_USER_DEFAULT_CHANNEL',
-        'SLACK_BOT_USER_OAUTH_TOKEN',
-        'SQS_PREFIX',
-        'SQS_QUEUE',
-        'SQS_SUFFIX',
-        'VIEW_COMPILED_PATH',
-    ];
 
     public function shouldRun(): bool
     {
@@ -318,8 +155,9 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Build one Medium issue per env() key read in config/ that .env.example
-     * does not document (actively or commented) and no exemption covers.
+     * Build one Medium issue per env() key read in config/ without a real
+     * default that .env.example does not document (actively or commented)
+     * and no exemption covers.
      *
      * @param  array<string, string>  $exampleVars
      * @param  array<string, string>  $exampleCommented
@@ -327,6 +165,13 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
      */
     private function buildUndocumentedConfigKeyIssues(array $exampleVars, array $exampleCommented): array
     {
+        // Pre-11 laravel/framework ships no config stubs, so the vendor
+        // filter that separates bare stock keys from app keys has no data;
+        // skip the config direction there.
+        if (! is_dir($this->getBasePath().'/vendor/laravel/framework/config')) {
+            return [];
+        }
+
         $usages = $this->collectConfigEnvKeyUsages();
 
         if ($usages === []) {
@@ -339,6 +184,12 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
         $issues = [];
 
         foreach ($usages as $key => $usage) {
+            // A real config default makes the key an optional knob that
+            // config owns; only defaultless keys require documentation.
+            if ($usage['hasDefault']) {
+                continue;
+            }
+
             if (isset($exampleVars[$key]) || isset($exampleCommented[$key]) || isset($vendorKeys[$key])) {
                 continue;
             }
@@ -355,7 +206,6 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
                 recommendation: $this->buildUndocumentedConfigKeyRecommendation($key),
                 metadata: [
                     'key' => $key,
-                    'has_config_default' => $usage['hasDefault'],
                     'code' => 'undocumented-config-key',
                 ]
             );
@@ -365,7 +215,7 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Merge the built-in framework key list with per-project ignores.
+     * Load the per-project ignored keys.
      *
      * @return array<int, string>
      */
@@ -377,10 +227,7 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
             $configured = [];
         }
 
-        return array_values(array_unique(array_merge(
-            self::BUILTIN_IGNORED_KEYS,
-            array_filter($configured, 'is_string')
-        )));
+        return array_values(array_unique(array_filter($configured, 'is_string')));
     }
 
     /**
@@ -462,8 +309,8 @@ RECOMMENDATION,
     {
         return sprintf(
             <<<'RECOMMENDATION'
-The %s environment variable is read by a config file but does not appear in .env.example.
-Add it to .env.example (actively or commented out) so other developers can see it is available for configuration.
+The %s environment variable is read by a config file without a default, so the application reads null when it is not set.
+Add it to .env.example (actively or commented out) so other developers can see it must be configured.
 RECOMMENDATION,
             $key,
         );

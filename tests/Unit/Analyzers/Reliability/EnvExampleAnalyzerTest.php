@@ -585,15 +585,18 @@ app_name=lowercase';
     }
 
     // =========================================================================
-    // Config → .env.example Completeness Tests
+    // Config → .env.example Completeness Tests (no-default rule)
     // =========================================================================
 
-    public function test_flags_config_key_undocumented_in_env_example(): void
+    private const FRAMEWORK_STUB = "<?php\n\nreturn ['name' => env('APP_NAME', 'Laravel')];";
+
+    public function test_flags_bare_config_key_undocumented_in_env_example(): void
     {
         $tempDir = $this->createTempDirectory([
             '.env.example' => 'APP_NAME=Laravel',
             '.env' => 'APP_NAME=MyApp',
-            'config/widget.php' => "<?php\n\nreturn ['seats' => env('WIDGET_MAX_SEATS', 1000)];",
+            'config/services.php' => "<?php\n\nreturn ['acme' => ['key' => env('ACME_API_KEY')]];",
+            'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -605,24 +608,60 @@ app_name=lowercase';
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertSame(
-            "Environment variable 'WIDGET_MAX_SEATS' is read in config files but not documented in .env.example",
+            "Environment variable 'ACME_API_KEY' is read in config files but not documented in .env.example",
             $issues[0]->message
         );
         $this->assertSame('medium', $issues[0]->severity->value);
         $this->assertSame('undocumented-config-key', $issues[0]->metadata['code']);
-        $this->assertSame('WIDGET_MAX_SEATS', $issues[0]->metadata['key']);
-        $this->assertTrue($issues[0]->metadata['has_config_default']);
+        $this->assertSame('ACME_API_KEY', $issues[0]->metadata['key']);
         $this->assertNotNull($issues[0]->location);
-        $this->assertStringContainsString('config/widget.php', $issues[0]->location->file);
+        $this->assertStringContainsString('config/services.php', $issues[0]->location->file);
         $this->assertGreaterThan(0, $issues[0]->location->line);
     }
 
-    public function test_passes_when_config_key_documented_active(): void
+    public function test_defaulted_config_keys_are_never_flagged(): void
     {
         $tempDir = $this->createTempDirectory([
-            '.env.example' => "APP_NAME=Laravel\nWIDGET_MAX_SEATS=1000",
+            '.env.example' => 'APP_NAME=Laravel',
             '.env' => 'APP_NAME=MyApp',
-            'config/widget.php' => "<?php\n\nreturn ['seats' => env('WIDGET_MAX_SEATS', 1000)];",
+            'config/app.php' => "<?php\n\nreturn ['timezone' => env('APP_TIMEZONE', 'UTC'), 'seats' => env('WIDGET_MAX_SEATS', 1000)];",
+            'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertEmpty($result->getIssues());
+    }
+
+    public function test_null_default_is_treated_as_no_default(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => 'APP_NAME=Laravel',
+            '.env' => 'APP_NAME=MyApp',
+            'config/services.php' => "<?php\n\nreturn ['key' => env('ACME_SECRET_KEY', null)];",
+            'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertSame('ACME_SECRET_KEY', $result->getIssues()[0]->metadata['key']);
+    }
+
+    public function test_empty_string_default_counts_as_default(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => 'APP_NAME=Laravel',
+            '.env' => 'APP_NAME=MyApp',
+            'config/widget.php' => "<?php\n\nreturn ['label' => env('WIDGET_LABEL', '')];",
+            'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -633,12 +672,13 @@ app_name=lowercase';
         $this->assertPassed($result);
     }
 
-    public function test_passes_when_config_key_documented_as_commented(): void
+    public function test_passes_when_bare_config_key_documented_active(): void
     {
         $tempDir = $this->createTempDirectory([
-            '.env.example' => "APP_NAME=Laravel\n# WIDGET_MAX_SEATS=1000",
+            '.env.example' => "APP_NAME=Laravel\nACME_API_KEY=",
             '.env' => 'APP_NAME=MyApp',
-            'config/widget.php' => "<?php\n\nreturn ['seats' => env('WIDGET_MAX_SEATS', 1000)];",
+            'config/services.php' => "<?php\n\nreturn ['key' => env('ACME_API_KEY')];",
+            'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -649,14 +689,49 @@ app_name=lowercase';
         $this->assertPassed($result);
     }
 
-    public function test_builtin_skeleton_keys_are_not_flagged(): void
+    public function test_passes_when_bare_config_key_documented_as_commented(): void
     {
         $tempDir = $this->createTempDirectory([
-            '.env.example' => "CACHE_DRIVER=file\nQUEUE_CONNECTION=sync\nSESSION_DRIVER=file\nSESSION_LIFETIME=120\nMEMCACHED_HOST=127.0.0.1",
-            '.env' => "CACHE_DRIVER=file\nQUEUE_CONNECTION=sync\nSESSION_DRIVER=file\nSESSION_LIFETIME=120\nMEMCACHED_HOST=127.0.0.1",
-            'config/cache.php' => "<?php\n\nreturn ['default' => env('CACHE_DRIVER', 'file'), 'prefix' => env('CACHE_PREFIX', 'laravel'), 'memcached' => ['host' => env('MEMCACHED_HOST', '127.0.0.1'), 'port' => env('MEMCACHED_PORT', 11211), 'username' => env('MEMCACHED_USERNAME'), 'password' => env('MEMCACHED_PASSWORD')]];",
-            'config/queue.php' => "<?php\n\nreturn ['default' => env('QUEUE_CONNECTION', 'sync'), 'sqs' => ['prefix' => env('SQS_PREFIX'), 'queue' => env('SQS_QUEUE', 'default'), 'suffix' => env('SQS_SUFFIX')]];",
-            'config/session.php' => "<?php\n\nreturn ['driver' => env('SESSION_DRIVER', 'file'), 'lifetime' => env('SESSION_LIFETIME', 120), 'cookie' => env(\n    'SESSION_COOKIE',\n    'laravel-session'\n)];",
+            '.env.example' => "APP_NAME=Laravel\n# ACME_API_KEY=",
+            '.env' => 'APP_NAME=MyApp',
+            'config/services.php' => "<?php\n\nreturn ['key' => env('ACME_API_KEY')];",
+            'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_bare_stock_keys_covered_by_framework_stubs_are_not_flagged(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => 'APP_NAME=Laravel',
+            '.env' => 'APP_NAME=MyApp',
+            'config/cache.php' => "<?php\n\nreturn ['memcached' => ['username' => env('MEMCACHED_USERNAME'), 'password' => env('MEMCACHED_PASSWORD')]];",
+            'config/session.php' => "<?php\n\nreturn ['store' => env('SESSION_STORE'), 'lifetime' => env('SESSION_LIFETIME', 120)];",
+            'vendor/laravel/framework/config/cache.php' => "<?php\n\nreturn ['memcached' => ['username' => env('MEMCACHED_USERNAME'), 'password' => env(\n    'MEMCACHED_PASSWORD'\n)]];",
+            'vendor/laravel/framework/config/session.php' => "<?php\n\nreturn ['store' => env('SESSION_STORE')];",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertEmpty($result->getIssues());
+    }
+
+    public function test_config_direction_skipped_without_framework_stubs(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => 'APP_NAME=Laravel',
+            '.env' => 'APP_NAME=MyApp',
+            'config/services.php' => "<?php\n\nreturn ['key' => env('ACME_API_KEY')];",
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -671,7 +746,7 @@ app_name=lowercase';
     public function test_project_ignored_keys_suppress_findings(): void
     {
         config(['shieldci.analyzers.reliability.env-example-documented.ignored_keys' => [
-            'WIDGET_MAX_SEATS',
+            'WIDGET_TOKEN',
             'ACME_*',
             42,
         ]]);
@@ -679,7 +754,8 @@ app_name=lowercase';
         $tempDir = $this->createTempDirectory([
             '.env.example' => 'APP_NAME=Laravel',
             '.env' => 'APP_NAME=MyApp',
-            'config/widget.php' => "<?php\n\nreturn ['seats' => env('WIDGET_MAX_SEATS', 1000), 'timeout' => env('ACME_TIMEOUT', 30), 'label' => env('WIDGET_LABEL', 'widgets')];",
+            'config/widget.php' => "<?php\n\nreturn ['token' => env('WIDGET_TOKEN'), 'timeout' => env('ACME_TIMEOUT'), 'secret' => env('WIDGET_SECRET')];",
+            'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -690,18 +766,17 @@ app_name=lowercase';
         $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertSame('WIDGET_LABEL', $issues[0]->metadata['key']);
+        $this->assertSame('WIDGET_SECRET', $issues[0]->metadata['key']);
     }
 
-    public function test_vendor_shipped_config_keys_are_not_flagged(): void
+    public function test_vendor_shipped_bare_keys_are_not_flagged(): void
     {
-        $vendorConfig = "<?php\n\nreturn ['timeout' => env(\n    'ACME_WIDGET_TIMEOUT',\n    30\n)];";
-
         $tempDir = $this->createTempDirectory([
             '.env.example' => 'APP_NAME=Laravel',
             '.env' => 'APP_NAME=MyApp',
-            'vendor/acme/widget/config/widget.php' => $vendorConfig,
-            'config/widget.php' => "<?php\n\nreturn ['timeout' => env('ACME_WIDGET_TIMEOUT', 30)];",
+            'vendor/acme/widget/config/widget.php' => "<?php\n\nreturn ['timeout' => env(\n    'ACME_WIDGET_TIMEOUT'\n)];",
+            'config/widget.php' => "<?php\n\nreturn ['timeout' => env('ACME_WIDGET_TIMEOUT')];",
+            'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -718,8 +793,9 @@ app_name=lowercase';
         $tempDir = $this->createTempDirectory([
             '.env.example' => 'APP_NAME=Laravel',
             '.env' => 'APP_NAME=MyApp',
-            'vendor/acme/widget/config/widget.php' => "<?php\n\nreturn ['timeout' => env('ACME_WIDGET_TIMEOUT', 30)];",
-            'config/widget.php' => "<?php\n\nreturn ['timeout' => env('ACME_WIDGET_TIMEOUT', 30)];",
+            'vendor/acme/widget/config/widget.php' => "<?php\n\nreturn ['timeout' => env('ACME_WIDGET_TIMEOUT')];",
+            'config/widget.php' => "<?php\n\nreturn ['timeout' => env('ACME_WIDGET_TIMEOUT')];",
+            'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
         $vendorConfigPath = $tempDir.'/vendor/acme/widget/config/widget.php';
@@ -737,13 +813,14 @@ app_name=lowercase';
         $this->assertSame('ACME_WIDGET_TIMEOUT', $result->getIssues()[0]->metadata['key']);
     }
 
-    public function test_app_added_key_in_published_config_is_flagged(): void
+    public function test_app_added_bare_key_in_published_config_is_flagged(): void
     {
         $tempDir = $this->createTempDirectory([
             '.env.example' => 'APP_NAME=Laravel',
             '.env' => 'APP_NAME=MyApp',
-            'vendor/acme/widget/config/widget.php' => "<?php\n\nreturn ['timeout' => env('ACME_WIDGET_TIMEOUT', 30)];",
-            'config/widget.php' => "<?php\n\nreturn ['timeout' => env('ACME_WIDGET_TIMEOUT', 30), 'custom' => env('ACME_WIDGET_CUSTOM', 5)];",
+            'vendor/acme/widget/config/widget.php' => "<?php\n\nreturn ['timeout' => env('ACME_WIDGET_TIMEOUT')];",
+            'config/widget.php' => "<?php\n\nreturn ['timeout' => env('ACME_WIDGET_TIMEOUT'), 'custom' => env('ACME_WIDGET_CUSTOM')];",
+            'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -761,7 +838,8 @@ app_name=lowercase';
     {
         $tempDir = $this->createTempDirectory([
             '.env.example' => 'APP_NAME=Laravel',
-            'config/widget.php' => "<?php\n\nreturn ['seats' => env('WIDGET_MAX_SEATS', 1000)];",
+            'config/services.php' => "<?php\n\nreturn ['key' => env('ACME_API_KEY')];",
+            'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -780,6 +858,7 @@ app_name=lowercase';
         $tempDir = $this->createTempDirectory([
             '.env.example' => "APP_NAME=Laravel\nWIDGET_MAX_SEATS=1000",
             'config/widget.php' => "<?php\n\nreturn ['seats' => env('WIDGET_MAX_SEATS', 1000)];",
+            'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -797,7 +876,8 @@ app_name=lowercase';
         $tempDir = $this->createTempDirectory([
             '.env.example' => 'APP_NAME=Laravel',
             '.env' => "APP_NAME=MyApp\nACME_UNDOCUMENTED=1",
-            'config/widget.php' => "<?php\n\nreturn ['seats' => env('WIDGET_MAX_SEATS', 1000)];",
+            'config/services.php' => "<?php\n\nreturn ['key' => env('ACME_API_KEY')];",
+            'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -812,22 +892,5 @@ app_name=lowercase';
         $codes = array_map(static fn ($issue) => $issue->metadata['code'], $issues);
         $this->assertContains('undocumented-config-key', $codes);
         $this->assertContains('undocumented-variables', $codes);
-    }
-
-    public function test_bare_config_key_reports_has_config_default_false(): void
-    {
-        $tempDir = $this->createTempDirectory([
-            '.env.example' => 'APP_NAME=Laravel',
-            '.env' => 'APP_NAME=MyApp',
-            'config/services.php' => "<?php\n\nreturn ['key' => env('ACME_SECRET_KEY')];",
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertWarning($result);
-        $this->assertFalse($result->getIssues()[0]->metadata['has_config_default']);
     }
 }

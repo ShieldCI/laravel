@@ -28,8 +28,11 @@ use ShieldCI\Concerns\DetectsDeploymentPlatform;
  * it stays voluntary; a bare env('KEY') or explicit null default reads null
  * when unset, making the key a required input worth documenting. Bare keys
  * that any installed package's own vendor config also reads are
- * vendor-owned and exempt; the direction is skipped on Laravel 9/10, which
- * ship no framework config stubs for that comparison.
+ * vendor-owned and exempt, as are bare keys read in an app config file
+ * whose basename matches a vendor config file (stock-file territory, where
+ * skeleton and vendor stubs drift apart key by key); the direction is
+ * skipped on Laravel 9/10, which ship no framework config stubs for those
+ * comparisons.
  *
  * Checks for:
  * - All variables from .env are present in .env.example
@@ -179,6 +182,7 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
         }
 
         $vendorKeys = $this->collectVendorConfigEnvKeys();
+        $vendorFileNames = $this->collectVendorConfigFileNames();
         $ignoredKeys = $this->loadIgnoredKeys();
 
         $issues = [];
@@ -191,6 +195,16 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
             }
 
             if (isset($exampleVars[$key]) || isset($exampleCommented[$key]) || isset($vendorKeys[$key])) {
+                continue;
+            }
+
+            // A key read in a config file sharing a vendor config's basename
+            // (services.php, mail.php, filesystems.php, ...) is stock-file
+            // territory: skeleton files drift from vendor stubs key by key,
+            // and optional per-service settings there are legitimately null.
+            // Custom keys in such files are still caught by the .env
+            // direction once they are set.
+            if (isset($vendorFileNames[basename($usage['file'])])) {
                 continue;
             }
 

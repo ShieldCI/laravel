@@ -595,7 +595,7 @@ app_name=lowercase';
         $tempDir = $this->createTempDirectory([
             '.env.example' => 'APP_NAME=Laravel',
             '.env' => 'APP_NAME=MyApp',
-            'config/services.php' => "<?php\n\nreturn ['acme' => ['key' => env('ACME_API_KEY')]];",
+            'config/acme.php' => "<?php\n\nreturn ['acme' => ['key' => env('ACME_API_KEY')]];",
             'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
@@ -615,7 +615,7 @@ app_name=lowercase';
         $this->assertSame('undocumented-config-key', $issues[0]->metadata['code']);
         $this->assertSame('ACME_API_KEY', $issues[0]->metadata['key']);
         $this->assertNotNull($issues[0]->location);
-        $this->assertStringContainsString('config/services.php', $issues[0]->location->file);
+        $this->assertStringContainsString('config/acme.php', $issues[0]->location->file);
         $this->assertGreaterThan(0, $issues[0]->location->line);
     }
 
@@ -642,7 +642,7 @@ app_name=lowercase';
         $tempDir = $this->createTempDirectory([
             '.env.example' => 'APP_NAME=Laravel',
             '.env' => 'APP_NAME=MyApp',
-            'config/services.php' => "<?php\n\nreturn ['key' => env('ACME_SECRET_KEY', null)];",
+            'config/acme.php' => "<?php\n\nreturn ['key' => env('ACME_SECRET_KEY', null)];",
             'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
@@ -677,7 +677,7 @@ app_name=lowercase';
         $tempDir = $this->createTempDirectory([
             '.env.example' => "APP_NAME=Laravel\nACME_API_KEY=",
             '.env' => 'APP_NAME=MyApp',
-            'config/services.php' => "<?php\n\nreturn ['key' => env('ACME_API_KEY')];",
+            'config/acme.php' => "<?php\n\nreturn ['key' => env('ACME_API_KEY')];",
             'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
@@ -694,7 +694,7 @@ app_name=lowercase';
         $tempDir = $this->createTempDirectory([
             '.env.example' => "APP_NAME=Laravel\n# ACME_API_KEY=",
             '.env' => 'APP_NAME=MyApp',
-            'config/services.php' => "<?php\n\nreturn ['key' => env('ACME_API_KEY')];",
+            'config/acme.php' => "<?php\n\nreturn ['key' => env('ACME_API_KEY')];",
             'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
@@ -731,7 +731,7 @@ app_name=lowercase';
         $tempDir = $this->createTempDirectory([
             '.env.example' => 'APP_NAME=Laravel',
             '.env' => 'APP_NAME=MyApp',
-            'config/services.php' => "<?php\n\nreturn ['key' => env('ACME_API_KEY')];",
+            'config/acme.php' => "<?php\n\nreturn ['key' => env('ACME_API_KEY')];",
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -775,7 +775,7 @@ app_name=lowercase';
             '.env.example' => 'APP_NAME=Laravel',
             '.env' => 'APP_NAME=MyApp',
             'vendor/acme/widget/config/widget.php' => "<?php\n\nreturn ['timeout' => env(\n    'ACME_WIDGET_TIMEOUT'\n)];",
-            'config/widget.php' => "<?php\n\nreturn ['timeout' => env('ACME_WIDGET_TIMEOUT')];",
+            'config/custom.php' => "<?php\n\nreturn ['timeout' => env('ACME_WIDGET_TIMEOUT')];",
             'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
@@ -794,7 +794,7 @@ app_name=lowercase';
             '.env.example' => 'APP_NAME=Laravel',
             '.env' => 'APP_NAME=MyApp',
             'vendor/acme/widget/config/widget.php' => "<?php\n\nreturn ['timeout' => env('ACME_WIDGET_TIMEOUT')];",
-            'config/widget.php' => "<?php\n\nreturn ['timeout' => env('ACME_WIDGET_TIMEOUT')];",
+            'config/custom.php' => "<?php\n\nreturn ['timeout' => env('ACME_WIDGET_TIMEOUT')];",
             'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
@@ -813,13 +813,31 @@ app_name=lowercase';
         $this->assertSame('ACME_WIDGET_TIMEOUT', $result->getIssues()[0]->metadata['key']);
     }
 
-    public function test_app_added_bare_key_in_published_config_is_flagged(): void
+    public function test_bare_key_in_vendor_named_config_file_is_not_flagged(): void
     {
         $tempDir = $this->createTempDirectory([
             '.env.example' => 'APP_NAME=Laravel',
             '.env' => 'APP_NAME=MyApp',
-            'vendor/acme/widget/config/widget.php' => "<?php\n\nreturn ['timeout' => env('ACME_WIDGET_TIMEOUT')];",
-            'config/widget.php' => "<?php\n\nreturn ['timeout' => env('ACME_WIDGET_TIMEOUT'), 'custom' => env('ACME_WIDGET_CUSTOM')];",
+            'config/services.php' => "<?php\n\nreturn ['mailer' => ['key' => env('ACME_MAIL_KEY')]];",
+            'vendor/laravel/framework/config/services.php' => "<?php\n\nreturn ['mailer' => ['key' => env('OTHER_MAIL_KEY')]];",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertEmpty($result->getIssues());
+    }
+
+    public function test_custom_disk_keys_in_vendor_named_filesystems_config_are_not_flagged(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => 'APP_NAME=Laravel',
+            '.env' => 'APP_NAME=MyApp',
+            'config/filesystems.php' => "<?php\n\nreturn ['disks' => ['acme' => ['url' => env('ACME_DISK_URL'), 'endpoint' => env('ACME_DISK_ENDPOINT')]]];",
+            'vendor/laravel/framework/config/filesystems.php' => "<?php\n\nreturn ['disks' => ['local' => ['serve' => env('FILESYSTEM_SERVE', true)]]];",
             'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
@@ -828,17 +846,15 @@ app_name=lowercase';
 
         $result = $analyzer->analyze();
 
-        $this->assertWarning($result);
-        $issues = $result->getIssues();
-        $this->assertCount(1, $issues);
-        $this->assertSame('ACME_WIDGET_CUSTOM', $issues[0]->metadata['key']);
+        $this->assertPassed($result);
+        $this->assertEmpty($result->getIssues());
     }
 
     public function test_config_direction_runs_when_env_missing(): void
     {
         $tempDir = $this->createTempDirectory([
             '.env.example' => 'APP_NAME=Laravel',
-            'config/services.php' => "<?php\n\nreturn ['key' => env('ACME_API_KEY')];",
+            'config/acme.php' => "<?php\n\nreturn ['key' => env('ACME_API_KEY')];",
             'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 
@@ -876,7 +892,7 @@ app_name=lowercase';
         $tempDir = $this->createTempDirectory([
             '.env.example' => 'APP_NAME=Laravel',
             '.env' => "APP_NAME=MyApp\nACME_UNDOCUMENTED=1",
-            'config/services.php' => "<?php\n\nreturn ['key' => env('ACME_API_KEY')];",
+            'config/acme.php' => "<?php\n\nreturn ['key' => env('ACME_API_KEY')];",
             'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
         ]);
 

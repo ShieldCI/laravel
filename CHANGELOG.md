@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.13.2
+
+### Fixed
+- `env-example-documented` no longer flags bare `env()` keys read in vendor-named config files such as `services.php` (#322)
+
 ## v1.13.1
 
 ### Fixed

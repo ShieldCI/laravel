@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.13.1
+
+### Fixed
+- `env-example-documented` now requires a `.env.example` entry only for config `env()` keys without a default (#320)
+
 ## v1.13.0
 
 ### Added

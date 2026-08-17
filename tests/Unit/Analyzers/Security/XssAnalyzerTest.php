@@ -1199,6 +1199,10 @@ BLADE;
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('src attribute', $result);
+        // Locks in the fix: only the legitimate "src attribute" issue should remain, the
+        // spurious "JavaScript string context" issue (from the <script ...> tag's own
+        // attributes being scanned as JS body) must not reappear.
+        $this->assertIssueCount(1, $result);
     }
 
     public function test_detects_unescaped_output_in_data_attributes(): void
@@ -1755,5 +1759,46 @@ BLADE;
 
         // urlencode makes user input safe in src attribute
         $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_nonce_attribute_on_single_line_script_tag(): void
+    {
+        $bladeCode = <<<'BLADE'
+<script src="/assets/app.js" nonce="{{ request()->attributes->get('csp_nonce', '') }}"></script>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['nonce-script.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // The nonce is a request *attribute* (set by first-party middleware), not user
+        // input, and it lives in the <script> tag's own HTML attribute, never executed
+        // as JavaScript. This must not be flagged as JS-context injection.
+        $this->assertPassed($result);
+    }
+
+    public function test_still_flags_user_input_in_single_line_script_body_with_attributes(): void
+    {
+        $bladeCode = <<<'BLADE'
+<script src="/assets/app.js">var x = {{ request('x') }};</script>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['tainted-body-with-attrs.blade.php' => $bladeCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // A tainted script *body* must still be flagged even when the tag carries its own
+        // (safe) attributes, confirms the fix scopes to "after the tag's own '>'", not to
+        // "the whole tag line is exempt."
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('JavaScript', $result);
     }
 }

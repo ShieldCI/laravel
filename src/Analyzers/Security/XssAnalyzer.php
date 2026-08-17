@@ -200,12 +200,23 @@ class XssAnalyzer extends AbstractFileAnalyzer
                 $hasOpeningTag = preg_match('/<script[^>]*>/', $line);
                 $hasClosingTag = str_contains($line, '</script>');
 
+                // Text used by the JS-injection heuristic below (~line 291+). Defaults to the
+                // raw line; narrowed to the script body only for the single-line
+                // <script ...>...</script> case so the opening tag's own HTML attributes
+                // (e.g. a CSP nonce) are never mistaken for JavaScript source.
+                $scriptCheckText = $line;
+
                 $exitScriptAfterLine = false;
                 if ($hasOpeningTag && $hasClosingTag) {
                     // Single-line <script>...</script> - treat content as inside script
                     // (will be checked in the inScriptTag section)
                     $inScriptTag = true;
                     $exitScriptAfterLine = true;
+
+                    // Strip everything through the opening tag's own closing '>' so the
+                    // check below sees only the script body, not the <script ...> tag's
+                    // own attribute values.
+                    $scriptCheckText = preg_replace('/^.*?<script[^>]*>/', '', $line) ?? $line;
                 } elseif ($hasOpeningTag) {
                     // Opening tag without closing - enter script block
                     $inScriptTag = true;
@@ -287,14 +298,17 @@ class XssAnalyzer extends AbstractFileAnalyzer
                 $attributeIssues = $this->checkHtmlAttributeContext($line, $file, $lineNumber);
                 $issues = array_merge($issues, $attributeIssues);
 
-                // Check for dangerous JavaScript output when inside script tags
-                $isBladeOutput = preg_match('/\{\{.*?\}\}|\{!!.*?!!\}/', $line);
-                $isRawBlade = preg_match('/\{!!.*?!!\}/', $line);
-                $isTainted = $this->mightContainUserInput($line);
-                $isEncoded = preg_match('/@json\s*\(|json_encode\s*\(|Js::from\s*\(/', $line);
-                $isJsString = preg_match('/([=\(,]\s*[\'"]\s*\{\{.*?\}\}\s*[\'"])/', $line);
+                // Check for dangerous JavaScript output when inside script tags.
+                // Uses $scriptCheckText (script body only for the single-line case) rather
+                // than $line, so a single-line <script ...> tag's own HTML attributes are
+                // never treated as JavaScript source.
+                $isBladeOutput = preg_match('/\{\{.*?\}\}|\{!!.*?!!\}/', $scriptCheckText);
+                $isRawBlade = preg_match('/\{!!.*?!!\}/', $scriptCheckText);
+                $isTainted = $this->mightContainUserInput($scriptCheckText);
+                $isEncoded = preg_match('/@json\s*\(|json_encode\s*\(|Js::from\s*\(/', $scriptCheckText);
+                $isJsString = preg_match('/([=\(,]\s*[\'"]\s*\{\{.*?\}\}\s*[\'"])/', $scriptCheckText);
                 if ($inScriptTag && ! $rawBladeMatched && $isBladeOutput && $isTainted && ! $isEncoded
-                    && ! $this->allBladeExpressionsAreLiteralOutputs($line)) {
+                    && ! $this->allBladeExpressionsAreLiteralOutputs($scriptCheckText)) {
                     // Check for unescaped Blade output or superglobals in JavaScript
                     $severity = $isRawBlade || $isJsString
                         ? Severity::Critical

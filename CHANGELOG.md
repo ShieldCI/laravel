@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.13.3
+
+### Fixed
+- `xss-vulnerabilities` no longer flags a single-line `<script>` tag's own HTML attributes (such as a CSP nonce) as JavaScript-context injection (#324)
+
 ## v1.13.2
 
 ### Fixed

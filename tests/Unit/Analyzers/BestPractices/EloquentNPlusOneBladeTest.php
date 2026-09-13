@@ -423,4 +423,24 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
         $this->assertCount(1, $issues);
         $this->assertStringContainsString('FeedController::index', $issues[0]->recommendation);
     }
+
+    /**
+     * Regression test for the polymorphic-column false positive. `subject_type` and
+     * `subject_id` are the two halves of a morphTo pair: plain columns on a row that the
+     * paginated query already put in memory, with the relation itself named `subject`. The
+     * model ships inside a package, so it never enters the relationship registry and the
+     * property name reached the naming heuristic instead. Flagging it is worse than noise,
+     * because the recommendation this analyzer emits is to eager-load the flagged name and
+     * `with('subject_type')` raises RelationNotFoundException.
+     */
+    public function test_morph_type_column_on_unscanned_model_is_not_flagged(): void
+    {
+        $result = $this->analyze([
+            'app/Http/Controllers/AuditController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse Vendor\\Audit\\Models\\AuditEntry;\nclass AuditController { public function index(){ \$entries = AuditEntry::latest()->paginate(10); return view('audit.index', compact('entries')); } }",
+            'resources/views/audit/index.blade.php' => "@foreach(\$entries as \$entry)\n  {{ \$entry->subject_type }} : {{ \$entry->subject_id }}\n@endforeach",
+        ]);
+
+        $messages = array_map(fn (Issue $i): string => $i->message, $result->getIssues());
+        $this->assertSame([], $messages);
+    }
 }

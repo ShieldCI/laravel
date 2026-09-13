@@ -403,7 +403,11 @@ class BladeLogicVisitor extends NodeVisitorAbstract
     /**
      * Enclosing @foreach loops, outermost first. Populated on enter, popped on leave.
      *
-     * @var list<array{value: string|null, key: string|null}>
+     * One entry per loop, holding the names that identify an item in it. The entry must stay
+     * per-loop: enterNode() reads the entry count as the nesting depth and leaveNode() pops one
+     * entry per loop left.
+     *
+     * @var list<list<string>>
      */
     private array $loopStack = [];
 
@@ -596,14 +600,34 @@ class BladeLogicVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Record a loop's key/value variable names as the enclosing scope for any nested loop.
+     * Record a loop's variable names as the enclosing scope for any nested loop.
      */
     private function pushLoop(Stmt\Foreach_ $node): void
     {
-        $this->loopStack[] = [
-            'value' => $this->variableName($node->valueVar),
-            'key' => $node->keyVar !== null ? $this->variableName($node->keyVar) : null,
-        ];
+        $this->loopStack[] = $this->loopVariableNames($node);
+    }
+
+    /**
+     * Variable names that identify an item in this loop: its value, its key, or both.
+     *
+     * Both sides of the linear-search comparison are derived from this one helper, so an item can
+     * never be identifiable on the enclosing side but invisible on the inner side.
+     *
+     * @return list<string>
+     */
+    private function loopVariableNames(Stmt\Foreach_ $node): array
+    {
+        $names = [];
+
+        foreach ([$node->valueVar, $node->keyVar] as $var) {
+            $name = $var !== null ? $this->variableName($var) : null;
+
+            if ($name !== null) {
+                $names[] = $name;
+            }
+        }
+
+        return $names;
     }
 
     /**
@@ -636,8 +660,8 @@ class BladeLogicVisitor extends NodeVisitorAbstract
 
         // An unrelated source is only wasteful if the body scans it for the outer item. Rendering
         // every combination (a grid of rows × columns) costs what it outputs, so it is left alone.
-        $innerValue = $this->variableName($node->valueVar);
-        if ($innerValue === null || ! $this->searchesForEnclosingItem($node, $innerValue, $enclosing)) {
+        $innerNames = $this->loopVariableNames($node);
+        if ($innerNames === [] || ! $this->searchesForEnclosingItem($node, $innerNames, $enclosing)) {
             return;
         }
 
@@ -674,10 +698,8 @@ class BladeLogicVisitor extends NodeVisitorAbstract
         $names = [];
 
         foreach ($this->loopStack as $loop) {
-            foreach ([$loop['value'], $loop['key']] as $name) {
-                if ($name !== null) {
-                    $names[] = $name;
-                }
+            foreach ($loop as $name) {
+                $names[] = $name;
             }
         }
 
@@ -685,14 +707,19 @@ class BladeLogicVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Does the inner loop compare one of its own values against an enclosing loop's value?
+     * Does the inner loop compare one of its own items against an enclosing loop's item?
      *
      * This is the linear-search signature: a loop over every post nested inside a loop over every
-     * user, keeping only the posts where $post->user_id === $user->id.
+     * user, keeping only the posts where $post->user_id === $user->id. The match is the same work
+     * whether it is written against the loop's value or its key, so both are considered.
      *
+     * Only the four equality operators count. Widening this to isset(), in_array() or array access
+     * would flag grid rendering, which costs what it outputs.
+     *
+     * @param  list<string>  $innerNames
      * @param  list<string>  $enclosing
      */
-    private function searchesForEnclosingItem(Stmt\Foreach_ $node, string $innerValue, array $enclosing): bool
+    private function searchesForEnclosingItem(Stmt\Foreach_ $node, array $innerNames, array $enclosing): bool
     {
         $comparisons = (new NodeFinder)->find($node->stmts, fn (Node $found): bool => $found instanceof Expr\BinaryOp\Equal
             || $found instanceof Expr\BinaryOp\Identical
@@ -704,7 +731,7 @@ class BladeLogicVisitor extends NodeVisitorAbstract
                 continue;
             }
 
-            $matchesInner = fn (Expr $side): bool => $this->referencesAny($side, [$innerValue]);
+            $matchesInner = fn (Expr $side): bool => $this->referencesAny($side, $innerNames);
             $matchesOuter = fn (Expr $side): bool => $this->referencesAny($side, $enclosing);
 
             if (($matchesInner($comparison->left) && $matchesOuter($comparison->right))

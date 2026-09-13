@@ -2648,6 +2648,85 @@ BLADE;
         $this->assertSame([], $this->nestedForeachIssues($blade));
     }
 
+    public function test_detects_nested_foreach_that_searches_by_the_inner_loop_key(): void
+    {
+        // The same linear search as the value-variable form, written against the loop key: for
+        // each city, scan every listing group to find the one that matches.
+        $blade = <<<'BLADE'
+<div>
+    @foreach($cities as $city)
+        @foreach($allListings as $listingCity => $listings)
+            @if($listingCity == $city->slug)
+                <span>{{ count($listings) }}</span>
+            @endif
+        @endforeach
+    @endforeach
+</div>
+BLADE;
+
+        $issues = $this->nestedForeachIssues($blade);
+
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('scans a collection for each outer item', $issues[0]->message);
+    }
+
+    public function test_detects_nested_foreach_that_matches_inner_key_to_outer_key(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @foreach($totalsByMonth as $month => $total)
+        @foreach($budgetsByMonth as $budgetMonth => $budget)
+            @if($budgetMonth == $month)
+                <td>{{ $total }} / {{ $budget }}</td>
+            @endif
+        @endforeach
+    @endforeach
+</div>
+BLADE;
+
+        $this->assertCount(1, $this->nestedForeachIssues($blade));
+    }
+
+    public function test_ignores_partition_iteration_compared_on_the_inner_key(): void
+    {
+        // The inner loop walks the outer item's own array, so every cell is visited once. The
+        // comparison is a display decision, not a search.
+        $blade = <<<'BLADE'
+<table>
+    @foreach($rows as $row)
+        @foreach($row as $key => $cell)
+            @if($key == $highlight)
+                <td class="active">{{ $cell }}</td>
+            @else
+                <td>{{ $cell }}</td>
+            @endif
+        @endforeach
+    @endforeach
+</table>
+BLADE;
+
+        $this->assertSame([], $this->nestedForeachIssues($blade));
+    }
+
+    public function test_ignores_grid_rendering_with_a_keyed_inner_loop(): void
+    {
+        // Unrelated inner collection, but nothing is matched back to the outer item: the grid
+        // costs exactly what it renders. Naming the inner key must not change that.
+        $blade = <<<'BLADE'
+<table>
+    @foreach($rows as $row)
+        <tr>
+            @foreach($columns as $i => $column)
+                <td>{{ $row[$column] }}</td>
+            @endforeach
+        </tr>
+    @endforeach
+</table>
+BLADE;
+
+        $this->assertSame([], $this->nestedForeachIssues($blade));
+    }
+
     public function test_max_foreach_depth_is_configurable(): void
     {
         $blade = <<<'BLADE'

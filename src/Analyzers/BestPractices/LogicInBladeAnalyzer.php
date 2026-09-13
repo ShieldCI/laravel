@@ -45,6 +45,24 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
 
     public const DEFAULT_MAX_FOREACH_DEPTH = 2;
 
+    /**
+     * Methods only a paginator exposes while rendering its link window.
+     *
+     * @var array<string>
+     */
+    private const PAGINATOR_WINDOW_METHODS = [
+        'hasPages', 'onFirstPage', 'hasMorePages', 'previousPageUrl', 'nextPageUrl',
+        'currentPage', 'lastPage', 'firstItem', 'lastItem', 'getUrlRange',
+        'onEachSide', 'appends', 'withQueryString',
+    ];
+
+    /**
+     * Distinct paginator methods one receiver must drive before a template counts as a paginator
+     * window view. An ordinary index view calls at most one of them on its collection; the
+     * framework's own pagination templates call five or more.
+     */
+    private const MIN_PAGINATOR_WINDOW_METHODS = 2;
+
     private int $maxPhpBlockLines;
 
     private int $minArithmeticOperators;
@@ -135,6 +153,42 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         }
 
         return $files;
+    }
+
+    /**
+     * Is this template a paginator's link-window view?
+     *
+     * AbstractPaginator::render() invokes the view itself, supplying $paginator and the bounded
+     * $elements window, so no controller sits between the data and the markup. A template that
+     * drives two or more paginator-only methods off a single receiver is that view wherever it
+     * happens to live: published under resources/views/vendor, relocated by
+     * Paginator::defaultView(), or wrapped in a Blade component.
+     *
+     * Grouping by receiver is what keeps the test tight. An index view calls one of these methods
+     * on its collection; only a pagination template drives several off the same variable.
+     */
+    private function isPaginatorWindowView(string $content): bool
+    {
+        $pattern = '/\$(\w+)\s*->\s*('.implode('|', self::PAGINATOR_WINDOW_METHODS).')\s*\(/';
+
+        if (! preg_match_all($pattern, $content, $matches, PREG_SET_ORDER)) {
+            return false;
+        }
+
+        /** @var array<string, array<string, true>> $byReceiver */
+        $byReceiver = [];
+
+        foreach ($matches as $match) {
+            $byReceiver[$match[1]][$match[2]] = true;
+        }
+
+        foreach ($byReceiver as $methods) {
+            if (count($methods) >= self::MIN_PAGINATOR_WINDOW_METHODS) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -285,7 +339,11 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $visitor = new BladeLogicVisitor($this->minArithmeticOperators, $this->maxForeachDepth);
+        $visitor = new BladeLogicVisitor(
+            $this->minArithmeticOperators,
+            $this->maxForeachDepth,
+            $this->isPaginatorWindowView($content),
+        );
         $traverser = new NodeTraverser;
         $traverser->addVisitor($visitor);
         $traverser->traverse($ast);
@@ -334,6 +392,11 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
  * - Complex calculations (multiple arithmetic operators, compound assignment)
  * - Nested @foreach loops that linearly search a collection per outer item
  * - Collection manipulation in @foreach expressions
+ *
+ * Suppressed in a paginator window view (a template rendered by AbstractPaginator::render(), which
+ * supplies $paginator and the bounded $elements window itself): every check whose recommendation is
+ * "move this to a controller", because no controller sits between the data and the markup. DB query
+ * and API call detection still run there.
  */
 class BladeLogicVisitor extends NodeVisitorAbstract
 {
@@ -358,6 +421,7 @@ class BladeLogicVisitor extends NodeVisitorAbstract
     public function __construct(
         private int $minArithmeticOperators = LogicInBladeAnalyzer::DEFAULT_MIN_ARITHMETIC_OPERATORS,
         private int $maxForeachDepth = LogicInBladeAnalyzer::DEFAULT_MAX_FOREACH_DEPTH,
+        private bool $isPaginatorWindowView = false,
     ) {}
 
     /** @var array<string> Non-Eloquent classes with DB-like method names */
@@ -452,33 +516,52 @@ class BladeLogicVisitor extends NodeVisitorAbstract
     {
         if ($node instanceof Stmt\Foreach_) {
             // Classify before pushing, so the stack holds only the *enclosing* loops.
-            $this->checkNestedLoop($node);
-            $this->checkForeachExpression($node);
+            if (! $this->isPaginatorWindowView) {
+                $this->checkNestedLoop($node);
+                $this->checkForeachExpression($node);
+            }
             $this->pushLoop($node);
         }
 
         // Detect $__currentLoopData = $expr->collectionMethod() pattern
-        // (Blade compiles @foreach($items->filter() as $item) to this)
+        // (Blade compiles @foreach($items->filter() as $item) to this). Always entered: the
+        // assignment also records the loop source that checkNestedLoop() reads back.
         if ($node instanceof Expr\Assign) {
             $this->checkCurrentLoopDataAssignment($node);
         }
 
-        // DB query detection — static calls
+        // DB and API detection run in every template. A query or an HTTP call is a genuine
+        // finding even where the surrounding data contract belongs to the framework.
         if ($node instanceof Expr\StaticCall) {
             $this->checkDbStaticCall($node);
             $this->checkApiStaticCall($node);
         }
 
-        // DB query detection — method chains
         if ($node instanceof Expr\MethodCall) {
             $this->checkDbMethodChain($node);
             $this->checkModelSave($node);
+        }
+
+        if ($node instanceof Expr\FuncCall) {
+            $this->checkApiFuncCall($node);
+        }
+
+        // Every check below recommends moving work into a controller. A paginator window view is
+        // rendered by AbstractPaginator::render(), which supplies $paginator and the bounded
+        // $elements window itself, so there is no controller to move anything to. Returning null
+        // rather than a NodeTraverser constant keeps the traversal descending into child nodes,
+        // so the DB and API checks above still run on them.
+        if ($this->isPaginatorWindowView) {
+            return null;
+        }
+
+        // Expensive computation — method chains
+        if ($node instanceof Expr\MethodCall) {
             $this->checkExpensiveCollectionMethod($node);
         }
 
-        // API call and business logic — function calls
+        // Business logic and expensive computation — function calls
         if ($node instanceof Expr\FuncCall) {
-            $this->checkApiFuncCall($node);
             $this->checkBusinessLogicFunction($node);
             if ($this->loopStack !== []) {
                 $this->checkExpensiveStringFunction($node);
@@ -1004,6 +1087,10 @@ class BladeLogicVisitor extends NodeVisitorAbstract
         // Remember what the upcoming foreach really iterates — the compiled loop itself only
         // ever names $__currentLoopData. checkNestedLoop() reads this back.
         $this->lastLoopSource = $node->expr;
+
+        if ($this->isPaginatorWindowView) {
+            return;
+        }
 
         // Check if RHS is a method call with a collection manipulation method
         $rhs = $node->expr;

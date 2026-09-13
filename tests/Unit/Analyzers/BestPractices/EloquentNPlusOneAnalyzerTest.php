@@ -4929,11 +4929,10 @@ PHP,
     }
 
     /**
-     * The boundary that keeps this change additive. Knowing a name IS a relationship is
-     * not the same as knowing which names are not: the chain may leave the scanned paths.
-     * So an inherited relationship must not, on its own, start answering absent names
-     * conclusively. Item declares none of its own, so sku stays a guess and stays flagged,
-     * exactly as before.
+     * Knowing a name IS a relationship is not the same as knowing which names are not: the
+     * chain may leave the scanned paths. So an inherited relationship must not, on its own,
+     * start answering absent names conclusively. Item states none of its own and uses a
+     * trait that ships in a package, so it cannot be read in full and sku stays a guess.
      */
     public function test_column_on_a_model_with_only_inherited_relations_is_still_heuristic(): void
     {
@@ -4960,10 +4959,11 @@ namespace App\Models;
 
 use App\Models\Concerns\HasProfile;
 use Illuminate\Database\Eloquent\Model;
+use Vendor\Pkg\HasThings;
 
 class Item extends Model
 {
-    use HasProfile;
+    use HasProfile, HasThings;
 }
 PHP,
             'app/Http/Controllers/ItemController.php' => <<<'PHP'
@@ -4995,5 +4995,955 @@ PHP,
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('sku', $result);
+    }
+
+    // -------------------------------------------------------------------------
+    // Conclusive readings for models the scanner could read in full
+    // -------------------------------------------------------------------------
+
+    /**
+     * The case the naming heuristic could never get right on its own. Product has no
+     * relationships and extends a base that declares none, so every class it reaches was
+     * read, and Eloquent resolves $product->sku through method_exists: no method named sku
+     * exists anywhere in the chain, so sku is a column. Before, an absent name on a model
+     * with no relationships at all fell through to the heuristic, which had only the shape
+     * of the word to go on and answered yes.
+     */
+    public function test_does_not_flag_a_single_word_column_on_a_model_with_no_relationships(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Product extends Model {}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $rows = Product::get();
+
+        foreach ($rows as $row) {
+            echo $row->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * Nearly every generated model uses at least one framework trait, so a reading that
+     * broke on them would apply to almost nothing. HasFactory and SoftDeletes declare no
+     * relationships, which is carried as data because those declarations are never scanned.
+     */
+    public function test_does_not_flag_a_single_word_column_on_a_model_using_only_relation_free_framework_traits(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
+
+class Product extends Model
+{
+    use HasFactory, SoftDeletes;
+}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $rows = Product::get();
+
+        foreach ($rows as $row) {
+            echo $row->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * The counterpart to the notifications test: same shape of model, opposite polarity.
+     * notifications is flagged because Notifiable really does declare it, and sku is not
+     * because the chain was read to the end and nothing in it declares that method.
+     */
+    public function test_does_not_flag_a_single_word_column_on_a_user_model_extending_authenticatable(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Account.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+
+class Account extends Authenticatable
+{
+    use Notifiable;
+}
+PHP,
+            'app/Http/Controllers/AccountController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Account;
+
+class AccountController
+{
+    public function index()
+    {
+        $rows = Account::get();
+
+        foreach ($rows as $row) {
+            echo $row->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * A name carrying its own namespace needs no import, and resolution has to pass it
+     * through rather than prepend the enclosing namespace to it.
+     */
+    public function test_does_not_flag_a_fully_qualified_eloquent_parent_without_a_use_statement(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Product extends \Illuminate\Database\Eloquent\Model {}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $rows = Product::get();
+
+        foreach ($rows as $row) {
+            echo $row->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * The guard that keeps the conclusive reading honest. A trait that ships in a package
+     * is never scanned, so its members are unknown and the model cannot be spoken for. It
+     * keeps guessing, exactly as it did before.
+     */
+    public function test_still_flags_when_a_trait_is_outside_the_scan(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Vendor\Pkg\HasThings;
+
+class Product extends Model
+{
+    use HasThings;
+}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $rows = Product::get();
+
+        foreach ($rows as $row) {
+            echo $row->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('sku', $result);
+    }
+
+    /**
+     * The same guard on the inheritance axis. A base class from a package may declare
+     * relationships the scan never saw.
+     */
+    public function test_still_flags_when_the_parent_is_outside_the_scan(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Product extends \Vendor\Pkg\BaseThing {}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $rows = Product::get();
+
+        foreach ($rows as $row) {
+            echo $row->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('sku', $result);
+    }
+
+    /**
+     * Proving a name is not a relationship is not the same as failing to recognise one.
+     * This relationship is returned from a match arm, which the shape matching does not
+     * follow, but owner is still a method on the model, so the reading stays a guess and
+     * the finding survives. That distinction is what keeps the conclusive answer from
+     * depending on recognising every way a relationship can be written.
+     */
+    public function test_still_flags_a_method_that_exists_but_was_not_classified(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Product extends Model
+{
+    public function owner()
+    {
+        return match ($this->kind) {
+            default => $this->belongsTo(User::class),
+        };
+    }
+}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $rows = Product::get();
+
+        foreach ($rows as $row) {
+            echo $row->owner;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('owner', $result);
+    }
+
+    /**
+     * An alias gives the class a relationship under a name that appears in neither the
+     * trait nor the class body, so the flattened lists no longer describe the model.
+     */
+    public function test_trait_alias_adaptation_leaves_the_model_unread(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/HasProfile.php' => <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+use App\Models\Profile;
+
+trait HasProfile
+{
+    public function profile()
+    {
+        return $this->hasOne(Profile::class);
+    }
+}
+PHP,
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use App\Models\Concerns\HasProfile;
+use Illuminate\Database\Eloquent\Model;
+
+class Product extends Model
+{
+    use HasProfile {
+        profile as author;
+    }
+}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $rows = Product::get();
+
+        foreach ($rows as $row) {
+            echo $row->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('sku', $result);
+    }
+
+    /**
+     * __get answers for names no declaration lists, so the member index stops being a
+     * complete account of the model.
+     */
+    public function test_model_declaring_magic_get_is_left_unread(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Product extends Model
+{
+    public function __get($key)
+    {
+        return $this->resolveDynamically($key);
+    }
+}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $rows = Product::get();
+
+        foreach ($rows as $row) {
+            echo $row->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('sku', $result);
+    }
+
+    /**
+     * The one way a relationship exists with no method of its name: a package registers
+     * it on someone else's model from a service provider, and Eloquent answers it through
+     * __call. Proving sku is absent would prove nothing about vendor, so the registration
+     * is read and folded into the model it names.
+     */
+    public function test_relation_registered_by_resolve_relation_using_is_flagged(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Product extends Model {}
+PHP,
+            'app/Providers/RelationServiceProvider.php' => <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use App\Models\Product;
+use App\Models\Vendor;
+
+class RelationServiceProvider
+{
+    public function boot()
+    {
+        Product::resolveRelationUsing('vendor', function ($product) {
+            return $product->belongsTo(Vendor::class);
+        });
+    }
+}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $rows = Product::get();
+
+        foreach ($rows as $row) {
+            echo $row->vendor;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('vendor', $result);
+    }
+
+    /**
+     * When the registration names its model through a variable, any model could be the
+     * one being extended, so no model can be spoken for and every reading falls back to
+     * the heuristic.
+     */
+    public function test_unattributable_resolve_relation_using_withdraws_conclusive_readings(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Product extends Model {}
+PHP,
+            'app/Providers/RelationServiceProvider.php' => <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+class RelationServiceProvider
+{
+    public function boot()
+    {
+        foreach (config('extend.models') as $model) {
+            $model::resolveRelationUsing('vendor', fn ($row) => $row->belongsTo($model));
+        }
+    }
+}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $rows = Product::get();
+
+        foreach ($rows as $row) {
+            echo $row->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('sku', $result);
+    }
+
+    /**
+     * The lookup side only ever knows a model by its short name, so two classes sharing
+     * one are answered together. Judging an absent name would then rest partly on a class
+     * the code never referred to, so neither is spoken for.
+     */
+    public function test_shared_short_name_is_never_answered_conclusively(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Product extends Model {}
+PHP,
+            'app/Legacy/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Legacy;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Product extends Model {}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $rows = Product::get();
+
+        foreach ($rows as $row) {
+            echo $row->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('sku', $result);
+    }
+
+    /**
+     * Eloquent resolves $item->throughParts() by finding parts and hopping through it, so
+     * no method of that name is declared and proving its absence proves nothing.
+     */
+    public function test_through_relation_method_is_not_answered_conclusively(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/HasParts.php' => <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+use App\Models\Part;
+
+trait HasParts
+{
+    public function parts()
+    {
+        return $this->hasMany(Part::class);
+    }
+}
+PHP,
+            'app/Models/Item.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use App\Models\Concerns\HasParts;
+use Illuminate\Database\Eloquent\Model;
+
+class Item extends Model
+{
+    use HasParts;
+}
+PHP,
+            'app/Http/Controllers/ItemController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Item;
+
+class ItemController
+{
+    public function index()
+    {
+        $rows = Item::get();
+
+        foreach ($rows as $row) {
+            echo $row->throughParts()->count();
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('throughParts', $result);
+    }
+
+    /**
+     * Isolates accessor flattening. On a model read in full the absent-method reading
+     * would answer this anyway, so the fixture uses a package trait to withhold that and
+     * leave the accessor as the only thing standing between the code and a finding.
+     */
+    public function test_inherited_accessor_suppresses_a_column_on_a_model_not_read_in_full(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/HasSku.php' => <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+trait HasSku
+{
+    public function getSkuAttribute(): string
+    {
+        return strtoupper($this->code);
+    }
+}
+PHP,
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use App\Models\Concerns\HasSku;
+use Illuminate\Database\Eloquent\Model;
+use Vendor\Pkg\HasThings;
+
+class Product extends Model
+{
+    use HasSku, HasThings;
+}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $rows = Product::get();
+
+        foreach ($rows as $row) {
+            echo $row->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * The same isolation for $fillable, $casts and $appends flattening.
+     */
+    public function test_inherited_fillable_suppresses_a_column_on_a_model_not_read_in_full(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/BaseProduct.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Vendor\Pkg\HasThings;
+
+class BaseProduct extends Model
+{
+    use HasThings;
+
+    protected $fillable = ['sku'];
+}
+PHP,
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Product extends BaseProduct {}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $rows = Product::get();
+
+        foreach ($rows as $row) {
+            echo $row->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * A parent named without a namespace to resolve it against still names a class, and
+     * that class may declare relationships the scan never saw. Reading such a name as
+     * though the model had no parent at all would turn a model nothing is known about into
+     * one with nothing left to read, which is the worst direction for this analyzer.
+     */
+    public function test_still_flags_when_an_unqualified_parent_cannot_be_found(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Thing.php' => <<<'PHP'
+<?php
+
+class Thing extends SomePackageBase {}
+PHP,
+            'app/Http/Controllers/ThingController.php' => <<<'PHP'
+<?php
+
+class ThingController
+{
+    public function index()
+    {
+        $rows = Thing::get();
+
+        foreach ($rows as $row) {
+            echo $row->owner;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('owner', $result);
+    }
+
+    /**
+     * PHP resolves an unqualified name in the global namespace to the global one, so a
+     * trait declared there is found like any other and the model it is used by can still
+     * be read in full.
+     */
+    public function test_resolves_a_trait_in_the_global_namespace(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/HasParts.php' => <<<'PHP'
+<?php
+
+trait HasParts
+{
+    public function parts()
+    {
+        return $this->hasMany(Part::class);
+    }
+}
+PHP,
+            'app/Models/Thing.php' => <<<'PHP'
+<?php
+
+class Thing extends Illuminate\Database\Eloquent\Model
+{
+    use HasParts;
+}
+PHP,
+            'app/Http/Controllers/ThingController.php' => <<<'PHP'
+<?php
+
+class ThingController
+{
+    public function index()
+    {
+        $rows = Thing::get();
+
+        foreach ($rows as $row) {
+            echo $row->parts;
+            echo $row->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('parts', $result);
+        $this->assertCount(1, $result->getIssues());
     }
 }

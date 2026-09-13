@@ -1223,55 +1223,20 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // Exclude naming convention patterns that indicate non-relationships
-
-        // Foreign key pattern: *_id (user_id, post_id, etc.)
-        if (str_ends_with($lowerName, '_id')) {
-            return false;
-        }
-
-        // Hash column pattern: *_hash (api_token_hash, password_hash, etc.)
-        if (str_ends_with($lowerName, '_hash')) {
-            return false;
-        }
-
-        // Aggregate/total prefix: total_* (total_issues, total_execution_time, etc.)
-        if (str_starts_with($lowerName, 'total_')) {
-            return false;
-        }
-
-        // Timestamp pattern: *_at (published_at, verified_at, etc.)
-        if (str_ends_with($lowerName, '_at')) {
-            return false;
-        }
-
-        // Boolean prefix patterns: is_*, has_*, can_*, should_*, was_*, will_*
-        if (preg_match('/^(is|has|can|should|was|will)_/', $lowerName)) {
-            return false;
-        }
-
-        // Count/total suffix patterns: *_count, *_total, *_sum, *_avg
-        if (preg_match('/_(count|total|sum|avg|min|max)$/', $lowerName)) {
-            return false;
-        }
-
-        // Raw/original prefix patterns: raw_*, original_*
-        if (preg_match('/^(raw|original)_/', $lowerName)) {
-            return false;
-        }
-
-        // Cached/computed prefix patterns: cached_*, computed_*
-        if (preg_match('/^(cached|computed|calculated)_/', $lowerName)) {
+        // Snake_case names are database columns, not relationships. Eloquent resolves
+        // $model->foo as a relationship only when a method named exactly foo() exists
+        // (Model::isRelation uses method_exists, with no case conversion), and relation
+        // methods follow PHP's camelCase convention while columns follow Laravel's
+        // snake_case one. So an underscore marks a column: subject_type and causer_type
+        // (the type half of a morphTo pair, whose relation is named subject/causer),
+        // log_name, batch_uuid. This subsumes the *_id, *_at, *_hash, total_*, is_* and
+        // *_count patterns that were previously listed one rule at a time.
+        if (str_contains($name, '_')) {
             return false;
         }
 
         // Single character names are unlikely to be relationships
         if (strlen($name) === 1) {
-            return false;
-        }
-
-        // Names starting with underscore are typically internal
-        if (str_starts_with($name, '_')) {
             return false;
         }
 

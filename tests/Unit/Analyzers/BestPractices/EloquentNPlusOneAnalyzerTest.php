@@ -3760,4 +3760,194 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('Category::find', $result);
     }
+
+    // -------------------------------------------------------------------------
+    // Column-vs-relationship naming on models outside the scanned paths
+    // -------------------------------------------------------------------------
+
+    /**
+     * A model that lives in a package is never scanned, so it never enters the
+     * relationship registry and the property name falls through to the naming heuristic.
+     * Every name here is a plain column on a row that is already in memory: the two halves
+     * of a morphTo pair, plus ordinary snake_case columns. Reading them costs no query.
+     */
+    public function test_does_not_flag_snake_case_columns_on_unscanned_model(): void
+    {
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Vendor\Audit\Models\AuditEntry;
+
+class AuditController
+{
+    public function index()
+    {
+        $entries = AuditEntry::get();
+
+        foreach ($entries as $entry) {
+            echo $entry->subject_type;
+            echo $entry->causer_type;
+            echo $entry->log_name;
+            echo $entry->batch_uuid;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/AuditController.php' => $controllerCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * Recall guard for the change above. A relationship accessor is a method name, so it is
+     * camelCase or a single lowercase word, never snake_case. Narrowing the heuristic to
+     * treat snake_case as a column must not silence the singular morphTo/belongsTo access
+     * that is the classic N+1 shape on an unscanned model.
+     */
+    public function test_still_flags_singular_relationship_on_unscanned_model(): void
+    {
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Vendor\Audit\Models\AuditEntry;
+
+class AuditController
+{
+    public function index()
+    {
+        $entries = AuditEntry::get();
+
+        foreach ($entries as $entry) {
+            echo $entry->causer;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/AuditController.php' => $controllerCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('causer', $result);
+    }
+
+    /**
+     * Boundary between the two conventions. Columns are snake_case, relationship methods are
+     * camelCase, so a camelCase name keeps its relationship reading even when it ends in the
+     * same word as a polymorphic type column.
+     */
+    public function test_camel_case_type_suffix_is_still_treated_as_relationship(): void
+    {
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Vendor\Audit\Models\AuditEntry;
+
+class AuditController
+{
+    public function index()
+    {
+        $entries = AuditEntry::get();
+
+        foreach ($entries as $entry) {
+            echo $entry->subjectType;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/AuditController.php' => $controllerCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('subjectType', $result);
+    }
+
+    /**
+     * The naming heuristic only ever runs for models outside the scanned paths. A scanned
+     * model is answered by exact registry lookup, so a legacy snake_case relationship method
+     * keeps being detected: narrowing the heuristic costs nothing once the model file is
+     * visible to the analyzer.
+     */
+    public function test_snake_case_relationship_on_scanned_model_is_still_flagged(): void
+    {
+        $modelCode = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Legacy extends Model
+{
+    public function user_profile()
+    {
+        return $this->hasOne(Profile::class);
+    }
+}
+PHP;
+
+        $controllerCode = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Legacy;
+
+class LegacyController
+{
+    public function index()
+    {
+        $records = Legacy::get();
+
+        foreach ($records as $legacy) {
+            echo $legacy->user_profile;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Legacy.php' => $modelCode,
+            'app/Http/Controllers/LegacyController.php' => $controllerCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('user_profile', $result);
+    }
 }

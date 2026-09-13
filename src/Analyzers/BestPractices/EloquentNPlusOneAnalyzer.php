@@ -20,6 +20,7 @@ use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Support\BladeCompilerFactory;
+use ShieldCI\Support\EloquentModelDetector;
 use ShieldCI\Support\ModelVariableScanner;
 use ShieldCI\Support\ViewBindingRegistry;
 use ShieldCI\Support\ViewRenderScanner;
@@ -265,12 +266,16 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
 }
 
 /**
- * Maps model class names to their defined Eloquent relationship method names.
+ * Maps model class names to their Eloquent relationship method names, including the ones
+ * reached through traits and parent classes.
  */
 class RelationshipRegistry
 {
     /** @var array<string, array<string>> */
     private array $map = [];
+
+    /** @var array<string, true> */
+    private array $selfDeclared = [];
 
     public function add(string $model, string $relation): void
     {
@@ -282,10 +287,22 @@ class RelationshipRegistry
         return in_array($relation, $this->map[$model] ?? [], true);
     }
 
-    /** @return array<string, array<string>> */
-    public function all(): array
+    /**
+     * Record that $model states a relationship in its own body.
+     *
+     * An inherited relationship proves a name IS one, but says nothing about the names
+     * that are absent, because the chain may leave the scanned paths. A relationship the
+     * class states itself is the narrower signal the analyzer has always used to answer
+     * an absent name conclusively, and it keeps exactly the reach it had before.
+     */
+    public function markSelfDeclared(string $model): void
     {
-        return $this->map;
+        $this->selfDeclared[$model] = true;
+    }
+
+    public function declaresOwn(string $model): bool
+    {
+        return isset($this->selfDeclared[$model]);
     }
 }
 
@@ -345,10 +362,18 @@ class ModelScanResult
 }
 
 /**
- * Scans PHP files to build a registry of Eloquent model relationships.
+ * Scans PHP files to build the registries the analyzer uses to tell a relationship from a
+ * column.
  *
- * Detects methods that return one of the Eloquent relation builder calls
- * (hasOne, hasMany, belongsTo, etc.) on $this.
+ * A model states only part of itself in its own body: the rest arrives through the traits
+ * it uses and the class it extends. So the scan runs in two stages. It first indexes every
+ * class and trait declaration it meets by fully qualified name, recording the members each
+ * states and the names of its parent and its traits. It then walks that graph and flattens
+ * what each class actually has.
+ *
+ * No file lookup is involved. Every file is parsed during the first stage anyway, so a
+ * declaration is either already in the table or outside the scanned paths, and the table
+ * is released once the registries are built.
  */
 class EloquentModelRelationshipScanner
 {
@@ -359,6 +384,102 @@ class EloquentModelRelationshipScanner
         'morphMany', 'morphToMany', 'morphedByMany',
     ];
 
+    /**
+     * Return types that declare a method to be a relationship on their own.
+     *
+     * A model may hand the body off to a helper the shape matching below cannot follow,
+     * but the declared type still names the contract.
+     *
+     * @var array<string>
+     */
+    private const RELATION_RETURN_TYPES = [
+        'Illuminate\Database\Eloquent\Relations\Relation',
+        'Illuminate\Database\Eloquent\Relations\HasOne',
+        'Illuminate\Database\Eloquent\Relations\HasMany',
+        'Illuminate\Database\Eloquent\Relations\HasOneOrMany',
+        'Illuminate\Database\Eloquent\Relations\HasOneThrough',
+        'Illuminate\Database\Eloquent\Relations\HasManyThrough',
+        'Illuminate\Database\Eloquent\Relations\BelongsTo',
+        'Illuminate\Database\Eloquent\Relations\BelongsToMany',
+        'Illuminate\Database\Eloquent\Relations\MorphTo',
+        'Illuminate\Database\Eloquent\Relations\MorphOne',
+        'Illuminate\Database\Eloquent\Relations\MorphMany',
+        'Illuminate\Database\Eloquent\Relations\MorphOneOrMany',
+        'Illuminate\Database\Eloquent\Relations\MorphToMany',
+    ];
+
+    /**
+     * Classes and traits the scan never reaches, mapped to the relationship methods each
+     * declares. An empty list means the entry declares none.
+     *
+     * Getting an entry wrong is asymmetric. Listing a trait that does declare a
+     * relationship silences a real N+1. Omitting one costs nothing: the name simply stays
+     * unknown and the naming heuristic answers it, exactly as before. Every entry here was
+     * read off the package source.
+     *
+     * The framework half is exhaustive for Laravel 12: of every trait shipped under
+     * Illuminate, only HasDatabaseNotifications returns a relation builder.
+     *
+     * @var array<string, array<string>>
+     */
+    private const KNOWN_EXTERNAL_DECLARATIONS = [
+        // Eloquent base classes. hasMany() and friends on Model are relation factories,
+        // not named relationships.
+        'Illuminate\Database\Eloquent\Model' => [],
+        'Illuminate\Foundation\Auth\User' => [],
+        'Illuminate\Database\Eloquent\Relations\Pivot' => [],
+        'Illuminate\Database\Eloquent\Relations\MorphPivot' => [],
+
+        // Framework traits that declare no relationships.
+        'Illuminate\Database\Eloquent\Factories\HasFactory' => [],
+        'Illuminate\Database\Eloquent\SoftDeletes' => [],
+        'Illuminate\Database\Eloquent\Prunable' => [],
+        'Illuminate\Database\Eloquent\MassPrunable' => [],
+        'Illuminate\Database\Eloquent\BroadcastsEvents' => [],
+        'Illuminate\Database\Eloquent\Concerns\HasUuids' => [],
+        'Illuminate\Database\Eloquent\Concerns\HasUlids' => [],
+        'Illuminate\Auth\Authenticatable' => [],
+        'Illuminate\Auth\MustVerifyEmail' => [],
+        'Illuminate\Auth\Passwords\CanResetPassword' => [],
+        'Illuminate\Foundation\Auth\Access\Authorizable' => [],
+        'Illuminate\Notifications\RoutesNotifications' => [],
+
+        // Traits that do. readNotifications() and unreadNotifications() are the
+        // notifications() morphMany with a scope applied, so each is a real query.
+        'Illuminate\Notifications\Notifiable' => ['notifications', 'readNotifications', 'unreadNotifications'],
+        'Illuminate\Notifications\HasDatabaseNotifications' => ['notifications', 'readNotifications', 'unreadNotifications'],
+        'Laravel\Sanctum\HasApiTokens' => ['tokens'],
+    ];
+
+    /** @var array{relations: array<string>, attributes: array<string>, accessors: array<string>} */
+    private const NO_MEMBERS = ['relations' => [], 'attributes' => [], 'accessors' => []];
+
+    /**
+     * Every class and trait declaration the scan saw, keyed by fully qualified name.
+     *
+     * `parent` and `traits` hold fully qualified names resolved through the declaring
+     * namespace's imports, so the inheritance graph can be walked without touching the
+     * filesystem: every file is already parsed by the time this table is complete.
+     *
+     * @var array<string, array{
+     *     kind: string,
+     *     short: string,
+     *     relations: array<string>,
+     *     attributes: array<string>,
+     *     accessors: array<string>,
+     *     parent: ?string,
+     *     traits: array<string>,
+     * }>
+     */
+    private array $declarations = [];
+
+    /**
+     * Memoized flattening of $declarations, keyed by fully qualified name.
+     *
+     * @var array<string, array{relations: array<string>, attributes: array<string>, accessors: array<string>}>
+     */
+    private array $resolved = [];
+
     public function __construct(private ParserInterface $parser) {}
 
     /**
@@ -366,46 +487,161 @@ class EloquentModelRelationshipScanner
      */
     public function scan(array $files): ModelScanResult
     {
-        $relationships = new RelationshipRegistry;
-        $attributes = new ModelAttributesRegistry;
-        $accessors = new AccessorRegistry;
+        $this->declarations = [];
+        $this->resolved = [];
 
         foreach ($files as $file) {
             $ast = $this->parser->parseFile($file);
             if (empty($ast)) {
                 continue;
             }
-            $this->scanStatements($ast, $relationships, $attributes, $accessors);
+            $this->collectStatements($ast, null, []);
         }
 
-        return new ModelScanResult($relationships, $attributes, $accessors);
+        $result = $this->buildRegistries();
+
+        // The graph has served its purpose. Releasing it keeps nothing but the registries
+        // alive for the per-file pass that follows.
+        $this->declarations = [];
+        $this->resolved = [];
+
+        return $result;
     }
 
     /**
      * @param  array<Node>  $stmts
+     * @param  array<string, string>  $useStatements
      */
-    private function scanStatements(array $stmts, RelationshipRegistry $relationships, ModelAttributesRegistry $attributes, AccessorRegistry $accessors): void
+    private function collectStatements(array $stmts, ?string $namespace, array $useStatements): void
     {
+        $useStatements = [...$useStatements, ...$this->collectImports($stmts)];
+
         foreach ($stmts as $stmt) {
             if ($stmt instanceof Stmt\Namespace_) {
-                $this->scanStatements($stmt->stmts, $relationships, $attributes, $accessors);
-            } elseif ($stmt instanceof Stmt\Class_) {
-                $this->scanClass($stmt, $relationships, $attributes, $accessors);
+                $this->collectStatements($stmt->stmts, $stmt->name?->toString(), $useStatements);
+            } elseif ($stmt instanceof Stmt\Class_ || $stmt instanceof Stmt\Trait_) {
+                $this->collectDeclaration($stmt, $namespace, $useStatements);
             }
         }
     }
 
-    private function scanClass(Stmt\Class_ $class, RelationshipRegistry $relationships, ModelAttributesRegistry $attributes, AccessorRegistry $accessors): void
+    /**
+     * Short name to fully qualified name for the class imports declared at this level.
+     *
+     * Only `use Foo\Bar;` counts. `use function` and `use const` share the statement node
+     * but live in separate name contexts, so folding them in would let a function import
+     * shadow a class of the same name. A group use reports an unknown type when its items
+     * carry their own, so the item wins in that case.
+     *
+     * @param  array<Node>  $stmts
+     * @return array<string, string>
+     */
+    private function collectImports(array $stmts): array
     {
-        if ($class->name === null) {
+        $imports = [];
+
+        foreach ($stmts as $stmt) {
+            if ($stmt instanceof Stmt\Use_) {
+                if ($stmt->type !== Stmt\Use_::TYPE_NORMAL) {
+                    continue;
+                }
+
+                foreach ($stmt->uses as $use) {
+                    $imports[$use->getAlias()->toString()] = $use->name->toString();
+                }
+            } elseif ($stmt instanceof Stmt\GroupUse) {
+                $prefix = $stmt->prefix->toString();
+
+                foreach ($stmt->uses as $use) {
+                    $type = $stmt->type === Stmt\Use_::TYPE_UNKNOWN ? $use->type : $stmt->type;
+                    if ($type !== Stmt\Use_::TYPE_NORMAL) {
+                        continue;
+                    }
+
+                    $imports[$use->getAlias()->toString()] = $prefix.'\\'.$use->name->toString();
+                }
+            }
+        }
+
+        return $imports;
+    }
+
+    /**
+     * @param  array<string, string>  $useStatements
+     */
+    private function collectDeclaration(Stmt\ClassLike $decl, ?string $namespace, array $useStatements): void
+    {
+        if ($decl->name === null) {
             return; // Anonymous class
         }
-        $className = $class->name->toString();
 
-        foreach ($class->stmts as $stmt) {
+        $short = $decl->name->toString();
+        $fqcn = $namespace !== null && $namespace !== '' ? $namespace.'\\'.$short : $short;
+
+        $parent = null;
+        if ($decl instanceof Stmt\Class_ && $decl->extends !== null) {
+            $parent = EloquentModelDetector::resolveClassName($decl->extends->toString(), $useStatements, $namespace);
+        }
+
+        $members = $this->collectMembers($decl, $useStatements, $namespace);
+
+        $this->declarations[$fqcn] = [
+            'kind' => $decl instanceof Stmt\Trait_ ? 'trait' : 'class',
+            'short' => $short,
+            'relations' => $members['relations'],
+            'attributes' => $members['attributes'],
+            'accessors' => $members['accessors'],
+            'parent' => $parent,
+            'traits' => $this->collectUsedTraits($decl, $useStatements, $namespace),
+        ];
+    }
+
+    /**
+     * Fully qualified names of the traits a declaration uses. Traits use traits, so this
+     * is walked recursively during flattening rather than expanded here.
+     *
+     * @param  array<string, string>  $useStatements
+     * @return array<string>
+     */
+    private function collectUsedTraits(Stmt\ClassLike $decl, array $useStatements, ?string $namespace): array
+    {
+        $traits = [];
+
+        foreach ($decl->stmts as $stmt) {
+            if (! ($stmt instanceof Stmt\TraitUse)) {
+                continue;
+            }
+
+            foreach ($stmt->traits as $trait) {
+                $fqcn = EloquentModelDetector::resolveClassName($trait->toString(), $useStatements, $namespace);
+                if ($fqcn !== null) {
+                    $traits[] = $fqcn;
+                }
+            }
+        }
+
+        return $traits;
+    }
+
+    /**
+     * The relationships, mass-assignable attributes and accessors a declaration states in
+     * its own body, before anything it inherits is folded in.
+     *
+     * @param  array<string, string>  $useStatements
+     * @return array{relations: array<string>, attributes: array<string>, accessors: array<string>}
+     */
+    private function collectMembers(Stmt\ClassLike $decl, array $useStatements, ?string $namespace): array
+    {
+        $relations = [];
+        $attributes = [];
+        $accessors = [];
+
+        foreach ($decl->stmts as $stmt) {
             // Scan class properties: $fillable, $casts, $appends
             if ($stmt instanceof Stmt\Property) {
-                $this->scanPropertyForAttributes($stmt, $className, $attributes);
+                foreach ($this->attributeNames($stmt) as $attribute) {
+                    $attributes[] = $attribute;
+                }
 
                 continue;
             }
@@ -418,38 +654,187 @@ class EloquentModelRelationshipScanner
 
             // Detect accessor methods: getXxxAttribute()
             if ($this->isAccessorMethod($methodName)) {
-                $accessors->add($className, $this->accessorMethodToPropertyName($methodName));
+                $accessors[] = $this->accessorMethodToPropertyName($methodName);
 
                 continue;
             }
 
-            // Detect relationship methods: return $this->hasMany(...), etc.
-            foreach ($stmt->stmts ?? [] as $bodyStmt) {
-                if (! ($bodyStmt instanceof Stmt\Return_) || $bodyStmt->expr === null) {
-                    continue;
-                }
-
-                $rootCall = $this->findDeepestMethodCall($bodyStmt->expr);
-                if ($rootCall === null) {
-                    continue;
-                }
-
-                if ($rootCall->var instanceof Expr\Variable &&
-                    is_string($rootCall->var->name) &&
-                    $rootCall->var->name === 'this' &&
-                    $rootCall->name instanceof Node\Identifier &&
-                    in_array($rootCall->name->toString(), self::RELATION_METHODS, true)) {
-                    $relationships->add($className, $methodName);
-                }
+            if ($this->isRelationMethod($stmt, $useStatements, $namespace)) {
+                $relations[] = $methodName;
             }
         }
+
+        return ['relations' => $relations, 'attributes' => $attributes, 'accessors' => $accessors];
     }
 
     /**
-     * Extract attribute names from $fillable, $casts, and $appends properties.
+     * A method declares a relationship when its return type names one, or when a return
+     * anywhere in its body hands back a relation builder called on $this.
+     *
+     * @param  array<string, string>  $useStatements
      */
-    private function scanPropertyForAttributes(Stmt\Property $property, string $className, ModelAttributesRegistry $attributes): void
+    private function isRelationMethod(Stmt\ClassMethod $method, array $useStatements, ?string $namespace): bool
     {
+        if ($this->declaresRelationReturnType($method, $useStatements, $namespace)) {
+            return true;
+        }
+
+        foreach ($this->returnsIn($method) as $return) {
+            if ($return->expr === null) {
+                continue;
+            }
+
+            $rootCall = $this->findDeepestMethodCall($return->expr);
+            if ($rootCall === null) {
+                continue;
+            }
+
+            if ($rootCall->var instanceof Expr\Variable &&
+                is_string($rootCall->var->name) &&
+                $rootCall->var->name === 'this' &&
+                $rootCall->name instanceof Node\Identifier &&
+                in_array($rootCall->name->toString(), self::RELATION_METHODS, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, string>  $useStatements
+     */
+    private function declaresRelationReturnType(Stmt\ClassMethod $method, array $useStatements, ?string $namespace): bool
+    {
+        $type = $method->returnType;
+
+        if ($type instanceof Node\NullableType) {
+            $type = $type->type;
+        }
+
+        if (! ($type instanceof Node\Name)) {
+            return false;
+        }
+
+        $fqcn = EloquentModelDetector::resolveClassName($type->toString(), $useStatements, $namespace);
+
+        return $fqcn !== null && in_array($fqcn, self::RELATION_RETURN_TYPES, true);
+    }
+
+    /**
+     * Every return in a method body, including ones nested inside conditionals and try
+     * blocks, but not ones inside a closure, arrow function or nested class. A closure's
+     * `return $this->hasMany(...)` belongs to the closure, not to the enclosing method.
+     *
+     * @return array<Stmt\Return_>
+     */
+    private function returnsIn(Stmt\ClassMethod $method): array
+    {
+        $collector = new MethodReturnCollector;
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor($collector);
+        $traverser->traverse($method->stmts ?? []);
+
+        return $collector->returns;
+    }
+
+    /**
+     * Flatten a declaration's own members with everything it reaches through its trait
+     * uses and its parent chain, memoized by fully qualified name.
+     *
+     * @return array{relations: array<string>, attributes: array<string>, accessors: array<string>}
+     */
+    private function resolveMembers(string $fqcn): array
+    {
+        if (array_key_exists($fqcn, $this->resolved)) {
+            return $this->resolved[$fqcn];
+        }
+
+        // Reserve the slot before recursing. PHP rejects cyclic extends and trait-use
+        // graphs, but half-edited source still reaches this scanner, and re-entering a
+        // declaration already in progress then resolves to the empty record instead of
+        // recursing forever.
+        $this->resolved[$fqcn] = self::NO_MEMBERS;
+
+        if (! isset($this->declarations[$fqcn])) {
+            // The chain has left the scanned paths. Either it ends at a class or trait
+            // whose relationships are known, or nothing more can be said about it.
+            $known = self::KNOWN_EXTERNAL_DECLARATIONS[$fqcn] ?? null;
+
+            return $this->resolved[$fqcn] = $known === null
+                ? self::NO_MEMBERS
+                : ['relations' => $known, 'attributes' => [], 'accessors' => []];
+        }
+
+        $own = $this->declarations[$fqcn];
+        $relations = $own['relations'];
+        $attributes = $own['attributes'];
+        $accessors = $own['accessors'];
+
+        $ancestors = $own['traits'];
+        if ($own['parent'] !== null) {
+            $ancestors[] = $own['parent'];
+        }
+
+        foreach ($ancestors as $ancestor) {
+            $inherited = $this->resolveMembers($ancestor);
+            $relations = [...$relations, ...$inherited['relations']];
+            $attributes = [...$attributes, ...$inherited['attributes']];
+            $accessors = [...$accessors, ...$inherited['accessors']];
+        }
+
+        return $this->resolved[$fqcn] = [
+            'relations' => array_values(array_unique($relations)),
+            'attributes' => array_values(array_unique($attributes)),
+            'accessors' => array_values(array_unique($accessors)),
+        ];
+    }
+
+    private function buildRegistries(): ModelScanResult
+    {
+        $relationships = new RelationshipRegistry;
+        $attributes = new ModelAttributesRegistry;
+        $accessors = new AccessorRegistry;
+
+        foreach ($this->declarations as $fqcn => $declaration) {
+            // A trait reaches the registries through the classes that use it. Keying one
+            // by a trait's own short name would let a trait named Post answer for the model.
+            if ($declaration['kind'] !== 'class') {
+                continue;
+            }
+
+            $members = $this->resolveMembers($fqcn);
+            $short = $declaration['short'];
+
+            foreach ($members['relations'] as $relation) {
+                $relationships->add($short, $relation);
+            }
+
+            foreach ($members['attributes'] as $attribute) {
+                $attributes->add($short, $attribute);
+            }
+
+            foreach ($members['accessors'] as $accessor) {
+                $accessors->add($short, $accessor);
+            }
+
+            if ($declaration['relations'] !== []) {
+                $relationships->markSelfDeclared($short);
+            }
+        }
+
+        return new ModelScanResult($relationships, $attributes, $accessors);
+    }
+
+    /**
+     * Attribute names stated by a $fillable, $casts or $appends property.
+     *
+     * @return array<string>
+     */
+    private function attributeNames(Stmt\Property $property): array
+    {
+        $names = [];
+
         foreach ($property->props as $prop) {
             $propName = $prop->name->toString();
             if (! in_array($propName, ['fillable', 'casts', 'appends'], true)) {
@@ -465,14 +850,16 @@ class EloquentModelRelationshipScanner
                 }
                 // $fillable / $appends: values are strings (['name', 'email'])
                 if ($propName !== 'casts' && $item->value instanceof Node\Scalar\String_) {
-                    $attributes->add($className, $item->value->value);
+                    $names[] = $item->value->value;
                 }
                 // $casts: keys are attribute names (['name' => 'string'])
                 if ($propName === 'casts' && $item->key instanceof Node\Scalar\String_) {
-                    $attributes->add($className, $item->key->value);
+                    $names[] = $item->key->value;
                 }
             }
         }
+
+        return $names;
     }
 
     /**
@@ -486,12 +873,12 @@ class EloquentModelRelationshipScanner
     }
 
     /**
-     * Convert getFirstNameAttribute → first_name.
+     * Convert getFirstNameAttribute to first_name.
      */
     private function accessorMethodToPropertyName(string $methodName): string
     {
         $inner = substr($methodName, 3, -9); // strip 'get' and 'Attribute'
-        // CamelCase → snake_case
+        // CamelCase to snake_case
         $snake = strtolower((string) preg_replace('/[A-Z]/', '_$0', lcfirst($inner)));
 
         return ltrim($snake, '_');
@@ -499,7 +886,7 @@ class EloquentModelRelationshipScanner
 
     /**
      * Walk a MethodCall chain and return the deepest MethodCall node
-     * (the one whose var is NOT a MethodCall — typically Variable('this')).
+     * (the one whose var is NOT a MethodCall, typically Variable('this')).
      */
     private function findDeepestMethodCall(Node $expr): ?Expr\MethodCall
     {
@@ -511,6 +898,32 @@ class EloquentModelRelationshipScanner
         }
 
         return $deepest;
+    }
+}
+
+/**
+ * Collects the returns that belong to a method body, stopping at any nested function-like
+ * or class declaration whose returns belong to something else.
+ */
+class MethodReturnCollector extends NodeVisitorAbstract
+{
+    /** @var array<Stmt\Return_> */
+    public array $returns = [];
+
+    public function enterNode(Node $node)
+    {
+        if ($node instanceof Expr\Closure ||
+            $node instanceof Expr\ArrowFunction ||
+            $node instanceof Stmt\ClassLike ||
+            $node instanceof Stmt\Function_) {
+            return NodeTraverser::DONT_TRAVERSE_CHILDREN;
+        }
+
+        if ($node instanceof Stmt\Return_) {
+            $this->returns[] = $node;
+        }
+
+        return null;
     }
 }
 
@@ -755,8 +1168,13 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     /** @var string $lastProperty */
                     $lastProperty = end($chain);
 
-                    // Check if the last property looks like a relationship
-                    if ($this->isActualOrProbableRelationship($loopVariable, $lastProperty)) {
+                    // Check if the last property looks like a relationship. Only the tail
+                    // is judged against the loop variable's model, so a chain whose head is
+                    // a plain column on that model has to be rejected separately: reading
+                    // $user->settings->notifications walks into a JSON column, and eager
+                    // loading the reported path would raise RelationNotFoundException.
+                    if ($this->isActualOrProbableRelationship($loopVariable, $lastProperty) &&
+                        $this->isActualOrProbableRelationship($loopVariable, $chain[0])) {
                         // Get the first relationship in the chain (e.g., 'user' from 'user.team')
                         $firstRelationship = $chain[0];
 
@@ -943,44 +1361,50 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      * Determine if a property/method name is a real or probable relationship.
      *
      * An accessor or declared model attribute is never a relationship, so that check
-     * applies regardless of whether the model defines any relationships at all — it runs
-     * before the registry-membership gate, on both the precise-lookup and heuristic paths.
+     * applies regardless of whether the model defines any relationships at all: it runs
+     * before the registry is consulted, on both the precise-lookup and heuristic paths.
      *
-     * When the loop variable's model type is known (via registry), uses precise registry
-     * lookup. Otherwise falls back to heuristics. Method-call context uses
-     * looksLikeRelationshipMethod (stricter exclusions) to avoid false positives
-     * on helpers like relationLoaded(), count(), etc.
+     * A name the scanner saw declared as a relationship is one, whether the model states
+     * it, uses a trait that does, or inherits it from a parent. A name that is absent is
+     * only conclusive when the model states relationships of its own, because that is the
+     * one case where the analyzer has always had a full reading of the class. Everything
+     * else is still a guess, and the naming heuristic answers it as it always has.
+     * Method-call context uses looksLikeRelationshipMethod (stricter exclusions) to avoid
+     * false positives on helpers like relationLoaded(), count(), etc.
      */
     private function isActualOrProbableRelationship(string $loopVariable, string $name, bool $isMethodCall = false): bool
     {
         $model = $this->modelVars->typeOf($loopVariable);
 
-        if ($model !== null && ! str_starts_with($model, 'Collection<')) {
-            // An accessor or declared attribute is never a relationship — check this
-            // regardless of whether the model defines any relationships at all.
-            if ($this->modelAttributesRegistry->has($model, $name)) {
-                return false;
-            }
-            if ($this->accessorRegistry->has($model, $name)) {
-                return false;
-            }
-
-            // Model type known from a static call (Post::get(), Post::all(), etc.)
-            if (array_key_exists($model, $this->relationshipRegistry->all())) {
-                // Model IS in the registry — precise lookup only, no heuristics.
-                return $this->relationshipRegistry->has($model, $name);
-            }
-
-            // Model type known but NOT in registry (model file not scanned, e.g. vendor).
-            // Fall back to heuristic so existing code without model files still works.
-            return $isMethodCall
-                ? $this->looksLikeRelationshipMethod($name)
-                : $this->looksLikeRelationship($name);
+        // Variable type completely unknown (flatMap, complex chains, etc.), so don't flag.
+        // Conservative default: false negatives are preferable to false positives.
+        if ($model === null || str_starts_with($model, 'Collection<')) {
+            return false;
         }
 
-        // Variable type completely unknown (flatMap, complex chains, etc.) — don't flag.
-        // Conservative default: false negatives are preferable to false positives.
-        return false;
+        // An accessor or declared attribute is never a relationship. Check this
+        // regardless of whether the model defines any relationships at all.
+        if ($this->modelAttributesRegistry->has($model, $name)) {
+            return false;
+        }
+
+        if ($this->accessorRegistry->has($model, $name)) {
+            return false;
+        }
+
+        if ($this->relationshipRegistry->has($model, $name)) {
+            return true;
+        }
+
+        if ($this->relationshipRegistry->declaresOwn($model)) {
+            return false;
+        }
+
+        // Model outside the scanned paths, or one that states no relationships of its own.
+        // Fall back to heuristic so existing code without model files still works.
+        return $isMethodCall
+            ? $this->looksLikeRelationshipMethod($name)
+            : $this->looksLikeRelationship($name);
     }
 
     /**

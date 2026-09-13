@@ -114,6 +114,64 @@ final class EloquentModelDetector
     }
 
     /**
+     * Three-valued Eloquent verdict for a class name as written at a usage site.
+     *
+     * Use this where the caller holds a *reference* — `new Order`, a type-hint, a `::class`
+     * — rather than the class declaration that verdictFor() takes. The name is resolved
+     * against the referencing file's imports and namespace, the declaring file is located
+     * under app/, and that declaration's verdict is returned.
+     *
+     * An unreadable declaration stays `null` rather than becoming `false`: vendor code holds
+     * real models (Laravel\Cashier\Subscription), so outside a Models namespace we genuinely
+     * do not know.
+     *
+     * @param  array<Node>  $referencingFileAst  AST of the file where $className is written
+     */
+    public function verdictForClassName(string $className, array $referencingFileAst, string $basePath): ?bool
+    {
+        $className = ltrim($className, '\\');
+
+        // `self`, `static` and `parent` name the enclosing class, not an import; resolving
+        // them against the namespace would fabricate a class like App\Http\Middleware\static.
+        if ($className === '' || in_array(strtolower($className), ['self', 'static', 'parent'], true)) {
+            return null;
+        }
+
+        $fqn = $this->resolveClassName(
+            $className,
+            $this->extractUseStatements($referencingFileAst),
+            $this->extractNamespace($referencingFileAst)
+        );
+
+        if ($fqn === null) {
+            return null;
+        }
+
+        // A verdict read off the real declaration outranks the convention below,
+        // mirroring classVerdict()'s step 5 before step 6.
+        $path = $this->fqnToFilePath($fqn, $basePath);
+        if ($path !== null) {
+            $verdict = $this->classVerdictInFile($path, $this->shortName($fqn), $basePath);
+            if ($verdict !== null) {
+                return $verdict;
+            }
+        }
+
+        return self::namespaceLooksLikeModels($this->namespaceOf($fqn)) ? true : null;
+    }
+
+    /**
+     * Two-valued form of verdictForClassName(). The caller states what `unknown` means for
+     * its polarity — see the note on isModel().
+     *
+     * @param  array<Node>  $referencingFileAst
+     */
+    public function isModelClassName(string $className, array $referencingFileAst, string $basePath, bool $unknownIs = false): bool
+    {
+        return $this->verdictForClassName($className, $referencingFileAst, $basePath) ?? $unknownIs;
+    }
+
+    /**
      * Three-valued verdict for one named class declared in a file, memoized by
      * path + short name.
      *

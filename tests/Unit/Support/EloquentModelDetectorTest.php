@@ -601,4 +601,168 @@ PHP);
 
         $this->assertTrue($this->detector->verdictFor($class, $ast, '/nonexistent'));
     }
+
+    /**
+     * Parse $code and return its full AST, for use as the file referencing a class name.
+     *
+     * @return array<Node>
+     */
+    private function parseAst(string $code): array
+    {
+        return (new AstParser)->parseCode($code);
+    }
+
+    public function test_class_name_imported_from_a_models_namespace_is_a_model(): void
+    {
+        $referencing = $this->parseAst(<<<'PHP'
+<?php
+namespace App\Http\Middleware;
+use App\Models\Order;
+class TrackOrder {}
+PHP);
+
+        $this->assertTrue($this->detector->verdictForClassName('Order', $referencing, '/nonexistent'));
+    }
+
+    public function test_class_name_imported_from_vendor_is_unknown(): void
+    {
+        // Tighten\Ziggy\Ziggy is not an Eloquent model, but neither is
+        // Laravel\Cashier\Subscription readable as one — vendor code we cannot open is
+        // unknown, never a definitive "not a model".
+        $referencing = $this->parseAst(<<<'PHP'
+<?php
+namespace App\Http\Middleware;
+use Tighten\Ziggy\Ziggy;
+class HandleInertiaRequests {}
+PHP);
+
+        $this->assertNull($this->detector->verdictForClassName('Ziggy', $referencing, '/nonexistent'));
+    }
+
+    public function test_fully_qualified_class_name_needs_no_import(): void
+    {
+        $referencing = $this->parseAst(<<<'PHP'
+<?php
+namespace App\Http\Middleware;
+class TrackOrder {}
+PHP);
+
+        $this->assertTrue($this->detector->verdictForClassName('\\App\\Models\\Order', $referencing, '/nonexistent'));
+    }
+
+    public function test_aliased_import_resolves_to_the_real_model(): void
+    {
+        $referencing = $this->parseAst(<<<'PHP'
+<?php
+namespace App\Http\Middleware;
+use App\Models\Order as OrderModel;
+class TrackOrder {}
+PHP);
+
+        $this->assertTrue($this->detector->verdictForClassName('OrderModel', $referencing, '/nonexistent'));
+    }
+
+    public function test_group_import_resolves_to_the_real_model(): void
+    {
+        $referencing = $this->parseAst(<<<'PHP'
+<?php
+namespace App\Http\Middleware;
+use App\Models\{Order, Team};
+class TrackOrder {}
+PHP);
+
+        $this->assertTrue($this->detector->verdictForClassName('Team', $referencing, '/nonexistent'));
+    }
+
+    public function test_model_outside_a_models_namespace_is_found_through_its_declaration(): void
+    {
+        // App\Entities is not a Models namespace, so only reading the declaration off disk
+        // can reach the verdict — the legacy App\User layout depends on this path.
+        $dir = $this->createTempDir(['app/Entities/Order.php' => <<<'PHP'
+<?php
+namespace App\Entities;
+use Illuminate\Database\Eloquent\Model;
+class Order extends Model {}
+PHP]);
+
+        $referencing = $this->parseAst(<<<'PHP'
+<?php
+namespace App\Http\Middleware;
+use App\Entities\Order;
+class TrackOrder {}
+PHP);
+
+        $this->assertTrue($this->detector->verdictForClassName('Order', $referencing, $dir));
+    }
+
+    public function test_declaration_verdict_outranks_the_models_namespace_convention(): void
+    {
+        // A DTO parked in App\Models. The convention would say "model"; the declaration
+        // says it extends nothing, and the declaration wins.
+        $dir = $this->createTempDir(['app/Models/OrderData.php' => <<<'PHP'
+<?php
+namespace App\Models;
+class OrderData {}
+PHP]);
+
+        $referencing = $this->parseAst(<<<'PHP'
+<?php
+namespace App\Http\Middleware;
+use App\Models\OrderData;
+class TrackOrder {}
+PHP);
+
+        $this->assertFalse($this->detector->verdictForClassName('OrderData', $referencing, $dir));
+    }
+
+    public function test_models_namespace_convention_applies_when_no_declaration_is_readable(): void
+    {
+        $referencing = $this->parseAst(<<<'PHP'
+<?php
+namespace App\Http\Middleware;
+use App\Models\Order;
+class TrackOrder {}
+PHP);
+
+        $this->assertTrue($this->detector->verdictForClassName('Order', $referencing, '/nonexistent'));
+    }
+
+    public function test_relative_class_keywords_are_unknown(): void
+    {
+        $referencing = $this->parseAst(<<<'PHP'
+<?php
+namespace App\Models;
+class Order {}
+PHP);
+
+        foreach (['self', 'static', 'parent', 'STATIC', ''] as $keyword) {
+            $this->assertNull(
+                $this->detector->verdictForClassName($keyword, $referencing, '/nonexistent'),
+                $keyword.' must not resolve to a class'
+            );
+        }
+    }
+
+    public function test_unresolvable_name_in_a_namespaceless_file_is_unknown(): void
+    {
+        $referencing = $this->parseAst(<<<'PHP'
+<?php
+class LegacyMiddleware {}
+PHP);
+
+        $this->assertNull($this->detector->verdictForClassName('Order', $referencing, '/nonexistent'));
+    }
+
+    public function test_is_model_class_name_resolves_unknown_to_the_callers_polarity(): void
+    {
+        $referencing = $this->parseAst(<<<'PHP'
+<?php
+namespace App\Http\Middleware;
+use Tighten\Ziggy\Ziggy;
+class HandleInertiaRequests {}
+PHP);
+
+        $this->assertFalse($this->detector->isModelClassName('Ziggy', $referencing, '/nonexistent', unknownIs: false));
+        $this->assertTrue($this->detector->isModelClassName('Ziggy', $referencing, '/nonexistent', unknownIs: true));
+    }
 }

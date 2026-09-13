@@ -137,7 +137,7 @@ final class EloquentModelDetector
             return null;
         }
 
-        $fqn = $this->resolveClassName(
+        $fqn = self::resolveClassName(
             $className,
             $this->extractUseStatements($referencingFileAst),
             $this->extractNamespace($referencingFileAst)
@@ -232,7 +232,7 @@ final class EloquentModelDetector
         $useStatements = $this->extractUseStatements($fileAst);
         $namespace = $this->extractNamespace($fileAst);
 
-        $parentFqn = $this->resolveClassName($parentName, $useStatements, $namespace);
+        $parentFqn = self::resolveClassName($parentName, $useStatements, $namespace);
         if ($parentFqn === null) {
             return null;
         }
@@ -305,9 +305,12 @@ final class EloquentModelDetector
      * nodes produced by NameResolver). Otherwise consult the use map, then fall back
      * to the enclosing namespace, matching PHP's own name resolution.
      *
+     * Static and public because the rule is not specific to model detection: the N+1
+     * relationship scanner resolves `extends` and trait-use names the same way.
+     *
      * @param  array<string, string>  $useStatements
      */
-    private function resolveClassName(string $name, array $useStatements, ?string $namespace): ?string
+    public static function resolveClassName(string $name, array $useStatements, ?string $namespace): ?string
     {
         if (str_contains($name, '\\')) {
             return $name;

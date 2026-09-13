@@ -277,6 +277,12 @@ class RelationshipRegistry
     /** @var array<string, true> */
     private array $selfDeclared = [];
 
+    /** @var array<string, true> */
+    private array $fullyResolved = [];
+
+    /** @var array<string, array<string>> */
+    private array $members = [];
+
     public function add(string $model, string $relation): void
     {
         $this->map[$model][] = $relation;
@@ -303,6 +309,38 @@ class RelationshipRegistry
     public function declaresOwn(string $model): bool
     {
         return isset($this->selfDeclared[$model]);
+    }
+
+    /**
+     * Record that every class and trait $model reaches was read, so the relationship list
+     * above is exhaustive and the method names below are every method it has.
+     *
+     * Only a model read in full can answer an absent name conclusively. A chain that
+     * leaves the scanned paths, a trait alias that renames a method, or a magic __get
+     * all leave members the scan cannot see, and such a model keeps guessing.
+     */
+    public function markFullyResolved(string $model): void
+    {
+        $this->fullyResolved[$model] = true;
+    }
+
+    public function isFullyResolved(string $model): bool
+    {
+        return isset($this->fullyResolved[$model]);
+    }
+
+    /**
+     * Every method name declared anywhere in $model's chain, lowercased because
+     * method_exists is case insensitive.
+     */
+    public function addMember(string $model, string $method): void
+    {
+        $this->members[$model][] = $method;
+    }
+
+    public function hasMember(string $model, string $method): bool
+    {
+        return in_array($method, $this->members[$model] ?? [], true);
     }
 }
 
@@ -451,8 +489,11 @@ class EloquentModelRelationshipScanner
         'Laravel\Sanctum\HasApiTokens' => ['tokens'],
     ];
 
-    /** @var array{relations: array<string>, attributes: array<string>, accessors: array<string>} */
-    private const NO_MEMBERS = ['relations' => [], 'attributes' => [], 'accessors' => []];
+    /** @var array{relations: array<string>, attributes: array<string>, accessors: array<string>, members: array<string>, fully: bool} */
+    private const NO_MEMBERS = ['relations' => [], 'attributes' => [], 'accessors' => [], 'members' => [], 'fully' => false];
+
+    /** @var array<string> Magic methods that answer for members no declaration lists. */
+    private const OPAQUE_MAGIC_METHODS = ['__get', '__call', '__callstatic'];
 
     /**
      * Every class and trait declaration the scan saw, keyed by fully qualified name.
@@ -467,8 +508,11 @@ class EloquentModelRelationshipScanner
      *     relations: array<string>,
      *     attributes: array<string>,
      *     accessors: array<string>,
+     *     members: array<string>,
      *     parent: ?string,
      *     traits: array<string>,
+     *     opaque: bool,
+     *     selfDeclared: bool,
      * }>
      */
     private array $declarations = [];
@@ -476,9 +520,32 @@ class EloquentModelRelationshipScanner
     /**
      * Memoized flattening of $declarations, keyed by fully qualified name.
      *
-     * @var array<string, array{relations: array<string>, attributes: array<string>, accessors: array<string>}>
+     * @var array<string, array{relations: array<string>, attributes: array<string>, accessors: array<string>, members: array<string>, fully: bool}>
      */
     private array $resolved = [];
+
+    /**
+     * Relationships registered from outside a model's own body, by resolveRelationUsing().
+     * Eloquent answers these through __call, so no method of that name is declared
+     * anywhere and the member index alone would read the model as not having them.
+     *
+     * @var array<string, array<string>>
+     */
+    private array $registeredRelations = [];
+
+    /**
+     * Models whose resolveRelationUsing() call names a relationship the scan cannot read,
+     * and so cannot be trusted to have been read in full.
+     *
+     * @var array<string, true>
+     */
+    private array $registeredRelationsUnreadable = [];
+
+    /**
+     * Set when a resolveRelationUsing() call names a model the scan cannot identify, which
+     * leaves every model a candidate and so withdraws every conclusive reading.
+     */
+    private bool $unattributedRegisteredRelation = false;
 
     public function __construct(private ParserInterface $parser) {}
 
@@ -489,6 +556,9 @@ class EloquentModelRelationshipScanner
     {
         $this->declarations = [];
         $this->resolved = [];
+        $this->registeredRelations = [];
+        $this->registeredRelationsUnreadable = [];
+        $this->unattributedRegisteredRelation = false;
 
         foreach ($files as $file) {
             $ast = $this->parser->parseFile($file);
@@ -498,14 +568,45 @@ class EloquentModelRelationshipScanner
             $this->collectStatements($ast, null, []);
         }
 
+        $this->applyRegisteredRelations();
+
         $result = $this->buildRegistries();
 
         // The graph has served its purpose. Releasing it keeps nothing but the registries
         // alive for the per-file pass that follows.
         $this->declarations = [];
         $this->resolved = [];
+        $this->registeredRelations = [];
+        $this->registeredRelationsUnreadable = [];
 
         return $result;
+    }
+
+    /**
+     * Fold relationships registered by resolveRelationUsing() into the model they name.
+     *
+     * They arrive from wherever the call sits, usually a service provider, so they can
+     * only be attributed once every declaration has been seen.
+     */
+    private function applyRegisteredRelations(): void
+    {
+        foreach ($this->registeredRelations as $fqcn => $names) {
+            if (! isset($this->declarations[$fqcn])) {
+                continue;
+            }
+
+            $this->declarations[$fqcn]['relations'] = [...$this->declarations[$fqcn]['relations'], ...$names];
+            $this->declarations[$fqcn]['members'] = [
+                ...$this->declarations[$fqcn]['members'],
+                ...array_map(strtolower(...), $names),
+            ];
+        }
+
+        foreach (array_keys($this->registeredRelationsUnreadable) as $fqcn) {
+            if (isset($this->declarations[$fqcn])) {
+                $this->declarations[$fqcn]['opaque'] = true;
+            }
+        }
     }
 
     /**
@@ -567,6 +668,23 @@ class EloquentModelRelationshipScanner
     }
 
     /**
+     * Resolve a name written inside a declaration to the fully qualified one PHP would.
+     *
+     * EloquentModelDetector::resolveClassName answers null for an unqualified name with no
+     * import and no enclosing namespace, which for its own callers means "unknown". Here
+     * that case is not unknown at all: PHP resolves such a name to the global one. Keeping
+     * the distinction matters, because a name that resolves to nothing would be
+     * indistinguishable from a class having no parent, and a model whose parent could not
+     * be read would then be treated as one with nothing left to read.
+     *
+     * @param  array<string, string>  $useStatements
+     */
+    private function resolveDeclarationName(string $name, array $useStatements, ?string $namespace): string
+    {
+        return EloquentModelDetector::resolveClassName($name, $useStatements, $namespace) ?? $name;
+    }
+
+    /**
      * @param  array<string, string>  $useStatements
      */
     private function collectDeclaration(Stmt\ClassLike $decl, ?string $namespace, array $useStatements): void
@@ -580,10 +698,11 @@ class EloquentModelRelationshipScanner
 
         $parent = null;
         if ($decl instanceof Stmt\Class_ && $decl->extends !== null) {
-            $parent = EloquentModelDetector::resolveClassName($decl->extends->toString(), $useStatements, $namespace);
+            $parent = $this->resolveDeclarationName($decl->extends->toString(), $useStatements, $namespace);
         }
 
-        $members = $this->collectMembers($decl, $useStatements, $namespace);
+        $members = $this->collectMembers($decl, $fqcn, $useStatements, $namespace);
+        $used = $this->collectUsedTraits($decl, $useStatements, $namespace);
 
         $this->declarations[$fqcn] = [
             'kind' => $decl instanceof Stmt\Trait_ ? 'trait' : 'class',
@@ -591,8 +710,11 @@ class EloquentModelRelationshipScanner
             'relations' => $members['relations'],
             'attributes' => $members['attributes'],
             'accessors' => $members['accessors'],
+            'members' => $members['members'],
             'parent' => $parent,
-            'traits' => $this->collectUsedTraits($decl, $useStatements, $namespace),
+            'traits' => $used['traits'],
+            'opaque' => $members['opaque'] || $used['opaque'],
+            'selfDeclared' => $members['relations'] !== [],
         ];
     }
 
@@ -600,27 +722,34 @@ class EloquentModelRelationshipScanner
      * Fully qualified names of the traits a declaration uses. Traits use traits, so this
      * is walked recursively during flattening rather than expanded here.
      *
+     * An adaptation makes the declaration opaque. `use T { posts as archived; }` gives the
+     * class a relationship named archived that appears under that name neither in the
+     * trait nor in the class, and `insteadof` picks a winner between two that the
+     * flattened lists have no way to represent.
+     *
      * @param  array<string, string>  $useStatements
-     * @return array<string>
+     * @return array{traits: array<string>, opaque: bool}
      */
     private function collectUsedTraits(Stmt\ClassLike $decl, array $useStatements, ?string $namespace): array
     {
         $traits = [];
+        $opaque = false;
 
         foreach ($decl->stmts as $stmt) {
             if (! ($stmt instanceof Stmt\TraitUse)) {
                 continue;
             }
 
+            if ($stmt->adaptations !== []) {
+                $opaque = true;
+            }
+
             foreach ($stmt->traits as $trait) {
-                $fqcn = EloquentModelDetector::resolveClassName($trait->toString(), $useStatements, $namespace);
-                if ($fqcn !== null) {
-                    $traits[] = $fqcn;
-                }
+                $traits[] = $this->resolveDeclarationName($trait->toString(), $useStatements, $namespace);
             }
         }
 
-        return $traits;
+        return ['traits' => $traits, 'opaque' => $opaque];
     }
 
     /**
@@ -628,13 +757,15 @@ class EloquentModelRelationshipScanner
      * its own body, before anything it inherits is folded in.
      *
      * @param  array<string, string>  $useStatements
-     * @return array{relations: array<string>, attributes: array<string>, accessors: array<string>}
+     * @return array{relations: array<string>, attributes: array<string>, accessors: array<string>, members: array<string>, opaque: bool}
      */
-    private function collectMembers(Stmt\ClassLike $decl, array $useStatements, ?string $namespace): array
+    private function collectMembers(Stmt\ClassLike $decl, string $fqcn, array $useStatements, ?string $namespace): array
     {
         $relations = [];
         $attributes = [];
         $accessors = [];
+        $members = [];
+        $opaque = false;
 
         foreach ($decl->stmts as $stmt) {
             // Scan class properties: $fillable, $casts, $appends
@@ -651,6 +782,15 @@ class EloquentModelRelationshipScanner
             }
 
             $methodName = $stmt->name->toString();
+            $members[] = strtolower($methodName);
+
+            // A declaration that answers for names it does not list can hold a
+            // relationship the scan has no way to see.
+            if (in_array(strtolower($methodName), self::OPAQUE_MAGIC_METHODS, true)) {
+                $opaque = true;
+            }
+
+            $body = $this->collectBody($stmt, $fqcn, $useStatements, $namespace);
 
             // Detect accessor methods: getXxxAttribute()
             if ($this->isAccessorMethod($methodName)) {
@@ -659,27 +799,77 @@ class EloquentModelRelationshipScanner
                 continue;
             }
 
-            if ($this->isRelationMethod($stmt, $useStatements, $namespace)) {
+            if ($this->declaresRelationReturnType($stmt, $useStatements, $namespace) ||
+                $this->returnsRelationBuilder($body)) {
                 $relations[] = $methodName;
             }
         }
 
-        return ['relations' => $relations, 'attributes' => $attributes, 'accessors' => $accessors];
+        return [
+            'relations' => $relations,
+            'attributes' => $attributes,
+            'accessors' => $accessors,
+            'members' => $members,
+            'opaque' => $opaque,
+        ];
     }
 
     /**
-     * A method declares a relationship when its return type names one, or when a return
-     * anywhere in its body hands back a relation builder called on $this.
+     * Walk a method body once, collecting the returns that belong to it and any
+     * relationship it registers on a model from outside that model's own body.
      *
      * @param  array<string, string>  $useStatements
+     * @return array<Stmt\Return_>
      */
-    private function isRelationMethod(Stmt\ClassMethod $method, array $useStatements, ?string $namespace): bool
+    private function collectBody(Stmt\ClassMethod $method, string $fqcn, array $useStatements, ?string $namespace): array
     {
-        if ($this->declaresRelationReturnType($method, $useStatements, $namespace)) {
-            return true;
+        $collector = new MethodBodyCollector;
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor($collector);
+        $traverser->traverse($method->stmts ?? []);
+
+        foreach ($collector->registeredRelations as $registered) {
+            $this->recordRegisteredRelation($registered, $fqcn, $useStatements, $namespace);
         }
 
-        foreach ($this->returnsIn($method) as $return) {
+        return $collector->returns;
+    }
+
+    /**
+     * @param  array{class: ?string, relation: ?string}  $registered
+     * @param  array<string, string>  $useStatements
+     */
+    private function recordRegisteredRelation(array $registered, string $fqcn, array $useStatements, ?string $namespace): void
+    {
+        $class = $registered['class'];
+
+        if ($class === null) {
+            // The receiver is a variable or an expression, so the model being extended
+            // cannot be named and no model can be called fully read.
+            $this->unattributedRegisteredRelation = true;
+
+            return;
+        }
+
+        $target = in_array(strtolower($class), ['self', 'static'], true)
+            ? $fqcn
+            : $this->resolveDeclarationName($class, $useStatements, $namespace);
+
+        if ($registered['relation'] === null) {
+            $this->registeredRelationsUnreadable[$target] = true;
+
+            return;
+        }
+
+        $this->registeredRelations[$target][] = $registered['relation'];
+    }
+
+    /**
+     * @param  array<Stmt\Return_>  $returns
+     */
+    private function returnsRelationBuilder(array $returns): bool
+    {
+        foreach ($returns as $return) {
             if ($return->expr === null) {
                 continue;
             }
@@ -716,33 +906,20 @@ class EloquentModelRelationshipScanner
             return false;
         }
 
-        $fqcn = EloquentModelDetector::resolveClassName($type->toString(), $useStatements, $namespace);
+        $fqcn = $this->resolveDeclarationName($type->toString(), $useStatements, $namespace);
 
-        return $fqcn !== null && in_array($fqcn, self::RELATION_RETURN_TYPES, true);
-    }
-
-    /**
-     * Every return in a method body, including ones nested inside conditionals and try
-     * blocks, but not ones inside a closure, arrow function or nested class. A closure's
-     * `return $this->hasMany(...)` belongs to the closure, not to the enclosing method.
-     *
-     * @return array<Stmt\Return_>
-     */
-    private function returnsIn(Stmt\ClassMethod $method): array
-    {
-        $collector = new MethodReturnCollector;
-        $traverser = new NodeTraverser;
-        $traverser->addVisitor($collector);
-        $traverser->traverse($method->stmts ?? []);
-
-        return $collector->returns;
+        return in_array($fqcn, self::RELATION_RETURN_TYPES, true);
     }
 
     /**
      * Flatten a declaration's own members with everything it reaches through its trait
      * uses and its parent chain, memoized by fully qualified name.
      *
-     * @return array{relations: array<string>, attributes: array<string>, accessors: array<string>}
+     * `fully` records whether every edge out of the declaration was accounted for. It is
+     * what separates "this name is not a relationship" from "this name is not one of the
+     * relationships I could see", and it only survives if every ancestor kept it.
+     *
+     * @return array{relations: array<string>, attributes: array<string>, accessors: array<string>, members: array<string>, fully: bool}
      */
     private function resolveMembers(string $fqcn): array
     {
@@ -763,13 +940,21 @@ class EloquentModelRelationshipScanner
 
             return $this->resolved[$fqcn] = $known === null
                 ? self::NO_MEMBERS
-                : ['relations' => $known, 'attributes' => [], 'accessors' => []];
+                : [
+                    'relations' => $known,
+                    'attributes' => [],
+                    'accessors' => [],
+                    'members' => array_map(strtolower(...), $known),
+                    'fully' => true,
+                ];
         }
 
         $own = $this->declarations[$fqcn];
         $relations = $own['relations'];
         $attributes = $own['attributes'];
         $accessors = $own['accessors'];
+        $members = $own['members'];
+        $fully = ! $own['opaque'];
 
         $ancestors = $own['traits'];
         if ($own['parent'] !== null) {
@@ -781,12 +966,16 @@ class EloquentModelRelationshipScanner
             $relations = [...$relations, ...$inherited['relations']];
             $attributes = [...$attributes, ...$inherited['attributes']];
             $accessors = [...$accessors, ...$inherited['accessors']];
+            $members = [...$members, ...$inherited['members']];
+            $fully = $fully && $inherited['fully'];
         }
 
         return $this->resolved[$fqcn] = [
             'relations' => array_values(array_unique($relations)),
             'attributes' => array_values(array_unique($attributes)),
             'accessors' => array_values(array_unique($accessors)),
+            'members' => array_values(array_unique($members)),
+            'fully' => $fully,
         ];
     }
 
@@ -795,6 +984,15 @@ class EloquentModelRelationshipScanner
         $relationships = new RelationshipRegistry;
         $attributes = new ModelAttributesRegistry;
         $accessors = new AccessorRegistry;
+
+        // The lookup side only ever knows a model by its short name, so two classes
+        // sharing one are answered together. Their relationships merge, as they always
+        // have, but neither can be spoken for conclusively: an absent name would be
+        // judged partly on a class the code never referred to.
+        $shortNameCounts = array_count_values(array_column(
+            array_filter($this->declarations, fn (array $d): bool => $d['kind'] === 'class'),
+            'short'
+        ));
 
         foreach ($this->declarations as $fqcn => $declaration) {
             // A trait reaches the registries through the classes that use it. Keying one
@@ -818,8 +1016,18 @@ class EloquentModelRelationshipScanner
                 $accessors->add($short, $accessor);
             }
 
-            if ($declaration['relations'] !== []) {
+            foreach ($members['members'] as $member) {
+                $relationships->addMember($short, $member);
+            }
+
+            if ($declaration['selfDeclared']) {
                 $relationships->markSelfDeclared($short);
+            }
+
+            if ($members['fully'] &&
+                ! $this->unattributedRegisteredRelation &&
+                ($shortNameCounts[$short] ?? 0) === 1) {
+                $relationships->markFullyResolved($short);
             }
         }
 
@@ -902,13 +1110,29 @@ class EloquentModelRelationshipScanner
 }
 
 /**
- * Collects the returns that belong to a method body, stopping at any nested function-like
- * or class declaration whose returns belong to something else.
+ * Reads a method body once for the two things the scanner needs from it: the returns that
+ * belong to the method, and any relationship it registers on a model from outside that
+ * model's own body.
+ *
+ * Returns stop at a nested function-like or class declaration, because a closure's
+ * `return $this->hasMany(...)` belongs to the closure rather than to the method enclosing
+ * it. A registration does not stop there: resolveRelationUsing() takes a closure of its
+ * own and is often called from inside one.
  */
-class MethodReturnCollector extends NodeVisitorAbstract
+class MethodBodyCollector extends NodeVisitorAbstract
 {
     /** @var array<Stmt\Return_> */
     public array $returns = [];
+
+    /**
+     * Receiver and relationship name of each resolveRelationUsing() call, with null for
+     * either part the call does not state literally.
+     *
+     * @var array<array{class: ?string, relation: ?string}>
+     */
+    public array $registeredRelations = [];
+
+    private int $nestedDepth = 0;
 
     public function enterNode(Node $node)
     {
@@ -916,11 +1140,38 @@ class MethodReturnCollector extends NodeVisitorAbstract
             $node instanceof Expr\ArrowFunction ||
             $node instanceof Stmt\ClassLike ||
             $node instanceof Stmt\Function_) {
-            return NodeTraverser::DONT_TRAVERSE_CHILDREN;
+            $this->nestedDepth++;
+
+            return null;
         }
 
-        if ($node instanceof Stmt\Return_) {
+        if ($this->nestedDepth === 0 && $node instanceof Stmt\Return_) {
             $this->returns[] = $node;
+        }
+
+        if ($node instanceof Expr\StaticCall &&
+            $node->name instanceof Node\Identifier &&
+            $node->name->toString() === 'resolveRelationUsing') {
+            $argument = $node->args[0] ?? null;
+
+            $this->registeredRelations[] = [
+                'class' => $node->class instanceof Node\Name ? $node->class->toString() : null,
+                'relation' => $argument instanceof Node\Arg && $argument->value instanceof Node\Scalar\String_
+                    ? $argument->value->value
+                    : null,
+            ];
+        }
+
+        return null;
+    }
+
+    public function leaveNode(Node $node)
+    {
+        if ($node instanceof Expr\Closure ||
+            $node instanceof Expr\ArrowFunction ||
+            $node instanceof Stmt\ClassLike ||
+            $node instanceof Stmt\Function_) {
+            $this->nestedDepth--;
         }
 
         return null;
@@ -1365,10 +1616,17 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      * before the registry is consulted, on both the precise-lookup and heuristic paths.
      *
      * A name the scanner saw declared as a relationship is one, whether the model states
-     * it, uses a trait that does, or inherits it from a parent. A name that is absent is
-     * only conclusive when the model states relationships of its own, because that is the
-     * one case where the analyzer has always had a full reading of the class. Everything
-     * else is still a guess, and the naming heuristic answers it as it always has.
+     * it, uses a trait that does, or inherits it from a parent.
+     *
+     * A name that is absent is answered conclusively in two cases. The model states
+     * relationships of its own, which is the reading the analyzer has always trusted. Or
+     * every class and trait it reaches was read, and no method of that name exists
+     * anywhere in it: Model::isRelation resolves $model->foo through method_exists, so a
+     * name that is not a method cannot be a relationship however the body was written.
+     * That second case is deliberately about proving absence rather than about failing to
+     * classify: a relationship the scanner did not recognise is still a method, so its
+     * name is in the index and the reading stays a guess.
+     *
      * Method-call context uses looksLikeRelationshipMethod (stricter exclusions) to avoid
      * false positives on helpers like relationLoaded(), count(), etc.
      */
@@ -1400,11 +1658,31 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // Model outside the scanned paths, or one that states no relationships of its own.
+        if ($this->relationshipRegistry->isFullyResolved($model) &&
+            ! $this->relationshipRegistry->hasMember($model, strtolower($name)) &&
+            ! $this->namesRelationReachedThrough($model, $name)) {
+            return false;
+        }
+
+        // Model outside the scanned paths, or one the scanner could not read in full.
         // Fall back to heuristic so existing code without model files still works.
         return $isMethodCall
             ? $this->looksLikeRelationshipMethod($name)
             : $this->looksLikeRelationship($name);
+    }
+
+    /**
+     * Eloquent answers $model->throughComments() by resolving comments and hopping through
+     * it, so the name is never declared as a method and proving its absence proves
+     * nothing. Recognised here only to withhold a conclusive no, never to produce a yes.
+     */
+    private function namesRelationReachedThrough(string $model, string $name): bool
+    {
+        if (! str_starts_with($name, 'through') || strlen($name) <= 7 || ! ctype_upper($name[7])) {
+            return false;
+        }
+
+        return $this->relationshipRegistry->has($model, lcfirst(substr($name, 7)));
     }
 
     /**

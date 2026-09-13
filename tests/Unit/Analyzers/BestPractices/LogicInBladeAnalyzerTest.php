@@ -115,6 +115,190 @@ BLADE;
         $this->assertHasIssueContaining('Inline PHP found in Blade template', $result);
     }
 
+    public function test_ignores_presentational_findings_in_a_relocated_pagination_view(): void
+    {
+        // Laravel's pagination template, cosmetically customised and relocated out of
+        // resources/views/vendor by Paginator::defaultView(). AbstractPaginator::render()
+        // supplies $paginator and the bounded $elements window itself, so there is no
+        // controller to move the range arithmetic or the appends() call into.
+        $blade = <<<'BLADE'
+@if ($paginator->hasPages())
+    <nav class="pagination-shell">
+        <p>Showing {{ ($paginator->currentPage() - 1) * $paginator->perPage() + 1 }}
+           to {{ min($paginator->currentPage() * $paginator->perPage(), $paginator->total()) }}
+           of {{ $paginator->total() }}</p>
+        @foreach ($elements as $element)
+            @if (is_array($element))
+                @foreach ($element as $page => $url)
+                    @if ($page == $paginator->currentPage())
+                        <span>{{ $page }}</span>
+                    @else
+                        <a href="{{ $paginator->appends(request()->all())->url($page) }}">{{ $page }}</a>
+                    @endif
+                @endforeach
+            @endif
+        @endforeach
+    </nav>
+@endif
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/pagination/tailwind.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_recognises_a_pagination_component_with_a_custom_receiver_name(): void
+    {
+        // A <x-pagination> wrapper names the paginator whatever it likes; the paginator
+        // contract, not the variable name or the path, is what identifies the view.
+        $blade = <<<'BLADE'
+@props(['pages'])
+@if ($pages->hasPages())
+    @if ($pages->onFirstPage())
+        <span>prev</span>
+    @else
+        <a href="{{ $pages->previousPageUrl() }}">prev</a>
+    @endif
+    <p>{{ ($pages->currentPage() - 1) * $pages->perPage() + 1 }}</p>
+@endif
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/components/pagination.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_flags_database_query_in_a_pagination_view(): void
+    {
+        $blade = <<<'BLADE'
+@if ($paginator->hasPages())
+    <p>{{ ($paginator->currentPage() - 1) * $paginator->perPage() + 1 }}</p>
+    <span>{{ \App\Models\Setting::first()->label }}</span>
+    @if ($paginator->onFirstPage())
+        <span>prev</span>
+    @else
+        <a href="{{ $paginator->previousPageUrl() }}">prev</a>
+    @endif
+@endif
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/pagination/tailwind.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('Database query found in Blade template', $result);
+    }
+
+    public function test_still_flags_api_call_in_a_pagination_view(): void
+    {
+        $blade = <<<'BLADE'
+@if ($paginator->hasPages())
+    <p>{{ ($paginator->currentPage() - 1) * $paginator->perPage() + 1 }}</p>
+    <span>{{ Http::get('https://example.test/rates') }}</span>
+    @if ($paginator->onFirstPage())
+        <span>prev</span>
+    @else
+        <a href="{{ $paginator->previousPageUrl() }}">prev</a>
+    @endif
+@endif
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/pagination/tailwind.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('API call found in Blade template', $result);
+    }
+
+    public function test_still_flags_inline_php_in_a_pagination_view(): void
+    {
+        // Structural hygiene stays reported: the developer owns this template now and can
+        // swap raw <?php for @php.
+        $blade = <<<'BLADE'
+@if ($paginator->hasPages())
+<?php $label = 'page'; ?>
+    @if ($paginator->onFirstPage())
+        <span>{{ $label }}</span>
+    @else
+        <a href="{{ $paginator->previousPageUrl() }}">{{ $label }}</a>
+    @endif
+@endif
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/pagination/tailwind.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('Inline PHP found in Blade template', $result);
+    }
+
+    public function test_does_not_treat_an_ordinary_view_that_renders_links_as_a_pagination_view(): void
+    {
+        // Rendering a paginator's links is not the same as being its link-window template.
+        $blade = <<<'BLADE'
+@foreach ($users as $user)
+    <li>{{ ($user->credits - $user->used) * 2 }}</li>
+@endforeach
+{{ $users->links() }}
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/users/index.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('Complex calculation found in Blade template', $result);
+    }
+
+    public function test_single_paginator_method_does_not_exempt_a_view(): void
+    {
+        // One paginator method is the ordinary "hide the pager when it fits" guard. The
+        // exemption needs two distinct methods on the same receiver.
+        $blade = <<<'BLADE'
+@if ($users->hasPages())
+    <div>{{ ($total - $used) * $rate }}</div>
+    {{ $users->links() }}
+@endif
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/users/index.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('Complex calculation found in Blade template', $result);
+    }
+
     public function test_passes_with_simple_single_calculation(): void
     {
         $blade = <<<'BLADE'

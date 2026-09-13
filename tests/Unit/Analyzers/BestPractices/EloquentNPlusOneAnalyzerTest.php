@@ -3950,4 +3950,1050 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('user_profile', $result);
     }
+    // -------------------------------------------------------------------------
+    // Relationships reached through traits and parent classes
+    // -------------------------------------------------------------------------
+
+    /**
+     * A model states only part of itself in its own body. Here the relationship lives in a
+     * trait, and the model separately declares one of its own, which is what used to hide
+     * the problem: declaring any relationship put the model in the registry, and the
+     * registry was then answered by exact lookup with no fallback, so the trait's
+     * relationship was reported as "not a relationship" rather than as a lazy load.
+     */
+    public function test_flags_relationship_declared_in_a_trait(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/HasProfile.php' => <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+use App\Models\Profile;
+
+trait HasProfile
+{
+    public function profile()
+    {
+        return $this->hasOne(Profile::class);
+    }
+}
+PHP,
+            'app/Models/Item.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use App\Models\Concerns\HasProfile;
+use Illuminate\Database\Eloquent\Model;
+
+class Item extends Model
+{
+    use HasProfile;
+
+    public function owner()
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+PHP,
+            'app/Http/Controllers/ItemController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Item;
+
+class ItemController
+{
+    public function index()
+    {
+        $items = Item::get();
+
+        foreach ($items as $item) {
+            echo $item->profile;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('profile', $result);
+    }
+
+    /**
+     * The same blind spot on the inheritance axis: a child model inherits its parent's
+     * relationships, and reading one of them in a loop is the same lazy load it would be
+     * had the child declared it.
+     */
+    public function test_flags_relationship_inherited_from_a_scanned_parent(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/BaseUser.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class BaseUser extends Model
+{
+    public function posts()
+    {
+        return $this->hasMany(Post::class);
+    }
+}
+PHP,
+            'app/Models/Admin.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Admin extends BaseUser
+{
+    public function logs()
+    {
+        return $this->hasMany(Log::class);
+    }
+}
+PHP,
+            'app/Http/Controllers/AdminController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Admin;
+
+class AdminController
+{
+    public function index()
+    {
+        $admins = Admin::get();
+
+        foreach ($admins as $admin) {
+            echo $admin->posts;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('posts', $result);
+    }
+
+    /**
+     * Traits compose traits, so resolution has to recurse rather than expand one level.
+     * Illuminate\Notifications\Notifiable is exactly this shape.
+     */
+    public function test_flags_relationship_from_a_trait_used_by_another_trait(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/HasAvatar.php' => <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+use App\Models\Avatar;
+
+trait HasAvatar
+{
+    public function avatar()
+    {
+        return $this->hasOne(Avatar::class);
+    }
+}
+PHP,
+            'app/Models/Concerns/HasProfile.php' => <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+trait HasProfile
+{
+    use HasAvatar;
+}
+PHP,
+            'app/Models/Item.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use App\Models\Concerns\HasProfile;
+use Illuminate\Database\Eloquent\Model;
+
+class Item extends Model
+{
+    use HasProfile;
+
+    public function owner()
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+PHP,
+            'app/Http/Controllers/ItemController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Item;
+
+class ItemController
+{
+    public function index()
+    {
+        $items = Item::get();
+
+        foreach ($items as $item) {
+            echo $item->avatar;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('avatar', $result);
+    }
+
+    /**
+     * notifications() is a real morphMany that Notifiable contributes through
+     * HasDatabaseNotifications, so reading it per row is a real N+1. The trait ships with
+     * the framework and is never scanned, which is why the relationships it declares are
+     * carried as data rather than discovered.
+     */
+    public function test_flags_notifications_reached_through_the_notifiable_trait(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Account.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+
+class Account extends Authenticatable
+{
+    use Notifiable;
+
+    public function posts()
+    {
+        return $this->hasMany(Post::class);
+    }
+}
+PHP,
+            'app/Http/Controllers/AccountController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Account;
+
+class AccountController
+{
+    public function index()
+    {
+        $accounts = Account::get();
+
+        foreach ($accounts as $account) {
+            echo $account->notifications;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('notifications', $result);
+    }
+
+    /**
+     * A model may hand the body of a relationship off to a helper, which leaves the shape
+     * matching nothing to recognise. The declared return type still names the contract.
+     */
+    public function test_flags_relationship_declared_only_by_its_return_type(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Widget.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+
+class Widget extends Model
+{
+    public function parts(): HasMany
+    {
+        return $this->buildParts();
+    }
+
+    private function buildParts()
+    {
+        return $this->hasMany(Part::class);
+    }
+}
+PHP,
+            'app/Http/Controllers/WidgetController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Widget;
+
+class WidgetController
+{
+    public function index()
+    {
+        $widgets = Widget::get();
+
+        foreach ($widgets as $widget) {
+            echo $widget->parts;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('parts', $result);
+    }
+
+    /**
+     * Relationship bodies are not always a single top-level return. A guard clause that
+     * returns the relation from inside a conditional declares one just as plainly.
+     */
+    public function test_flags_relationship_returned_only_from_inside_a_conditional(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Ticket.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Ticket extends Model
+{
+    public function assignee()
+    {
+        if ($this->open) {
+            return $this->belongsTo(User::class);
+        }
+    }
+
+    public function reporter()
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+PHP,
+            'app/Http/Controllers/TicketController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Ticket;
+
+class TicketController
+{
+    public function index()
+    {
+        $tickets = Ticket::get();
+
+        foreach ($tickets as $ticket) {
+            echo $ticket->assignee;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('assignee', $result);
+    }
+
+    /**
+     * Resolution is keyed on the declaration the scan saw, not on a file whose name
+     * matches the class, so a trait sharing a file with the model that uses it resolves
+     * like any other.
+     */
+    public function test_flags_relationship_from_a_trait_declared_in_the_same_file(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Item.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+trait HasProfile
+{
+    public function profile()
+    {
+        return $this->hasOne(Profile::class);
+    }
+}
+
+class Item extends Model
+{
+    use HasProfile;
+
+    public function owner()
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+PHP,
+            'app/Http/Controllers/ItemController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Item;
+
+class ItemController
+{
+    public function index()
+    {
+        $items = Item::get();
+
+        foreach ($items as $item) {
+            echo $item->profile;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('profile', $result);
+    }
+
+    /**
+     * Trait names are resolved through the importing file's use map, so an alias names the
+     * same declaration the unaliased import would.
+     */
+    public function test_resolves_a_trait_imported_under_an_alias(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/HasProfile.php' => <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+use App\Models\Profile;
+
+trait HasProfile
+{
+    public function profile()
+    {
+        return $this->hasOne(Profile::class);
+    }
+}
+PHP,
+            'app/Models/Item.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use App\Models\Concerns\HasProfile as Profileable;
+use Illuminate\Database\Eloquent\Model;
+
+class Item extends Model
+{
+    use Profileable;
+
+    public function owner()
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+PHP,
+            'app/Http/Controllers/ItemController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Item;
+
+class ItemController
+{
+    public function index()
+    {
+        $items = Item::get();
+
+        foreach ($items as $item) {
+            echo $item->profile;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('profile', $result);
+    }
+
+    /**
+     * A group use carries its prefix separately from each imported name, and reports an
+     * unknown import type when its items carry their own.
+     */
+    public function test_resolves_a_trait_imported_through_a_group_use(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/HasProfile.php' => <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+use App\Models\Profile;
+
+trait HasProfile
+{
+    public function profile()
+    {
+        return $this->hasOne(Profile::class);
+    }
+}
+PHP,
+            'app/Models/Item.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use App\Models\Concerns\{HasProfile};
+use Illuminate\Database\Eloquent\Model;
+
+class Item extends Model
+{
+    use HasProfile;
+
+    public function owner()
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+PHP,
+            'app/Http/Controllers/ItemController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Item;
+
+class ItemController
+{
+    public function index()
+    {
+        $items = Item::get();
+
+        foreach ($items as $item) {
+            echo $item->profile;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('profile', $result);
+    }
+
+    /**
+     * PHP rejects a cyclic extends chain, but half-edited source still reaches the
+     * scanner, and walking the graph must terminate rather than recurse until the stack
+     * runs out. The reading then falls back to the naming heuristic, as it does for any
+     * model the scanner could not read fully.
+     */
+    public function test_cyclic_extends_chain_terminates(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Alpha.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Alpha extends Beta {}
+PHP,
+            'app/Models/Beta.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Beta extends Alpha {}
+PHP,
+            'app/Http/Controllers/AlphaController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Alpha;
+
+class AlphaController
+{
+    public function index()
+    {
+        $rows = Alpha::get();
+
+        foreach ($rows as $row) {
+            echo $row->widgets;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('widgets', $result);
+    }
+
+    /**
+     * A closure's $this is the model, so a relation builder called inside one would be
+     * attributed to whatever method happens to enclose the closure. Searching a body for
+     * returns has to stop at the closure boundary.
+     */
+    public function test_relationship_returned_from_a_closure_is_not_registered(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Gadget.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Gadget extends Model
+{
+    public function register()
+    {
+        $callback = function () {
+            return $this->hasMany(Part::class);
+        };
+
+        $callback();
+    }
+
+    public function owner()
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+PHP,
+            'app/Http/Controllers/GadgetController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Gadget;
+
+class GadgetController
+{
+    public function index()
+    {
+        $gadgets = Gadget::get();
+
+        foreach ($gadgets as $gadget) {
+            echo $gadget->register;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * Only the tail of a property chain is judged against the loop variable's model, so
+     * widening what counts as a relationship also widens the set of tails that match.
+     * settings is a JSON column here, and eager loading the reported path would raise
+     * RelationNotFoundException, which is what makes the finding worse than noise.
+     */
+    public function test_does_not_flag_a_nested_chain_whose_head_is_a_json_column(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Account.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+
+class Account extends Authenticatable
+{
+    use Notifiable;
+
+    public function posts()
+    {
+        return $this->hasMany(Post::class);
+    }
+}
+PHP,
+            'app/Http/Controllers/AccountController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Account;
+
+class AccountController
+{
+    public function index()
+    {
+        $accounts = Account::get();
+
+        foreach ($accounts as $account) {
+            echo $account->settings->notifications;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * Recall guard in the other direction: a trait's relationship is a relationship, so
+     * eager loading it has to silence the finding exactly as it does for one the model
+     * declares itself.
+     */
+    public function test_passes_when_a_trait_relationship_is_eager_loaded(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/HasProfile.php' => <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+use App\Models\Profile;
+
+trait HasProfile
+{
+    public function profile()
+    {
+        return $this->hasOne(Profile::class);
+    }
+}
+PHP,
+            'app/Models/Item.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use App\Models\Concerns\HasProfile;
+use Illuminate\Database\Eloquent\Model;
+
+class Item extends Model
+{
+    use HasProfile;
+
+    public function owner()
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+PHP,
+            'app/Http/Controllers/ItemController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Item;
+
+class ItemController
+{
+    public function index()
+    {
+        $items = Item::with('profile')->get();
+
+        foreach ($items as $item) {
+            echo $item->profile;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * $fillable, $casts and $appends are inherited like anything else, and the analyzer
+     * already treats a declared attribute as proof that a name is a column rather than a
+     * relationship. Reading the parent's declaration is what lets that proof apply.
+     */
+    public function test_does_not_flag_a_column_declared_fillable_on_a_parent_model(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/BaseProduct.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class BaseProduct extends Model
+{
+    protected $fillable = ['sku'];
+
+    public function owner()
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+PHP,
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Product extends BaseProduct {}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $products = Product::get();
+
+        foreach ($products as $product) {
+            echo $product->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * The same for accessors. An accessor exposes a computed property, never a
+     * relationship, and putting one in a trait is the usual way to share it.
+     */
+    public function test_does_not_flag_an_accessor_declared_in_a_trait(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/HasSku.php' => <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+trait HasSku
+{
+    public function getSkuAttribute(): string
+    {
+        return strtoupper($this->code);
+    }
+}
+PHP,
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use App\Models\Concerns\HasSku;
+use Illuminate\Database\Eloquent\Model;
+
+class Product extends Model
+{
+    use HasSku;
+}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $products = Product::get();
+
+        foreach ($products as $product) {
+            echo $product->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * The boundary that keeps this change additive. Knowing a name IS a relationship is
+     * not the same as knowing which names are not: the chain may leave the scanned paths.
+     * So an inherited relationship must not, on its own, start answering absent names
+     * conclusively. Item declares none of its own, so sku stays a guess and stays flagged,
+     * exactly as before.
+     */
+    public function test_column_on_a_model_with_only_inherited_relations_is_still_heuristic(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/HasProfile.php' => <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+use App\Models\Profile;
+
+trait HasProfile
+{
+    public function profile()
+    {
+        return $this->hasOne(Profile::class);
+    }
+}
+PHP,
+            'app/Models/Item.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use App\Models\Concerns\HasProfile;
+use Illuminate\Database\Eloquent\Model;
+
+class Item extends Model
+{
+    use HasProfile;
+}
+PHP,
+            'app/Http/Controllers/ItemController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Item;
+
+class ItemController
+{
+    public function index()
+    {
+        $items = Item::get();
+
+        foreach ($items as $item) {
+            echo $item->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('sku', $result);
+    }
 }

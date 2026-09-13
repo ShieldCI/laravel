@@ -443,4 +443,27 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
         $messages = array_map(fn (Issue $i): string => $i->message, $result->getIssues());
         $this->assertSame([], $messages);
     }
+
+    /**
+     * The Blade path is seeded from the same scan result as the PHP path, so a
+     * relationship the model reaches through a trait has to read the same way in a view as
+     * it does in a controller. City declares one relationship of its own here, which is the
+     * arrangement that used to hide the trait's: being in the registry at all meant the
+     * registry was answered by exact lookup, with no fallback.
+     */
+    public function test_flags_lazy_relation_declared_in_a_trait(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Concerns/HasAirports.php' => "<?php\nnamespace App\\Models\\Concerns;\nuse App\\Models\\Airport;\ntrait HasAirports { public function airports(){ return \$this->hasMany(Airport::class); } }",
+            'app/Models/City.php' => "<?php\nnamespace App\\Models;\nuse App\\Models\\Concerns\\HasAirports;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass City extends Model { use HasAirports; public function mayor(){ return \$this->belongsTo(Mayor::class); } }",
+            'app/Http/Controllers/CityController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\City;\nclass CityController { public function index(){ \$cities = City::all(); return view('cities.index', compact('cities')); } }",
+            'resources/views/cities/index.blade.php' => "@foreach(\$cities as \$city)\n  {{ \$city->airports->count() }}\n@endforeach",
+        ]);
+
+        $issues = $this->airportIssues($result);
+        $this->assertCount(1, $issues);
+        $location = $issues[0]->location;
+        $this->assertNotNull($location);
+        $this->assertStringEndsWith('index.blade.php', $location->file);
+    }
 }

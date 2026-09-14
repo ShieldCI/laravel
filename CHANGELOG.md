@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.14.0
+
+### Added
+- `EloquentModelDetector`: `verdictForClassName()`/`isModelClassName()` resolve a class reference through the referencing file's imports (#326)
+- `eloquent-n-plus-one` answers conclusively once a model's whole chain is read, so plain columns like `sku` are no longer flagged (#334)
+
+### Fixed
+- `logic-in-blade` exempts paginator window views, wherever they live, from the move-to-controller checks (#327)
+- `logic-in-blade` nested-`@foreach` now matches a linear search on the inner loop's key, not only its value (#329)
+- `eloquent-n-plus-one` treats snake_case property access as a column, so `*_type` columns are no longer flagged (#331)
+- `eloquent-n-plus-one` resolves relationships from traits and parents, so `$user->notifications` on `Notifiable` is no longer flagged (#333)
+- `phpstan` gives each error one category, ending duplicate findings and inflated counts; unmatched errors go to a new `other` category (#337)
+- `service-container-resolution` handles php-parser 5.9's `ArgPlaceholder`, restoring container-call detection (#338)
+
 ## v1.13.3
 
 ### Fixed

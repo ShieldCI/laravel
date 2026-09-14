@@ -385,7 +385,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
  *
  * Traverses the AST once, collecting issues for:
  * - DB queries (static calls, method chains, model save)
- * - API calls (Http facade, curl, file_get_contents)
+ * - API calls (Http facade, curl, file_get_contents on a URL)
  * - Business logic functions (array_filter, array_map, etc.)
  * - Complex @if conditions (4+ boolean operators)
  * - Expensive computation (toArray, toJson, regex in loops)
@@ -498,8 +498,31 @@ class BladeLogicVisitor extends NodeVisitorAbstract
         'delete', 'insert', 'upsert',
     ];
 
-    /** @var array<string> API-related function names */
-    private const API_FUNCTIONS = ['curl_init', 'curl_exec', 'file_get_contents'];
+    /** @var array<string> Functions whose call is always an outbound network request */
+    private const API_FUNCTIONS = ['curl_init', 'curl_exec'];
+
+    /**
+     * Functions that reach the network only when handed a remote URL.
+     *
+     * file_get_contents() is equally the ordinary way to read a local file, inlining an SVG from
+     * public_path() or reading a text blob from storage_path(), so the argument decides.
+     *
+     * @var array<string>
+     */
+    private const URL_AWARE_FUNCTIONS = ['file_get_contents'];
+
+    /**
+     * Helpers that always return an absolute URL, so reading one leaves the machine.
+     *
+     * mix() and the Vite helpers are excluded: they return a root-relative path, which
+     * file_get_contents() resolves against the filesystem rather than over HTTP.
+     *
+     * @var array<string>
+     */
+    private const URL_HELPERS = ['url', 'secure_url', 'asset', 'secure_asset', 'route', 'action'];
+
+    /** Schemes whose fetch leaves the machine. */
+    private const REMOTE_URL_PATTERN = '#^(?:https?|ftps?)://#i';
 
     /** @var array<string> Collection manipulation methods flagged in @foreach */
     private const COLLECTION_MANIPULATION_METHODS = [
@@ -970,15 +993,58 @@ class BladeLogicVisitor extends NodeVisitorAbstract
 
         $funcName = $node->name->toString();
 
-        if (in_array($funcName, self::API_FUNCTIONS, true)) {
-            $this->addIssue(
-                line: $node->getStartLine(),
-                message: 'API call found in Blade template',
-                severity: Severity::High,
-                recommendation: 'Move network or file-fetch calls to a controller or service and pass the result to the view. Views should only display pre-fetched data.',
-                code: 'blade-has-api-call',
-            );
+        $isApiCall = in_array($funcName, self::API_FUNCTIONS, true)
+            || (in_array($funcName, self::URL_AWARE_FUNCTIONS, true) && $this->fetchesRemoteUrl($node));
+
+        if (! $isApiCall) {
+            return;
         }
+
+        $this->addIssue(
+            line: $node->getStartLine(),
+            message: 'API call found in Blade template',
+            severity: Severity::High,
+            recommendation: 'Move network or file-fetch calls to a controller or service and pass the result to the view. Views should only display pre-fetched data.',
+            code: 'blade-has-api-call',
+        );
+    }
+
+    /**
+     * Whether a url-aware read is pointed at something the template spells out as remote.
+     *
+     * Only what the argument states counts. A variable or a config() lookup could hold either a
+     * path or a URL, and the local read is the common case by far, so an argument that proves
+     * nothing is left alone rather than reported under the wrong name.
+     */
+    private function fetchesRemoteUrl(Expr\FuncCall $node): bool
+    {
+        $first = $node->args[0] ?? null;
+
+        return $first instanceof Node\Arg && $this->isRemoteTarget($first->value);
+    }
+
+    private function isRemoteTarget(Expr $expr): bool
+    {
+        // 'https://api.test/rates/' . $code: the scheme lives in the leftmost literal.
+        while ($expr instanceof Expr\BinaryOp\Concat) {
+            $expr = $expr->left;
+        }
+
+        if ($expr instanceof Node\Scalar\String_) {
+            return (bool) preg_match(self::REMOTE_URL_PATTERN, $expr->value);
+        }
+
+        // "https://api.test/rates/{$code}": the scheme lives in the leading literal part.
+        if ($expr instanceof Node\Scalar\InterpolatedString) {
+            $leading = $expr->parts[0] ?? null;
+
+            return $leading instanceof Node\InterpolatedStringPart
+                && (bool) preg_match(self::REMOTE_URL_PATTERN, $leading->value);
+        }
+
+        return $expr instanceof Expr\FuncCall
+            && $expr->name instanceof Name
+            && in_array($expr->name->toString(), self::URL_HELPERS, true);
     }
 
     private function checkBusinessLogicFunction(Expr\FuncCall $node): void

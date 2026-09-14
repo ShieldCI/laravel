@@ -863,6 +863,129 @@ BASH;
         $this->assertWarning($result);
     }
 
+    public function test_reports_an_error_when_phpstan_only_returns_analysis_errors(): void
+    {
+        $result = $this->analyzeIssues([], [], [
+            'Ignored error pattern #Never matched# was not matched in reported errors.',
+        ]);
+
+        $this->assertError($result);
+        $this->assertStringContainsString('PHPStan reported 1 analysis error(s)', $result->getMessage());
+        $this->assertStringContainsString('was not matched in reported errors', $result->getMessage());
+        $this->assertSame(
+            ['Ignored error pattern #Never matched# was not matched in reported errors.'],
+            $result->getMetadata()['analysis_errors']
+        );
+    }
+
+    public function test_analysis_error_message_names_each_error(): void
+    {
+        $result = $this->analyzeIssues([], [], [
+            'Ignored error pattern #First# was not matched in reported errors.',
+            'Ignored error pattern #Second# was not matched in reported errors.',
+        ]);
+
+        $this->assertError($result);
+        $this->assertStringContainsString('PHPStan reported 2 analysis error(s)', $result->getMessage());
+        $this->assertStringContainsString('#First#', $result->getMessage());
+        $this->assertStringContainsString('#Second#', $result->getMessage());
+    }
+
+    public function test_summarizes_analysis_errors_beyond_the_message_cap(): void
+    {
+        $errors = [];
+
+        for ($i = 1; $i <= 5; $i++) {
+            $errors[] = 'Ignored error pattern #Pattern'.$i.'# was not matched in reported errors.';
+        }
+
+        $result = $this->analyzeIssues([], [], $errors);
+
+        $this->assertError($result);
+        $this->assertStringContainsString('#Pattern3#', $result->getMessage());
+        $this->assertStringNotContainsString('#Pattern4#', $result->getMessage());
+        $this->assertStringContainsString('(and 2 more)', $result->getMessage());
+
+        // The message is capped, the metadata is not.
+        $this->assertCount(5, $result->getMetadata()['analysis_errors']);
+    }
+
+    public function test_keeps_the_severity_result_when_analysis_errors_accompany_file_issues(): void
+    {
+        $result = $this->analyzeIssues(
+            [['identifier' => 'variable.undefined', 'message' => 'Undefined variable: $missing']],
+            [],
+            ['Internal error: child process ran out of memory.']
+        );
+
+        // The file issue still drives the status, so a partial run is not downgraded from
+        // failed to error and its findings are not thrown away.
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertStringContainsString('Found 1 PHPStan issue(s)', $result->getMessage());
+        $this->assertStringContainsString('1 analysis error(s)', $result->getMessage());
+        $this->assertStringContainsString('child process ran out of memory', $result->getMessage());
+        $this->assertSame(
+            ['Internal error: child process ran out of memory.'],
+            $result->getMetadata()['analysis_errors']
+        );
+    }
+
+    public function test_analysis_errors_do_not_upgrade_a_warning_to_a_failure(): void
+    {
+        $result = $this->analyzeIssues(
+            [['message' => 'If condition is always true.']],
+            [],
+            ['Ignored error pattern #Never matched# was not matched in reported errors.']
+        );
+
+        $this->assertWarning($result);
+        $this->assertStringContainsString('1 analysis error(s)', $result->getMessage());
+    }
+
+    public function test_passes_and_omits_analysis_error_metadata_when_phpstan_is_clean(): void
+    {
+        $result = $this->analyzeIssues([]);
+
+        $this->assertPassed($result);
+        $this->assertSame('No PHPStan issues detected', $result->getMessage());
+        $this->assertArrayNotHasKey('analysis_errors', $result->getMetadata());
+    }
+
+    public function test_omits_analysis_error_metadata_when_only_file_issues_are_found(): void
+    {
+        $result = $this->analyzeIssues([
+            ['identifier' => 'variable.undefined', 'message' => 'Undefined variable: $missing'],
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame('Found 1 PHPStan issue(s)', $result->getMessage());
+        $this->assertArrayNotHasKey('analysis_errors', $result->getMetadata());
+    }
+
+    public function test_reports_an_error_when_phpstan_crashes_without_emitting_json(): void
+    {
+        $result = $this->analyzeUnparseableOutput(
+            '',
+            'PHP Fatal error:  Allowed memory size of 134217728 bytes exhausted',
+            1
+        );
+
+        $this->assertError($result);
+        $this->assertStringContainsString('PHPStan produced no analysable output', $result->getMessage());
+        $this->assertStringContainsString('exit code 1', $result->getMessage());
+        $this->assertStringContainsString('Allowed memory size', $result->getMessage());
+    }
+
+    public function test_reports_an_error_when_phpstan_prints_something_other_than_json(): void
+    {
+        $result = $this->analyzeUnparseableOutput('Xdebug: [Step Debug] Could not connect', '', 0);
+
+        $this->assertError($result);
+        $this->assertStringContainsString('PHPStan produced no analysable output', $result->getMessage());
+        $this->assertStringContainsString('exit code 0', $result->getMessage());
+    }
+
     public function test_appends_the_phpstan_tip_to_the_recommendation(): void
     {
         $result = $this->analyzeIssues([
@@ -934,8 +1057,9 @@ BASH;
      *
      * @param  array<array{message: string, line?: int, identifier?: string, tip?: string}>  $issues
      * @param  array<string, mixed>  $config
+     * @param  array<string>  $analysisErrors  Errors PHPStan could not attach to a file
      */
-    private function analyzeIssues(array $issues, array $config = []): ResultInterface
+    private function analyzeIssues(array $issues, array $config = [], array $analysisErrors = []): ResultInterface
     {
         $code = <<<'PHP'
 <?php
@@ -960,7 +1084,10 @@ PHP;
         }
 
         @mkdir($tempDir.'/vendor/bin', 0755, true);
-        file_put_contents($tempDir.'/vendor/bin/phpstan', $this->createMockPHPStanScript($prepared));
+        file_put_contents(
+            $tempDir.'/vendor/bin/phpstan',
+            $this->createMockPHPStanScript($prepared, $analysisErrors)
+        );
         chmod($tempDir.'/vendor/bin/phpstan', 0755);
 
         $analyzer = $this->createAnalyzer($config);
@@ -974,11 +1101,13 @@ PHP;
      * Create a mock PHPStan script that returns predefined issues.
      *
      * Mirrors PHPStan's JSON error format, which omits 'identifier' and 'tip'
-     * entirely rather than emitting them as null.
+     * entirely rather than emitting them as null, and which reports errors it cannot
+     * attach to a file in a top-level 'errors' list counted by totals.errors.
      *
      * @param  array<array{file: string, line: int, message: string, identifier?: string, tip?: string}>  $issues
+     * @param  array<string>  $analysisErrors
      */
-    private function createMockPHPStanScript(array $issues): string
+    private function createMockPHPStanScript(array $issues, array $analysisErrors = []): string
     {
         $files = [];
 
@@ -1007,11 +1136,11 @@ PHP;
 
         $output = [
             'totals' => [
-                'errors' => 0,
+                'errors' => count($analysisErrors),
                 'file_errors' => count($issues),
             ],
             'files' => $files,
-            'errors' => [],
+            'errors' => array_values($analysisErrors),
         ];
 
         $json = json_encode($output, JSON_PRETTY_PRINT);
@@ -1022,5 +1151,48 @@ cat <<'EOF'
 {$json}
 EOF
 BASH;
+    }
+
+    /**
+     * Run the analyzer against a PHPStan binary whose output cannot be decoded.
+     *
+     * Covers both shapes of the same failure: a crash that writes only to standard
+     * error, and a run that exits cleanly but prints something other than JSON.
+     */
+    private function analyzeUnparseableOutput(string $stdout, string $stderr, int $exitCode): ResultInterface
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ExampleService
+{
+    public function run(): void {}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/ExampleService.php' => $code]);
+
+        $script = <<<BASH
+#!/bin/bash
+cat <<'STDOUT_EOF'
+{$stdout}
+STDOUT_EOF
+cat >&2 <<'STDERR_EOF'
+{$stderr}
+STDERR_EOF
+exit {$exitCode}
+BASH;
+
+        @mkdir($tempDir.'/vendor/bin', 0755, true);
+        file_put_contents($tempDir.'/vendor/bin/phpstan', $script);
+        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        return $analyzer->analyze();
     }
 }

@@ -522,6 +522,201 @@ class PHPStanRunnerTest extends TestCase
         $this->assertNull($issue['tip'] ?? null);
     }
 
+    public function test_get_analysis_errors_returns_non_file_specific_errors(): void
+    {
+        $this->createMockPHPStan([], [
+            'Ignored error pattern #This pattern will never match anything at all# was not matched in reported errors.',
+        ]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $this->assertSame(
+            ['Ignored error pattern #This pattern will never match anything at all# was not matched in reported errors.'],
+            $runner->getAnalysisErrors()
+        );
+
+        // Nothing lands in "files", so getIssues() cannot carry this signal on its own.
+        $this->assertTrue($runner->getIssues()->isEmpty());
+    }
+
+    public function test_get_analysis_errors_survive_alongside_file_issues(): void
+    {
+        $this->createMockPHPStan(
+            [
+                [
+                    'file' => $this->tempDir.'/app/test.php',
+                    'line' => 10,
+                    'message' => 'Undefined variable: $foo',
+                ],
+            ],
+            ['Child process error: Allowed memory size of 134217728 bytes exhausted.']
+        );
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $this->assertCount(1, $runner->getIssues());
+        $this->assertSame(
+            ['Child process error: Allowed memory size of 134217728 bytes exhausted.'],
+            $runner->getAnalysisErrors()
+        );
+    }
+
+    public function test_get_analysis_errors_is_empty_for_a_clean_run(): void
+    {
+        $this->createMockPHPStan([]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $this->assertSame([], $runner->getAnalysisErrors());
+    }
+
+    public function test_get_analysis_errors_returns_empty_array_without_analysis(): void
+    {
+        $runner = new PHPStanRunner($this->tempDir);
+
+        $this->assertSame([], $runner->getAnalysisErrors());
+    }
+
+    public function test_get_analysis_errors_drops_non_string_and_blank_entries(): void
+    {
+        $runner = new PHPStanRunner($this->tempDir);
+
+        $reflection = new ReflectionClass($runner);
+        $property = $reflection->getProperty('result');
+        $property->setAccessible(true);
+        $property->setValue($runner, [
+            'files' => [],
+            'errors' => [
+                'Internal error: child process died.',
+                '',
+                '   ',
+                42,
+                ['nested' => 'array'],
+                null,
+                '  Padded error.  ',
+            ],
+        ]);
+
+        // Trimmed, blanks and non-strings dropped, re-indexed as a list so the consumer
+        // can count and implode it without holes.
+        $this->assertSame(
+            ['Internal error: child process died.', 'Padded error.'],
+            $runner->getAnalysisErrors()
+        );
+    }
+
+    public function test_get_analysis_errors_returns_empty_array_when_the_errors_key_is_absent(): void
+    {
+        $runner = new PHPStanRunner($this->tempDir);
+
+        $reflection = new ReflectionClass($runner);
+        $property = $reflection->getProperty('result');
+        $property->setAccessible(true);
+        $property->setValue($runner, ['files' => []]);
+
+        $this->assertSame([], $runner->getAnalysisErrors());
+    }
+
+    public function test_get_analysis_errors_returns_empty_array_when_errors_is_not_an_array(): void
+    {
+        $runner = new PHPStanRunner($this->tempDir);
+
+        $reflection = new ReflectionClass($runner);
+        $property = $reflection->getProperty('result');
+        $property->setAccessible(true);
+        $property->setValue($runner, ['files' => [], 'errors' => 'boom']);
+
+        $this->assertSame([], $runner->getAnalysisErrors());
+    }
+
+    public function test_get_analysis_errors_records_a_run_that_emitted_no_json(): void
+    {
+        $this->createFailingMockPHPStan('PHPStan\Command\PathNotFoundException: Path /app was not found.');
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $errors = $runner->getAnalysisErrors();
+
+        $this->assertCount(1, $errors);
+        $this->assertStringContainsString('PHPStan produced no analysable output', $errors[0]);
+        $this->assertStringContainsString('exit code 1', $errors[0]);
+        $this->assertStringContainsString('PathNotFoundException', $errors[0]);
+        $this->assertTrue($runner->getIssues()->isEmpty());
+    }
+
+    public function test_get_analysis_errors_records_a_silent_failure_with_no_output(): void
+    {
+        // A process killed outright leaves neither stream to quote, so the exit code is
+        // all the evidence there is.
+        $this->createFailingMockPHPStan('', 137);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $this->assertSame(
+            ['PHPStan produced no analysable output (exit code 137)'],
+            $runner->getAnalysisErrors()
+        );
+    }
+
+    public function test_get_analysis_errors_truncates_a_long_output_excerpt(): void
+    {
+        $this->createFailingMockPHPStan(str_repeat('E', 2000).'TAIL_MARKER');
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $errors = $runner->getAnalysisErrors();
+
+        $this->assertCount(1, $errors);
+        $this->assertStringContainsString('EEEE', $errors[0]);
+        $this->assertStringNotContainsString('TAIL_MARKER', $errors[0]);
+        $this->assertLessThan(700, strlen($errors[0]));
+    }
+
+    public function test_get_analysis_errors_stays_empty_when_phpstan_exits_non_zero_with_valid_json(): void
+    {
+        // PHPStan exits 1 whenever it reports anything at all, so a non-zero exit on its
+        // own must never be read as a failed run.
+        $this->createMockPHPStan(
+            [
+                [
+                    'file' => $this->tempDir.'/app/test.php',
+                    'line' => 10,
+                    'message' => 'Undefined variable: $foo',
+                ],
+            ],
+            [],
+            1
+        );
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $this->assertCount(1, $runner->getIssues());
+        $this->assertSame([], $runner->getAnalysisErrors());
+    }
+
+    public function test_analyze_clears_a_recorded_failure_from_a_previous_run(): void
+    {
+        $this->createFailingMockPHPStan('Internal error.');
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $this->assertCount(1, $runner->getAnalysisErrors());
+
+        $this->createMockPHPStan([]);
+
+        $runner->analyze(['app']);
+
+        $this->assertSame([], $runner->getAnalysisErrors());
+    }
+
     public function test_matches_any_pattern_handles_wildcards_and_an_empty_list(): void
     {
         $this->assertTrue(PHPStanRunner::matchesAnyPattern('Undefined variable: $foo', ['*variable*']));
@@ -625,9 +820,17 @@ BASH;
         $runner = new PHPStanRunner($this->tempDir);
         $runner->analyze(['app']);
 
-        // When JSON is invalid, result should fall back to ['files' => []]
-        $issues = $runner->getIssues();
-        $this->assertTrue($issues->isEmpty());
+        // Issues still fall back to empty, but the run no longer looks clean: output that
+        // cannot be decoded is recorded as an analysis error rather than vanishing. Note
+        // the exit code is 0 here, which pins that undecodable output is a failure on its
+        // own, independent of how PHPStan exited.
+        $this->assertTrue($runner->getIssues()->isEmpty());
+
+        $errors = $runner->getAnalysisErrors();
+        $this->assertCount(1, $errors);
+        $this->assertStringContainsString('PHPStan produced no analysable output', $errors[0]);
+        $this->assertStringContainsString('exit code 0', $errors[0]);
+        $this->assertStringContainsString('This is not valid JSON', $errors[0]);
     }
 
     public function test_get_issues_skips_non_array_file_data(): void
@@ -802,14 +1005,22 @@ BASH;
      * Create a mock PHPStan script that returns predefined issues.
      *
      * Mirrors PHPStan's JSON error format, which omits 'identifier' and 'tip'
-     * entirely rather than emitting them as null.
+     * entirely rather than emitting them as null, and which reports errors it cannot
+     * attach to a file in a top-level 'errors' list counted by totals.errors.
+     *
+     * The exit code is configurable because PHPStan exits 1 whenever it reports
+     * anything at all, ordinary type errors included.
      *
      * @param  array<array{file: string, line: int, message: string, identifier?: string, tip?: string}>  $issues
+     * @param  array<string>  $analysisErrors
      */
-    private function createMockPHPStan(array $issues): void
+    private function createMockPHPStan(array $issues, array $analysisErrors = [], int $exitCode = 0): void
     {
         $vendorBinDir = $this->tempDir.'/vendor/bin';
-        mkdir($vendorBinDir, 0755, true);
+
+        if (! is_dir($vendorBinDir)) {
+            mkdir($vendorBinDir, 0755, true);
+        }
 
         $files = [];
         foreach ($issues as $issue) {
@@ -837,11 +1048,11 @@ BASH;
 
         $output = [
             'totals' => [
-                'errors' => 0,
+                'errors' => count($analysisErrors),
                 'file_errors' => count($issues),
             ],
             'files' => $files,
-            'errors' => [],
+            'errors' => array_values($analysisErrors),
         ];
 
         $json = json_encode($output, JSON_PRETTY_PRINT);
@@ -851,6 +1062,34 @@ BASH;
 cat <<'EOF'
 {$json}
 EOF
+exit {$exitCode}
+BASH;
+
+        file_put_contents($vendorBinDir.'/phpstan', $script);
+        chmod($vendorBinDir.'/phpstan', 0755);
+    }
+
+    /**
+     * Create a mock PHPStan script that writes to stderr and emits no JSON at all.
+     *
+     * Mirrors a crash, an out-of-memory kill or a PathNotFoundException: PHPStan
+     * writes the reason to stderr and leaves stdout empty, so there is no report to
+     * decode.
+     */
+    private function createFailingMockPHPStan(string $stderr, int $exitCode = 1): void
+    {
+        $vendorBinDir = $this->tempDir.'/vendor/bin';
+
+        if (! is_dir($vendorBinDir)) {
+            mkdir($vendorBinDir, 0755, true);
+        }
+
+        $script = <<<BASH
+#!/bin/bash
+cat >&2 <<'EOF'
+{$stderr}
+EOF
+exit {$exitCode}
 BASH;
 
         file_put_contents($vendorBinDir.'/phpstan', $script);

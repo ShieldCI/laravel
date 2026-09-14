@@ -937,6 +937,63 @@ class ReporterTest extends TestCase
 
     /** @test */
     #[Test]
+    public function console_output_shows_the_reason_an_analyzer_errored(): void
+    {
+        $results = $this->resultsOf(
+            new AnalysisResult(
+                analyzerId: 'phpstan',
+                status: Status::Error,
+                message: 'PHPStan reported 1 analysis error(s): Ignored error pattern #Never matched# was not matched.',
+                issues: [],
+                executionTime: 0.1,
+                metadata: [
+                    'name' => 'PHPStan Static Analyzer',
+                    'category' => Category::Reliability,
+                ],
+            ),
+        );
+
+        $report = $this->reporter->generate($results);
+        $output = $this->reporter->toConsole($report);
+
+        // An errored analyzer carries no issues, so the message is the only place the
+        // reason can appear. Printing the status label alone leaves the user with nothing.
+        $this->assertStringContainsString('PHPStan reported 1 analysis error(s)', $output);
+        $this->assertStringContainsString('#Never matched#', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_streams_error_result_with_its_message(): void
+    {
+        $result = AnalysisResult::error(
+            'phpstan',
+            'PHPStan produced no analysable output (exit code 1): Allowed memory size exhausted',
+        );
+
+        $output = $this->reporter->streamResult($result, 1, 1, 'Reliability');
+
+        $this->assertStringContainsString('Error', $output);
+        $this->assertStringContainsString('PHPStan produced no analysable output', $output);
+        $this->assertStringContainsString('Allowed memory size exhausted', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_does_not_print_the_message_for_a_passed_result(): void
+    {
+        // Guards the shortcut of widening the failed/warning branch to cover error:
+        // passed results must stay a single status line.
+        $result = AnalysisResult::passed('test-analyzer', 'Nothing to report here');
+
+        $output = $this->reporter->streamResult($result, 1, 1, 'Security');
+
+        $this->assertStringContainsString('Passed', $output);
+        $this->assertStringNotContainsString('Nothing to report here', $output);
+    }
+
+    /** @test */
+    #[Test]
     public function color_returns_text_for_unknown_color(): void
     {
         $reflection = new \ReflectionMethod($this->reporter, 'color');

@@ -1297,7 +1297,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                     if ($this->closureDepth > 0) {
                         // Still skip whitelisted service aliases in closures
                         $firstArg = $node->args[0];
-                        if (! $firstArg instanceof Node\VariadicPlaceholder &&
+                        if ($firstArg instanceof Node\Arg &&
                             $firstArg->value instanceof Node\Scalar\String_) {
                             $serviceName = $firstArg->value->value;
                             if (in_array($serviceName, $this->whitelistServices, true)) {
@@ -1319,7 +1319,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
 
                     // Check if first argument is a whitelisted service alias
                     $firstArg = $node->args[0];
-                    if (! $firstArg instanceof Node\VariadicPlaceholder &&
+                    if ($firstArg instanceof Node\Arg &&
                         $firstArg->value instanceof Node\Scalar\String_) {
                         $serviceName = $firstArg->value->value;
                         if (in_array($serviceName, $this->whitelistServices, true)) {
@@ -1574,7 +1574,13 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     /**
      * Get argument type from function/method args.
      *
-     * @param  array<Node\Arg|Node\VariadicPlaceholder>  $args
+     * Typed as plain nodes rather than a union of the argument node classes.
+     * php-parser keeps adding placeholder types to argument lists (ArgPlaceholder,
+     * for the "?" of partial application, arrived in 5.9), and the supported range
+     * is ^4.15|^5.0, so no union spelled here stays correct or is even resolvable
+     * across all of it. Only a plain Arg carries a value, and that is checked below.
+     *
+     * @param  array<Node>  $args
      */
     private function getArgumentType(array $args): string
     {
@@ -1590,9 +1596,10 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
             return 'factory';
         }
 
-        // Skip VariadicPlaceholder
+        // Only a plain Arg has a value. Placeholders (first-class callable "...",
+        // partial application "?") carry nothing to classify.
         $firstArg = $args[0];
-        if ($firstArg instanceof Node\VariadicPlaceholder) {
+        if (! $firstArg instanceof Node\Arg) {
             return 'unknown';
         }
 

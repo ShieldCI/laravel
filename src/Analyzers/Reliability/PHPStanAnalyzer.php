@@ -6,6 +6,7 @@ namespace ShieldCI\Analyzers\Reliability;
 
 use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Support\Collection;
+use ShieldCI\Analyzers\Performance\CollectionCallAnalyzer;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -475,7 +476,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
      * @var array<string>
      */
     private const IDENTIFIERS_HANDLED_ELSEWHERE = [
-        'larastan.noUnnecessaryCollectionCall',
+        CollectionCallAnalyzer::IDENTIFIER,
         'larastan.noEnvCallsOutsideOfConfig',
     ];
 
@@ -679,6 +680,14 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
             $identifier = $issue['identifier'] ?? null;
 
             if ($identifier !== null && in_array($identifier, self::IDENTIFIERS_HANDLED_ELSEWHERE, true)) {
+                continue;
+            }
+
+            // PHPStan below 1.11 and Larastan below 2.9 emit no identifier, so the check
+            // above cannot see a finding that another analyzer owns. Without the message
+            // fallback the same collection call is reported twice, once here as an
+            // uncategorised error and once by the analyzer that owns it.
+            if ($identifier === null && CollectionCallAnalyzer::isCollectionCall($issue)) {
                 continue;
             }
 

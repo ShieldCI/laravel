@@ -218,7 +218,7 @@ class ViewRenderScanner
     /**
      * Extract variable bindings from `->with('key', $value)` or `->with(['key' => $value])`.
      *
-     * @param  array<Node\Arg|Node\VariadicPlaceholder>  $args
+     * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
      * @return array<string, ?string>
      */
     private function extractWithBindings(array $args): array

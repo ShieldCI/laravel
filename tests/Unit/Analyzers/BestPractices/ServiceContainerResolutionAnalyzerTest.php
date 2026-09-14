@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use Illuminate\Config\Repository;
+use PhpParser\Node\ArgPlaceholder;
 use ShieldCI\Analyzers\BestPractices\ServiceContainerResolutionAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -3487,5 +3488,41 @@ PHP;
         $this->assertCount(1, $issues);
         $this->assertSame(Severity::High, $issues[0]->severity);
         $this->assertHasIssueContaining('app()->bind()', $result);
+    }
+
+    public function test_handles_partial_application_placeholder_arguments(): void
+    {
+        if (! class_exists(ArgPlaceholder::class)) {
+            $this->markTestSkipped('The installed nikic/php-parser does not model partial application placeholders.');
+        }
+
+        // The "?" of partial application parses to an ArgPlaceholder, which carries no
+        // ->value. Reading one emits a PHP warning, which phpunit.xml turns into a
+        // failure, so this also guards against the property access coming back.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class OrderProcessor
+{
+    public function resolver()
+    {
+        return app(?);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/OrderProcessor.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('app()', $result);
     }
 }

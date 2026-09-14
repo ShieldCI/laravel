@@ -195,7 +195,7 @@ class BootstrapRouteParser
      * Records the closure argument's line range when the group is throttled —
      * either through its method chain ($chainThrottled) or a config-array argument.
      *
-     * @param  array<Node\Arg|Node\VariadicPlaceholder>  $args
+     * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
      * @param  array<int, array{start: int, end: int}>  $ranges
      */
     private function collectThrottledGroupRange(array $args, bool $chainThrottled, array &$ranges): void
@@ -209,7 +209,7 @@ class BootstrapRouteParser
     /**
      * Returns the first Closure/ArrowFunction argument of a group() call, if any.
      *
-     * @param  array<Node\Arg|Node\VariadicPlaceholder>  $args
+     * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
      */
     private function closureArgument(array $args): ?Node
     {
@@ -227,7 +227,7 @@ class BootstrapRouteParser
      * Detects the array-config group form: a ['middleware' => 'throttle...'] or
      * ['middleware' => ['auth', 'throttle...']] entry among the call arguments.
      *
-     * @param  array<Node\Arg|Node\VariadicPlaceholder>  $args
+     * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
      */
     private function argsCarryThrottleMiddleware(array $args): bool
     {

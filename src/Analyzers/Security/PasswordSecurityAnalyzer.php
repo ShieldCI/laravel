@@ -686,7 +686,7 @@ class PasswordSecurityAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * @param  array<Node\Arg|Node\VariadicPlaceholder>  $args
+     * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
      * @param  array<string>  $hasherVars
      * @param  array<string>  $plaintextVars
      * @param  array<string>  $taintedVars

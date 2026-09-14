@@ -6,7 +6,6 @@ namespace ShieldCI\Analyzers\Security;
 
 use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
-use PhpParser\Node\VariadicPlaceholder;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
@@ -2354,7 +2353,7 @@ class RouteAuthVisitor extends NodeVisitorAbstract
      *   ->middleware(['auth', 'verified'])
      *   ->middleware(SomeClass::class)
      *
-     * @param  array<Node\Arg|VariadicPlaceholder>  $args
+     * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
      * @return list<string>
      */
     private function extractMiddlewareArgs(array $args): array

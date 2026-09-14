@@ -48,6 +48,15 @@ class PHPStanRunner
     ];
 
     /**
+     * Longest excerpt kept from a run that produced no analysable output.
+     *
+     * A run that dies can put a whole stack trace on stderr, and analyzer messages are
+     * rendered on one console line. Long enough for PHPStan's own abort reasons, short
+     * enough that it cannot flood a report.
+     */
+    private const MAX_OUTPUT_SNIPPET = 500;
+
+    /**
      * @var array<string, mixed>|null
      */
     private ?array $result = null;
@@ -107,15 +116,62 @@ class PHPStanRunner
             $process->run();
 
             // Parse JSON output
-            $output = $process->getOutput();
-            $decoded = json_decode($output, true);
-            $this->result = is_array($decoded) ? $this->toStringKeyedArray($decoded) : ['files' => []];
+            $decoded = json_decode($process->getOutput(), true);
+
+            // PathNotFoundException, "No files found to analyse." and fatal errors all
+            // abort before the JSON formatter runs, so there is no report to read and no
+            // per-file evidence of the failure. Record the reason in the report's own
+            // non-file-specific "errors" list rather than handing back an empty report
+            // that reads as clean.
+            $this->result = is_array($decoded)
+                ? $this->toStringKeyedArray($decoded)
+                : ['files' => [], 'errors' => [$this->describeAbortedRun($process)]];
         } finally {
             // Clean up temp config file
             $this->cleanupTempConfig();
         }
 
         return $this;
+    }
+
+    /**
+     * Describe a run that produced no analysable output.
+     *
+     * The exit code plus a snippet of the output is the only evidence such a run leaves.
+     * Standard error comes first because PHPStan writes its abort reasons there; standard
+     * output is the fallback, since a PHP fatal error or an exhausted memory limit can
+     * land there instead.
+     */
+    private function describeAbortedRun(Process $process): string
+    {
+        $detail = $this->condenseOutput($process->getErrorOutput());
+
+        if ($detail === '') {
+            $detail = $this->condenseOutput($process->getOutput());
+        }
+
+        // A null exit code means the process never reported one, which is not the same
+        // as exiting cleanly, so it must not be cast to 0.
+        $summary = sprintf(
+            'PHPStan produced no analysable output (exit code %d)',
+            $process->getExitCode() ?? -1
+        );
+
+        return $detail === '' ? $summary : $summary.': '.$detail;
+    }
+
+    /**
+     * Flatten process output to one bounded line.
+     */
+    private function condenseOutput(string $output): string
+    {
+        $collapsed = preg_replace('/\s+/', ' ', $output);
+
+        if (! is_string($collapsed)) {
+            return '';
+        }
+
+        return Str::limit(trim($collapsed), self::MAX_OUTPUT_SNIPPET);
     }
 
     /**
@@ -267,6 +323,43 @@ class PHPStanRunner
         $collected = collect($issues);
 
         return $this->filterKnownFalsePositives($collected);
+    }
+
+    /**
+     * Get the errors PHPStan reported that are not attached to any file.
+     *
+     * PHPStan reports unmatched ignoreErrors patterns, unusable ignore configuration and
+     * its own internal errors in a top-level "errors" list rather than under "files". A
+     * run that reports one of these has not produced a trustworthy result even when every
+     * analysed file came back clean, and on an internal error PHPStan discards the real
+     * findings entirely. analyze() records a run that emitted no report at all here too,
+     * so this is the single channel for "the analysis itself did not go through".
+     *
+     * @return list<string>
+     */
+    public function getAnalysisErrors(): array
+    {
+        $errors = $this->result['errors'] ?? null;
+
+        if (! is_array($errors)) {
+            return [];
+        }
+
+        $messages = [];
+
+        foreach ($errors as $error) {
+            if (! is_string($error)) {
+                continue;
+            }
+
+            $trimmed = trim($error);
+
+            if ($trimmed !== '') {
+                $messages[] = $trimmed;
+            }
+        }
+
+        return $messages;
     }
 
     /**

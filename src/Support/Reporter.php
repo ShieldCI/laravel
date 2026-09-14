@@ -129,6 +129,15 @@ class Reporter implements ReporterInterface
                     continue;
                 }
 
+                // Show the reason an analyzer could not complete. An errored result
+                // carries no issues, so its message is the only place the reason exists.
+                if ($result->getStatus()->value === 'error') {
+                    $output[] = $this->color("  ⚡ {$result->getMessage()}", 'magenta');
+                    $output[] = '';
+
+                    continue;
+                }
+
                 // Show detailed info for failed/warning analyzers
                 if ($result->getStatus()->value === 'failed' || $result->getStatus()->value === 'warning') {
                     // Use bold for critical failures
@@ -792,6 +801,15 @@ class Reporter implements ReporterInterface
         // Show skip reason for skipped analyzers
         if ($result->getStatus()->value === 'skipped') {
             $output[] = $this->color("  ⊝ {$result->getMessage()}", 'gray');
+            $output[] = '';
+
+            return implode(PHP_EOL, $output);
+        }
+
+        // Show the reason an analyzer could not complete. An errored result carries no
+        // issues, so its message is the only place the reason exists.
+        if ($result->getStatus()->value === 'error') {
+            $output[] = $this->color("  ⚡ {$result->getMessage()}", 'magenta');
             $output[] = '';
 
             return implode(PHP_EOL, $output);

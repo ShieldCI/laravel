@@ -50,6 +50,11 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
     private const OTHER_CATEGORY = 'other';
 
     /**
+     * Number of analysis errors quoted in a result message before summarising the rest.
+     */
+    private const MAX_ANALYSIS_ERRORS_IN_MESSAGE = 3;
+
+    /**
      * All issue categories with their patterns and severity levels.
      *
      * Declaration order is LOAD-BEARING: categoryFromMessage() evaluates these in
@@ -558,6 +563,9 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
             // Run PHPStan once on all paths
             $runner->analyze($paths, $level, $timeout, $memoryLimit);
 
+            // An error PHPStan could not attach to a file is still a failed analysis
+            $analysisErrors = $runner->getAnalysisErrors();
+
             // Categorize all issues
             $categorizedIssues = $this->categorizeIssues($runner->getIssues(), $activeCategories);
         } catch (\Throwable $e) {
@@ -575,7 +583,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         $totalIssues = array_sum(array_map(fn ($issues) => $issues->count(), $categorizedIssues));
 
         if ($totalIssues === 0) {
-            return $this->passed('No PHPStan issues detected');
+            return $this->noFileIssuesResult($analysisErrors);
         }
 
         // Create issue objects for each category
@@ -597,7 +605,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         }
 
         if ($allIssueObjects === []) {
-            return $this->passed('No PHPStan issues detected');
+            return $this->noFileIssuesResult($analysisErrors);
         }
 
         $displayedCount = count($allIssueObjects);
@@ -606,7 +614,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         // The per-category display cap can hide rows, so publish the true breakdown.
         // This is what keeps the Other bucket countable even when its rows are
         // truncated away, and is the machine-readable half of "nothing is discarded".
-        return $this->resultBySeverity($message, $allIssueObjects, [
+        $metadata = [
             'total_issues' => $totalIssues,
             'displayed_issues' => $displayedCount,
             'issues_by_category' => array_map(
@@ -614,7 +622,71 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
                 $categorizedIssues
             ),
             'truncated' => $displayedCount < $totalIssues,
-        ]);
+        ];
+
+        // Both halves are real findings, so neither displaces the other: the status stays
+        // severity-derived and the analysis errors ride along instead of being dropped.
+        // PHPStan throws away the file results when it hits an internal error, so findings
+        // that arrive next to one are a partial view and have to say so.
+        if ($analysisErrors !== []) {
+            $message .= sprintf(
+                '. PHPStan also reported %d analysis error(s), so these findings may be incomplete: %s',
+                count($analysisErrors),
+                $this->summarizeAnalysisErrors($analysisErrors)
+            );
+
+            $metadata['analysis_errors'] = $analysisErrors;
+        }
+
+        return $this->resultBySeverity($message, $allIssueObjects, $metadata);
+    }
+
+    /**
+     * Result for a run that produced no reportable file issues.
+     *
+     * PHPStan can come back with an empty "files" map and still have failed: unmatched
+     * ignoreErrors patterns, unusable ignore configuration and internal errors are all
+     * reported outside the per-file map, and an aborted run reports nothing at all.
+     * Calling either of those "passed" claims a clean analysis that never happened.
+     *
+     * @param  list<string>  $analysisErrors
+     */
+    private function noFileIssuesResult(array $analysisErrors): ResultInterface
+    {
+        if ($analysisErrors === []) {
+            return $this->passed('No PHPStan issues detected');
+        }
+
+        return $this->error(
+            sprintf(
+                'PHPStan reported %d analysis error(s): %s',
+                count($analysisErrors),
+                $this->summarizeAnalysisErrors($analysisErrors)
+            ),
+            ['analysis_errors' => $analysisErrors]
+        );
+    }
+
+    /**
+     * Condense analysis errors into one bounded clause for a result message.
+     *
+     * A reportUnmatchedIgnoredErrors run can produce dozens of these. The full list always
+     * reaches the caller through the analysis_errors metadata key; the message quotes the
+     * leaders and counts the rest.
+     *
+     * @param  list<string>  $analysisErrors
+     */
+    private function summarizeAnalysisErrors(array $analysisErrors): string
+    {
+        $quoted = array_slice($analysisErrors, 0, self::MAX_ANALYSIS_ERRORS_IN_MESSAGE);
+        $summary = implode(' | ', $quoted);
+        $remaining = count($analysisErrors) - count($quoted);
+
+        if ($remaining > 0) {
+            $summary .= sprintf(' (and %d more)', $remaining);
+        }
+
+        return $summary;
     }
 
     /**

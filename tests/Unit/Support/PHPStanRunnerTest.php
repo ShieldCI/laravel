@@ -448,6 +448,91 @@ class PHPStanRunnerTest extends TestCase
         $this->assertTrue($issues->isEmpty());
     }
 
+    public function test_get_issues_captures_identifier_and_tip(): void
+    {
+        $this->createMockPHPStan([
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 10,
+                'message' => 'Instantiated class App\Nope not found.',
+                'identifier' => 'class.notFound',
+                'tip' => 'Learn more at https://phpstan.org/user-guide/discovering-symbols',
+            ],
+        ]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $issue = $runner->getIssues()->first();
+
+        $this->assertNotNull($issue);
+        $this->assertArrayHasKey('identifier', $issue);
+        $this->assertArrayHasKey('tip', $issue);
+        $this->assertSame('class.notFound', $issue['identifier'] ?? null);
+        $this->assertSame('Learn more at https://phpstan.org/user-guide/discovering-symbols', $issue['tip'] ?? null);
+    }
+
+    public function test_get_issues_defaults_identifier_and_tip_to_null_when_absent(): void
+    {
+        // PHPStan below 1.11 emits neither key, and that version is still inside the
+        // supported range, so both must read as null rather than being missing.
+        $this->createMockPHPStan([
+            [
+                'file' => $this->tempDir.'/app/test.php',
+                'line' => 10,
+                'message' => 'Undefined variable: $foo',
+            ],
+        ]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $issue = $runner->getIssues()->first();
+
+        $this->assertNotNull($issue);
+        // Present-and-null, not absent: assertArrayHasKey proves the key is there,
+        // the null assertion proves its value.
+        $this->assertArrayHasKey('identifier', $issue);
+        $this->assertArrayHasKey('tip', $issue);
+        $this->assertNull($issue['identifier'] ?? null);
+        $this->assertNull($issue['tip'] ?? null);
+    }
+
+    public function test_get_issues_nulls_non_string_identifier_and_tip(): void
+    {
+        $runner = new PHPStanRunner($this->tempDir);
+
+        $reflection = new ReflectionClass($runner);
+        $property = $reflection->getProperty('result');
+        $property->setAccessible(true);
+        $property->setValue($runner, [
+            'files' => [
+                '/app/valid.php' => [
+                    'messages' => [
+                        ['line' => 10, 'message' => 'Valid issue', 'identifier' => 42, 'tip' => ''],
+                    ],
+                ],
+            ],
+        ]);
+
+        $issue = $runner->getIssues()->first();
+
+        $this->assertNotNull($issue);
+        $this->assertNull($issue['identifier'] ?? null);
+        $this->assertNull($issue['tip'] ?? null);
+    }
+
+    public function test_matches_any_pattern_handles_wildcards_and_an_empty_list(): void
+    {
+        $this->assertTrue(PHPStanRunner::matchesAnyPattern('Undefined variable: $foo', ['*variable*']));
+        $this->assertTrue(PHPStanRunner::matchesAnyPattern('Undefined variable: $foo', ['no match', 'Undefined *']));
+        $this->assertFalse(PHPStanRunner::matchesAnyPattern('Undefined variable: $foo', ['Method *']));
+
+        // An empty pattern list must claim nothing, otherwise a category without
+        // patterns would swallow every message.
+        $this->assertFalse(PHPStanRunner::matchesAnyPattern('Undefined variable: $foo', []));
+    }
+
     public function test_filter_by_pattern_works(): void
     {
         $this->createMockPHPStan([
@@ -716,7 +801,10 @@ BASH;
     /**
      * Create a mock PHPStan script that returns predefined issues.
      *
-     * @param  array<array{file: string, line: int, message: string}>  $issues
+     * Mirrors PHPStan's JSON error format, which omits 'identifier' and 'tip'
+     * entirely rather than emitting them as null.
+     *
+     * @param  array<array{file: string, line: int, message: string, identifier?: string, tip?: string}>  $issues
      */
     private function createMockPHPStan(array $issues): void
     {
@@ -730,11 +818,21 @@ BASH;
                 $files[$file] = ['messages' => []];
             }
 
-            $files[$file]['messages'][] = [
+            $entry = [
                 'message' => $issue['message'],
                 'line' => $issue['line'],
                 'ignorable' => true,
             ];
+
+            if (isset($issue['tip'])) {
+                $entry['tip'] = $issue['tip'];
+            }
+
+            if (isset($issue['identifier'])) {
+                $entry['identifier'] = $issue['identifier'];
+            }
+
+            $files[$file]['messages'][] = $entry;
         }
 
         $output = [

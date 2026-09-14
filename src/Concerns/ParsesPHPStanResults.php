@@ -19,7 +19,11 @@ trait ParsesPHPStanResults
     /**
      * Create issue objects from PHPStan results.
      *
-     * @param  Collection<int, array{file: string, line: int, message: string}>  $issues
+     * The identifier and tip keys are deliberately optional: this trait only needs
+     * file/line/message, so accepting a wider shape than PHPStanRunner produces keeps
+     * callers that build issues by hand working unchanged.
+     *
+     * @param  Collection<int, array{file: string, line: int, message: string, identifier?: string|null, tip?: string|null}>  $issues
      * @param  string  $issueMessage  The message to display for each issue
      * @param  Severity  $severity  The severity level for issues
      * @param  callable(string): string  $recommendationCallback  Callback to generate recommendations
@@ -53,14 +57,27 @@ trait ParsesPHPStanResults
                 $line = 1;
             }
 
+            $identifier = isset($issue['identifier']) && is_string($issue['identifier']) ? $issue['identifier'] : null;
+            $tip = isset($issue['tip']) && is_string($issue['tip']) ? $issue['tip'] : null;
+
+            // PHPStan's own tip is often the actionable half of the error, and it is the
+            // only guidance available for issues we could not categorise.
+            $recommendation = $recommendationCallback($message);
+
+            if ($tip !== null) {
+                $recommendation .= ' PHPStan tip: '.$tip;
+            }
+
             $issueObjects[] = $this->createIssueWithSnippet(
                 message: $issueMessage,
                 filePath: $file,
                 lineNumber: $line,
                 severity: $severity,
-                recommendation: $recommendationCallback($message),
+                recommendation: $recommendation,
                 metadata: [
                     'phpstan_message' => $message,
+                    'phpstan_identifier' => $identifier,
+                    'phpstan_tip' => $tip,
                     'file' => $file,
                     'line' => $line,
                     'code' => 'phpstan',

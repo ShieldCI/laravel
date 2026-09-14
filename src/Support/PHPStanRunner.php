@@ -15,6 +15,13 @@ use Symfony\Component\Process\Process;
  *
  * Uses Larastan and Carbon extensions when available to properly handle
  * Laravel's magic methods and Carbon's iterator types, reducing false positives.
+ *
+ * The identifier and tip keys are optional in the shape rather than required-and-
+ * nullable. getIssues() always sets them, but Collection's value template is
+ * invariant, so a required-key shape could not be passed to consumers that accept
+ * hand-built issue arrays without either widening them or editing every caller.
+ *
+ * @phpstan-type PHPStanIssue array{file: string, line: int, message: string, identifier?: string|null, tip?: string|null}
  */
 class PHPStanRunner
 {
@@ -214,7 +221,7 @@ class PHPStanRunner
     /**
      * Get all issues from PHPStan analysis.
      *
-     * @return Collection<int, array{file: string, line: int, message: string}>
+     * @return Collection<int, PHPStanIssue>
      */
     public function getIssues(): Collection
     {
@@ -238,22 +245,35 @@ class PHPStanRunner
 
                 $line = $message['line'] ?? 0;
                 $msg = $message['message'] ?? '';
+
+                // PHPStan omits these keys entirely rather than emitting null, and only
+                // emits 'identifier' from 1.11 onwards - 1.10 is still inside our
+                // "phpstan/phpstan": "^1.10|^2.0" range. Normalise both to null so
+                // consumers read one shape regardless of the installed version.
+                $identifier = $message['identifier'] ?? null;
+                $tip = $message['tip'] ?? null;
+
                 $issues[] = [
                     'file' => $file,
                     'line' => is_int($line) ? $line : 0,
                     'message' => is_string($msg) ? $msg : '',
+                    'identifier' => is_string($identifier) && $identifier !== '' ? $identifier : null,
+                    'tip' => is_string($tip) && $tip !== '' ? $tip : null,
                 ];
             }
         }
 
-        return $this->filterKnownFalsePositives(collect($issues));
+        /** @var Collection<int, PHPStanIssue> $collected */
+        $collected = collect($issues);
+
+        return $this->filterKnownFalsePositives($collected);
     }
 
     /**
      * Filter out known false positives from issues.
      *
-     * @param  Collection<int, array{file: string, line: int, message: string}>  $issues
-     * @return Collection<int, array{file: string, line: int, message: string}>
+     * @param  Collection<int, PHPStanIssue>  $issues
+     * @return Collection<int, PHPStanIssue>
      */
     private function filterKnownFalsePositives(Collection $issues): Collection
     {
@@ -269,30 +289,44 @@ class PHPStanRunner
     }
 
     /**
+     * Does a message match any of the given wildcard patterns?
+     *
+     * Single source of truth for pattern semantics, shared by filterByPattern()
+     * and PHPStanAnalyzer's per-issue classification fallback, so the two cannot
+     * drift apart.
+     *
+     * @param  array<string>  $patterns
+     */
+    public static function matchesAnyPattern(string $message, array $patterns): bool
+    {
+        foreach ($patterns as $pattern) {
+            if (Str::is($pattern, $message)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Filter issues by message pattern (wildcard match).
      *
      * @param  string|array<string>  $patterns
-     * @return Collection<int, array{file: string, line: int, message: string}>
+     * @return Collection<int, PHPStanIssue>
      */
     public function filterByPattern(string|array $patterns): Collection
     {
         $patterns = is_array($patterns) ? $patterns : [$patterns];
 
-        return $this->getIssues()->filter(function (array $issue) use ($patterns) {
-            foreach ($patterns as $pattern) {
-                if (Str::is($pattern, $issue['message'])) {
-                    return true;
-                }
-            }
-
-            return false;
-        });
+        return $this->getIssues()->filter(
+            static fn (array $issue): bool => self::matchesAnyPattern($issue['message'], $patterns)
+        );
     }
 
     /**
      * Filter issues by regex pattern.
      *
-     * @return Collection<int, array{file: string, line: int, message: string}>
+     * @return Collection<int, PHPStanIssue>
      */
     public function filterByRegex(string $regex): Collection
     {
@@ -305,7 +339,7 @@ class PHPStanRunner
      * Filter issues containing specific text.
      *
      * @param  string|array<string>  $search
-     * @return Collection<int, array{file: string, line: int, message: string}>
+     * @return Collection<int, PHPStanIssue>
      */
     public function filterByText(string|array $search): Collection
     {

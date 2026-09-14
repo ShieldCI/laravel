@@ -40,6 +40,83 @@ class ParsesPHPStanResultsTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_includes_identifier_and_tip_in_issue_metadata(): void
+    {
+        $class = $this->createParsesPHPStanResultsClass();
+
+        $issues = collect([
+            [
+                'file' => '/app/Test.php',
+                'line' => 10,
+                'message' => 'Instantiated class App\Nope not found.',
+                'identifier' => 'class.notFound',
+                'tip' => 'Learn more at https://phpstan.org/user-guide/discovering-symbols',
+            ],
+        ]);
+
+        $result = $class->publicCreateIssuesFromPHPStanResults(
+            $issues,
+            'PHPStan issue detected',
+            Severity::High,
+            fn (string $msg) => "Fix: {$msg}"
+        );
+
+        $this->assertCount(1, $result);
+        $this->assertEquals('class.notFound', $result[0]->metadata['phpstan_identifier']);
+        $this->assertEquals(
+            'Learn more at https://phpstan.org/user-guide/discovering-symbols',
+            $result[0]->metadata['phpstan_tip']
+        );
+    }
+
+    /** @test */
+    #[Test]
+    public function it_tolerates_issues_without_identifier_or_tip(): void
+    {
+        $class = $this->createParsesPHPStanResultsClass();
+
+        $issues = collect([
+            ['file' => '/app/Test.php', 'line' => 10, 'message' => 'Undefined variable'],
+        ]);
+
+        $result = $class->publicCreateIssuesFromPHPStanResults(
+            $issues,
+            'PHPStan issue detected',
+            Severity::High,
+            fn (string $msg) => "Fix: {$msg}"
+        );
+
+        $this->assertCount(1, $result);
+        $this->assertNull($result[0]->metadata['phpstan_identifier']);
+        $this->assertNull($result[0]->metadata['phpstan_tip']);
+        $this->assertEquals('Fix: Undefined variable', $result[0]->recommendation);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_appends_the_tip_to_the_recommendation_only_when_present(): void
+    {
+        $class = $this->createParsesPHPStanResultsClass();
+
+        $issues = collect([
+            ['file' => '/app/A.php', 'line' => 10, 'message' => 'With tip', 'tip' => 'Try this instead'],
+            ['file' => '/app/B.php', 'line' => 11, 'message' => 'Without tip'],
+        ]);
+
+        $result = $class->publicCreateIssuesFromPHPStanResults(
+            $issues,
+            'PHPStan issue detected',
+            Severity::High,
+            fn (string $msg) => "Fix: {$msg}"
+        );
+
+        $this->assertCount(2, $result);
+        $this->assertEquals('Fix: With tip PHPStan tip: Try this instead', $result[0]->recommendation);
+        $this->assertEquals('Fix: Without tip', $result[1]->recommendation);
+    }
+
+    /** @test */
+    #[Test]
     public function it_limits_issues_to_50(): void
     {
         $class = $this->createParsesPHPStanResultsClass();
@@ -203,7 +280,7 @@ class ParsesPHPStanResultsTest extends TestCase
             use ParsesPHPStanResults;
 
             /**
-             * @param  Collection<int, array{file: string, line: int, message: string}>  $issues
+             * @param  Collection<int, array{file: string, line: int, message: string, identifier?: string|null, tip?: string|null}>  $issues
              * @return array<int, Issue>
              */
             public function publicCreateIssuesFromPHPStanResults(

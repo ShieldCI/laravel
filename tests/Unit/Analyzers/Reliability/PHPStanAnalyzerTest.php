@@ -7,6 +7,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\Reliability;
 use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\Reliability\PHPStanAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class PHPStanAnalyzerTest extends AnalyzerTestCase
@@ -621,10 +622,361 @@ BASH;
         $this->assertStringContainsString('--memory-limit=2048M', $captured);
     }
 
+    public function test_does_not_report_a_cross_category_duplicate_twice(): void
+    {
+        $result = $this->analyzeIssues([
+            ['message' => 'Parameter #1 $id of method App\Services\ExampleService::find() expects int, string given.'],
+        ]);
+
+        $this->assertIssueCount(1, $result);
+        $this->assertStringContainsString('Found 1 PHPStan issue(s)', $result->getMessage());
+    }
+
+    public function test_reports_unmatched_errors_in_the_other_category(): void
+    {
+        $result = $this->analyzeIssues([
+            ['message' => 'If condition is always true.'],
+        ]);
+
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('Other PHPStan Issues', $result);
+    }
+
+    public function test_routes_function_argument_errors_to_invalid_function_calls(): void
+    {
+        $result = $this->analyzeIssues([
+            [
+                'identifier' => 'argument.type',
+                'message' => 'Parameter #1 $callback of function array_map expects callable, string given.',
+            ],
+        ]);
+
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('Invalid Function Calls', $result);
+    }
+
+    public function test_routes_static_method_and_constructor_arguments_to_invalid_method_calls(): void
+    {
+        $result = $this->analyzeIssues([
+            [
+                'identifier' => 'argument.type',
+                'message' => 'Parameter #1 $id of static method App\Services\ExampleService::locate() expects int, string given.',
+            ],
+            [
+                'identifier' => 'argument.type',
+                'message' => 'Parameter #1 $id of class App\Services\ExampleService constructor expects int, string given.',
+            ],
+        ]);
+
+        $this->assertIssueCount(2, $result);
+        $this->assertHasIssueContaining('Invalid Method Calls', $result);
+
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringNotContainsString('Invalid Function Calls', $issue->message);
+        }
+    }
+
+    public function test_recovers_always_false_comparison_as_dead_code(): void
+    {
+        $result = $this->analyzeIssues([
+            [
+                'identifier' => 'equal.alwaysFalse',
+                'message' => "Loose comparison using == between int<min, -1>|int<1, max> and '' will always evaluate to false.",
+            ],
+        ]);
+
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('Dead Code', $result);
+    }
+
+    public function test_recovers_null_coalesce_errors_into_distinct_categories(): void
+    {
+        $result = $this->analyzeIssues([
+            [
+                'identifier' => 'nullCoalesce.variable',
+                'message' => 'Variable $selected on left side of ?? always exists and is not nullable.',
+            ],
+            [
+                'identifier' => 'nullCoalesce.expr',
+                'message' => 'Expression on left side of ?? is not nullable.',
+            ],
+            [
+                'identifier' => 'nullCoalesce.offset',
+                'message' => "Offset 'name' on array{name: string} on left side of ?? always exists and is not nullable.",
+            ],
+        ]);
+
+        $this->assertIssueCount(3, $result);
+        $this->assertHasIssueContaining('Undefined Variables', $result);
+        $this->assertHasIssueContaining('Dead Code', $result);
+        $this->assertHasIssueContaining('Invalid Offset Access', $result);
+    }
+
+    public function test_deprecation_identifier_beats_the_namespace_prefix(): void
+    {
+        $result = $this->analyzeIssues([
+            [
+                'identifier' => 'method.deprecated',
+                'message' => 'Call to deprecated method find() of class App\Services\ExampleService.',
+            ],
+            [
+                'identifier' => 'class.deprecated',
+                'message' => 'Usage of deprecated class App\Services\ExampleService.',
+            ],
+            [
+                'identifier' => 'property.deprecated',
+                'message' => 'Access to deprecated property $name of class App\Services\ExampleService.',
+            ],
+        ]);
+
+        $this->assertIssueCount(3, $result);
+
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringContainsString('Deprecated Code', $issue->message);
+        }
+    }
+
+    public function test_does_not_treat_a_symbol_named_deprecated_as_deprecated_code(): void
+    {
+        $result = $this->analyzeIssues([
+            ['message' => 'Call to an undefined method App\Deprecated\Legacy::run().'],
+        ]);
+
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('Invalid Method Calls', $result);
+    }
+
+    public function test_missing_model_relation_matches_only_the_larastan_identifier(): void
+    {
+        $result = $this->analyzeIssues([
+            [
+                'identifier' => 'larastan.relationExistence',
+                'message' => "Relation 'widgets' is not found in App\Models\Team model.",
+            ],
+            [
+                'identifier' => 'method.notFound',
+                'message' => 'Call to an undefined method App\Models\Team::widgets().',
+            ],
+            [
+                'identifier' => 'property.notFound',
+                'message' => 'Access to an undefined property Illuminate\Database\Eloquent\Model::$owner_id.',
+            ],
+        ]);
+
+        $this->assertIssueCount(3, $result);
+
+        $relationIssues = array_filter(
+            $result->getIssues(),
+            static fn ($issue): bool => str_contains($issue->message, 'Missing Model Relations')
+        );
+
+        $this->assertCount(1, $relationIssues);
+        $this->assertHasIssueContaining('Invalid Method Calls', $result);
+        $this->assertHasIssueContaining('Invalid Property Access', $result);
+    }
+
+    public function test_other_category_is_active_even_when_categories_are_pinned(): void
+    {
+        $result = $this->analyzeIssues(
+            [['message' => 'If condition is always true.']],
+            ['categories' => ['undefined-variable']]
+        );
+
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('Other PHPStan Issues', $result);
+    }
+
+    public function test_other_category_can_be_disabled(): void
+    {
+        $result = $this->analyzeIssues(
+            [['message' => 'If condition is always true.']],
+            ['disabled_categories' => ['other']]
+        );
+
+        $this->assertPassed($result);
+    }
+
+    public function test_disabled_category_issues_do_not_leak_into_other(): void
+    {
+        $result = $this->analyzeIssues(
+            [['identifier' => 'variable.undefined', 'message' => 'Undefined variable: $missing']],
+            ['disabled_categories' => ['undefined-variable']]
+        );
+
+        $this->assertPassed($result);
+        $this->assertStringNotContainsString('Other PHPStan Issues', $result->getMessage());
+    }
+
+    public function test_skips_identifiers_owned_by_a_dedicated_analyzer(): void
+    {
+        $result = $this->analyzeIssues([
+            [
+                'identifier' => 'larastan.noUnnecessaryCollectionCall',
+                'message' => "Called 'count' on Laravel collection, but could have been retrieved as a query.",
+            ],
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_total_issue_count_matches_the_emitted_issue_count(): void
+    {
+        $result = $this->analyzeIssues([
+            ['identifier' => 'variable.undefined', 'message' => 'Undefined variable: $a'],
+            ['identifier' => 'method.notFound', 'message' => 'Call to an undefined method App\Services\ExampleService::b().'],
+            ['identifier' => 'class.notFound', 'message' => 'Instantiated class App\Nope not found.'],
+            ['identifier' => 'equal.alwaysFalse', 'message' => 'Loose comparison using == between int and string will always evaluate to false.'],
+            ['identifier' => 'argument.type', 'message' => 'Parameter #1 $x of function strlen expects string, int given.'],
+        ]);
+
+        $metadata = $result->getMetadata();
+
+        $this->assertSame(5, $metadata['total_issues']);
+        $this->assertCount(5, $result->getIssues());
+        $this->assertFalse($metadata['truncated']);
+    }
+
+    public function test_result_metadata_reports_category_breakdown_and_truncation(): void
+    {
+        $issues = [];
+
+        for ($i = 0; $i < 60; $i++) {
+            $issues[] = ['identifier' => 'variable.undefined', 'message' => 'Undefined variable: $v'.$i];
+        }
+
+        $result = $this->analyzeIssues($issues);
+        $metadata = $result->getMetadata();
+
+        $this->assertSame(60, $metadata['total_issues']);
+        $this->assertSame(50, $metadata['displayed_issues']);
+        $this->assertTrue($metadata['truncated']);
+        $this->assertSame(60, $metadata['issues_by_category']['undefined-variable']);
+        $this->assertStringContainsString('Found 60 PHPStan issue(s) (showing first 50)', $result->getMessage());
+    }
+
+    public function test_other_category_alone_produces_a_warning_not_a_failure(): void
+    {
+        $result = $this->analyzeIssues([
+            ['message' => 'If condition is always true.'],
+        ]);
+
+        $this->assertWarning($result);
+    }
+
+    public function test_appends_the_phpstan_tip_to_the_recommendation(): void
+    {
+        $result = $this->analyzeIssues([
+            [
+                'identifier' => 'class.notFound',
+                'message' => 'Instantiated class App\Nope not found.',
+                'tip' => 'Learn more at https://phpstan.org/user-guide/discovering-symbols',
+            ],
+        ]);
+
+        $issues = $result->getIssues();
+
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('PHPStan tip: Learn more at', $issues[0]->recommendation);
+        $this->assertSame('class.notFound', $issues[0]->metadata['phpstan_identifier']);
+    }
+
+    public function test_identifier_and_pattern_paths_agree(): void
+    {
+        $rows = [
+            ['method.notFound', 'Call to an undefined method App\Services\ExampleService::missing().', 'Invalid Method Calls'],
+            ['variable.undefined', 'Undefined variable: $missing', 'Undefined Variables'],
+            ['return.missing', 'Method App\Services\ExampleService::run() should return string but return statement is missing.', 'Missing Return Statements'],
+            ['class.notFound', 'Instantiated class App\Nope not found.', 'Invalid Imports'],
+            ['property.notFound', 'Access to an undefined property App\Services\ExampleService::$name.', 'Invalid Property Access'],
+            ['larastan.relationExistence', "Relation 'widgets' is not found in App\Models\Team model.", 'Missing Model Relations'],
+        ];
+
+        foreach ($rows as [$identifier, $message, $expectedCategory]) {
+            $withIdentifier = $this->analyzeIssues([
+                ['identifier' => $identifier, 'message' => $message],
+            ]);
+
+            $withoutIdentifier = $this->analyzeIssues([
+                ['message' => $message],
+            ]);
+
+            $this->assertHasIssueContaining($expectedCategory, $withIdentifier);
+            $this->assertHasIssueContaining($expectedCategory, $withoutIdentifier);
+        }
+    }
+
+    public function test_issue_categories_declaration_is_internally_consistent(): void
+    {
+        $reflection = new \ReflectionClass(PHPStanAnalyzer::class);
+
+        /** @var array<string, array<string, mixed>> $categories */
+        $categories = $reflection->getConstant('ISSUE_CATEGORIES');
+
+        $this->assertSame('other', array_key_last($categories));
+        $this->assertSame([], $categories['other']['patterns']);
+
+        foreach (['IDENTIFIER_MAP', 'IDENTIFIER_SUFFIX_MAP', 'IDENTIFIER_PREFIX_MAP'] as $mapName) {
+            /** @var array<string, string> $map */
+            $map = $reflection->getConstant($mapName);
+
+            foreach ($map as $key => $category) {
+                $this->assertArrayHasKey(
+                    $category,
+                    $categories,
+                    sprintf('%s maps "%s" to unknown category "%s"', $mapName, $key, $category)
+                );
+            }
+        }
+    }
+
+    /**
+     * Run the analyzer over a set of mock PHPStan errors.
+     *
+     * @param  array<array{message: string, line?: int, identifier?: string, tip?: string}>  $issues
+     * @param  array<string, mixed>  $config
+     */
+    private function analyzeIssues(array $issues, array $config = []): ResultInterface
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ExampleService
+{
+    public function run(): void {}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/ExampleService.php' => $code]);
+        $filePath = $tempDir.'/app/Services/ExampleService.php';
+
+        $prepared = [];
+
+        foreach ($issues as $issue) {
+            $issue['file'] = $filePath;
+            $issue['line'] = $issue['line'] ?? 7;
+            $prepared[] = $issue;
+        }
+
+        @mkdir($tempDir.'/vendor/bin', 0755, true);
+        file_put_contents($tempDir.'/vendor/bin/phpstan', $this->createMockPHPStanScript($prepared));
+        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+
+        $analyzer = $this->createAnalyzer($config);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        return $analyzer->analyze();
+    }
+
     /**
      * Create a mock PHPStan script that returns predefined issues.
      *
-     * @param  array<array{file: string, line: int, message: string}>  $issues
+     * Mirrors PHPStan's JSON error format, which omits 'identifier' and 'tip'
+     * entirely rather than emitting them as null.
+     *
+     * @param  array<array{file: string, line: int, message: string, identifier?: string, tip?: string}>  $issues
      */
     private function createMockPHPStanScript(array $issues): string
     {
@@ -636,11 +988,21 @@ BASH;
                 $files[$file] = ['messages' => []];
             }
 
-            $files[$file]['messages'][] = [
+            $entry = [
                 'message' => $issue['message'],
                 'line' => $issue['line'],
                 'ignorable' => true,
             ];
+
+            if (isset($issue['tip'])) {
+                $entry['tip'] = $issue['tip'];
+            }
+
+            if (isset($issue['identifier'])) {
+                $entry['identifier'] = $issue['identifier'];
+            }
+
+            $files[$file]['messages'][] = $entry;
         }
 
         $output = [

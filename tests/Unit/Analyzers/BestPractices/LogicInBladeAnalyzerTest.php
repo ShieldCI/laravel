@@ -846,6 +846,134 @@ BLADE;
         $this->assertFailed($result);
     }
 
+    public function test_flags_file_get_contents_on_a_url_as_an_api_call(): void
+    {
+        $blade = <<<'BLADE'
+<pre>{{ file_get_contents('https://api.example.test/rates') }}</pre>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/rates.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('API call found in Blade template', $result);
+    }
+
+    public function test_flags_file_get_contents_on_a_concatenated_url(): void
+    {
+        $blade = <<<'BLADE'
+<pre>{{ file_get_contents('https://api.example.test/rates/' . $code) }}</pre>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/rates.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('API call found in Blade template', $result);
+    }
+
+    public function test_flags_file_get_contents_on_an_interpolated_url(): void
+    {
+        $blade = <<<'BLADE'
+<pre>{{ file_get_contents("https://api.example.test/rates/{$code}") }}</pre>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/rates.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('API call found in Blade template', $result);
+    }
+
+    public function test_flags_file_get_contents_on_a_url_helper(): void
+    {
+        $blade = <<<'BLADE'
+<pre>{{ file_get_contents(url('/api/rates')) }}</pre>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/rates.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('API call found in Blade template', $result);
+    }
+
+    public function test_does_not_flag_file_get_contents_on_a_path_helper(): void
+    {
+        // Inlining an SVG from public_path() and reading a text blob from storage_path() are
+        // local file reads, not outbound requests.
+        $blade = <<<'BLADE'
+<span>{!! file_get_contents(public_path('img/logo.svg')) !!}</span>
+<pre>{{ file_get_contents(storage_path('app/release-notes.txt')) }}</pre>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/logo.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_file_get_contents_on_a_relative_path_literal(): void
+    {
+        $blade = <<<'BLADE'
+<pre>{{ file_get_contents('data/notes.txt') }}</pre>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/notes.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_file_get_contents_on_a_variable(): void
+    {
+        // The argument could hold either a path or a URL. The local read is the common case by
+        // far, so an argument that proves nothing is left alone rather than named an API call.
+        $blade = <<<'BLADE'
+<pre>{{ file_get_contents($path) }}</pre>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/notes.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_severity_critical_for_database_queries(): void
     {
         $blade = <<<'BLADE'

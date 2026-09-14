@@ -303,6 +303,61 @@ class PHPStanRunnerTest extends TestCase
         $this->assertStringContainsString('larastan/larastan/extension.neon', $capturedConfig);
     }
 
+    public function test_generates_config_with_caller_supplied_parameters(): void
+    {
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app'], 5, 300, null, [
+            'noUnnecessaryCollectionCall' => true,
+            'reportUnmatchedIgnoredErrors' => false,
+        ]);
+
+        $capturedConfig = $this->getCapturedConfig();
+
+        $this->assertStringContainsString('    noUnnecessaryCollectionCall: true', $capturedConfig);
+        $this->assertStringContainsString('    reportUnmatchedIgnoredErrors: false', $capturedConfig);
+    }
+
+    public function test_generates_the_same_config_as_before_when_no_parameters_are_passed(): void
+    {
+        // Regression guard for PHPStanAnalyzer, which passes none: the generated config
+        // must be byte-identical to what it got before the argument existed.
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $capturedConfig = $this->getCapturedConfig();
+
+        $this->assertSame(
+            "parameters:\n    level: 5\n    tmpDir: ".sys_get_temp_dir().'/phpstan',
+            $capturedConfig
+        );
+    }
+
+    public function test_caller_supplied_parameters_outrank_the_users_phpstan_neon(): void
+    {
+        // The generated parameters block is written after the includes, and PHPStan lets
+        // the including file win, so a user who switched the rule off does not silently
+        // disable the analyzer that depends on it.
+        file_put_contents($this->tempDir.'/phpstan.neon', "parameters:\n    noUnnecessaryCollectionCall: false\n");
+
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app'], 5, 300, null, ['noUnnecessaryCollectionCall' => true]);
+
+        $capturedConfig = $this->getCapturedConfig();
+
+        $includesAt = strpos($capturedConfig, 'phpstan.neon');
+        $parameterAt = strpos($capturedConfig, 'noUnnecessaryCollectionCall: true');
+
+        $this->assertIsInt($includesAt);
+        $this->assertIsInt($parameterAt);
+        $this->assertGreaterThan($includesAt, $parameterAt);
+    }
+
     public function test_generates_config_with_carbon_extension(): void
     {
         // Create mock Carbon extension

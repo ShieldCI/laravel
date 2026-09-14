@@ -89,6 +89,67 @@ trait ParsesPHPStanResults
     }
 
     /**
+     * Condense analysis errors into one bounded clause for a result message.
+     *
+     * A reportUnmatchedIgnoredErrors run can produce dozens of these. The full list always
+     * reaches the caller through the analysis_errors metadata key; the message quotes the
+     * leaders and counts the rest.
+     *
+     * The cap is a parameter rather than a constant because constants in traits need
+     * PHP 8.2 and this package supports 8.1.
+     *
+     * @param  list<string>  $analysisErrors
+     */
+    protected function summarizeAnalysisErrors(array $analysisErrors, int $limit = 3): string
+    {
+        $quoted = array_slice($analysisErrors, 0, $limit);
+        $summary = implode(' | ', $quoted);
+        $remaining = count($analysisErrors) - count($quoted);
+
+        if ($remaining > 0) {
+            $summary .= sprintf(' (and %d more)', $remaining);
+        }
+
+        return $summary;
+    }
+
+    /**
+     * Describe a run that reported errors it could not attach to a file.
+     *
+     * @param  list<string>  $analysisErrors
+     */
+    protected function describeAnalysisErrors(array $analysisErrors): string
+    {
+        return sprintf(
+            'PHPStan reported %d analysis error(s): %s',
+            count($analysisErrors),
+            $this->summarizeAnalysisErrors($analysisErrors)
+        );
+    }
+
+    /**
+     * Note on a findings message that the run behind it did not complete cleanly.
+     *
+     * PHPStan throws away the file results when it hits an internal error, so findings
+     * that arrive next to one are a partial view and have to say so. Returns the message
+     * untouched when the run was clean.
+     *
+     * @param  list<string>  $analysisErrors
+     */
+    protected function appendAnalysisErrorNotice(string $message, array $analysisErrors): string
+    {
+        if ($analysisErrors === []) {
+            return $message;
+        }
+
+        return $message.sprintf(
+            '. PHPStan also reported %d analysis error(s), so these findings may be incomplete: %s',
+            count($analysisErrors),
+            $this->summarizeAnalysisErrors($analysisErrors)
+        );
+    }
+
+    /**
      * Format the issue count message.
      *
      * @param  int  $totalCount  Total number of issues found

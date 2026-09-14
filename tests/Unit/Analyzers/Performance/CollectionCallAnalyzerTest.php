@@ -294,8 +294,9 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $tempDir = $this->createStubbedProject();
 
         // isAvailable() only proves the file is there. A present but unrunnable binary
-        // is launched through sh, which reports the refusal on stderr and exits 126
-        // rather than throwing, so this lands on the aborted-run path.
+        // does not throw: the launch fails and the run lands on the aborted-run path.
+        // The exact exit code is left unasserted because it is environment-dependent
+        // (126 where a shell reports "not executable", 127 where it reports "not found").
         $this->writePHPStanStub($tempDir, "#!/bin/bash\necho hi\n");
         chmod($tempDir.'/vendor/bin/phpstan', 0644);
 
@@ -303,7 +304,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
 
         $this->assertError($result);
         $this->assertStringContainsString('PHPStan produced no analysable output', $result->getMessage());
-        $this->assertStringContainsString('exit code 126', $result->getMessage());
+        $this->assertStringContainsString('exit code', $result->getMessage());
     }
 
     public function test_reports_an_error_when_the_run_exceeds_the_configured_timeout(): void

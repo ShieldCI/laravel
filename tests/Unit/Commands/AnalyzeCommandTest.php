@@ -11,7 +11,9 @@ use Illuminate\Support\Facades\Http;
 use Mockery;
 use Mockery\MockInterface;
 use PHPUnit\Framework\Attributes\Test;
+use RuntimeException;
 use ShieldCI\AnalyzerManager;
+use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -412,6 +414,321 @@ class AnalyzeCommandTest extends TestCase
 
         $this->artisan('shield:analyze', ['--format' => 'json'])
             ->assertFailed();
+    }
+
+    // Errored analyzer exit code (#343)
+
+    /** @test */
+    #[Test]
+    public function it_fails_when_an_analyzer_errors(): void
+    {
+        $this->registerManagerWithResults([
+            AnalysisResult::error('broken-analyzer', 'PHPStan reported 2 analysis error(s)'),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertFailed();
+    }
+
+    /** @test */
+    #[Test]
+    public function it_fails_when_an_analyzer_errors_and_fail_on_is_critical(): void
+    {
+        config(['shieldci.fail_on' => 'critical']);
+        $this->registerManagerWithResults([
+            AnalysisResult::error('broken-analyzer', 'PHPStan reported 2 analysis error(s)'),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertFailed();
+    }
+
+    /** @test */
+    #[Test]
+    public function it_fails_when_an_analyzer_errors_alongside_passing_analyzers(): void
+    {
+        $this->registerManagerWithResults([
+            AnalysisResult::passed('clean-analyzer', 'No issues detected'),
+            AnalysisResult::passed('other-clean-analyzer', 'No issues detected'),
+            AnalysisResult::error('broken-analyzer', 'PHPStan reported 2 analysis error(s)'),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertFailed();
+    }
+
+    /** @test */
+    #[Test]
+    public function it_succeeds_when_an_analyzer_errors_and_fail_on_is_never(): void
+    {
+        config(['shieldci.fail_on' => 'never']);
+        $this->registerManagerWithResults([
+            AnalysisResult::error('broken-analyzer', 'PHPStan reported 2 analysis error(s)'),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful();
+    }
+
+    /** @test */
+    #[Test]
+    public function it_succeeds_when_an_errored_analyzer_is_in_dont_report(): void
+    {
+        config(['shieldci.dont_report' => ['broken-analyzer']]);
+        $this->registerManagerWithResults([
+            AnalysisResult::error('broken-analyzer', 'PHPStan reported 2 analysis error(s)'),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful();
+    }
+
+    /** @test */
+    #[Test]
+    public function it_fails_when_only_one_of_two_errored_analyzers_is_in_dont_report(): void
+    {
+        config(['shieldci.dont_report' => ['broken-analyzer']]);
+        $this->registerManagerWithResults([
+            AnalysisResult::error('broken-analyzer', 'PHPStan reported 2 analysis error(s)'),
+            AnalysisResult::error('other-broken-analyzer', 'Unable to read composer.lock'),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertFailed();
+    }
+
+    /** @test */
+    #[Test]
+    public function it_fails_when_an_errored_analyzer_is_only_waived_by_the_baseline_dont_report(): void
+    {
+        $this->registerManagerWithResults([
+            AnalysisResult::error('broken-analyzer', 'PHPStan reported 2 analysis error(s)'),
+        ]);
+
+        $baselinePath = base_path('tests/test-baseline-errored-dont-report.json');
+        file_put_contents($baselinePath, json_encode([
+            'generated_at' => '2024-01-01T00:00:00Z',
+            'version' => '1.0.0',
+            'errors' => [],
+            'dont_report' => ['broken-analyzer'],
+        ]));
+        config(['shieldci.baseline_file' => $baselinePath]);
+
+        $this->artisan('shield:analyze', ['--baseline' => true, '--format' => 'json'])
+            ->assertFailed();
+
+        @unlink($baselinePath);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_returns_exit_code_one_when_an_analyzer_errors(): void
+    {
+        $this->registerManagerWithResults([
+            AnalysisResult::error('broken-analyzer', 'PHPStan reported 2 analysis error(s)'),
+        ]);
+
+        $exitCode = Artisan::call('shield:analyze', ['--format' => 'json']);
+
+        $this->assertSame(1, $exitCode);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_names_the_errored_analyzer_as_the_reason_for_failing(): void
+    {
+        $this->registerManagerWithResults([
+            AnalysisResult::passed('clean-analyzer', 'No issues detected'),
+            AnalysisResult::error('broken-analyzer', 'PHPStan reported 2 analysis error(s)'),
+        ]);
+
+        // Artisan::call rather than a chain of expectsOutputToContain: each of those
+        // registers a separate doWrite matcher, and a single written line is consumed by
+        // only the first one that matches, so two substrings on the same line never both
+        // resolve. The verdict names the count and the analyzer ids on one line.
+        $exitCode = Artisan::call('shield:analyze');
+        $output = Artisan::output();
+
+        $this->assertSame(1, $exitCode);
+        $this->assertStringContainsString('Analysis incomplete', $output);
+        $this->assertStringContainsString('broken-analyzer', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_keeps_json_output_machine_readable_when_an_analyzer_errors(): void
+    {
+        $this->registerManagerWithResults([
+            AnalysisResult::error('broken-analyzer', 'PHPStan reported 2 analysis error(s)'),
+        ]);
+
+        $exitCode = Artisan::call('shield:analyze', ['--format' => 'json']);
+        $output = Artisan::output();
+
+        $this->assertSame(1, $exitCode);
+        $this->assertIsArray(json_decode($output, true));
+        $this->assertStringNotContainsString('Analysis incomplete', $output);
+        $this->assertStringContainsString('"errors": 1', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_prints_the_incomplete_verdict_when_the_json_report_goes_to_a_file(): void
+    {
+        $this->registerManagerWithResults([
+            AnalysisResult::error('broken-analyzer', 'PHPStan reported 2 analysis error(s)'),
+        ]);
+
+        $reportPath = 'tests/test-report-errored.json';
+
+        $exitCode = Artisan::call('shield:analyze', ['--format' => 'json', '--output' => $reportPath]);
+        $output = Artisan::output();
+
+        // saveReport() writes the raw relative path with file_put_contents(), so the file
+        // lands relative to the process cwd rather than base_path().
+        @unlink($reportPath);
+
+        $this->assertSame(1, $exitCode);
+        $this->assertStringContainsString('Analysis incomplete', $output);
+        $this->assertStringContainsString('broken-analyzer', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_does_not_print_the_incomplete_verdict_when_the_analyzer_is_in_dont_report(): void
+    {
+        config(['shieldci.dont_report' => ['broken-analyzer']]);
+        $this->registerManagerWithResults([
+            AnalysisResult::error('broken-analyzer', 'PHPStan reported 2 analysis error(s)'),
+        ]);
+
+        $exitCode = Artisan::call('shield:analyze');
+        $output = Artisan::output();
+
+        $this->assertSame(0, $exitCode);
+        $this->assertStringNotContainsString('Analysis incomplete', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_does_not_print_the_incomplete_verdict_when_fail_on_is_never(): void
+    {
+        config(['shieldci.fail_on' => 'never']);
+        $this->registerManagerWithResults([
+            AnalysisResult::error('broken-analyzer', 'PHPStan reported 2 analysis error(s)'),
+        ]);
+
+        $exitCode = Artisan::call('shield:analyze');
+        $output = Artisan::output();
+
+        $this->assertSame(0, $exitCode);
+        $this->assertStringNotContainsString('Analysis incomplete', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function an_errored_analyzer_is_not_turned_into_a_pass_by_ignore_errors(): void
+    {
+        config(['shieldci.ignore_errors' => [
+            'broken-analyzer' => [
+                ['path' => 'app/Legacy/OldController.php'],
+            ],
+        ]]);
+        $this->registerManagerWithResults([
+            AnalysisResult::error('broken-analyzer', 'PHPStan reported 2 analysis error(s)'),
+        ]);
+
+        $exitCode = Artisan::call('shield:analyze', ['--format' => 'json']);
+        $output = Artisan::output();
+
+        $this->assertSame(1, $exitCode);
+        $this->assertStringContainsString('"status": "error"', $output);
+        $this->assertStringContainsString('PHPStan reported 2 analysis error(s)', $output);
+        $this->assertStringNotContainsString('All issues are ignored via config', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function an_errored_analyzer_is_not_turned_into_a_pass_by_the_baseline(): void
+    {
+        $this->registerManagerWithResults([
+            AnalysisResult::error('broken-analyzer', 'PHPStan reported 2 analysis error(s)'),
+        ]);
+
+        $baselinePath = base_path('tests/test-baseline-errored-result.json');
+        file_put_contents($baselinePath, json_encode([
+            'generated_at' => '2024-01-01T00:00:00Z',
+            'version' => '1.0.0',
+            'errors' => [
+                'broken-analyzer' => [
+                    ['type' => 'hash', 'path' => 'app/Legacy/OldController.php', 'hash' => 'abc123'],
+                ],
+            ],
+            'dont_report' => [],
+        ]));
+        config(['shieldci.baseline_file' => $baselinePath]);
+
+        $exitCode = Artisan::call('shield:analyze', ['--baseline' => true, '--format' => 'json']);
+        $output = Artisan::output();
+
+        @unlink($baselinePath);
+
+        $this->assertSame(1, $exitCode);
+        $this->assertStringContainsString('"status": "error"', $output);
+        $this->assertStringNotContainsString('All issues are in baseline', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_fails_when_a_real_analyzer_throws_during_analysis(): void
+    {
+        $throwingAnalyzer = new AnalyzeCommandThrowingAnalyzer;
+
+        /** @phpstan-ignore-next-line */
+        $this->app->singleton(AnalyzerManager::class, function ($app) use ($throwingAnalyzer) {
+            /** @var MockInterface&AnalyzerManager $manager */
+            $manager = Mockery::mock(AnalyzerManager::class);
+
+            $manager->shouldReceive('getAnalyzers')
+                ->andReturn(collect([$throwingAnalyzer]));
+
+            $manager->shouldReceive('getSkippedAnalyzers')
+                ->andReturn(collect());
+
+            $manager->shouldReceive('clearParserCache')
+                ->andReturn(null);
+
+            return $manager;
+        });
+
+        $exitCode = Artisan::call('shield:analyze', ['--format' => 'console']);
+        $output = Artisan::output();
+
+        $this->assertSame(1, $exitCode);
+        $this->assertStringContainsString('Analysis incomplete', $output);
+        $this->assertStringContainsString('throwing-analyzer', $output);
+        $this->assertStringContainsString('parser exploded', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function a_zero_issue_failed_result_is_not_turned_into_a_pass_by_ignore_errors(): void
+    {
+        config(['shieldci.ignore_errors' => [
+            'issueless-analyzer' => [
+                ['path' => 'app/Legacy/OldController.php'],
+            ],
+        ]]);
+        $this->registerManagerWithResults([
+            AnalysisResult::failed('issueless-analyzer', 'Configuration is invalid'),
+        ]);
+
+        $exitCode = Artisan::call('shield:analyze', ['--format' => 'json']);
+        $output = Artisan::output();
+
+        $this->assertSame(0, $exitCode);
+        $this->assertStringContainsString('"status": "failed"', $output);
+        $this->assertStringNotContainsString('All issues are ignored via config', $output);
     }
 
     /** @test */
@@ -3542,7 +3859,7 @@ PHP);
             category: Category::Security,
             severity: Severity::High,
         ));
-        $throwingAnalyzer->shouldReceive('analyze')->andThrow(new \RuntimeException('AST parser crashed'));
+        $throwingAnalyzer->shouldReceive('analyze')->andThrow(new RuntimeException('AST parser crashed'));
         $throwingAnalyzer->shouldReceive('shouldRun')->andReturn(true);
         $throwingAnalyzer->shouldReceive('getSkipReason')->andReturn('');
 
@@ -4790,5 +5107,29 @@ class AnalyzeCommandAstCacheAnalyzer implements AnalyzerInterface
     public function getId(): string
     {
         return 'ast-cache-analyzer';
+    }
+}
+
+/**
+ * A real analyzer that throws, to exercise the error path the framework builds rather than a
+ * hand-made error result: AbstractAnalyzer::analyze() is final and converts any Throwable
+ * into an errored result, which is the most common way an error reaches the exit code.
+ */
+class AnalyzeCommandThrowingAnalyzer extends AbstractAnalyzer
+{
+    protected function metadata(): AnalyzerMetadata
+    {
+        return new AnalyzerMetadata(
+            id: 'throwing-analyzer',
+            name: 'Throwing Analyzer',
+            description: 'Throws during analysis',
+            category: Category::Reliability,
+            severity: Severity::High,
+        );
+    }
+
+    protected function runAnalysis(): ResultInterface
+    {
+        throw new RuntimeException('parser exploded');
     }
 }

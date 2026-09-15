@@ -70,18 +70,23 @@ jobs:
           - php: '8.5'
             laravel: '12.*'
             testbench: '^10.0'
-          # Laravel 13 (PHP 8.3–8.5)
+          # Laravel 13 (PHP 8.3–8.5). illuminate/http only accepts Guzzle 8 from
+          # v13.26.0, so these are the only rows where either major can be chosen
+          # deliberately. Pin one row to each so neither stops being exercised.
           - php: '8.3'
             laravel: '13.*'
             testbench: '^11.0'
+            guzzle: '^7.0'
           - php: '8.4'
             laravel: '13.*'
             testbench: '^11.0'
+            guzzle: '^8.0'
           - php: '8.5'
             laravel: '13.*'
             testbench: '^11.0'
+            guzzle: '^8.0'
 
-    name: PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }}
+    name: PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }}${{ matrix.guzzle && format(' / Guzzle {0}', matrix.guzzle) || '' }}
 
     steps:
       - name: Checkout code
@@ -108,7 +113,13 @@ jobs:
       - name: Install Composer dependencies
         run: |
           composer require "laravel/framework:${{ matrix.laravel }}" "orchestra/testbench:${{ matrix.testbench }}" --no-interaction --no-update
+          if [ -n "${{ matrix.guzzle }}" ]; then
+            composer require "guzzlehttp/guzzle:${{ matrix.guzzle }}" --no-interaction --no-update
+          fi
           composer update --prefer-dist --no-interaction --no-progress
+
+      - name: Report resolved Guzzle version
+        run: composer show | grep '^guzzlehttp/'
 
       - name: Run tests
         run: vendor/bin/phpunit ${{ matrix.phpunit-config && format('--configuration {0} --no-coverage', matrix.phpunit-config) || '--coverage-clover=coverage.xml' }}

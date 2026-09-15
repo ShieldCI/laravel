@@ -12,6 +12,12 @@ use GuzzleHttp\Exception\GuzzleException;
  *
  * Provides methods to retrieve and analyze HTTP response headers
  * from a given URL, useful for security header verification.
+ *
+ * Guzzle 8 types its request options as an array shape, so the options forwarded
+ * to the client have to name the keys they may carry. Guzzle 7 declares the same
+ * parameter as a plain array and accepts this unchanged.
+ *
+ * @phpstan-type GuzzleRequestOptions array{allow_redirects?: bool, connect_timeout?: int|float, headers?: array<string, string>, http_errors?: bool, timeout?: int|float, verify?: bool|string}
  */
 trait AnalyzesHeaders
 {
@@ -49,7 +55,7 @@ trait AnalyzesHeaders
      * Determine if the header(s) exist on the URL.
      *
      * @param  string|array<int, string>  $headers
-     * @param  array<string, mixed>  $options
+     * @param  GuzzleRequestOptions  $options
      */
     protected function headerExistsOnUrl(?string $url, string|array $headers, array $options = []): bool
     {
@@ -77,7 +83,7 @@ trait AnalyzesHeaders
     /**
      * Get the headers on the URL.
      *
-     * @param  array<string, mixed>  $options
+     * @param  GuzzleRequestOptions  $options
      * @return array<int, string>
      */
     protected function getHeadersOnUrl(?string $url, string $header, array $options = []): array

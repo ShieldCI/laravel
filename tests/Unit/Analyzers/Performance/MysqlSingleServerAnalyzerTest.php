@@ -1196,6 +1196,83 @@ class MysqlSingleServerAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('Docker', $analyzer->getSkipReason());
     }
 
+    // =========================================================================
+    // Issue Location (#358)
+    // =========================================================================
+
+    public function test_omits_the_location_when_database_config_is_not_published(): void
+    {
+        $result = $this->withBasePath(
+            $this->createTempDirectory([]),
+            fn () => $this->createAnalyzer()->analyze()
+        );
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertNull($issues[0]->location);
+    }
+
+    public function test_keeps_connections_distinct_when_database_config_is_not_published(): void
+    {
+        $result = $this->withBasePath(
+            $this->createTempDirectory([]),
+            fn () => $this->createAnalyzer([
+                'database' => [
+                    'default' => 'mysql',
+                    'connections' => [
+                        'mysql' => ['driver' => 'mysql', 'host' => '127.0.0.1', 'database' => 'laravel'],
+                        'reporting' => ['driver' => 'mysql', 'host' => 'localhost', 'database' => 'reports'],
+                    ],
+                ],
+            ])->analyze()
+        );
+
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+
+        foreach ($issues as $issue) {
+            $this->assertNull($issue->location);
+        }
+
+        // Without a location the Reporter groups by message, so the two connections must
+        // not collapse into one row the way an identical fabricated location made them.
+        $this->assertNotEquals($issues[0]->message, $issues[1]->message);
+    }
+
+    public function test_locates_the_connection_in_a_published_database_config(): void
+    {
+        $config = <<<'PHP'
+<?php
+
+return [
+    'default' => env('DB_CONNECTION', 'mysql'),
+
+    'connections' => [
+        'mysql' => [
+            'driver' => 'mysql',
+            'host' => env('DB_HOST', '127.0.0.1'),
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory(['config/database.php' => $config]);
+
+        $result = $this->withBasePath($tempDir, fn () => $this->createAnalyzer()->analyze());
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        $location = $issues[0]->location;
+        $this->assertNotNull($location);
+        $this->assertSame('config/database.php', $location->file);
+        $this->assertNotNull($location->line);
+
+        $lines = file($tempDir.'/config/database.php', FILE_IGNORE_NEW_LINES);
+        $this->assertIsArray($lines);
+        $this->assertStringContainsString("'mysql' =>", $lines[$location->line - 1]);
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();

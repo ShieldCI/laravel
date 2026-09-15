@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests;
 
+use Illuminate\Foundation\Application as LaravelApplication;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Status;
@@ -164,6 +165,33 @@ abstract class AnalyzerTestCase extends TestCase
         });
 
         return $tempDir;
+    }
+
+    /**
+     * Run a callback with the application's base path pointed somewhere else.
+     *
+     * Analyzers extending AbstractAnalyzer resolve getBasePath() through base_path()
+     * and have no setBasePath() of their own, so the application's base path is the
+     * only lever. Without this they inherit Testbench's skeleton, which does ship
+     * config/cache.php, config/queue.php and config/session.php.
+     *
+     * @template T
+     *
+     * @param  callable(): T  $callback
+     * @return T
+     */
+    protected function withBasePath(string $basePath, callable $callback): mixed
+    {
+        /** @var LaravelApplication $application */
+        $application = app();
+        $originalBasePath = $application->basePath();
+        $application->setBasePath($basePath);
+
+        try {
+            return $callback();
+        } finally {
+            $application->setBasePath($originalBasePath);
+        }
     }
 
     /**

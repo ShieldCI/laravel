@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
-use Illuminate\Foundation\Application as LaravelApplication;
 use Mockery;
 use Mockery\MockInterface;
 use ShieldCI\Analyzers\Performance\CacheDriverAnalyzer;
@@ -698,25 +697,11 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
     /**
      * Run the analyzer against a base path of our choosing.
      *
-     * CacheDriverAnalyzer extends AbstractAnalyzer, which resolves getBasePath()
-     * through base_path() and has no setBasePath(), so the application's own base
-     * path is the only lever. Without this the tests inherit Testbench's skeleton,
-     * which does ship a config/cache.php.
-     *
      * @param  array<string, mixed>  $configValues
      */
     private function analyzeWithBasePath(string $basePath, array $configValues): ResultInterface
     {
-        /** @var LaravelApplication $application */
-        $application = app();
-        $originalBasePath = $application->basePath();
-        $application->setBasePath($basePath);
-
-        try {
-            return $this->createAnalyzer($configValues)->analyze();
-        } finally {
-            $application->setBasePath($originalBasePath);
-        }
+        return $this->withBasePath($basePath, fn () => $this->createAnalyzer($configValues)->analyze());
     }
 
     public function test_reports_the_driver_when_cache_config_is_not_published(): void

@@ -148,9 +148,18 @@ class DebugLogAnalyzer extends AbstractAnalyzer
             );
 
             // Fallback to buildPath if ConfigFileHelper returns empty string
-            if ($configPath === '' || ! file_exists($configPath)) {
+            if ($configPath === '') {
                 $configPath = $this->buildPath('config', 'logging.php');
             }
+
+            // The level comes from the config repository, which merges the framework's own
+            // config/logging.php, so the verdict holds whether or not the app published the
+            // file - and Laravel 11+ invites deleting config files you do not customise.
+            // Only the line reference is lost, so an unpublished file yields no location at
+            // all rather than naming a file the reader cannot open. The previous fallback
+            // re-pointed at buildPath('config', 'logging.php'), which resolves to the same
+            // absent path, so it could never make the file appear.
+            $configPublished = file_exists($configPath);
 
             // Determine whether the channel is actually authored in config/logging.php.
             // Channels injected at runtime by a package/framework (e.g. laravel-cloud-socket)
@@ -168,23 +177,38 @@ class DebugLogAnalyzer extends AbstractAnalyzer
                 ? null
                 : ConfigFileHelper::findNestedKeyLine($configPath, 'channels', 'level', $channel);
 
-            $issues[] = $this->createIssueWithSnippet(
-                message: "Log channel '{$channel}' is set to debug level in {$environment} environment",
-                filePath: $configPath,
-                lineNumber: $lineNumber,
-                severity: $this->metadata()->severity,
-                recommendation: $isInjected
-                    ? $this->injectedChannelRecommendation($channel)
-                    : "Set the log level to 'info' or higher in production by updating your logging configuration or setting the LOG_LEVEL environment variable. Debug logging causes significant performance degradation, generates excessive log files that can exhaust disk space, and exposes sensitive data.",
-                metadata: [
-                    'environment' => $environment,
-                    'channel' => $channel,
-                    'level' => $level,
-                    'detection_method' => $isInjected ? 'runtime_injected' : 'config_repository',
-                    'injected' => $isInjected,
-                    'code' => 'debug-log-level',
-                ]
-            );
+            $message = "Log channel '{$channel}' is set to debug level in {$environment} environment";
+            $recommendation = $isInjected
+                ? $this->injectedChannelRecommendation($channel)
+                : "Set the log level to 'info' or higher in production by updating your logging configuration or setting the LOG_LEVEL environment variable. Debug logging causes significant performance degradation, generates excessive log files that can exhaust disk space, and exposes sensitive data.";
+            $metadata = [
+                'environment' => $environment,
+                'channel' => $channel,
+                'level' => $level,
+                'detection_method' => $isInjected ? 'runtime_injected' : 'config_repository',
+                'injected' => $isInjected,
+                'code' => 'debug-log-level',
+            ];
+
+            // createIssueWithSnippet() always builds a Location from the path it is given,
+            // so the unpublished case has to go through createIssue() to report none. No
+            // snippet is lost: that helper already skips snippets when there is no line.
+            $issues[] = $configPublished
+                ? $this->createIssueWithSnippet(
+                    message: $message,
+                    filePath: $configPath,
+                    lineNumber: $lineNumber,
+                    severity: $this->metadata()->severity,
+                    recommendation: $recommendation,
+                    metadata: $metadata
+                )
+                : $this->createIssue(
+                    message: $message,
+                    location: null,
+                    severity: $this->metadata()->severity,
+                    recommendation: $recommendation,
+                    metadata: $metadata
+                );
         }
     }
 

@@ -938,6 +938,145 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('queue.default', $skipReason);
     }
 
+    // =========================================================================
+    // Issue Location (#358)
+    // =========================================================================
+
+    public function test_omits_the_location_when_queue_config_is_not_published(): void
+    {
+        $result = $this->withBasePath(
+            $this->createTempDirectory([]),
+            fn () => $this->createAnalyzer([
+                'queue' => [
+                    'default' => 'sync',
+                    'connections' => ['sync' => ['driver' => 'sync']],
+                ],
+            ])->analyze()
+        );
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining("'sync'", $result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertNull($issues[0]->location);
+    }
+
+    public function test_omits_the_location_when_the_connection_is_undefined_and_queue_config_is_not_published(): void
+    {
+        $result = $this->withBasePath(
+            $this->createTempDirectory([]),
+            fn () => $this->createAnalyzer([
+                'queue' => [
+                    'default' => 'nonexistent',
+                    'connections' => ['redis' => ['driver' => 'redis']],
+                ],
+            ])->analyze()
+        );
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('not defined', $result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertNull($issues[0]->location);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
+    }
+
+    public function test_omits_the_location_when_the_default_connection_is_not_a_string_and_queue_config_is_not_published(): void
+    {
+        $result = $this->withBasePath(
+            $this->createTempDirectory([]),
+            fn () => $this->createAnalyzer([
+                'queue' => [
+                    'default' => 123,
+                    'connections' => ['redis' => ['driver' => 'redis']],
+                ],
+            ])->analyze()
+        );
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('default connection is not configured', $result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertNull($issues[0]->location);
+    }
+
+    public function test_locates_the_driver_in_a_published_queue_config(): void
+    {
+        $tempDir = $this->createTempDirectory(['config/queue.php' => $this->publishedQueueConfig()]);
+
+        $result = $this->withBasePath(
+            $tempDir,
+            fn () => $this->createAnalyzer([
+                'queue' => [
+                    'default' => 'sync',
+                    'connections' => ['sync' => ['driver' => 'sync']],
+                ],
+            ])->analyze()
+        );
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        $location = $issues[0]->location;
+        $this->assertNotNull($location);
+        $this->assertSame('config/queue.php', $location->file);
+        $this->assertNotNull($location->line);
+
+        $lines = file($tempDir.'/config/queue.php', FILE_IGNORE_NEW_LINES);
+        $this->assertIsArray($lines);
+        $this->assertStringContainsString("'driver' => 'sync'", $lines[$location->line - 1]);
+    }
+
+    public function test_locates_the_default_key_in_a_published_queue_config(): void
+    {
+        $tempDir = $this->createTempDirectory(['config/queue.php' => $this->publishedQueueConfig()]);
+
+        $result = $this->withBasePath(
+            $tempDir,
+            fn () => $this->createAnalyzer([
+                'queue' => [
+                    'default' => 123,
+                    'connections' => ['sync' => ['driver' => 'sync']],
+                ],
+            ])->analyze()
+        );
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        $location = $issues[0]->location;
+        $this->assertNotNull($location);
+        $this->assertNotNull($location->line);
+
+        $lines = file($tempDir.'/config/queue.php', FILE_IGNORE_NEW_LINES);
+        $this->assertIsArray($lines);
+        $this->assertStringContainsString("'default' =>", $lines[$location->line - 1]);
+    }
+
+    private function publishedQueueConfig(): string
+    {
+        return <<<'PHP'
+<?php
+
+return [
+    'default' => env('QUEUE_CONNECTION', 'sync'),
+
+    'connections' => [
+        'sync' => [
+            'driver' => 'sync',
+        ],
+    ],
+];
+PHP;
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();

@@ -125,6 +125,11 @@ class CachePrefixAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
+        $this->assertHasIssueContaining('Cache prefix is empty', $result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertNull($issues[0]->location);
     }
 
     // =========================================================================
@@ -486,6 +491,124 @@ class CachePrefixAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    // =========================================================================
+    // Issue Location (#358)
+    // =========================================================================
+
+    public function test_omits_the_location_for_a_generic_prefix_when_cache_config_is_not_published(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $this->setupCacheConfig($tempDir, [
+            'prefix' => 'laravel_cache',
+        ], writeFile: false);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('too generic', $result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertNull($issues[0]->location);
+    }
+
+    public function test_locates_the_global_prefix_in_a_published_cache_config(): void
+    {
+        $config = <<<'PHP'
+<?php
+
+return [
+    'default' => env('CACHE_STORE', 'redis'),
+
+    'prefix' => env('CACHE_PREFIX', 'laravel_cache'),
+
+    'stores' => [
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => 'cache',
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory(['config/cache.php' => $config]);
+
+        $this->setupCacheConfig($tempDir, [
+            'prefix' => 'laravel_cache',
+        ], writeFile: false);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        $location = $issues[0]->location;
+        $this->assertNotNull($location);
+        $this->assertSame('config/cache.php', $location->file);
+        $this->assertNotNull($location->line);
+
+        $lines = file($tempDir.'/config/cache.php', FILE_IGNORE_NEW_LINES);
+        $this->assertIsArray($lines);
+        $this->assertStringContainsString("'prefix' =>", $lines[$location->line - 1]);
+    }
+
+    public function test_locates_a_store_specific_prefix_in_a_published_cache_config(): void
+    {
+        $config = <<<'PHP'
+<?php
+
+return [
+    'default' => env('CACHE_STORE', 'redis'),
+
+    'stores' => [
+        'redis' => [
+            'driver' => 'redis',
+            'prefix' => 'laravel_cache',
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory(['config/cache.php' => $config]);
+
+        $this->setupCacheConfig($tempDir, [
+            'prefix' => '',
+            'stores' => [
+                'redis' => [
+                    'driver' => 'redis',
+                    'prefix' => 'laravel_cache',
+                ],
+            ],
+        ], writeFile: false);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        $location = $issues[0]->location;
+        $this->assertNotNull($location);
+        $this->assertNotNull($location->line);
+
+        $lines = file($tempDir.'/config/cache.php', FILE_IGNORE_NEW_LINES);
+        $this->assertIsArray($lines);
+        $this->assertStringContainsString("'prefix' =>", $lines[$location->line - 1]);
     }
 
     /**

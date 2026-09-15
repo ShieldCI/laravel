@@ -1506,10 +1506,9 @@ PHP;
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertEquals(Severity::Medium, $issues[0]->severity);
-        $this->assertStringContainsString('WARNING', $issues[0]->message);
     }
 
-    public function test_get_filter_has_critical_severity(): void
+    public function test_get_filter_has_high_severity(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1537,11 +1536,10 @@ PHP;
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(Severity::Critical, $issues[0]->severity);
-        $this->assertStringContainsString('CRITICAL', $issues[0]->message);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
     }
 
-    public function test_all_filter_has_critical_severity(): void
+    public function test_all_filter_has_high_severity(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1569,7 +1567,7 @@ PHP;
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
     }
 
     public function test_cursor_filter_has_medium_severity(): void
@@ -2338,7 +2336,7 @@ PHP;
         $this->assertHasIssueContaining('filter', $result);
     }
 
-    public function test_find_with_array_has_critical_severity(): void
+    public function test_find_with_array_has_high_severity(): void
     {
         $code = <<<'PHP'
 <?php
@@ -2349,7 +2347,7 @@ class UserService
 {
     public function getUsers()
     {
-        // find([...]) with filter should be critical
+        // find([...]) with filter can fetch many records
         return \App\Models\User::find([1, 2, 3])->filter(fn($u) => $u->active);
     }
 }
@@ -2366,7 +2364,7 @@ PHP;
         $this->assertFailed($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
     }
 
     public function test_ignores_find_with_variable(): void

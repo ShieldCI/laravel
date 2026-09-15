@@ -51,7 +51,7 @@ class PhpSideFilteringAnalyzer extends AbstractFileAnalyzer
             name: 'PHP-Side Collection Filtering Analyzer',
             description: 'Detects filter(), reject(), whereIn(), and whereNotIn() usage after database fetch (patterns not covered by Larastan)',
             category: Category::BestPractices,
-            severity: Severity::Critical,
+            severity: Severity::High,
             tags: ['laravel', 'performance', 'database', 'memory', 'optimization', 'collections'],
             timeToFix: 15
         );
@@ -430,12 +430,10 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
         if ($this->hasPhpSideFiltering($chain, $hasFindWithArray, $isRelationshipRoot)) {
             $pattern = $this->formatChain($chain);
             $severity = $this->determineSeverity($chain, $hasFindWithArray);
-            $severityLabel = $severity === Severity::Critical ? 'CRITICAL' : 'WARNING';
 
             $this->issues[] = [
                 'message' => sprintf(
-                    '%s: Filtering data in PHP instead of database: %s',
-                    $severityLabel,
+                    'Filtering data in PHP instead of database: %s',
                     $pattern
                 ),
                 'line' => $node->getLine(),
@@ -1148,16 +1146,16 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
      * - cursor: Medium (lazy loading, memory efficient)
      * - pluck: Medium (single column, smaller memory footprint)
      * - relationship (no fetch method): Medium (scoped by foreign key)
-     * - get/all/find([...])/findMany: Critical (can fetch entire table)
+     * - get/all/find([...])/findMany: High (can fetch entire table)
      *
      * @param  array<string>  $chain
      * @param  bool  $hasFindWithArray  Whether the chain contains find() with array argument
      */
     private function determineSeverity(array $chain, bool $hasFindWithArray = false): Severity
     {
-        // find() with array argument is critical (can fetch many records)
+        // find() with array argument can fetch many records
         if ($hasFindWithArray) {
-            return Severity::Critical;
+            return Severity::High;
         }
 
         $fetchMethod = $this->getFetchMethod($chain);
@@ -1185,7 +1183,7 @@ class PhpFilteringVisitor extends NodeVisitorAbstract
         }
 
         // get(), all(), find(), findMany(): can potentially fetch entire table
-        return Severity::Critical;
+        return Severity::High;
     }
 
     /**

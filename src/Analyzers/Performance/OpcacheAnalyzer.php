@@ -180,7 +180,7 @@ class OpcacheAnalyzer extends AbstractAnalyzer
             $issues[] = $this->createIssue(
                 message: 'OPcache extension is not loaded',
                 location: new Location($phpIniPath),
-                severity: Severity::Critical,
+                severity: Severity::High,
                 recommendation: 'Install and enable the OPcache extension in your PHP installation / php.ini (zend_extension/opcache depending on distribution).',
                 metadata: [
                     'php_version' => PHP_VERSION,

@@ -40,7 +40,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             name: 'Login Throttling Analyzer',
             description: 'Detects missing rate limiting on authentication endpoints to prevent brute force attacks',
             category: Category::Security,
-            severity: Severity::High,
+            severity: Severity::Critical,
             tags: ['authentication', 'rate-limiting', 'brute-force', 'security', 'throttling'],
             timeToFix: 20
         );

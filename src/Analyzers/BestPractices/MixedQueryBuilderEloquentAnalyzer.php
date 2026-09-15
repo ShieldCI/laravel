@@ -82,7 +82,7 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
             name: 'Mixed Query Builder and Eloquent Analyzer',
             description: 'Detects inconsistent mixing of Query Builder and Eloquent ORM in the same codebase',
             category: Category::BestPractices,
-            severity: Severity::Medium,
+            severity: Severity::High,
             tags: ['laravel', 'eloquent', 'query-builder', 'consistency'],
             timeToFix: 30
         );

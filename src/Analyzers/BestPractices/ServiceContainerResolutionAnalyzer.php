@@ -138,7 +138,7 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
             name: 'Service Container Resolution Analyzer',
             description: 'Detects manual service container resolution that should use dependency injection',
             category: Category::BestPractices,
-            severity: Severity::Medium,
+            severity: Severity::High,
             tags: ['dependency-injection', 'architecture', 'testability', 'laravel', 'ioc'],
             timeToFix: 25
         );
@@ -1092,7 +1092,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                     $this->addIssue(
                         pattern: "app()->{$methodName}()",
                         line: $node->getStartLine(),
-                        severity: Severity::High,
+                        severity: Severity::Medium,
                         argumentType: 'binding'
                     );
                 }
@@ -1181,7 +1181,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
                         $this->addIssue(
                             pattern: "\$this->app->{$methodName}()",
                             line: $node->getStartLine(),
-                            severity: Severity::High,
+                            severity: Severity::Medium,
                             argumentType: 'binding'
                         );
                     }

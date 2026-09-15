@@ -812,7 +812,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         $this->assertGreaterThanOrEqual(3, count($issues));
@@ -845,7 +845,7 @@ PHP;
 
         $this->assertEquals(Severity::Low, $lowIssue->severity);
         $this->assertEquals(Severity::Medium, $mediumIssue->severity);
-        $this->assertEquals(Severity::High, $highIssue->severity);
+        $this->assertEquals(Severity::Medium, $highIssue->severity);
     }
 
     /** @test */

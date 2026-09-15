@@ -150,16 +150,10 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
 
         $composer = $this->parseComposerJson($composerPath);
         if ($composer === null) {
-            // Malformed JSON - fail with error
-            return $this->resultBySeverity(
-                'composer.json contains invalid JSON',
-                [$this->createIssue(
-                    message: 'composer.json contains invalid JSON and cannot be parsed',
-                    location: new Location('composer.json'),
-                    severity: Severity::High,
-                    recommendation: 'Fix JSON syntax errors in composer.json. Run: composer validate',
-                )]
-            );
+            // An unparseable composer.json leaves nothing to inspect. Reporting the
+            // broken file is composer-validation's job, so this is an analysis error
+            // rather than a finding about error tracking.
+            return $this->error('composer.json contains invalid JSON and cannot be parsed');
         }
 
         // Check for error tracking packages

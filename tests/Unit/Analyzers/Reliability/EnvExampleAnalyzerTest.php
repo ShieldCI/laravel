@@ -68,7 +68,7 @@ APP_ENV=local';
         $this->assertHasIssueContaining('Undocumented environment variables', $result);
     }
 
-    public function test_fails_when_env_example_missing(): void
+    public function test_warns_when_env_example_missing(): void
     {
         $envContent = 'APP_NAME=MyApp
 APP_ENV=production
@@ -83,7 +83,7 @@ APP_KEY=base64:key';
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('missing', $result);
     }
 
@@ -359,7 +359,7 @@ CUSTOM_VAR=value';
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
 

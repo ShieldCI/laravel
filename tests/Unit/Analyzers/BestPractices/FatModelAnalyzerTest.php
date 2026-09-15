@@ -802,7 +802,7 @@ PHP;
         $this->assertEquals(Severity::Medium, $issues[0]->severity);
     }
 
-    public function test_severity_escalation_high_for_very_many_methods(): void
+    public function test_severity_escalation_medium_for_very_many_methods(): void
     {
         // 31 methods (excess = 16, high severity)
         $methods = '';
@@ -831,10 +831,10 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(Severity::High, $issues[0]->severity);
+        $this->assertEquals(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_multiple_issues_on_same_model(): void
@@ -1375,10 +1375,10 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(Severity::High, $issues[0]->severity);
+        $this->assertEquals(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_counts_coalesce_operator_in_complexity(): void

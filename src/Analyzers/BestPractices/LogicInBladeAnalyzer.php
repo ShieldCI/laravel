@@ -84,7 +84,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
             name: 'Logic in Blade Analyzer',
             description: 'Finds business logic in Blade templates that should be moved to controllers or view composers',
             category: Category::BestPractices,
-            severity: Severity::Medium,
+            severity: Severity::High,
             tags: ['laravel', 'blade', 'mvc', 'views', 'architecture'],
             timeToFix: 30
         );
@@ -1321,7 +1321,7 @@ class BladeLogicVisitor extends NodeVisitorAbstract
         $this->addIssue(
             line: $line,
             message: 'Database query found in Blade template',
-            severity: Severity::Critical,
+            severity: Severity::High,
             recommendation: 'Never query the database from Blade templates. Load all required data in the controller and pass it to the view',
             code: 'blade-has-db-query',
         );

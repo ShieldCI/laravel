@@ -491,7 +491,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
             name: 'PHPStan Static Analyzer',
             description: 'Comprehensive static analysis using PHPStan to detect type errors, undefined references, and code quality issues',
             category: Category::Reliability,
-            severity: Severity::High,
+            severity: Severity::Critical,
             tags: ['phpstan', 'static-analysis', 'type-safety', 'reliability'],
             timeToFix: 120
         );

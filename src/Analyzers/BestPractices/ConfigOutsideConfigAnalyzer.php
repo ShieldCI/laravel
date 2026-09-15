@@ -49,7 +49,7 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
             name: 'Hardcoded Configuration Analyzer',
             description: 'Detects configuration values hardcoded in code instead of config files',
             category: Category::BestPractices,
-            severity: Severity::Medium,
+            severity: Severity::High,
             tags: ['laravel', 'configuration', 'maintainability', 'testability'],
             timeToFix: 10
         );

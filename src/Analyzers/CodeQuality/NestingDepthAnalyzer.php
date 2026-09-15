@@ -111,10 +111,6 @@ class NestingDepthAnalyzer extends AbstractFileAnalyzer
     {
         $excess = $depth - $threshold;
 
-        if ($excess >= 3) {
-            return Severity::High;
-        }
-
         if ($excess >= 2) {
             return Severity::Medium;
         }

@@ -2668,7 +2668,7 @@ PHP;
         $this->assertEquals(Severity::Medium, $authIssue->severity);
     }
 
-    public function test_route_groups_have_high_severity(): void
+    public function test_route_groups_have_critical_severity(): void
     {
         $routes = <<<'PHP'
 <?php
@@ -2688,7 +2688,7 @@ PHP;
         $this->assertFalse($result->isSuccess());
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertEquals(Severity::High, $issues[0]->severity);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
     public function test_passes_controller_without_auth_middleware_but_all_routes_protected(): void

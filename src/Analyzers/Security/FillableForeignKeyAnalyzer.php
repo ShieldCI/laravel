@@ -59,7 +59,7 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
             name: 'Fillable Foreign Key Analyzer',
             description: 'Detects ownership/impersonation foreign keys exposed to mass assignment in Eloquent model $fillable arrays',
             category: Category::Security,
-            severity: Severity::High,
+            severity: Severity::Critical,
             tags: ['mass-assignment', 'foreign-keys', 'eloquent', 'security', 'relationships'],
             timeToFix: 15
         );

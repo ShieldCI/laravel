@@ -68,7 +68,7 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
             name: 'Environment Example Documentation Analyzer',
             description: 'Ensures all environment variables used in .env and read by config files are documented in .env.example',
             category: Category::Reliability,
-            severity: Severity::Low,
+            severity: Severity::Medium,
             tags: ['environment', 'configuration', 'documentation', 'team-collaboration'],
             timeToFix: 10
         );
@@ -93,7 +93,7 @@ class EnvExampleAnalyzer extends AbstractFileAnalyzer
                 [$this->createIssue(
                     message: '.env.example file is missing',
                     location: new Location('.env.example'),
-                    severity: Severity::High,
+                    severity: Severity::Medium,
                     recommendation: $this->buildMissingExampleFileRecommendation(),
                     metadata: []
                 )]

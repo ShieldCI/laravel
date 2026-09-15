@@ -130,7 +130,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
             name: 'Mass Assignment Vulnerabilities Analyzer',
             description: 'Detects mass assignment vulnerabilities in Eloquent models and query builders',
             category: Category::Security,
-            severity: Severity::High,
+            severity: Severity::Critical,
             tags: ['mass-assignment', 'eloquent', 'security', 'models', 'sql-injection'],
             timeToFix: 25
         );

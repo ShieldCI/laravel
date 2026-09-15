@@ -609,7 +609,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     message: 'Route group without authentication middleware',
                     filePath: $file,
                     lineNumber: $group['line'],
-                    severity: Severity::High,
+                    severity: Severity::Critical,
                     recommendation: 'Add the auth middleware to this route group. If these routes are intentionally public, add their URIs to the public_routes config option.',
                     metadata: ['route_type' => 'group', 'file' => basename($file)]
                 );
@@ -646,7 +646,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                         : "{$httpMethod} route without authentication middleware",
                     filePath: $file,
                     lineNumber: $route['line'],
-                    severity: Severity::High,
+                    severity: Severity::Critical,
                     recommendation: $isClosure
                         ? 'Apply auth middleware to this closure route or extract the logic into a controller action and protect it with auth middleware at the route or group level. If intentionally public, add the route URI to the public_routes config option.'
                         : 'Apply auth middleware to this route at the route level or inside a middleware group. If intentionally public, add the route URI to the public_routes config option.',

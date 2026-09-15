@@ -866,4 +866,75 @@ ENV;
         $this->assertEquals('array', $metadata['cache_driver']);
         $this->assertEquals('production', $metadata['environment']);
     }
+
+    // =========================================================================
+    // Issue Location (#358)
+    // =========================================================================
+
+    public function test_omits_the_location_when_cache_config_is_not_published(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        config(['cache.default' => 'array']);
+        config(['cache.stores.array.driver' => 'array']);
+
+        Cache::shouldReceive('put')->andReturnTrue();
+        Cache::shouldReceive('get')->andReturn('wrong');
+        Cache::shouldReceive('forget')->andReturnTrue();
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertNull($issues[0]->location);
+    }
+
+    public function test_locates_the_default_store_in_a_published_cache_config(): void
+    {
+        $cacheConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'array',
+    'stores' => [
+        'array' => [
+            'driver' => 'array',
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/cache.php' => $cacheConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        config(['cache.default' => 'array']);
+        config(['cache.stores.array.driver' => 'array']);
+
+        Cache::shouldReceive('put')->andReturnTrue();
+        Cache::shouldReceive('get')->andReturn('wrong');
+        Cache::shouldReceive('forget')->andReturnTrue();
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        $location = $issues[0]->location;
+        $this->assertNotNull($location);
+        $this->assertSame('config/cache.php', $location->file);
+        $this->assertNotNull($location->line);
+
+        $lines = file($tempDir.'/config/cache.php', FILE_IGNORE_NEW_LINES);
+        $this->assertIsArray($lines);
+        $this->assertStringContainsString("'default' =>", $lines[$location->line - 1]);
+    }
 }

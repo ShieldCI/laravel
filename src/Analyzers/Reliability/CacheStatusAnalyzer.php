@@ -144,19 +144,25 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Get the location of the cache configuration file.
-     * Attempts to find the 'default' key line, falls back to line 1.
+     *
+     * The driver comes from the config repository, which merges the framework's own
+     * config/cache.php, so the verdict holds whether or not the app published the file -
+     * and Laravel 11+ invites deleting config files you do not customise. Only the line
+     * reference is lost, so an unpublished file yields no location rather than naming a
+     * file the reader cannot open.
      */
-    private function getCacheConfigLocation(): Location
+    private function getCacheConfigLocation(): ?Location
     {
         $configFile = $this->getCacheConfigPath();
 
-        if (file_exists($configFile)) {
-            $lineNumber = ConfigFileHelper::findKeyLine($configFile, 'default');
-
-            return new Location($this->getRelativePath($configFile), $lineNumber < 1 ? null : $lineNumber);
+        if (! file_exists($configFile)) {
+            return null;
         }
 
-        return new Location($this->getRelativePath($configFile));
+        return new Location(
+            $this->getRelativePath($configFile),
+            ConfigFileHelper::findKeyLine($configFile, 'default')
+        );
     }
 
     /**

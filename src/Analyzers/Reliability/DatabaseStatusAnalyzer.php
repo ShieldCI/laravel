@@ -297,24 +297,26 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Get the location of the database configuration file.
-     * Attempts to find the connection line, falls back to line 1.
+     *
+     * The connections come from the config repository, which merges the framework's own
+     * config/database.php, so the verdict holds whether or not the app published the file -
+     * and Laravel 11+ invites deleting config files you do not customise. Only the line
+     * reference is lost, so an unpublished file yields no location rather than giving every
+     * connection the same pointer to a file the reader cannot open.
      */
-    private function getDatabaseConfigLocation(string $connectionName): Location
+    private function getDatabaseConfigLocation(string $connectionName): ?Location
     {
         $configFile = $this->getDatabaseConfigPath();
 
-        if (file_exists($configFile)) {
-            // Find the connection name as a key within the 'connections' array
-            $lineNumber = ConfigFileHelper::findKeyLine(
-                $configFile,
-                $connectionName,
-                'connections'
-            );
-
-            return new Location($this->getRelativePath($configFile), $lineNumber < 1 ? null : $lineNumber);
+        if (! file_exists($configFile)) {
+            return null;
         }
 
-        return new Location($this->getRelativePath($configFile));
+        // Find the connection name as a key within the 'connections' array
+        return new Location(
+            $this->getRelativePath($configFile),
+            ConfigFileHelper::findKeyLine($configFile, $connectionName, 'connections')
+        );
     }
 
     /**

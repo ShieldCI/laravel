@@ -492,15 +492,17 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Get the location for a queue connection in the config file.
+     *
+     * Unlike the other config analyzers this one reads its values out of the file itself,
+     * so runAnalysis() has already returned 'Unable to read queue configuration' when the
+     * file is absent. By the time a connection is reported the file is guaranteed to exist,
+     * which is why there is no unpublished-file branch here.
      */
     private function getConnectionLocation(string $configFile, string $connectionName): Location
     {
-        if (! file_exists($configFile)) {
-            return new Location($this->getRelativePath($configFile));
-        }
-
-        $lineNumber = ConfigFileHelper::findKeyLine($configFile, $connectionName, 'connections');
-
-        return new Location($this->getRelativePath($configFile), $lineNumber < 1 ? null : $lineNumber);
+        return new Location(
+            $this->getRelativePath($configFile),
+            ConfigFileHelper::findKeyLine($configFile, $connectionName, 'connections')
+        );
     }
 }

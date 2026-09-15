@@ -36,7 +36,7 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             name: 'Unguarded Models Analyzer',
             description: 'Detects Model::unguard() usage that disables mass assignment protection',
             category: Category::Security,
-            severity: Severity::High,
+            severity: Severity::Critical,
             tags: ['eloquent', 'mass-assignment', 'models', 'security', 'unguard'],
             timeToFix: 20
         );

@@ -974,7 +974,7 @@ BLADE;
         $this->assertPassed($result);
     }
 
-    public function test_severity_critical_for_database_queries(): void
+    public function test_severity_high_for_database_queries(): void
     {
         $blade = <<<'BLADE'
 <div>
@@ -994,7 +994,7 @@ BLADE;
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertEquals('critical', $issues[0]->severity->value);
+        $this->assertEquals('high', $issues[0]->severity->value);
     }
 
     public function test_severity_high_for_api_calls(): void

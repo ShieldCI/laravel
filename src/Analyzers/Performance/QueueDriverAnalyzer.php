@@ -42,7 +42,7 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
             name: 'Queue Driver Configuration Analyzer',
             description: 'Ensures a proper queue driver is configured for optimal performance and reliability',
             category: Category::Performance,
-            severity: Severity::Medium,
+            severity: Severity::Critical,
             tags: ['queue', 'performance', 'configuration', 'redis', 'sqs'],
             timeToFix: 30
         );

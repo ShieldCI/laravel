@@ -118,7 +118,7 @@ class CommentedCodeAnalyzer extends AbstractFileAnalyzer
             name: 'Commented Code Analyzer',
             description: 'Detects commented-out code that should be removed in favor of version control',
             category: Category::CodeQuality,
-            severity: Severity::Low,
+            severity: Severity::Medium,
             tags: ['maintainability', 'code-quality', 'comments', 'dead-code', 'version-control'],
             timeToFix: 5
         );

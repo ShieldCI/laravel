@@ -250,7 +250,7 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertError($result);
     }
 
     public function test_passes_with_reportable_in_handler(): void

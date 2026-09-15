@@ -150,7 +150,7 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
             name: 'Helper Function Abuse Analyzer',
             description: 'Detects excessive use of Laravel helper functions that hide dependencies and hinder testing',
             category: Category::BestPractices,
-            severity: Severity::Low,
+            severity: Severity::Medium,
             tags: ['testability', 'dependency-injection', 'laravel', 'helpers', 'code-quality'],
             timeToFix: 25
         );
@@ -238,12 +238,7 @@ class HelperFunctionAbuseAnalyzer extends AbstractFileAnalyzer
     {
         $excess = $count - $threshold;
 
-        // 10+ unique helpers over threshold is a serious issue
-        if ($excess >= 10) {
-            return Severity::High;
-        }
-
-        // 5-9 unique helpers over threshold is moderate
+        // 5+ unique helpers over threshold is moderate
         if ($excess >= 5) {
             return Severity::Medium;
         }

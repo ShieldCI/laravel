@@ -41,7 +41,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
             name: 'Cache Driver Configuration Analyzer',
             description: 'Ensures a proper cache driver is configured for optimal performance',
             category: Category::Performance,
-            severity: Severity::High,
+            severity: Severity::Critical,
             tags: ['cache', 'performance', 'configuration', 'redis', 'memcached'],
             timeToFix: 60
         );

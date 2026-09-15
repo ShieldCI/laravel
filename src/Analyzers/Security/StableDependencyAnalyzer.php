@@ -37,7 +37,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
             name: 'Stable Dependencies Analyzer',
             description: 'Validates that all dependencies use stable versions rather than dev/alpha/beta releases',
             category: Category::Security,
-            severity: Severity::Low,
+            severity: Severity::Medium,
             tags: ['dependencies', 'composer', 'stability', 'versions', 'production'],
             timeToFix: 30
         );

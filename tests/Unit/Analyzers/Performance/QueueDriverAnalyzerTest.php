@@ -400,7 +400,7 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
         $this->assertEquals('queue-driver', $metadata->id);
         $this->assertEquals('Queue Driver Configuration Analyzer', $metadata->name);
         $this->assertEquals(Category::Performance, $metadata->category);
-        $this->assertEquals(Severity::Medium, $metadata->severity);
+        $this->assertEquals(Severity::Critical, $metadata->severity);
         $this->assertContains('queue', $metadata->tags);
     }
 

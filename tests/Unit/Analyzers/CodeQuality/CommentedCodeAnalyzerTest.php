@@ -779,7 +779,7 @@ PHP;
 
         $this->assertSame('commented-code', $metadata->id);
         $this->assertSame('Commented Code Analyzer', $metadata->name);
-        $this->assertSame(Severity::Low, $metadata->severity);
+        $this->assertSame(Severity::Medium, $metadata->severity);
         $this->assertSame(5, $metadata->timeToFix);
         $this->assertContains('maintainability', $metadata->tags);
         $this->assertContains('code-quality', $metadata->tags);

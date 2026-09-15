@@ -85,7 +85,7 @@ class PHPIniAnalyzer extends AbstractFileAnalyzer
             name: 'PHP Configuration Analyzer',
             description: 'Validates that PHP ini settings are configured securely',
             category: Category::Security,
-            severity: Severity::High,
+            severity: Severity::Critical,
             tags: ['php', 'configuration', 'ini', 'security', 'server'],
             timeToFix: 15
         );

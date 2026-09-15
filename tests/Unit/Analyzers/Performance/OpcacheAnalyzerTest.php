@@ -638,7 +638,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
     // Category 9: Metadata & Severity Tests
 
-    public function test_extension_not_loaded_has_critical_severity(): void
+    public function test_extension_not_loaded_has_high_severity(): void
     {
         /** @var OpcacheAnalyzer $analyzer */
         $analyzer = $this->createAnalyzer();
@@ -649,7 +649,7 @@ class OpcacheAnalyzerTest extends AnalyzerTestCase
 
         $this->assertFailed($result);
         $issues = $result->getIssues();
-        $this->assertEquals(Severity::Critical, $issues[0]->severity);
+        $this->assertEquals(Severity::High, $issues[0]->severity);
     }
 
     public function test_opcache_disabled_has_high_severity(): void

@@ -250,7 +250,7 @@ class LicenseAnalyzer extends AbstractFileAnalyzer
 
             // Check for restrictive licenses
             if (! empty($restrictiveMatches)) {
-                $severity = $isDevDependency ? Severity::Low : Severity::Critical;
+                $severity = $isDevDependency ? Severity::Low : Severity::High;
                 $prefix = $isDevDependency ? 'Dev package' : 'Package';
 
                 $licenseType = $isConjunctive ? ' (conjunctive - ALL apply)' : ' (disjunctive - choose one)';

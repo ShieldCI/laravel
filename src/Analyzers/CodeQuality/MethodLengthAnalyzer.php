@@ -72,7 +72,7 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
             name: 'Method Length Analyzer',
             description: 'Flags methods exceeding recommended line count for better maintainability',
             category: Category::CodeQuality,
-            severity: Severity::Low,
+            severity: Severity::Medium,
             tags: ['complexity', 'maintainability', 'code-quality', 'readability'],
             timeToFix: 30
         );
@@ -159,9 +159,6 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
         $threshold = max(1, $threshold);
         $ratio = $lines / $threshold;
 
-        if ($ratio >= 3.0) {
-            return Severity::High;
-        }
         if ($ratio >= 2.0) {
             return Severity::Medium;
         }

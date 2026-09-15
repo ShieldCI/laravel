@@ -202,9 +202,8 @@ class FatModelVisitor extends NodeVisitorAbstract
         if ($businessMethods > $this->methodThreshold) {
             $excess = $businessMethods - $this->methodThreshold;
             $severity = match (true) {
-                $excess >= 15 => Severity::High,    // 30+ methods (threshold + 15)
-                $excess >= 5 => Severity::Medium,   // 20-29 methods (threshold + 5)
-                default => Severity::Low,            // 16-19 methods
+                $excess >= 5 => Severity::Medium,   // 20+ methods (threshold + 5)
+                default => Severity::Low,           // 16-19 methods
             };
 
             $this->issues[] = [
@@ -226,8 +225,7 @@ class FatModelVisitor extends NodeVisitorAbstract
         if ($statementLines > $this->locThreshold) {
             $excess = $statementLines - $this->locThreshold;
             $severity = match (true) {
-                $excess >= 200 => Severity::High,  // 500+ lines (threshold + 200)
-                $excess >= 100 => Severity::Medium, // 400-499 lines (threshold + 100)
+                $excess >= 100 => Severity::Medium, // 400+ lines (threshold + 100)
                 default => Severity::Low,           // 301-399 lines
             };
 
@@ -251,8 +249,7 @@ class FatModelVisitor extends NodeVisitorAbstract
             if ($complexity > $this->complexityThreshold) {
                 $excess = $complexity - $this->complexityThreshold;
                 $severity = match (true) {
-                    $excess >= 15 => Severity::High,   // 25+ complexity (threshold + 15)
-                    $excess >= 5 => Severity::Medium,  // 15-24 complexity (threshold + 5)
+                    $excess >= 5 => Severity::Medium,  // 15+ complexity (threshold + 5)
                     default => Severity::Low,          // 11-14 complexity
                 };
 

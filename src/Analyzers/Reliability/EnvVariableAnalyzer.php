@@ -57,7 +57,7 @@ class EnvVariableAnalyzer extends AbstractFileAnalyzer
             name: 'Environment Variables Complete Analyzer',
             description: 'Ensures all required environment variables from .env.example are defined in .env',
             category: Category::Reliability,
-            severity: Severity::High,
+            severity: Severity::Critical,
             tags: ['environment', 'configuration', 'reliability', 'deployment'],
             timeToFix: 20
         );

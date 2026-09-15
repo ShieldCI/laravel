@@ -208,7 +208,7 @@ PHP;
         $this->assertEquals('medium', $issues[0]->severity->value);
     }
 
-    public function test_severity_escalation_high(): void
+    public function test_severity_stays_medium_far_over_threshold(): void
     {
         $code = <<<'PHP'
 <?php
@@ -243,11 +243,11 @@ class MassiveService
         resolve(Service::class);
         validator([], []);
         report(new Exception());
-        // Need more to hit 26 total (21+ over threshold = High)
+        // Need more to hit 26 total (far over threshold)
         auth()->check();
         app()->make('service2');
         cache()->get('key');
-        // 26 dependency-hiding helpers = 21 over threshold (High severity)
+        // 26 dependency-hiding helpers = 21 over threshold (still Medium: the ladder tops out there)
     }
 }
 PHP;
@@ -262,10 +262,10 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertNotEmpty($issues);
-        $this->assertEquals('high', $issues[0]->severity->value);
+        $this->assertEquals('medium', $issues[0]->severity->value);
     }
 
     public function test_custom_threshold_configuration(): void

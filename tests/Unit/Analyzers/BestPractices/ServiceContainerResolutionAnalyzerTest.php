@@ -340,11 +340,11 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('app()->bind()', $result);
-        // Should be high severity for binding
+        // Should be medium severity for binding
         $issues = $result->getIssues();
-        $this->assertSame(Severity::High, $issues[0]->severity);
+        $this->assertSame(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_detects_singleton_outside_service_provider(): void
@@ -373,10 +373,10 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('app()->singleton()', $result);
         $issues = $result->getIssues();
-        $this->assertSame(Severity::High, $issues[0]->severity);
+        $this->assertSame(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_service_provider_skips_binding_and_resolution(): void
@@ -1317,7 +1317,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should detect binding even in closures
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('app()->bind()', $result);
     }
 
@@ -1450,7 +1450,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertStringContainsString('ServiceProvider', $issues[0]->recommendation);
         $this->assertStringContainsString('register()', $issues[0]->recommendation);
@@ -1831,7 +1831,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('app()->scoped()', $result);
     }
 
@@ -1862,7 +1862,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('app()->instance()', $result);
     }
 
@@ -2446,10 +2446,10 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('$this->app->bind()', $result);
         $issues = $result->getIssues();
-        $this->assertSame(Severity::High, $issues[0]->severity);
+        $this->assertSame(Severity::Medium, $issues[0]->severity);
     }
 
     public function test_detects_container_variable_make(): void
@@ -3080,11 +3080,11 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Bindings outside service providers are still flagged at High severity
-        $this->assertFailed($result);
+        // Bindings outside service providers are still flagged at Medium severity
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertSame(Severity::High, $issues[0]->severity);
+        $this->assertSame(Severity::Medium, $issues[0]->severity);
         $this->assertHasIssueContaining('app()->bind()', $result);
     }
 
@@ -3414,7 +3414,7 @@ PHP;
         $this->assertHasIssueContaining('app()', $result);
     }
 
-    public function test_form_request_binding_is_still_flagged_high(): void
+    public function test_form_request_binding_is_still_flagged(): void
     {
         // The FormRequest downgrade lowers resolution to Low but never bindings: registering a
         // binding outside a service provider is always wrong, so it stays High even in authorize().
@@ -3446,14 +3446,14 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertSame(Severity::High, $issues[0]->severity);
+        $this->assertSame(Severity::Medium, $issues[0]->severity);
         $this->assertHasIssueContaining('app()->bind()', $result);
     }
 
-    public function test_model_event_binding_is_still_flagged_high(): void
+    public function test_model_event_binding_is_still_flagged(): void
     {
         // Model-event closures suppress resolution but not bindings. A binding registered inside
         // a static::creating() closure (always wrong) stays High.
@@ -3483,10 +3483,10 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
-        $this->assertSame(Severity::High, $issues[0]->severity);
+        $this->assertSame(Severity::Medium, $issues[0]->severity);
         $this->assertHasIssueContaining('app()->bind()', $result);
     }
 

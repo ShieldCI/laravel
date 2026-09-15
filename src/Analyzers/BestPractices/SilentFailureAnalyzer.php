@@ -111,7 +111,7 @@ class SilentFailureAnalyzer extends AbstractFileAnalyzer
             name: 'Silent Failure Analyzer',
             description: 'Detects empty catch blocks and error suppression that hide failures',
             category: Category::BestPractices,
-            severity: Severity::Medium,
+            severity: Severity::High,
             tags: ['laravel', 'exceptions', 'error-handling', 'debugging', 'monitoring'],
             timeToFix: 20
         );

@@ -150,9 +150,27 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
         $defaultConnection = $this->config->get('database.default', 'mysql');
         $connections = $this->config->get('database.connections', []);
 
-        // Validate connections is an array
+        // A malformed connections block is a fact about the user's configuration, not a
+        // failure of this analyzer, so it is reported as a located finding like every
+        // other verdict here. As an errored result it carried no issue, which left it
+        // unbaselineable and unsuppressible.
         if (! is_array($connections)) {
-            return $this->error('Database connections configuration is invalid');
+            $configFile = $this->getDatabaseConfigPath();
+
+            return $this->failed(
+                'Database connections configuration is invalid',
+                [
+                    $this->createIssue(
+                        message: 'Database connections configuration is not an array',
+                        location: file_exists($configFile)
+                            ? new Location($this->getRelativePath($configFile), ConfigFileHelper::findKeyLine($configFile, 'connections'))
+                            : null,
+                        severity: Severity::Medium,
+                        recommendation: 'Define database.connections as an array keyed by connection name. Laravel cannot resolve any database connection from a non-array value, so every query fails at runtime.',
+                        metadata: ['type' => get_debug_type($connections)]
+                    ),
+                ]
+            );
         }
 
         // Validate default connection is a string

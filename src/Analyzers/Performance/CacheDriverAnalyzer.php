@@ -64,26 +64,41 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
     {
         $issues = [];
 
-        // Use injected config repository to get runtime values (respects .env and config:cache)
-        $defaultStore = $this->config->get('cache.default');
-        if (! is_string($defaultStore)) {
-            return $this->error('Cache default store is not configured properly');
-        }
-
         $environment = $this->getEnvironment();
-
-        // Validate that the store exists in configuration
-        $driver = $this->config->get("cache.stores.{$defaultStore}.driver");
 
         $basePath = $this->getBasePath();
         $configFile = ConfigFileHelper::getConfigPath($basePath, 'cache.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
-        // The store and driver above come from the config repository, which merges the
+        // The store and driver below come from the config repository, which merges the
         // framework's own config/cache.php, so they are correct whether or not the app
         // published the file - and Laravel 11+ invites deleting config files you do not
         // customise. Only the line reference is lost, so an unpublished file degrades the
         // location to null instead of aborting an analysis that already has its answer.
         $configPublished = file_exists($configFile);
+
+        // Use injected config repository to get runtime values (respects .env and config:cache)
+        $defaultStore = $this->config->get('cache.default');
+
+        // A malformed store name is a fact about the user's configuration, not a failure of
+        // this analyzer, so it is reported as a located finding like the undefined-store
+        // case below. As an errored result it carried no issue, which left it unbaselineable
+        // and unsuppressible.
+        if (! is_string($defaultStore)) {
+            $issues[] = $this->createIssue(
+                message: 'Cache default store is not a string',
+                location: $configPublished
+                    ? new Location($this->getRelativePath($configFile), ConfigFileHelper::findKeyLine($configFile, 'default'))
+                    : null,
+                severity: Severity::Critical,
+                recommendation: 'Set the default cache store to the name of a store defined in config/cache.php. Laravel cannot resolve a store from a non-string value, so every cache read and write fails at runtime.',
+                metadata: ['type' => get_debug_type($defaultStore), 'environment' => $environment]
+            );
+
+            return $this->failed('Cache configuration is invalid', $issues);
+        }
+
+        // Validate that the store exists in configuration
+        $driver = $this->config->get("cache.stores.{$defaultStore}.driver");
 
         if ($driver === null) {
             $issues[] = $this->createIssue(
@@ -99,9 +114,18 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
             return $this->failed('Cache configuration is invalid', $issues);
         }
 
-        // Ensure driver is a string for PHPStan
         if (! is_string($driver)) {
-            return $this->error('Cache driver configuration is invalid (driver is not a string)');
+            $issues[] = $this->createIssue(
+                message: "Cache store '{$defaultStore}' has a driver that is not a string",
+                location: $configPublished
+                    ? new Location($this->getRelativePath($configFile), ConfigFileHelper::findNestedKeyLine($configFile, 'stores', 'driver', $defaultStore))
+                    : null,
+                severity: Severity::Critical,
+                recommendation: 'Set the store driver to one of the cache drivers Laravel supports. Laravel cannot build a cache store from a non-string driver, so every cache read and write fails at runtime.',
+                metadata: ['store' => $defaultStore, 'type' => get_debug_type($driver), 'environment' => $environment]
+            );
+
+            return $this->failed('Cache configuration is invalid', $issues);
         }
 
         // Resolve the location once so every driver check reports the same one.

@@ -414,8 +414,9 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertError($result);
-        $this->assertStringContainsString('Invalid view.compiled', $result->getMessage());
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('compiled path is not a string', $result);
+        $this->assertSame('array', $result->getIssues()[0]->metadata['type'] ?? null);
     }
 
     public function test_warn_when_compiled_directory_does_not_exist(): void

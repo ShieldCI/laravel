@@ -630,8 +630,9 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertError($result);
-        $this->assertStringContainsString('Invalid session driver', $result->getMessage());
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Session driver is not a string', $result);
+        $this->assertSame('array', $result->getIssues()[0]->metadata['type'] ?? null);
     }
 
     public function test_null_driver_always_fails_regardless_of_environment(): void

@@ -273,7 +273,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString("\napp\n", $args);
     }
 
-    public function test_reports_an_error_when_the_base_path_cannot_be_determined(): void
+    public function test_skips_when_the_base_path_cannot_be_determined(): void
     {
         $analyzer = new class extends CollectionCallAnalyzer
         {
@@ -285,8 +285,8 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertError($result);
-        $this->assertStringContainsString('Unable to determine base path', $result->getMessage());
+        $this->assertSkipped($result);
+        $this->assertStringContainsString('base path could not be determined', $result->getMessage());
     }
 
     public function test_reports_an_error_when_the_phpstan_binary_cannot_be_executed(): void

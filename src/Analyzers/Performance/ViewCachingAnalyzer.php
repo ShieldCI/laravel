@@ -128,14 +128,25 @@ class ViewCachingAnalyzer extends AbstractAnalyzer
     {
         $environment = $this->getEnvironment();
 
-        if ($environment === '') {
-            return $this->error('Invalid environment configuration');
-        }
-
         $compiledPath = $this->config->get('view.compiled');
 
+        // A malformed compiled path is a fact about the user's configuration, not a
+        // failure of this analyzer, so it is reported as a finding like every other
+        // verdict here. As an errored result it carried no issue, which left it
+        // unbaselineable and unsuppressible.
         if (! is_string($compiledPath)) {
-            return $this->error('Invalid view.compiled configuration');
+            return $this->failed(
+                'View compiled path is not a string',
+                [
+                    $this->createIssue(
+                        message: 'View compiled path is not a string',
+                        location: null,
+                        severity: Severity::Medium,
+                        recommendation: 'Set the compiled view path to a writable directory. Laravel cannot compile a Blade template without a string path, so every view render fails at runtime.',
+                        metadata: ['type' => get_debug_type($compiledPath), 'environment' => $environment]
+                    ),
+                ]
+            );
         }
 
         $newestBladeMtime = $this->getNewestBladeTimestamp();

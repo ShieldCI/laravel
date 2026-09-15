@@ -92,8 +92,23 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
         $driver = $this->config->get('session.driver', 'file');
         $environment = $this->getEnvironment();
 
+        // A malformed driver is a fact about the user's configuration, not a failure of
+        // this analyzer, so it is reported as a located finding like every other driver
+        // verdict below. As an errored result it carried no issue, which left it
+        // unbaselineable and unsuppressible.
         if (! is_string($driver)) {
-            return $this->error('Invalid session driver or environment configuration');
+            return $this->failed(
+                'Session driver is not a string',
+                [
+                    $this->createIssue(
+                        message: 'Session driver is not a string',
+                        location: $this->getConfigLocation(),
+                        severity: Severity::Critical,
+                        recommendation: 'Set the session driver to one of the session drivers Laravel supports. Laravel cannot build a session store from a non-string driver, so every request that touches the session fails at runtime.',
+                        metadata: ['type' => get_debug_type($driver), 'environment' => $environment]
+                    ),
+                ]
+            );
         }
 
         // Assess the driver based on environment

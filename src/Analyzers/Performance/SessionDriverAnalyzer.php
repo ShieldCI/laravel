@@ -212,8 +212,14 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
 
     /**
      * Get the location of the session driver configuration.
+     *
+     * The driver comes from the config repository, which merges the framework's own
+     * config/session.php, so the verdict holds whether or not the app published the
+     * file - and Laravel 11+ invites deleting config files you do not customise. Only
+     * the line reference is lost, so an unpublished file yields no location rather than
+     * naming a file the reader cannot open.
      */
-    private function getConfigLocation(): Location
+    private function getConfigLocation(): ?Location
     {
         $basePath = $this->getBasePath();
         $configPath = ConfigFileHelper::getConfigPath(
@@ -222,8 +228,13 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
             fn ($file) => function_exists('config_path') ? config_path($file) : null
         );
 
-        $lineNumber = ConfigFileHelper::findKeyLine($configPath, 'driver');
+        if (! file_exists($configPath)) {
+            return null;
+        }
 
-        return new Location($this->getRelativePath($configPath), $lineNumber < 1 ? null : $lineNumber);
+        return new Location(
+            $this->getRelativePath($configPath),
+            ConfigFileHelper::findKeyLine($configPath, 'driver')
+        );
     }
 }

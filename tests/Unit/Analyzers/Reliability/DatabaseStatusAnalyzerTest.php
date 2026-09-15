@@ -213,6 +213,91 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
+    // =========================================================================
+    // Issue Location (#358)
+    // =========================================================================
+
+    public function test_omits_the_location_when_database_config_is_not_published(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'Connection refused', 'PDOException'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertNull($issues[0]->location);
+    }
+
+    public function test_keeps_failing_connections_distinct_when_database_config_is_not_published(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $this->applyDatabaseConfig();
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('shieldci.analyzers.reliability.database-status.connections', ['mysql', 'sqlite']);
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->with('mysql')->andReturn(new DatabaseConnectionResult(false, 'mysql is unreachable', 'PDOException'));
+        $checker->shouldReceive('check')->with('sqlite')->andReturn(new DatabaseConnectionResult(false, 'sqlite is unreachable', 'PDOException'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+
+        foreach ($issues as $issue) {
+            $this->assertNull($issue->location);
+        }
+
+        // Every connection used to share one fabricated config/database.php location, which
+        // collapsed them into a single Reporter group. Without a location they group by
+        // message, so distinct failures stay distinct.
+        $this->assertNotEquals($issues[0]->message, $issues[1]->message);
+    }
+
+    public function test_locates_the_connection_in_a_published_database_config(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(false, 'Connection refused', 'PDOException'));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        $location = $issues[0]->location;
+        $this->assertNotNull($location);
+        $this->assertSame('config/database.php', $location->file);
+        $this->assertNotNull($location->line);
+
+        $lines = file($tempDir.'/config/database.php', FILE_IGNORE_NEW_LINES);
+        $this->assertIsArray($lines);
+        $this->assertStringContainsString("'mysql' =>", $lines[$location->line - 1]);
+    }
+
     public function test_handles_array_with_non_string_values(): void
     {
         $tempDir = $this->createTempDirectory([

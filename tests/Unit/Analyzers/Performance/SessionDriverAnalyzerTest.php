@@ -882,6 +882,74 @@ class SessionDriverAnalyzerTest extends AnalyzerTestCase
         $this->assertFalse(SessionDriverAnalyzer::$runInCI);
     }
 
+    // =========================================================================
+    // Issue Location (#358)
+    // =========================================================================
+
+    public function test_omits_the_location_when_session_config_is_not_published(): void
+    {
+        $result = $this->withBasePath(
+            $this->createTempDirectory([]),
+            fn () => $this->createAnalyzer(['session' => ['driver' => 'file']])->analyze()
+        );
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('file', $result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertNull($issues[0]->location);
+    }
+
+    public function test_omits_the_location_for_the_null_driver_when_session_config_is_not_published(): void
+    {
+        $result = $this->withBasePath(
+            $this->createTempDirectory([]),
+            fn () => $this->createAnalyzer(['session' => ['driver' => 'null']])->analyze()
+        );
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertNull($issues[0]->location);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
+    }
+
+    public function test_locates_the_driver_in_a_published_session_config(): void
+    {
+        $config = <<<'PHP'
+<?php
+
+return [
+    'driver' => env('SESSION_DRIVER', 'file'),
+
+    'lifetime' => env('SESSION_LIFETIME', 120),
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory(['config/session.php' => $config]);
+
+        $result = $this->withBasePath(
+            $tempDir,
+            fn () => $this->createAnalyzer(['session' => ['driver' => 'file']])->analyze()
+        );
+
+        $this->assertWarning($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        $location = $issues[0]->location;
+        $this->assertNotNull($location);
+        $this->assertSame('config/session.php', $location->file);
+        $this->assertNotNull($location->line);
+
+        $lines = file($tempDir.'/config/session.php', FILE_IGNORE_NEW_LINES);
+        $this->assertIsArray($lines);
+        $this->assertStringContainsString("'driver' =>", $lines[$location->line - 1]);
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();

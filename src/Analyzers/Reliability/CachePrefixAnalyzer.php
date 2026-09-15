@@ -80,7 +80,15 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
     {
         $configFile = $this->getCacheConfigPath();
         $prefix = $this->getEffectivePrefix();
-        $prefixLine = $this->getPrefixLineNumber($configFile);
+
+        // The prefix comes from the config repository, which merges the framework's own
+        // config/cache.php, so it is correct whether or not the app published the file -
+        // and Laravel 11+ invites deleting config files you do not customise. Only the
+        // line reference is lost. Resolve the location once so both findings below
+        // report the same one, and report none at all when the file is not there.
+        $location = file_exists($configFile)
+            ? new Location($this->getRelativePath($configFile), $this->getPrefixLineNumber($configFile))
+            : null;
 
         // Check if prefix is empty
         if ($prefix === '') {
@@ -88,7 +96,7 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
                 'Cache prefix is not configured',
                 [$this->createIssue(
                     message: 'Cache prefix is empty or not set',
-                    location: new Location($this->getRelativePath($configFile), $prefixLine),
+                    location: $location,
                     severity: $this->metadata()->severity,
                     recommendation: $this->getEmptyPrefixRecommendation(),
                     metadata: [
@@ -105,7 +113,7 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
                 'Cache prefix is too generic',
                 [$this->createIssue(
                     message: "Cache prefix '{$prefix}' is too generic and may cause collisions",
-                    location: new Location($this->getRelativePath($configFile), $prefixLine),
+                    location: $location,
                     severity: $this->metadata()->severity,
                     recommendation: $this->getGenericPrefixRecommendation($prefix),
                     metadata: [
@@ -136,26 +144,20 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Get the line number for the prefix configuration key.
-     * Falls back to line 1 if not found.
+     *
+     * The caller has already confirmed the file exists.
      */
     private function getPrefixLineNumber(string $configFile): int
     {
-        if (! file_exists($configFile)) {
-            return 1;
-        }
-
         $store = $this->getDefaultStore();
 
         if ($this->hasStoreSpecificPrefix($store)) {
-            // Find stores.{store}.prefix (e.g., stores.redis.prefix)
-            $line = ConfigFileHelper::findNestedKeyLine($configFile, 'stores', $store, 'prefix');
-
-            return $line > 0 ? $line : 1;
+            // Find stores.{store}.prefix (e.g., stores.redis.prefix). The helper takes the
+            // key to locate before the array to locate it in, so 'prefix' precedes $store.
+            return ConfigFileHelper::findNestedKeyLine($configFile, 'stores', 'prefix', $store);
         }
 
-        $lineNumber = ConfigFileHelper::findKeyLine($configFile, 'prefix');
-
-        return $lineNumber > 0 ? $lineNumber : 1;
+        return ConfigFileHelper::findKeyLine($configFile, 'prefix');
     }
 
     /**

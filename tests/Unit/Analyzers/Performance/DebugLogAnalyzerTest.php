@@ -886,6 +886,10 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
         $this->assertFalse($issue->metadata['injected'] ?? true);
         $this->assertEquals('config_repository', $issue->metadata['detection_method'] ?? '');
         $this->assertStringContainsString('LOG_LEVEL environment variable', $issue->recommendation);
+
+        // The channel classification above is deliberately unchanged, but there is still no
+        // config/logging.php to point at, so the issue carries no location at all.
+        $this->assertNull($issue->location);
     }
 
     protected function tearDown(): void

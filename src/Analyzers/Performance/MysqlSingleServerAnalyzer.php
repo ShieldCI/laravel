@@ -230,16 +230,22 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
         if ($this->isLocalhostConnection($host) && $this->isEmptySocket($unixSocket)) {
             $severity = $connectionName === $defaultConnection ? Severity::Medium : Severity::Low;
             $configFile = $this->getDatabaseConfigPath();
-            $lineNumber = ConfigFileHelper::findKeyLine($configFile, $connectionName, 'connections');
 
-            // Ensure valid line number (fallback to 1 if invalid)
-            if ($lineNumber < 1) {
-                $lineNumber = 1;
-            }
+            // The host and socket come from the config repository, which merges the
+            // framework's own config/database.php, so they are correct whether or not the
+            // app published the file - and Laravel 11+ invites deleting config files you
+            // do not customise. Only the line reference is lost, so an unpublished file
+            // yields no location instead of naming a file the reader cannot open.
+            $location = file_exists($configFile)
+                ? new Location(
+                    $this->getRelativePath($configFile),
+                    ConfigFileHelper::findKeyLine($configFile, $connectionName, 'connections')
+                )
+                : null;
 
             return $this->createIssue(
                 message: "MySQL connection '{$connectionName}' uses TCP on localhost; if MySQL runs on the same host, Unix sockets can improve performance",
-                location: new Location($this->getRelativePath($configFile), $lineNumber),
+                location: $location,
                 severity: $severity,
                 recommendation: $this->getRecommendation($connectionName),
                 metadata: [
@@ -390,19 +396,11 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
      */
     private function getDatabaseConfigPath(): string
     {
-        $basePath = $this->getBasePath();
-        $configFile = ConfigFileHelper::getConfigPath(
-            $basePath,
+        return ConfigFileHelper::getConfigPath(
+            $this->getBasePath(),
             'database.php',
             fn ($file) => function_exists('config_path') ? config_path($file) : null
         );
-
-        // Validate config file exists, fallback to default path if not
-        if (! file_exists($configFile)) {
-            $configFile = $basePath ? rtrim($basePath, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'database.php' : 'config/database.php';
-        }
-
-        return $configFile;
     }
 
     /**

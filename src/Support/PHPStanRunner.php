@@ -321,8 +321,8 @@ class PHPStanRunner
                 $msg = $message['message'] ?? '';
 
                 // PHPStan omits these keys entirely rather than emitting null, and only
-                // emits 'identifier' from 1.11 onwards - 1.10 is still inside our
-                // "phpstan/phpstan": "^1.10|^2.0" range. Normalise both to null so
+                // emits 'identifier' from 1.10.10 onwards, and 1.10.0 is still inside
+                // our "phpstan/phpstan": "^1.10|^2.0" range. Normalise both to null so
                 // consumers read one shape regardless of the installed version.
                 $identifier = $message['identifier'] ?? null;
                 $tip = $message['tip'] ?? null;

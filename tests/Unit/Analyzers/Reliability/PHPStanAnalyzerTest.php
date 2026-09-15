@@ -13,6 +13,15 @@ use ShieldCI\Tests\AnalyzerTestCase;
 class PHPStanAnalyzerTest extends AnalyzerTestCase
 {
     /**
+     * Messages Larastan builds from fixed literals, quoted as its rules emit them.
+     */
+    private const COLLECTION_MESSAGE = "Called 'count' on Laravel collection, but could have been retrieved as a query.";
+
+    private const ENV_MESSAGE = "Called 'env' outside of the config directory which returns null when the config is cached, use 'config'.";
+
+    private const RELATION_MESSAGE = "Relation 'widgets' is not found in App\Models\Team model.";
+
+    /**
      * @param  array<string, mixed>  $config
      */
     protected function createAnalyzer(array $config = []): AnalyzerInterface
@@ -809,14 +818,85 @@ BASH;
 
     public function test_skips_identifiers_owned_by_a_dedicated_analyzer(): void
     {
+        $rows = [
+            ['larastan.noUnnecessaryCollectionCall', self::COLLECTION_MESSAGE],
+            ['larastan.noEnvCallsOutsideOfConfig', self::ENV_MESSAGE],
+            // Larastan 2.9.0 published its rule identifiers under a "rules." namespace
+            // and renamed them to "larastan." in 2.9.1. composer.json still admits 2.9.0,
+            // so both spellings reach us and both belong to env-call-outside-config.
+            ['rules.noEnvCallsOutsideOfConfig', self::ENV_MESSAGE],
+        ];
+
+        foreach ($rows as [$identifier, $message]) {
+            $result = $this->analyzeIssues([
+                ['identifier' => $identifier, 'message' => $message],
+            ]);
+
+            $this->assertPassed($result);
+            $this->assertCount(
+                0,
+                $result->getIssues(),
+                sprintf('%s is owned by another analyzer and must not be reported here', $identifier)
+            );
+        }
+    }
+
+    public function test_skips_a_collection_call_finding_that_carries_no_identifier(): void
+    {
+        // Larastan's collection rule sets no identifier before 2.9.1, so the message is
+        // the only thing distinguishing a finding collection-call-optimization owns.
         $result = $this->analyzeIssues([
-            [
-                'identifier' => 'larastan.noUnnecessaryCollectionCall',
-                'message' => "Called 'count' on Laravel collection, but could have been retrieved as a query.",
-            ],
+            ['message' => self::COLLECTION_MESSAGE],
         ]);
 
         $this->assertPassed($result);
+        $this->assertCount(0, $result->getIssues());
+    }
+
+    public function test_reports_an_env_message_whose_identifier_belongs_to_another_rule(): void
+    {
+        // Ownership is decided by the whole identifier, never by its last segment: a
+        // third-party rule that happens to end in the same word is not ours to suppress.
+        $result = $this->analyzeIssues([
+            ['identifier' => 'acme.noEnvCallsOutsideOfConfig', 'message' => self::ENV_MESSAGE],
+        ]);
+
+        $this->assertHasIssueContaining('Other PHPStan Issues', $result);
+    }
+
+    public function test_the_legacy_relation_existence_identifier_still_reaches_its_category(): void
+    {
+        // Unlike the env rule, this one has a message pattern, so the 2.9.0 spelling
+        // lands in the right category without an entry of its own. Pinned because the
+        // pattern is what carries it: dropping the pattern would silently regress 2.9.0.
+        $result = $this->analyzeIssues([
+            ['identifier' => 'rules.relationExistence', 'message' => self::RELATION_MESSAGE],
+        ]);
+
+        $this->assertHasIssueContaining('Missing Model Relations', $result);
+    }
+
+    public function test_owned_identifiers_are_not_also_categorised(): void
+    {
+        $reflection = new \ReflectionClass(PHPStanAnalyzer::class);
+
+        /** @var array<string> $owned */
+        $owned = $reflection->getConstant('IDENTIFIERS_HANDLED_ELSEWHERE');
+
+        /** @var array<string, string> $map */
+        $map = $reflection->getConstant('IDENTIFIER_MAP');
+
+        $this->assertNotSame([], $owned);
+
+        foreach ($owned as $identifier) {
+            // Categorising an identifier we suppress is a contradiction: whichever
+            // check runs first wins and the other declaration becomes dead.
+            $this->assertArrayNotHasKey(
+                $identifier,
+                $map,
+                sprintf('"%s" is both owned elsewhere and mapped to a category', $identifier)
+            );
+        }
     }
 
     public function test_total_issue_count_matches_the_emitted_issue_count(): void

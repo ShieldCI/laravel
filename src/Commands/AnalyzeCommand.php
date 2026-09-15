@@ -1141,6 +1141,13 @@ class AnalyzeCommand extends Command
         $dontReportConfig = config('shieldci.dont_report', []);
         $dontReport = is_array($dontReportConfig) ? array_values(array_filter($dontReportConfig, 'is_string')) : [];
 
+        // An incomplete analysis is only ever waived by a human. BaselineCommand adds every
+        // non-passed analyzer with no issues to the baseline's dont_report, and an errored
+        // result has no issues by construction, so a single baseline run taken while an
+        // analyzer was broken would otherwise write a permanent, invisible hole into the
+        // check below. Findings keep using the merged list; errors use the config list only.
+        $configDontReport = $dontReport;
+
         // If baseline was used, merge with baseline's dont_report
         if ($this->option('baseline')) {
             $baselineFileRaw = config('shieldci.baseline_file');
@@ -1160,6 +1167,21 @@ class AnalyzeCommand extends Command
         $criticalResults = $report->failed()->filter(function ($result) use ($dontReport) {
             return ! in_array($result->getAnalyzerId(), $dontReport, true);
         });
+
+        // An analyzer that errored produced no verdict, and the severity gating below cannot
+        // see it: AnalysisResult::error() carries no issues, and both loops decide by reading
+        // $issue->severity. Reporting success for an analysis that never completed is the
+        // defect this check exists to prevent. Checked before fail_threshold so the reason
+        // the user is told is "phpstan never ran" rather than a score that it depressed.
+        $blockingErrors = $report->errors()->filter(function ($result) use ($configDontReport) {
+            return ! in_array($result->getAnalyzerId(), $configDontReport, true);
+        });
+
+        if ($blockingErrors->isNotEmpty()) {
+            $this->reportIncompleteAnalysis($blockingErrors);
+
+            return self::FAILURE;
+        }
 
         // Check threshold if configured
         if ($threshold = config('shieldci.fail_threshold')) {
@@ -1237,6 +1259,47 @@ class AnalyzeCommand extends Command
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Name the analyzers that could not complete as the reason for the non-zero exit code.
+     *
+     * Runs after the whole report body, so this is the last thing on screen. The per-analyzer
+     * reason is already printed by the Reporter, so this names the analyzers rather than
+     * repeating their messages.
+     *
+     * Skipped only when the JSON report is itself going to stdout, which appending prose
+     * would stop `shield:analyze --format=json | jq` from parsing. Such a consumer already
+     * has summary.errors and each result's "status": "error". When the report is written to
+     * a file instead, stdout is free and the verdict is the only thing telling an operator
+     * why the command exited non-zero, so it is printed.
+     *
+     * @param  Collection<int, ResultInterface>  $erroredResults
+     */
+    private function reportIncompleteAnalysis(Collection $erroredResults): void
+    {
+        $format = $this->option('format') ?: config('shieldci.report.format', 'console');
+
+        $outputFile = $this->option('output');
+        if (! $outputFile) {
+            $configOutput = config('shieldci.report.output_file');
+            $outputFile = is_string($configOutput) ? $configOutput : null;
+        }
+
+        if ($format === 'json' && ! $outputFile) {
+            return;
+        }
+
+        $ids = $erroredResults->map(fn (ResultInterface $result) => $result->getAnalyzerId())->implode(', ');
+        $count = $erroredResults->count();
+        $noun = $count === 1 ? 'analyzer' : 'analyzers';
+
+        $this->newLine();
+        $this->line($this->color("✗ Analysis incomplete: {$count} {$noun} could not run ({$ids}).", 'bright_red'));
+        $this->line($this->color(
+            "  Add an analyzer id to 'dont_report' in config/shieldci.php to stop it affecting the exit code.",
+            'dim'
+        ));
     }
 
     /**
@@ -1375,6 +1438,16 @@ class AnalyzeCommand extends Command
         }
 
         $currentIssues = $result->getIssues();
+
+        // Nothing to filter. Without this, a result that never had issues falls into the
+        // "no issues remain" branch below: deriveSuppressedStatus() rewrites it to Passed
+        // and the message becomes 'All issues are ignored via config', which turns an
+        // errored analyzer into a clean pass and destroys the only record of why it could
+        // not run. Mirrors the guard in filterSingleResultAgainstInlineSuppressions().
+        if ($currentIssues === []) {
+            return new FilterResult($result, []);
+        }
+
         $suppressedRecords = [];
 
         /** @var array<int, array<string, mixed>> $analyzerIgnoreErrors */
@@ -1621,6 +1694,15 @@ class AnalyzeCommand extends Command
 
             $baselineIssues = $baselineErrors[$analyzerId];
             $currentIssues = $result->getIssues();
+
+            // Same guard as ignore_errors: a result with no issues has nothing to match
+            // against the baseline, and must not be rewritten to Passed / 'All issues are
+            // in baseline' just because the analyzer had issues on the run that generated
+            // the baseline.
+            if ($currentIssues === []) {
+                return $result;
+            }
+
             $suppressedRecords = [];
 
             // Filter out issues that exist in baseline

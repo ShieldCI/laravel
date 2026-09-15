@@ -414,6 +414,10 @@ return [
     |   - 'medium': Fail on Medium, High, or Critical issues
     |   - 'low': Fail on any issues (strict quality enforcement)
     |
+    | An analyzer that could not complete carries no issues, so no severity threshold can
+    | express it. It fails the run at every level except 'never'. Waive one by adding its
+    | id to 'dont_report' above.
+    |
     | fail_threshold: Minimum score to pass (0-100, optional)
     |   - Set a percentage threshold for passing (e.g., 80 = require 80% pass rate)
     |   - Both fail_on AND fail_threshold must pass for exit code 0

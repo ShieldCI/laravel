@@ -55,16 +55,12 @@ parameters:
                 - tests/Unit/Concerns/FindsLoginRouteTest.php
                 - tests/Unit/Concerns/ParsesPHPStanResultsTest.php
                 - tests/Unit/Concerns/AnalyzesMiddlewareTest.php
-                - tests/Unit/Concerns/ParsesPHPStanAnalysisTest.php
         -
             message: '#Parameter \#1 \$url of method class@anonymous.*::convertToString\(\) expects#'
             path: tests/Unit/Concerns/FindsLoginRouteTest.php
         -
             message: '#has parameter \$results with generic class Illuminate\\Support\\Collection but does not specify its types#'
             path: tests
-        -
-            message: '#Offset 0 does not exist on array#'
-            path: tests/Unit/Concerns/ParsesPHPStanAnalysisTest.php
         -
             message: '#Cannot call method (getId|getAnalyzerId|getMessage)\(\) on ShieldCI\\AnalyzersCore\\Contracts\\(AnalyzerInterface|ResultInterface)\|null#'
             path: tests/Unit/AnalyzerManagerTest.php

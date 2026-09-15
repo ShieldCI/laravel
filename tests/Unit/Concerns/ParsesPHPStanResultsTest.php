@@ -270,6 +270,63 @@ class ParsesPHPStanResultsTest extends TestCase
         $this->assertEquals('Second error message', $callbackMessages[1]);
     }
 
+    public function test_summarize_analysis_errors_quotes_every_error_under_the_cap(): void
+    {
+        $parser = $this->createParsesPHPStanResultsClass();
+
+        $summary = $parser->publicSummarizeAnalysisErrors(['First error', 'Second error']);
+
+        $this->assertSame('First error | Second error', $summary);
+        $this->assertStringNotContainsString('more', $summary);
+    }
+
+    public function test_summarize_analysis_errors_counts_the_rest_beyond_the_cap(): void
+    {
+        $parser = $this->createParsesPHPStanResultsClass();
+
+        $summary = $parser->publicSummarizeAnalysisErrors([
+            'Pattern1', 'Pattern2', 'Pattern3', 'Pattern4', 'Pattern5',
+        ]);
+
+        $this->assertStringContainsString('Pattern3', $summary);
+        $this->assertStringNotContainsString('Pattern4', $summary);
+        $this->assertStringContainsString('(and 2 more)', $summary);
+    }
+
+    public function test_describe_analysis_errors_names_the_count(): void
+    {
+        $parser = $this->createParsesPHPStanResultsClass();
+
+        $description = $parser->publicDescribeAnalysisErrors(['Internal error: child process died.']);
+
+        $this->assertSame(
+            'PHPStan reported 1 analysis error(s): Internal error: child process died.',
+            $description
+        );
+    }
+
+    public function test_append_analysis_error_notice_leaves_a_clean_run_untouched(): void
+    {
+        $parser = $this->createParsesPHPStanResultsClass();
+
+        $this->assertSame('Found 2 issue(s)', $parser->publicAppendAnalysisErrorNotice('Found 2 issue(s)', []));
+    }
+
+    public function test_append_analysis_error_notice_marks_findings_as_partial(): void
+    {
+        $parser = $this->createParsesPHPStanResultsClass();
+
+        $message = $parser->publicAppendAnalysisErrorNotice(
+            'Found 2 issue(s)',
+            ['Internal error: child process ran out of memory.']
+        );
+
+        $this->assertStringStartsWith('Found 2 issue(s). ', $message);
+        $this->assertStringContainsString('1 analysis error(s)', $message);
+        $this->assertStringContainsString('these findings may be incomplete', $message);
+        $this->assertStringContainsString('ran out of memory', $message);
+    }
+
     /**
      * @return object
      */
@@ -295,6 +352,30 @@ class ParsesPHPStanResultsTest extends TestCase
             public function publicFormatIssueCountMessage(int $totalCount, int $displayedCount, string $issueType): string
             {
                 return $this->formatIssueCountMessage($totalCount, $displayedCount, $issueType);
+            }
+
+            /**
+             * @param  list<string>  $analysisErrors
+             */
+            public function publicSummarizeAnalysisErrors(array $analysisErrors, int $limit = 3): string
+            {
+                return $this->summarizeAnalysisErrors($analysisErrors, $limit);
+            }
+
+            /**
+             * @param  list<string>  $analysisErrors
+             */
+            public function publicDescribeAnalysisErrors(array $analysisErrors): string
+            {
+                return $this->describeAnalysisErrors($analysisErrors);
+            }
+
+            /**
+             * @param  list<string>  $analysisErrors
+             */
+            public function publicAppendAnalysisErrorNotice(string $message, array $analysisErrors): string
+            {
+                return $this->appendAnalysisErrorNotice($message, $analysisErrors);
             }
 
             /**

@@ -76,15 +76,23 @@ class PHPStanRunner
      * Generates a temporary configuration file that includes Larastan and Carbon
      * extensions when available, enabling proper analysis of Laravel code.
      *
+     * $parameters lets a caller pin the PHPStan settings its analysis depends on.
+     * The generated config includes the user's own phpstan.neon, and a scalar declared
+     * here outranks the same key there, so a caller whose rule the user switched off is
+     * not left silently reporting nothing. List-valued settings are not supported: NEON
+     * appends included lists rather than replacing them, so an override would need the
+     * prevent-merging suffix and would overrule tuning the user is entitled to.
+     *
      * @param  string|array<string>  $paths
+     * @param  array<string, bool>  $parameters
      * @return $this
      */
-    public function analyze(string|array $paths, int $level = 5, int $timeout = 300, ?string $memoryLimit = null): self
+    public function analyze(string|array $paths, int $level = 5, int $timeout = 300, ?string $memoryLimit = null, array $parameters = []): self
     {
         $paths = is_array($paths) ? $paths : [$paths];
 
         // Generate config with Larastan/Carbon extensions
-        $configFile = $this->generateConfig($level);
+        $configFile = $this->generateConfig($level, $parameters);
         $this->tempConfigFile = $configFile;
 
         try {
@@ -182,7 +190,10 @@ class PHPStanRunner
      * - Carbon extension (for Carbon types and iterators)
      * - User's existing config if present
      */
-    private function generateConfig(int $level): string
+    /**
+     * @param  array<string, bool>  $parameters
+     */
+    private function generateConfig(int $level, array $parameters = []): string
     {
         $includes = [];
 
@@ -209,7 +220,7 @@ class PHPStanRunner
         }
 
         // Generate NEON content
-        $neon = $this->buildNeonConfig($includes, $level);
+        $neon = $this->buildNeonConfig($includes, $level, $parameters);
 
         // Write to temp file
         $baseTempFile = tempnam(sys_get_temp_dir(), 'shieldci_phpstan_');
@@ -238,8 +249,9 @@ class PHPStanRunner
      * ephemeral container filesystems.
      *
      * @param  array<string>  $includes
+     * @param  array<string, bool>  $parameters
      */
-    private function buildNeonConfig(array $includes, int $level): string
+    private function buildNeonConfig(array $includes, int $level, array $parameters = []): string
     {
         $lines = [];
 
@@ -254,6 +266,12 @@ class PHPStanRunner
         $lines[] = 'parameters:';
         $lines[] = '    level: '.$level;
         $lines[] = '    tmpDir: '.sys_get_temp_dir().'/phpstan';
+
+        // Emitted before the nested parallel block below, which is indented one level
+        // deeper and would otherwise swallow these keys.
+        foreach ($parameters as $name => $value) {
+            $lines[] = '    '.$name.': '.($value ? 'true' : 'false');
+        }
 
         if (PlatformDetector::isServerless()) {
             $lines[] = '    parallel:';

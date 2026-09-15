@@ -469,15 +469,22 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
     /**
      * Identifiers owned by a dedicated ShieldCI analyzer.
      *
-     * Larastan enables these rules by default and PHPStanRunner includes Larastan's
-     * extension, so without this list the same finding would be reported twice under
-     * two different analyzer ids once the Other bucket stops discarding them.
+     * PHPStanRunner includes Larastan's extension, so these rules run here as well as
+     * in the analyzer that owns them. Without this list the same finding is reported
+     * twice under two different analyzer ids.
+     *
+     * The env rule is listed under both spellings because Larastan 2.9.0 published its
+     * rule identifiers in a "rules." namespace and renamed them to "larastan." in
+     * 2.9.1, and composer.json still admits 2.9.0. It is also the only owned rule with
+     * no message pattern of its own, so an identifier this list does not recognise
+     * drops it straight into Other rather than into its real category.
      *
      * @var array<string>
      */
     private const IDENTIFIERS_HANDLED_ELSEWHERE = [
         CollectionCallAnalyzer::IDENTIFIER,
         'larastan.noEnvCallsOutsideOfConfig',
+        'rules.noEnvCallsOutsideOfConfig',
     ];
 
     public function __construct(
@@ -683,8 +690,9 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            // PHPStan below 1.11 and Larastan below 2.9 emit no identifier, so the check
-            // above cannot see a finding that another analyzer owns. Without the message
+            // Larastan's collection rule sets no identifier before 2.9.1, and PHPStan's
+            // JSON output omits the key entirely before 1.10.10, so the check above
+            // cannot see a finding that another analyzer owns. Without the message
             // fallback the same collection call is reported twice, once here as an
             // uncategorised error and once by the analyzer that owns it.
             if ($identifier === null && CollectionCallAnalyzer::isCollectionCall($issue)) {
@@ -774,8 +782,8 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
     /**
      * Classify by message pattern, first match wins in declaration order.
      *
-     * Retained for PHPStan below 1.11, which emits no identifiers at all, and for
-     * third-party rules that set none.
+     * Retained for PHPStan below 1.10.10, whose JSON output carries no identifiers at
+     * all, and for third-party rules that set none.
      */
     private function categoryFromMessage(string $message): ?string
     {

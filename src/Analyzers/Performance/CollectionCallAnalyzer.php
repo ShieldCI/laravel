@@ -39,9 +39,10 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
     /**
      * Message shape to fall back on when a finding carries no identifier.
      *
-     * PHPStan below 1.11 and Larastan below 2.9 emit none, and composer.json still
-     * admits both. Larastan builds this message from a fixed literal, so the wording
-     * is a reliable stand-in where the identifier is missing.
+     * This rule sets none before Larastan 2.9.1, and PHPStan's JSON output omits the
+     * key entirely before 1.10.10. composer.json still admits both. Larastan builds
+     * this message from a fixed literal, so the wording is a reliable stand-in where
+     * the identifier is missing.
      */
     public const MESSAGE_PATTERN = '*could have been retrieved as a query*';
 

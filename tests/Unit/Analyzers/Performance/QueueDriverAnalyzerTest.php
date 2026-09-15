@@ -336,7 +336,7 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
         $this->assertSame(123, $issues[0]->metadata['connection'] ?? null);
     }
 
-    public function test_errors_when_driver_is_not_string(): void
+    public function test_fails_when_driver_is_not_string(): void
     {
         $analyzer = $this->createAnalyzer([
             'queue' => [
@@ -351,8 +351,13 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertError($result);
-        $this->assertStringContainsString('driver is not a string', $result->getMessage());
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('driver that is not a string', $result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertSame('redis', $issues[0]->metadata['connection'] ?? null);
+        $this->assertSame('array', $issues[0]->metadata['type'] ?? null);
     }
 
     public function test_skips_when_queue_config_not_found(): void
@@ -670,7 +675,7 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
-    public function test_errors_when_driver_is_numeric(): void
+    public function test_fails_when_driver_is_numeric(): void
     {
         $analyzer = $this->createAnalyzer([
             'queue' => [
@@ -685,11 +690,12 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertError($result);
-        $this->assertStringContainsString('driver is not a string', $result->getMessage());
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('driver that is not a string', $result);
+        $this->assertSame('int', $result->getIssues()[0]->metadata['type'] ?? null);
     }
 
-    public function test_errors_when_driver_is_boolean(): void
+    public function test_fails_when_driver_is_boolean(): void
     {
         $analyzer = $this->createAnalyzer([
             'queue' => [
@@ -704,8 +710,9 @@ class QueueDriverAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertError($result);
-        $this->assertStringContainsString('driver is not a string', $result->getMessage());
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('driver that is not a string', $result);
+        $this->assertSame('bool', $result->getIssues()[0]->metadata['type'] ?? null);
     }
 
     public function test_driver_matching_is_case_sensitive(): void

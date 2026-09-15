@@ -385,7 +385,7 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('not configured', $analyzer->getSkipReason());
     }
 
-    public function test_errors_when_cache_default_is_not_string(): void
+    public function test_fails_when_cache_default_is_not_string(): void
     {
         $analyzer = $this->createAnalyzer([
             'cache' => [
@@ -395,11 +395,16 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertEquals('error', $result->getStatus()->value);
-        $this->assertStringContainsString('not configured properly', $result->getMessage());
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('is not a string', $result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertEquals('int', $issues[0]->metadata['type'] ?? '');
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
-    public function test_errors_when_cache_default_is_array(): void
+    public function test_fails_when_cache_default_is_array(): void
     {
         $analyzer = $this->createAnalyzer([
             'cache' => [
@@ -409,11 +414,12 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertEquals('error', $result->getStatus()->value);
-        $this->assertStringContainsString('not configured properly', $result->getMessage());
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('is not a string', $result);
+        $this->assertEquals('array', $result->getIssues()[0]->metadata['type'] ?? '');
     }
 
-    public function test_errors_when_driver_is_not_string(): void
+    public function test_fails_when_driver_is_not_string(): void
     {
         $analyzer = $this->createAnalyzer([
             'cache' => [
@@ -428,8 +434,13 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertEquals('error', $result->getStatus()->value);
-        $this->assertStringContainsString('driver is not a string', $result->getMessage());
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('driver that is not a string', $result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertEquals('redis', $issues[0]->metadata['store'] ?? '');
+        $this->assertEquals('array', $issues[0]->metadata['type'] ?? '');
     }
 
     public function test_fails_when_store_not_defined_with_proper_metadata(): void

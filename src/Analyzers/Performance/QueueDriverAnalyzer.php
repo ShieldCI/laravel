@@ -113,9 +113,28 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
             );
         }
 
-        // Ensure driver is a string for PHPStan
+        // A malformed driver is a fact about the user's configuration, not a failure of
+        // this analyzer, so it is reported as a located finding like the non-string
+        // connection above. As an errored result it carried no issue, which left it
+        // unbaselineable and unsuppressible.
         if (! is_string($driver)) {
-            return $this->error('Queue driver configuration is invalid (driver is not a string)');
+            return $this->failed(
+                'Queue configuration is invalid',
+                [
+                    $this->createIssue(
+                        message: "Queue connection '{$defaultConnection}' has a driver that is not a string",
+                        location: $configPublished
+                            ? new Location($this->getRelativePath($configFile), ConfigFileHelper::findNestedKeyLine($configFile, 'connections', 'driver', $defaultConnection))
+                            : null,
+                        severity: Severity::High,
+                        recommendation: 'Set the connection driver to one of the queue drivers Laravel supports. Laravel cannot build a queue connection from a non-string driver, so every dispatched job fails at runtime.',
+                        metadata: [
+                            'connection' => $defaultConnection,
+                            'type' => get_debug_type($driver),
+                        ]
+                    ),
+                ]
+            );
         }
 
         $issues = [];

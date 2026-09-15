@@ -691,7 +691,7 @@ class MysqlSingleServerAnalyzerTest extends AnalyzerTestCase
 
     // Category 4: Configuration Validation
 
-    public function test_returns_error_when_connections_is_not_array(): void
+    public function test_fails_when_connections_is_not_array(): void
     {
         /** @var ConfigRepository&MockInterface $config */
         $config = Mockery::mock(ConfigRepository::class);
@@ -710,8 +710,9 @@ class MysqlSingleServerAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertError($result);
-        $this->assertStringContainsString('invalid', $result->getMessage());
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('is not an array', $result);
+        $this->assertSame('string', $result->getIssues()[0]->metadata['type'] ?? null);
     }
 
     public function test_skips_non_string_connection_names(): void

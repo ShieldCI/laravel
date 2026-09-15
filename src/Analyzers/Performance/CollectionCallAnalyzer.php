@@ -113,11 +113,8 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
                     // The rule this analyzer exists to read. The generated config includes
                     // the user's phpstan.neon, where it could otherwise be switched off.
                     'noUnnecessaryCollectionCall' => true,
-                    // A stale ignore pattern in the user's config is a real signal, but it
-                    // belongs to the phpstan analyzer, which already reports it. Letting it
-                    // through here would redden a performance analyzer for a reason it has
-                    // nothing to say about, and report one cause twice.
-                    'reportUnmatchedIgnoredErrors' => false,
+                    // reportUnmatchedIgnoredErrors is off for every run the runner generates,
+                    // so it no longer needs pinning here.
                 ]
             );
 

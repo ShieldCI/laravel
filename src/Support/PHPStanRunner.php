@@ -83,6 +83,9 @@ class PHPStanRunner
      * appends included lists rather than replacing them, so an override would need the
      * prevent-merging suffix and would overrule tuning the user is entitled to.
      *
+     * reportUnmatchedIgnoredErrors is sent as false unless a caller passes it, because this
+     * run substitutes its own level for the user's and so cannot judge their ignore patterns.
+     *
      * @param  string|array<string>  $paths
      * @param  array<string, bool>  $parameters
      * @return $this
@@ -218,6 +221,15 @@ class PHPStanRunner
         } elseif (file_exists($userConfigDist)) {
             $includes[] = $userConfigDist;
         }
+
+        // The user's config is included above but its level is replaced by ours, so their
+        // ignoreErrors patterns are matched against a level they were never written for. At
+        // a lower level most of them stop matching, and PHPStan reports each one in its
+        // top-level errors list, which reads as an analysis that did not complete. Nothing
+        // here adds ignoreErrors of its own, so every such report concerns patterns whose
+        // meaning this run changed, and is not something the user can act on. A caller that
+        // genuinely wants them can still pass the key.
+        $parameters = array_merge(['reportUnmatchedIgnoredErrors' => false], $parameters);
 
         // Generate NEON content
         $neon = $this->buildNeonConfig($includes, $level, $parameters);

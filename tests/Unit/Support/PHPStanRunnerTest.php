@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use ShieldCI\Support\PHPStanRunner;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
+use Symfony\Component\Process\Process;
 
 class PHPStanRunnerTest extends TestCase
 {
@@ -754,6 +755,45 @@ class PHPStanRunnerTest extends TestCase
 
         $this->assertCount(1, $runner->getIssues());
         $this->assertSame([], $runner->getAnalysisErrors());
+    }
+
+    /**
+     * A regex engine failure must not cost the caller the whole message.
+     *
+     * condenseOutput() falls back to an empty excerpt when PCRE gives up, so the exit
+     * code still reaches the report. That is the only evidence a run which produced no
+     * output leaves behind, and losing it would put us back to reporting a clean pass
+     * for an analysis that never happened.
+     */
+    public function test_describe_aborted_run_survives_a_regex_engine_failure(): void
+    {
+        // Run the process before lowering the limit: Symfony\Process uses PCRE itself.
+        $process = new Process(['sh', '-c', 'echo "crash detail" >&2; exit 3']);
+        $process->run();
+
+        $runner = new PHPStanRunner($this->tempDir);
+
+        $reflection = new ReflectionClass($runner);
+        $method = $reflection->getMethod('describeAbortedRun');
+        $method->setAccessible(true);
+
+        // A match limit of zero makes PCRE abort before it matches anything, which is
+        // the only way preg_replace() can fail on a pattern as simple as /\s+/.
+        $original = ini_get('pcre.backtrack_limit');
+        ini_set('pcre.backtrack_limit', '0');
+
+        try {
+            if (preg_replace('/\s+/', ' ', 'a b') !== null) {
+                $this->markTestSkipped('This PCRE build does not honour a zero match limit.');
+            }
+
+            $message = $method->invoke($runner, $process);
+        } finally {
+            ini_set('pcre.backtrack_limit', $original === false ? '1000000' : $original);
+        }
+
+        // The stderr excerpt is dropped, the summary is not.
+        $this->assertSame('PHPStan produced no analysable output (exit code 3)', $message);
     }
 
     public function test_analyze_clears_a_recorded_failure_from_a_previous_run(): void

@@ -320,10 +320,11 @@ class PHPStanRunnerTest extends TestCase
         $this->assertStringContainsString('    reportUnmatchedIgnoredErrors: false', $capturedConfig);
     }
 
-    public function test_generates_the_same_config_as_before_when_no_parameters_are_passed(): void
+    public function test_generates_a_fixed_config_when_no_parameters_are_passed(): void
     {
-        // Regression guard for PHPStanAnalyzer, which passes none: the generated config
-        // must be byte-identical to what it got before the argument existed.
+        // Regression guard for PHPStanAnalyzer, which passes none. reportUnmatchedIgnoredErrors
+        // joined this baseline in #352: the run substitutes its own level for the user's, so
+        // it cannot judge whether their ignore patterns are stale.
         $this->createMockPHPStanWithConfigCapture();
 
         $runner = new PHPStanRunner($this->tempDir);
@@ -332,9 +333,52 @@ class PHPStanRunnerTest extends TestCase
         $capturedConfig = $this->getCapturedConfig();
 
         $this->assertSame(
-            "parameters:\n    level: 5\n    tmpDir: ".sys_get_temp_dir().'/phpstan',
+            "parameters:\n    level: 5\n    tmpDir: ".sys_get_temp_dir()
+                .'/phpstan'."\n    reportUnmatchedIgnoredErrors: false",
             $capturedConfig
         );
+    }
+
+    public function test_does_not_report_unmatched_ignore_patterns_from_the_users_config(): void
+    {
+        // #352: the generated config includes the user's phpstan.neon but replaces its level,
+        // so patterns tuned for their level go unmatched at ours and land in PHPStan's
+        // top-level errors list. That reddened the run for a configuration ShieldCI itself
+        // changed the meaning of.
+        file_put_contents(
+            $this->tempDir.'/phpstan.neon',
+            "parameters:\n    level: 8\n    reportUnmatchedIgnoredErrors: true\n"
+        );
+
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $capturedConfig = $this->getCapturedConfig();
+
+        $this->assertStringContainsString('    reportUnmatchedIgnoredErrors: false', $capturedConfig);
+
+        // The setting has to be written after the includes to outrank the user's own value.
+        $includesAt = strpos($capturedConfig, 'phpstan.neon');
+        $settingAt = strpos($capturedConfig, 'reportUnmatchedIgnoredErrors: false');
+
+        $this->assertIsInt($includesAt);
+        $this->assertIsInt($settingAt);
+        $this->assertGreaterThan($includesAt, $settingAt);
+    }
+
+    public function test_a_caller_can_re_enable_unmatched_ignore_reporting(): void
+    {
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app'], 5, 300, null, ['reportUnmatchedIgnoredErrors' => true]);
+
+        $capturedConfig = $this->getCapturedConfig();
+
+        $this->assertStringContainsString('    reportUnmatchedIgnoredErrors: true', $capturedConfig);
+        $this->assertStringNotContainsString('    reportUnmatchedIgnoredErrors: false', $capturedConfig);
     }
 
     public function test_caller_supplied_parameters_outrank_the_users_phpstan_neon(): void

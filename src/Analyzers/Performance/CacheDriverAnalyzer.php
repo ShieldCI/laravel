@@ -78,18 +78,21 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
         $basePath = $this->getBasePath();
         $configFile = ConfigFileHelper::getConfigPath($basePath, 'cache.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
 
-        if (! file_exists($configFile)) {
-            return $this->error('Laravel cache configuration file could not be located', [
-                'expected_path' => $configFile,
-            ]);
-        }
+        // The store and driver above come from the config repository, which merges the
+        // framework's own config/cache.php, so they are correct whether or not the app
+        // published the file - and Laravel 11+ invites deleting config files you do not
+        // customise. Only the line reference is lost, so an unpublished file degrades the
+        // location to null instead of aborting an analysis that already has its answer.
+        $configPublished = file_exists($configFile);
 
         if ($driver === null) {
             $issues[] = $this->createIssue(
                 message: "Cache store '{$defaultStore}' is not defined in cache configuration",
-                location: new Location($this->getRelativePath($configFile), ConfigFileHelper::findKeyLine($configFile, 'default')),
+                location: $configPublished
+                    ? new Location($this->getRelativePath($configFile), ConfigFileHelper::findKeyLine($configFile, 'default'))
+                    : null,
                 severity: Severity::Critical,
-                recommendation: 'Define the cache store in config/cache.php or change the default store in your .env file (CACHE_DRIVER)',
+                recommendation: 'Define the cache store in config/cache.php or change the default store in your .env file (CACHE_STORE, or CACHE_DRIVER on Laravel 10 and earlier)',
                 metadata: ['store' => $defaultStore, 'environment' => $environment]
             );
 
@@ -101,20 +104,25 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
             return $this->error('Cache driver configuration is invalid (driver is not a string)');
         }
 
-        // Calculate line number once for all driver checks
-        $lineNumber = ConfigFileHelper::findNestedKeyLine($configFile, 'stores', 'driver', $defaultStore);
+        // Resolve the location once so every driver check reports the same one.
+        $location = $configPublished
+            ? new Location(
+                $this->getRelativePath($configFile),
+                ConfigFileHelper::findNestedKeyLine($configFile, 'stores', 'driver', $defaultStore)
+            )
+            : null;
 
         // Use match expression for better type safety and clarity
         match ($driver) {
-            'null' => $this->assessNullDriver($issues, $configFile, $lineNumber, $defaultStore, $environment),
-            'array' => $this->assessArrayDriver($issues, $configFile, $lineNumber, $defaultStore, $environment),
-            'file' => $this->assessFileDriver($issues, $configFile, $lineNumber, $defaultStore, $environment),
-            'database' => $this->assessDatabaseDriver($issues, $configFile, $lineNumber, $defaultStore, $environment),
-            'apc' => $this->assessApcDriver($issues, $configFile, $lineNumber, $defaultStore, $environment),
-            'redis', 'memcached' => $this->assessPreferredDriver($driver, $issues, $configFile, $lineNumber, $defaultStore, $environment),
-            'dynamodb' => $this->assessDynamoDbDriver($issues, $configFile, $lineNumber, $defaultStore, $environment),
-            'octane' => $this->assessOctaneDriver($issues, $configFile, $lineNumber, $defaultStore, $environment),
-            default => $this->assessOtherDriver($driver, $issues, $configFile, $lineNumber, $defaultStore, $environment),
+            'null' => $this->assessNullDriver($issues, $location, $defaultStore, $environment),
+            'array' => $this->assessArrayDriver($issues, $location, $defaultStore, $environment),
+            'file' => $this->assessFileDriver($issues, $location, $defaultStore, $environment),
+            'database' => $this->assessDatabaseDriver($issues, $location, $defaultStore, $environment),
+            'apc' => $this->assessApcDriver($issues, $location, $defaultStore, $environment),
+            'redis', 'memcached' => $this->assessPreferredDriver($driver, $issues, $location, $defaultStore, $environment),
+            'dynamodb' => $this->assessDynamoDbDriver($issues, $location, $defaultStore, $environment),
+            'octane' => $this->assessOctaneDriver($issues, $location, $defaultStore, $environment),
+            default => $this->assessOtherDriver($driver, $issues, $location, $defaultStore, $environment),
         };
 
         if (count($issues) === 0) {
@@ -141,7 +149,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
      *
      * @param  array<int, Issue>  &$issues
      */
-    private function assessNullDriver(array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
+    private function assessNullDriver(array &$issues, ?Location $location, string $defaultStore, string $environment): void
     {
         // Null driver is acceptable outside staging/production (e.g., local/testing)
         if (! $this->isProductionOrStaging($environment)) {
@@ -150,9 +158,9 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
 
         $issues[] = $this->createIssue(
             message: 'Cache driver is set to null - caching is disabled',
-            location: new Location($this->getRelativePath($configFile), $lineNumber),
+            location: $location,
             severity: Severity::Critical,
-            recommendation: 'Set CACHE_DRIVER to redis, memcached, or dynamodb in your .env file for production. Null driver means all cache operations will be no-ops.',
+            recommendation: 'Set CACHE_STORE (CACHE_DRIVER on Laravel 10 and earlier) to redis, memcached, or dynamodb in your .env file for production. Null driver means all cache operations will be no-ops.',
             metadata: ['driver' => 'null', 'store' => $defaultStore, 'environment' => $environment]
         );
     }
@@ -163,7 +171,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
      *
      * @param  array<int, Issue>  &$issues
      */
-    private function assessArrayDriver(array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
+    private function assessArrayDriver(array &$issues, ?Location $location, string $defaultStore, string $environment): void
     {
         // Array driver is expected for testing/local contexts; only warn in staging/production
         if (! $this->isProductionOrStaging($environment)) {
@@ -172,7 +180,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
 
         $issues[] = $this->createIssue(
             message: 'Cache driver is set to array - cache not persisted',
-            location: new Location($this->getRelativePath($configFile), $lineNumber),
+            location: $location,
             severity: Severity::Critical,
             recommendation: 'Array driver only caches within a single request and is only suitable for testing. Use redis, memcached, or dynamodb for production.',
             metadata: ['driver' => 'array', 'store' => $defaultStore, 'environment' => $environment]
@@ -185,7 +193,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
      *
      * @param  array<int, Issue>  &$issues
      */
-    private function assessFileDriver(array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
+    private function assessFileDriver(array &$issues, ?Location $location, string $defaultStore, string $environment): void
     {
         // File driver is acceptable anywhere except staging/production
         if (! $this->isProductionOrStaging($environment)) {
@@ -194,7 +202,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
 
         $issues[] = $this->createIssue(
             message: "File cache driver in {$environment} environment",
-            location: new Location($this->getRelativePath($configFile), $lineNumber),
+            location: $location,
             severity: Severity::High,
             recommendation: 'File cache is only suitable for single-server setups and causes significant performance degradation in production. Use Redis or Memcached with unix sockets for 10-100x better performance and proper multi-server support.',
             metadata: ['driver' => 'file', 'store' => $defaultStore, 'environment' => $environment]
@@ -207,7 +215,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
      *
      * @param  array<int, Issue>  &$issues
      */
-    private function assessDatabaseDriver(array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
+    private function assessDatabaseDriver(array &$issues, ?Location $location, string $defaultStore, string $environment): void
     {
         // Database cache driver is acceptable anywhere except staging/production
         if (! $this->isProductionOrStaging($environment)) {
@@ -216,7 +224,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
 
         $issues[] = $this->createIssue(
             message: "Database cache driver in {$environment} environment",
-            location: new Location($this->getRelativePath($configFile), $lineNumber),
+            location: $location,
             severity: Severity::High,
             recommendation: 'Database cache driver defeats the purpose of caching by adding load to your database server. This creates a performance bottleneck and can cause cascading failures under high load. Use Redis or Memcached for proper production caching.',
             metadata: ['driver' => 'database', 'store' => $defaultStore, 'environment' => $environment]
@@ -229,11 +237,11 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
      *
      * @param  array<int, Issue>  &$issues
      */
-    private function assessOtherDriver(string $driver, array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
+    private function assessOtherDriver(string $driver, array &$issues, ?Location $location, string $defaultStore, string $environment): void
     {
         $issues[] = $this->createIssue(
             message: "Cache driver '{$driver}' is unsupported by ShieldCI",
-            location: new Location($this->getRelativePath($configFile), $lineNumber),
+            location: $location,
             severity: Severity::Low,
             recommendation: 'Ensure your custom cache driver uses a persistent backend suitable for production workloads. ShieldCI cannot automatically verify custom drivers.',
             metadata: ['driver' => $driver, 'store' => $defaultStore, 'environment' => $environment]
@@ -243,7 +251,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
     /**
      * @param  array<int, Issue>  &$issues
      */
-    private function assessPreferredDriver(string $driver, array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
+    private function assessPreferredDriver(string $driver, array &$issues, ?Location $location, string $defaultStore, string $environment): void
     {
         // Redis/Memcached are ideal choices; no action needed.
     }
@@ -251,7 +259,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
     /**
      * @param  array<int, Issue>  &$issues
      */
-    private function assessApcDriver(array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
+    private function assessApcDriver(array &$issues, ?Location $location, string $defaultStore, string $environment): void
     {
         if (! $this->isProductionOrStaging($environment)) {
             return;
@@ -259,7 +267,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
 
         $issues[] = $this->createIssue(
             message: "APC cache driver in {$environment} environment",
-            location: new Location($this->getRelativePath($configFile), $lineNumber),
+            location: $location,
             severity: Severity::High,
             recommendation: 'APCu storage only works on a single server and will cause cache inconsistency in load-balanced or containerized environments. Use Redis or Memcached for proper distributed caching.',
             metadata: ['driver' => 'apc', 'store' => $defaultStore, 'environment' => $environment]
@@ -269,16 +277,16 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
     /**
      * @param  array<int, Issue>  &$issues
      */
-    private function assessDynamoDbDriver(array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
+    private function assessDynamoDbDriver(array &$issues, ?Location $location, string $defaultStore, string $environment): void
     {
         $table = $this->config->get("cache.stores.{$defaultStore}.table");
 
         if (! is_string($table) || trim($table) === '') {
             $issues[] = $this->createIssue(
                 message: 'DynamoDB cache driver is missing a table configuration',
-                location: new Location($this->getRelativePath($configFile), $lineNumber),
+                location: $location,
                 severity: Severity::High,
-                recommendation: 'Set cache.stores.dynamodb.table (CACHE_DYNAMODB_TABLE) so cache items can be persisted.',
+                recommendation: 'Set cache.stores.dynamodb.table (DYNAMODB_CACHE_TABLE) so cache items can be persisted.',
                 metadata: ['driver' => 'dynamodb', 'store' => $defaultStore, 'environment' => $environment]
             );
 
@@ -289,7 +297,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
     /**
      * @param  array<int, Issue>  &$issues
      */
-    private function assessOctaneDriver(array &$issues, string $configFile, int $lineNumber, string $defaultStore, string $environment): void
+    private function assessOctaneDriver(array &$issues, ?Location $location, string $defaultStore, string $environment): void
     {
         if ($this->hasOctaneSupport()) {
             return;
@@ -297,7 +305,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
 
         $issues[] = $this->createIssue(
             message: 'Octane cache driver requires Laravel Octane runtime',
-            location: new Location($this->getRelativePath($configFile), $lineNumber),
+            location: $location,
             severity: Severity::High,
             recommendation: 'Install laravel/octane and ensure Octane workers are running before using the octane cache driver. Otherwise, switch to redis or memcached.',
             metadata: ['driver' => 'octane', 'store' => $defaultStore, 'environment' => $environment]

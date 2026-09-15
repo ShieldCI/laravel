@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Foundation\Application as LaravelApplication;
 use Mockery;
 use Mockery\MockInterface;
 use ShieldCI\Analyzers\Performance\CacheDriverAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
@@ -691,6 +693,126 @@ class CacheDriverAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    /**
+     * Run the analyzer against a base path of our choosing.
+     *
+     * CacheDriverAnalyzer extends AbstractAnalyzer, which resolves getBasePath()
+     * through base_path() and has no setBasePath(), so the application's own base
+     * path is the only lever. Without this the tests inherit Testbench's skeleton,
+     * which does ship a config/cache.php.
+     *
+     * @param  array<string, mixed>  $configValues
+     */
+    private function analyzeWithBasePath(string $basePath, array $configValues): ResultInterface
+    {
+        /** @var LaravelApplication $application */
+        $application = app();
+        $originalBasePath = $application->basePath();
+        $application->setBasePath($basePath);
+
+        try {
+            return $this->createAnalyzer($configValues)->analyze();
+        } finally {
+            $application->setBasePath($originalBasePath);
+        }
+    }
+
+    public function test_reports_the_driver_when_cache_config_is_not_published(): void
+    {
+        $result = $this->analyzeWithBasePath($this->createTempDirectory([]), [
+            'cache' => [
+                'default' => 'file',
+                'stores' => [
+                    'file' => ['driver' => 'file'],
+                ],
+            ],
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('File cache driver', $result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertNull($issues[0]->location);
+    }
+
+    public function test_passes_with_redis_when_cache_config_is_not_published(): void
+    {
+        $result = $this->analyzeWithBasePath($this->createTempDirectory([]), [
+            'cache' => [
+                'default' => 'redis',
+                'stores' => [
+                    'redis' => ['driver' => 'redis'],
+                ],
+            ],
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_store_not_defined_and_cache_config_is_not_published(): void
+    {
+        $result = $this->analyzeWithBasePath($this->createTempDirectory([]), [
+            'cache' => [
+                'default' => 'nonexistent',
+                'stores' => [
+                    'redis' => ['driver' => 'redis'],
+                ],
+            ],
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('not defined', $result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+        $this->assertNull($issues[0]->location);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
+    }
+
+    public function test_locates_the_driver_in_a_published_cache_config(): void
+    {
+        $config = <<<'PHP'
+<?php
+
+return [
+    'default' => env('CACHE_STORE', 'file'),
+
+    'stores' => [
+        'file' => [
+            'driver' => 'file',
+            'path' => storage_path('framework/cache/data'),
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory(['config/cache.php' => $config]);
+
+        $result = $this->analyzeWithBasePath($tempDir, [
+            'cache' => [
+                'default' => 'file',
+                'stores' => [
+                    'file' => ['driver' => 'file'],
+                ],
+            ],
+        ]);
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        $location = $issues[0]->location;
+        $this->assertNotNull($location);
+        $this->assertSame('config/cache.php', $location->file);
+        $this->assertNotNull($location->line);
+
+        $lines = file($tempDir.'/config/cache.php', FILE_IGNORE_NEW_LINES);
+        $this->assertIsArray($lines);
+        $this->assertStringContainsString("'driver' => 'file'", $lines[$location->line - 1]);
     }
 
     protected function tearDown(): void

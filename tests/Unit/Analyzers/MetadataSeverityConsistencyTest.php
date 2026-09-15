@@ -101,7 +101,7 @@ class MetadataSeverityConsistencyTest extends TestCase
     {
         $cases = [];
 
-        foreach (self::analyzerFiles() as $file) {
+        foreach (self::phpFilesIn(self::packageRoot().'/src/Analyzers') as $file) {
             $cases[self::relative($file)] = [$file];
         }
 
@@ -110,24 +110,23 @@ class MetadataSeverityConsistencyTest extends TestCase
 
     /**
      * The per-analyzer check above reads one file, which only works while severities are
-     * assigned in the analyzer itself (or a visitor declared beside it). A shared trait
-     * that assigned one would be invisible to it.
+     * assigned in the analyzer itself (or a visitor declared beside it). A severity
+     * assigned anywhere else under src/ - a shared trait, a support class - would be
+     * invisible to it.
      *
      * @test
      */
     #[Test]
-    public function no_shared_concern_assigns_a_severity(): void
+    public function no_shared_class_assigns_a_severity(): void
     {
         $finder = new NodeFinder;
+        $analyzerDirectory = self::packageRoot().'/src/Analyzers';
 
-        $concerns = new \DirectoryIterator(self::packageRoot().'/src/Concerns');
-
-        foreach ($concerns as $fileInfo) {
-            if ($fileInfo->getExtension() !== 'php') {
+        foreach (self::phpFilesIn(self::packageRoot().'/src') as $path) {
+            if (str_starts_with($path, $analyzerDirectory)) {
                 continue;
             }
 
-            $path = $fileInfo->getPathname();
             $literals = self::severityLiterals((new AstParser)->parseFile($path), $path, $finder, []);
 
             $this->assertSame(
@@ -135,7 +134,7 @@ class MetadataSeverityConsistencyTest extends TestCase
                 $literals,
                 sprintf(
                     '%s assigns a Severity, so an analyzer using it can emit a severity that '
-                    .'%s cannot see. Extend that check to follow trait imports.',
+                    .'%s cannot see. Extend that check to follow the class.',
                     self::relative($path),
                     self::class
                 )
@@ -146,11 +145,11 @@ class MetadataSeverityConsistencyTest extends TestCase
     /**
      * @return list<string>
      */
-    private static function analyzerFiles(): array
+    private static function phpFilesIn(string $directory): array
     {
         /** @var iterable<string, \SplFileInfo> $iterator */
         $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator(self::packageRoot().'/src/Analyzers', \FilesystemIterator::SKIP_DOTS)
+            new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS)
         );
 
         $files = [];

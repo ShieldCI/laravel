@@ -115,11 +115,14 @@ class ConfigCachingAnalyzerTest extends AnalyzerTestCase
 
         $analyzer = new ConfigCachingAnalyzer($app, $config);
 
-        // Should skip if app doesn't implement CachesConfiguration
-        $shouldRun = $analyzer->shouldRun();
+        // An application that cannot be asked whether its config is cached leaves this
+        // analyzer with nothing to say, so it skips rather than reporting a verdict.
+        $this->assertFalse($analyzer->shouldRun());
 
-        // This will be true in Laravel 7+ test environment, false otherwise
-        $this->assertIsBool($shouldRun);
+        $result = $analyzer->analyze();
+
+        $this->assertSkipped($result);
+        $this->assertStringContainsString('CachesConfiguration', $result->getMessage());
     }
 
     public function test_metadata(): void

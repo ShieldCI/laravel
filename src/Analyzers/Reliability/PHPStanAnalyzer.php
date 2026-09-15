@@ -508,8 +508,11 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
     {
         $basePath = $this->getBasePath();
 
+        // Nothing the user can act on, and nothing this analyzer can say without a path
+        // to analyse. Distinct from the missing-PHPStan warning below, which names a
+        // condition the user can fix; a base path that cannot be resolved is not one.
         if ($basePath === '') {
-            return $this->error('Unable to determine base path for PHPStan analysis');
+            return $this->skipped('The application base path could not be determined, so static analysis was not run');
         }
 
         $runner = new PHPStanRunner($basePath);

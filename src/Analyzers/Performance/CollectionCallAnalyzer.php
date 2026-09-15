@@ -87,15 +87,16 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
     {
         $basePath = $this->getBasePath();
 
+        // None of these three absences is a finding about the user's code, and none of
+        // them leaves this analyzer able to say anything. Reporting "no inefficient
+        // collection calls" off an analysis that never ran is the defect these guards
+        // exist to prevent.
         if ($basePath === '') {
-            return $this->error('Unable to determine base path for PHPStan analysis');
+            return $this->skipped('The application base path could not be determined, so collection calls were not analysed');
         }
 
         $runner = new PHPStanRunner($basePath);
 
-        // Neither absence is a finding about the user's code, and neither leaves this
-        // analyzer able to say anything. Reporting "no inefficient collection calls"
-        // off an analysis that never ran is the defect this guard exists to prevent.
         if (! $runner->isAvailable()) {
             return $this->skipped('PHPStan is not installed, so collection calls were not analysed');
         }

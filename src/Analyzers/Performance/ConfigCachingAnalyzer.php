@@ -85,9 +85,14 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
     {
         $environment = $this->getEnvironment();
 
-        // Type assertion for PHPStan
+        // Narrows the type for PHPStan so configurationIsCached() below resolves. Not
+        // reachable: shouldRun() already returns false for an application that does not
+        // implement the interface, and analyze() is final and consults it first. Kept as
+        // a skip rather than an error so that if the two ever diverge, a missing kernel
+        // capability reports as "nothing to say" rather than failing the build - the
+        // convention stated in ComposerValidationAnalyzer and CollectionCallAnalyzer.
         if (! ($this->app instanceof CachesConfiguration)) {
-            return $this->error('Application does not implement CachesConfiguration interface');
+            return $this->skipped('Application does not implement CachesConfiguration, so config caching was not analysed');
         }
 
         try {

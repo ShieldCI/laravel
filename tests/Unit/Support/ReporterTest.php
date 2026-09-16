@@ -188,6 +188,17 @@ class ReporterTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_renders_no_code_preview_for_a_snippet_with_no_lines(): void
+    {
+        // Issue::fromArray() rebuilds a CodeSnippet from a stored report, where the lines
+        // may not have survived, so an empty block is reachable without a file behind it.
+        $output = $this->consoleWithSnippet([]);
+
+        $this->assertStringNotContainsString('Code Preview:', $output);
+    }
+
+    /** @test */
+    #[Test]
     public function it_renders_no_code_preview_when_snippets_are_disabled(): void
     {
         config(['shieldci.report.show_code_snippets' => false]);

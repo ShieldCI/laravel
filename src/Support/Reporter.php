@@ -1055,16 +1055,12 @@ class Reporter implements ReporterInterface
      * keyword pass recoloured keywords inside already yellow strings. Partitioning the
      * input once retires the whole class of bug rather than reordering it.
      *
-     * @param  array<int, string>  $lines
+     * @param  non-empty-array<int, string>  $lines
      * @return array<int, string>
      */
     private function highlightPhpLines(array $lines): array
     {
         $firstLine = array_key_first($lines);
-
-        if ($firstLine === null) {
-            return [];
-        }
 
         // token_get_all() needs an open tag, and counts it as line 1, so the first line of
         // the block is line 2 of what the tokeniser sees.

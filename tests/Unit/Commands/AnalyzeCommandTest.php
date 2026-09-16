@@ -312,6 +312,113 @@ class AnalyzeCommandTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_resolves_a_relative_config_output_file_against_the_base_path(): void
+    {
+        $this->registerTestAnalyzers();
+
+        // The CLI option is validated against base_path(); the config key is not validated at
+        // all, so this is the half of #368 no error message ever described.
+        $outputPath = base_path('tests/shieldci-config-relative.json');
+        @unlink($outputPath);
+
+        config(['shieldci.report.output_file' => 'tests/shieldci-config-relative.json']);
+
+        $this->artisan('shield:analyze')->assertSuccessful()->run();
+
+        $this->assertFileExists($outputPath);
+        @unlink($outputPath);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_creates_an_output_directory_that_validation_left_alone(): void
+    {
+        $this->registerTestAnalyzers();
+
+        // validateOptions() only calls mkdir when the target directory AND its parent are
+        // both missing. One level down from the base path takes the other branch, so nothing
+        // is created there and saveReport() is the only thing standing between the run and a
+        // silently discarded report.
+        $directory = base_path('shieldci-reports');
+        $outputPath = $directory.'/report.json';
+        @unlink($outputPath);
+        @rmdir($directory);
+
+        $this->artisan('shield:analyze', [
+            '--output' => 'shieldci-reports/report.json',
+        ])->assertSuccessful()->run();
+
+        $this->assertFileExists($outputPath);
+
+        @unlink($outputPath);
+        @rmdir($directory);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_fails_the_run_when_the_report_cannot_be_written(): void
+    {
+        $this->registerTestAnalyzers();
+
+        // Reached through the config key, which bypasses validateOptions() entirely. The
+        // directory exists and is readable, so only the write itself fails.
+        $directory = sys_get_temp_dir().'/shieldci-readonly-'.uniqid();
+        mkdir($directory, 0555, true);
+
+        config(['shieldci.report.output_file' => $directory.'/report.json']);
+
+        $exitCode = Artisan::call('shield:analyze');
+        $output = Artisan::output();
+
+        chmod($directory, 0755);
+        @unlink($directory.'/report.json');
+        @rmdir($directory);
+
+        $this->assertSame(1, $exitCode);
+        $this->assertStringContainsString('Could not write the report to', $output);
+        $this->assertStringNotContainsString('Report saved to', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_notes_that_the_report_file_is_json_when_console_format_is_explicit(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $outputPath = base_path('tests/shieldci-console-advisory.json');
+        @unlink($outputPath);
+
+        $exitCode = Artisan::call('shield:analyze', [
+            '--format' => 'console',
+            '--output' => 'tests/shieldci-console-advisory.json',
+        ]);
+        $output = Artisan::output();
+
+        @unlink($outputPath);
+
+        $this->assertSame(0, $exitCode);
+        $this->assertStringContainsString('The report file is always JSON', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_does_not_note_the_json_file_format_when_console_was_never_asked_for(): void
+    {
+        $this->registerTestAnalyzers();
+
+        $outputPath = base_path('tests/shieldci-no-advisory.json');
+        @unlink($outputPath);
+
+        Artisan::call('shield:analyze', ['--output' => 'tests/shieldci-no-advisory.json']);
+        $output = Artisan::output();
+
+        @unlink($outputPath);
+
+        $this->assertStringNotContainsString('The report file is always JSON', $output);
+    }
+
+    /** @test */
+    #[Test]
     public function it_saves_report_to_file(): void
     {
         $this->registerTestAnalyzers();
@@ -328,6 +435,8 @@ class AnalyzeCommandTest extends TestCase
             '--format' => 'json',
             '--output' => 'tests/shieldci-test-report.json',
         ])->assertSuccessful();
+
+        $this->assertFileExists($outputPath);
 
         // Clean up after test
         if (file_exists($outputPath)) {
@@ -355,6 +464,10 @@ class AnalyzeCommandTest extends TestCase
         $result->doesntExpectOutput('"summary"');
         // Confirmation message should still appear
         $result->expectsOutputToContain('Report saved to');
+
+        $result->run();
+
+        $this->assertFileExists($outputPath);
 
         if (file_exists($outputPath)) {
             unlink($outputPath);
@@ -669,9 +782,7 @@ class AnalyzeCommandTest extends TestCase
         $exitCode = Artisan::call('shield:analyze', ['--format' => 'json', '--output' => $reportPath]);
         $output = Artisan::output();
 
-        // saveReport() writes the raw relative path with file_put_contents(), so the file
-        // lands relative to the process cwd rather than base_path().
-        @unlink($reportPath);
+        @unlink(base_path($reportPath));
 
         $this->assertSame(1, $exitCode);
         $this->assertStringContainsString('Analysis incomplete', $output);
@@ -1958,24 +2069,32 @@ class AnalyzeCommandTest extends TestCase
 
     /** @test */
     #[Test]
-    public function it_saves_report_in_console_format(): void
+    public function it_saves_a_json_report_at_the_base_path_even_in_console_format(): void
     {
         $this->registerTestAnalyzers();
 
-        // validateOptions() rejects absolute paths, and saveReport() then writes the relative
-        // one verbatim, so it lands relative to the process working directory rather than
-        // base_path(). This test used to write there and clean up under base_path(), which is
-        // why an untracked tests/shieldci-console-report.json accumulated on every run.
-        $outputPath = 'tests/shieldci-console-report.json';
+        // Both halves of the promise in one test: the relative path resolves against
+        // base_path() rather than the process working directory, and the .json name the
+        // validator insists on holds JSON rather than the console banner.
+        $outputPath = base_path('tests/shieldci-console-report.json');
         @unlink($outputPath);
 
         $this->artisan('shield:analyze', [
             '--format' => 'console',
-            '--output' => $outputPath,
+            '--output' => 'tests/shieldci-console-report.json',
         ])->assertSuccessful();
 
         $this->assertFileExists($outputPath);
+
+        $contents = file_get_contents($outputPath);
         @unlink($outputPath);
+
+        $this->assertIsString($contents);
+        $this->assertStringNotContainsString("\033[", $contents);
+
+        $decoded = json_decode($contents, true);
+        $this->assertIsArray($decoded);
+        $this->assertArrayHasKey('summary', $decoded);
     }
 
     /** @test */

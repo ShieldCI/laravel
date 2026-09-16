@@ -148,6 +148,7 @@ class AnalyzeCommand extends Command
         $this->validateIgnoreErrorsConfig($manager);
         $this->warnIfUnrecognizedEnvironment();
         $this->warnIfUnrecognizedFailOn();
+        $this->warnIfConsoleFormatIsWrittenToFile();
 
         // Check if any categories are enabled
         $analyzersConfig = config('shieldci.analyzers', []);
@@ -219,8 +220,8 @@ class AnalyzeCommand extends Command
         // Save to file if requested (CLI option or config default)
         $output = $this->resolveOutputPath();
 
-        if ($output !== null) {
-            $this->saveReport($report, $reporter, $output);
+        if ($output !== null && ! $this->saveReport($report, $reporter, $output)) {
+            return self::FAILURE;
         }
 
         // Output report to STDOUT (skip if saved to file or already streamed)
@@ -854,15 +855,40 @@ class AnalyzeCommand extends Command
         return is_string($env) ? $env : 'unknown';
     }
 
-    protected function saveReport(AnalysisReport $report, ReporterInterface $reporter, string $path): void
+    /**
+     * Write the report to disk, answering whether it landed.
+     *
+     * The file is always JSON. validateOptions() requires the name to end in .json, while the
+     * format branch that used to live here wrote the ASCII banner and ANSI escapes into it
+     * whenever --format was absent, which is the default. --format governs stdout instead,
+     * and a redirected run already writes a plain console report: #372 gated every escape on
+     * isDecorated(), so `shield:analyze > report.txt` needs nothing from this option.
+     *
+     * The write itself is checked. file_put_contents() answers false for a missing directory
+     * or a permission failure, and the confirmation below used to print regardless, so a run
+     * whose only report went to a file it could not write reported success and exited 0.
+     */
+    protected function saveReport(AnalysisReport $report, ReporterInterface $reporter, string $path): bool
     {
-        $content = $this->resolveFormat() === 'json'
-            ? $reporter->toJson($report)
-            : $reporter->toConsole($report);
+        $content = $reporter->toJson($report);
 
-        file_put_contents($path, $content);
+        $directory = dirname($path);
+
+        if (! is_dir($directory) && ! @mkdir($directory, 0755, true) && ! is_dir($directory)) {
+            $this->errorOnStderr("❌ Could not create the report directory: {$directory}");
+
+            return false;
+        }
+
+        if (@file_put_contents($path, $content) === false) {
+            $this->errorOnStderr("❌ Could not write the report to: {$path}");
+
+            return false;
+        }
 
         $this->lineOnStderr("<info>Report saved to: {$path}</info>");
+
+        return true;
     }
 
     /**
@@ -1203,6 +1229,14 @@ class AnalyzeCommand extends Command
     }
 
     /**
+     * Write a failure line to stderr, styled the way Command::error() would style it.
+     */
+    private function errorOnStderr(string $message): void
+    {
+        $this->errorOutput()->writeln("<error>{$message}</error>");
+    }
+
+    /**
      * Write a plain line to stderr.
      */
     private function lineOnStderr(string $message = ''): void
@@ -1233,18 +1267,61 @@ class AnalyzeCommand extends Command
 
     /**
      * Where the report is written, from --output or the configured default, or null for stdout.
+     *
+     * Always absolute. validateOptions() resolves --output against base_path(), creates the
+     * directory there and checks it is writable, but saveReport() used to hand the raw
+     * relative string to file_put_contents(), which resolves against the process working
+     * directory. The command validated one file and wrote another; the two coincide only
+     * because artisan is normally run from the project root.
      */
     private function resolveOutputPath(): ?string
     {
         $option = $this->option('output');
 
         if (is_string($option) && $option !== '') {
-            return $option;
+            return $this->absoluteReportPath($option);
         }
 
         $configured = config('shieldci.report.output_file');
 
-        return is_string($configured) && $configured !== '' ? $configured : null;
+        return is_string($configured) && $configured !== ''
+            ? $this->absoluteReportPath($configured)
+            : null;
+    }
+
+    /**
+     * Resolve a report path against the application base directory.
+     *
+     * An already absolute path is answered unchanged. shieldci.report.output_file is not
+     * validated at all and may legitimately point outside base_path(), which is what makes a
+     * temp directory a usable destination for it.
+     */
+    private function absoluteReportPath(string $path): string
+    {
+        $normalized = str_replace('\\', '/', $path);
+
+        if (str_starts_with($normalized, '/') || preg_match('#^[A-Za-z]:/#', $normalized) === 1) {
+            return $path;
+        }
+
+        return base_path($path);
+    }
+
+    /**
+     * Warn when an explicit --format=console is paired with a file destination.
+     *
+     * The file is always JSON, so a console format applies to stdout only. Gated on the
+     * option rather than resolveFormat() because console is the default: the ordinary
+     * `--output=report.json` never asked for console and has nothing to be told.
+     */
+    private function warnIfConsoleFormatIsWrittenToFile(): void
+    {
+        if ($this->option('format') !== 'console' || $this->resolveOutputPath() === null) {
+            return;
+        }
+
+        $this->warnOnStderr('⚠️  --format=console applies to stdout. The report file is always JSON.');
+        $this->lineOnStderr();
     }
 
     /**
@@ -2300,9 +2377,10 @@ class AnalyzeCommand extends Command
                 return false;
             }
 
-            // Resolve the final path relative to base path
+            // Resolve the final path the same way saveReport() will, so the file this block
+            // validates and the file that gets written cannot drift apart again.
             $basePath = base_path();
-            $resolvedPath = $basePath.'/'.ltrim($normalizedPath, '/');
+            $resolvedPath = $this->absoluteReportPath($normalizedPath);
 
             // Normalize the resolved path (removes redundant separators, etc.)
             $resolvedPath = str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $resolvedPath);

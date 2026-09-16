@@ -30,7 +30,11 @@ use ShieldCI\Support\CiEnvironmentDetector;
 use ShieldCI\Tests\TestCase;
 use ShieldCI\ValueObjects\AnalysisReport;
 use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
+use Symfony\Component\Console\Output\ConsoleSectionOutput;
 use Symfony\Component\Console\Output\NullOutput;
+use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Output\StreamOutput;
 
 /**
  * @phpstan-type TestAnalyzerMock MockInterface&AnalyzerInterface
@@ -153,6 +157,45 @@ class AnalyzeCommandTest extends TestCase
         $this->artisan('shield:analyze', ['--format' => 'json'])
             ->assertSuccessful()
             ->expectsOutputToContain('"summary"');
+    }
+
+    /** @test */
+    #[Test]
+    public function advisory_lines_go_to_stderr_so_json_on_stdout_stays_parseable(): void
+    {
+        // Every one of these used to be written to stdout alongside the report, so
+        // `shield:analyze --format=json | jq` failed whenever the run had anything to say.
+        config([
+            'app.env' => 'production-eu',
+            'shieldci.ignore_errors' => ['no-such-analyzer' => [['path' => 'app/X.php']]],
+            'shieldci.fail_on' => 'hgh',
+        ]);
+        $this->registerTestAnalyzers();
+
+        $stdoutStream = fopen('php://memory', 'w+');
+        $stderrStream = fopen('php://memory', 'w+');
+        $this->assertIsResource($stdoutStream);
+        $this->assertIsResource($stderrStream);
+
+        Artisan::call(
+            'shield:analyze',
+            ['--format' => 'json'],
+            new AnalyzeCommandTwoStreamOutput($stdoutStream, $stderrStream)
+        );
+
+        rewind($stdoutStream);
+        rewind($stderrStream);
+        $stdout = (string) stream_get_contents($stdoutStream);
+        $stderr = (string) stream_get_contents($stderrStream);
+        fclose($stdoutStream);
+        fclose($stderrStream);
+
+        // The whole point: stdout is the document and nothing else.
+        $this->assertIsArray(json_decode($stdout, true), 'stdout was not parseable JSON');
+
+        $this->assertStringContainsString('is not a recognized standard environment', $stderr);
+        $this->assertStringContainsString('Configuration Warnings', $stderr);
+        $this->assertStringContainsString("fail_on 'hgh' is not one of", $stderr);
     }
 
     /** @test */
@@ -5383,5 +5426,42 @@ class AnalyzeCommandThrowingAnalyzer extends AbstractAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         throw new RuntimeException('parser exploded');
+    }
+}
+
+/**
+ * A console output with genuinely separate stdout and stderr, which the test harness does not
+ * otherwise provide: it buffers one stream, so a message written to stderr is indistinguishable
+ * from one written to stdout. Only a real two-stream output can show that the JSON report and
+ * the advisory lines end up in different places.
+ */
+class AnalyzeCommandTwoStreamOutput extends StreamOutput implements ConsoleOutputInterface
+{
+    private OutputInterface $stderr;
+
+    /**
+     * @param  resource  $stdoutStream
+     * @param  resource  $stderrStream
+     */
+    public function __construct($stdoutStream, $stderrStream)
+    {
+        parent::__construct($stdoutStream);
+
+        $this->stderr = new StreamOutput($stderrStream);
+    }
+
+    public function getErrorOutput(): OutputInterface
+    {
+        return $this->stderr;
+    }
+
+    public function setErrorOutput(OutputInterface $error): void
+    {
+        $this->stderr = $error;
+    }
+
+    public function section(): ConsoleSectionOutput
+    {
+        throw new RuntimeException('Sections are not used by shield:analyze.');
     }
 }

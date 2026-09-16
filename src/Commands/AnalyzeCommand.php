@@ -40,7 +40,7 @@ class AnalyzeCommand extends Command
     protected $signature = 'shield:analyze
                             {--analyzer= : Run specific analyzer(s). Comma-separated for multiple (e.g., sql-injection,xss-detection)}
                             {--category= : Run analyzers in category. Comma-separated for multiple (e.g., security,performance)}
-                            {--format=console : Output format (console|json)}
+                            {--format= : Output format (console|json); defaults to shieldci.report.format}
                             {--output= : Save report to file}
                             {--baseline : Compare against baseline and only report new issues}
                             {--report : Send report to ShieldCI platform}
@@ -131,7 +131,7 @@ class AnalyzeCommand extends Command
         }
 
         // Determine if we should use streaming output (console format only)
-        $format = $this->option('format') ?: config('shieldci.report.format', 'console');
+        $format = $this->resolveFormat();
         $useStreaming = $format === 'console';
 
         // Validate ignore_errors config early (before analysis starts)
@@ -207,13 +207,9 @@ class AnalyzeCommand extends Command
         );
 
         // Save to file if requested (CLI option or config default)
-        $output = $this->option('output');
-        if (! $output) {
-            $configOutput = config('shieldci.report.output_file');
-            $output = is_string($configOutput) ? $configOutput : null;
-        }
+        $output = $this->resolveOutputPath();
 
-        if ($output && is_string($output)) {
+        if ($output !== null) {
             $this->saveReport($report, $reporter, $output);
         }
 
@@ -696,7 +692,7 @@ class AnalyzeCommand extends Command
     protected function outputReport(AnalysisReport $report, ReporterInterface $reporter): void
     {
         // Use CLI option or fall back to config
-        $format = $this->option('format') ?: config('shieldci.report.format', 'console');
+        $format = $this->resolveFormat();
 
         if ($format === 'json') {
             $this->line($reporter->toJson($report));
@@ -1008,7 +1004,7 @@ class AnalyzeCommand extends Command
 
     protected function saveReport(AnalysisReport $report, ReporterInterface $reporter, string $path): void
     {
-        $content = $this->option('format') === 'json'
+        $content = $this->resolveFormat() === 'json'
             ? $reporter->toJson($report)
             : $reporter->toConsole($report);
 
@@ -1323,15 +1319,44 @@ class AnalyzeCommand extends Command
      */
     private function prosePermitted(): bool
     {
-        $format = $this->option('format') ?: config('shieldci.report.format', 'console');
+        return $this->resolveFormat() !== 'json' || $this->resolveOutputPath() !== null;
+    }
 
-        $outputFile = $this->option('output');
-        if (! $outputFile) {
-            $configOutput = config('shieldci.report.output_file');
-            $outputFile = is_string($configOutput) ? $configOutput : null;
+    /**
+     * The report format, from --format or the configured default.
+     *
+     * The option used to declare console as its own default, which meant it was never
+     * empty, so the `?:` fallback below never ran and shieldci.report.format and
+     * SHIELDCI_REPORT_FORMAT could not be reached from anywhere. validateOptions() still
+     * guards `$format !== null`, which only makes sense for an option that can be absent.
+     */
+    private function resolveFormat(): string
+    {
+        $option = $this->option('format');
+
+        if (is_string($option) && $option !== '') {
+            return strtolower($option);
         }
 
-        return $format !== 'json' || (bool) $outputFile;
+        $configured = config('shieldci.report.format', 'console');
+
+        return is_string($configured) && $configured !== '' ? strtolower($configured) : 'console';
+    }
+
+    /**
+     * Where the report is written, from --output or the configured default, or null for stdout.
+     */
+    private function resolveOutputPath(): ?string
+    {
+        $option = $this->option('output');
+
+        if (is_string($option) && $option !== '') {
+            return $option;
+        }
+
+        $configured = config('shieldci.report.output_file');
+
+        return is_string($configured) && $configured !== '' ? $configured : null;
     }
 
     /**

@@ -70,6 +70,7 @@ class BaselineCommand extends Command
         $baseline = $existingBaseline;
         $dontReport = $existingDontReport;
         $newIssuesCount = 0;
+        $erroredAnalyzers = [];
 
         foreach ($results as $result) {
             $analyzerId = $result->getAnalyzerId();
@@ -84,6 +85,18 @@ class BaselineCommand extends Command
             $analyzerName = isset($metadata['name']) && is_string($metadata['name'])
                 ? $metadata['name']
                 : $analyzerId;
+
+            // An analyzer that could not run carries no issues by construction, so it would
+            // otherwise land in the dont_report branch below and be waived for good. A single
+            // baseline taken while an analyzer was broken would write a permanent, invisible
+            // hole into the exit code that outlives the analyzer being fixed. dont_report is
+            // a deliberate choice about a verdict, and an errored analyzer produced none.
+            if ($result->getStatus() === Status::Error) {
+                $erroredAnalyzers[] = $analyzerId;
+                $this->line("  ⚡ {$analyzerName}: could not run, so nothing was recorded for it");
+
+                continue;
+            }
 
             $issues = $result->getIssues();
 
@@ -153,6 +166,25 @@ class BaselineCommand extends Command
 
         if ($this->option('merge')) {
             $this->line("   🆕 New issues added: {$newIssuesCount}");
+        }
+
+        // Said plainly rather than left to the per-analyzer lines above, because a baseline
+        // taken while an analyzer was broken is incomplete in a way the file cannot record.
+        if ($erroredAnalyzers !== []) {
+            $count = count($erroredAnalyzers);
+            $noun = $count === 1 ? 'analyzer' : 'analyzers';
+
+            $this->newLine();
+            $this->warn(sprintf(
+                '⚠️  %d %s could not run (%s). The baseline does not cover %s, and %s will keep '
+                .'failing the build until %s run cleanly.',
+                $count,
+                $noun,
+                implode(', ', $erroredAnalyzers),
+                $count === 1 ? 'it' : 'them',
+                $count === 1 ? 'it' : 'they',
+                $count === 1 ? 'it does' : 'they do'
+            ));
         }
 
         $this->newLine();

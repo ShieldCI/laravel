@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Commands;
 
+use Illuminate\Support\Facades\Artisan;
 use Mockery;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\AnalyzerManager;
@@ -176,6 +177,118 @@ class BaselineCommandTest extends TestCase
         $this->assertIsArray($content);
         $this->assertArrayHasKey('dont_report', $content);
         $this->assertContains('failed-no-issues', $content['dont_report']);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_does_not_add_an_errored_analyzer_to_dont_report(): void
+    {
+        // An errored analyzer has no issues by construction, so it used to land in the
+        // dont_report branch alongside a genuine issueless failure. One baseline taken while
+        // an analyzer was broken then waived it for good, outliving the fix.
+        $manager = Mockery::mock(AnalyzerManager::class);
+
+        $result = new AnalysisResult(
+            analyzerId: 'broken-analyzer',
+            status: Status::Error,
+            message: 'Analysis failed: parser exploded',
+            issues: [],
+            executionTime: 0.1,
+            metadata: [
+                'name' => 'Broken Analyzer',
+            ],
+        );
+
+        $manager->shouldReceive('runAll')->andReturn(collect([$result]));
+
+        $this->app->singleton(AnalyzerManager::class, fn () => $manager);
+
+        config(['shieldci.baseline_file' => $this->baselinePath]);
+
+        $this->artisan('shield:baseline')->assertSuccessful();
+
+        $content = json_decode((string) file_get_contents($this->baselinePath), true);
+        $this->assertIsArray($content);
+
+        $dontReport = $content['dont_report'] ?? null;
+        $this->assertIsArray($dontReport);
+        $this->assertNotContains('broken-analyzer', $dontReport);
+        $this->assertArrayNotHasKey('broken-analyzer', $content['errors']);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_reports_an_analyzer_that_could_not_run(): void
+    {
+        // The baseline file cannot record that it is incomplete, so the command has to say so.
+        $manager = Mockery::mock(AnalyzerManager::class);
+
+        $result = new AnalysisResult(
+            analyzerId: 'broken-analyzer',
+            status: Status::Error,
+            message: 'Analysis failed: parser exploded',
+            issues: [],
+            executionTime: 0.1,
+            metadata: [
+                'name' => 'Broken Analyzer',
+            ],
+        );
+
+        $manager->shouldReceive('runAll')->andReturn(collect([$result]));
+
+        $this->app->singleton(AnalyzerManager::class, fn () => $manager);
+
+        config(['shieldci.baseline_file' => $this->baselinePath]);
+
+        $exitCode = Artisan::call('shield:baseline');
+        $output = Artisan::output();
+
+        $this->assertSame(0, $exitCode);
+        $this->assertStringContainsString('could not run', $output);
+        $this->assertStringContainsString('broken-analyzer', $output);
+        $this->assertStringContainsString('Broken Analyzer', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_still_adds_an_issueless_failure_to_dont_report_alongside_an_errored_analyzer(): void
+    {
+        // The two shapes both reach the command with no issues, and only one of them is a
+        // verdict the user can choose to waive.
+        $manager = Mockery::mock(AnalyzerManager::class);
+
+        $manager->shouldReceive('runAll')->andReturn(collect([
+            new AnalysisResult(
+                analyzerId: 'broken-analyzer',
+                status: Status::Error,
+                message: 'Analysis failed: parser exploded',
+                issues: [],
+                executionTime: 0.1,
+                metadata: ['name' => 'Broken Analyzer'],
+            ),
+            new AnalysisResult(
+                analyzerId: 'issueless-analyzer',
+                status: Status::Failed,
+                message: 'Configuration is invalid',
+                issues: [],
+                executionTime: 0.1,
+                metadata: ['name' => 'Issueless Analyzer'],
+            ),
+        ]));
+
+        $this->app->singleton(AnalyzerManager::class, fn () => $manager);
+
+        config(['shieldci.baseline_file' => $this->baselinePath]);
+
+        $this->artisan('shield:baseline')->assertSuccessful();
+
+        $content = json_decode((string) file_get_contents($this->baselinePath), true);
+        $this->assertIsArray($content);
+
+        $dontReport = $content['dont_report'] ?? null;
+        $this->assertIsArray($dontReport);
+        $this->assertContains('issueless-analyzer', $dontReport);
+        $this->assertNotContains('broken-analyzer', $dontReport);
     }
 
     /** @test */

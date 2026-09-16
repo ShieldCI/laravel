@@ -1143,11 +1143,14 @@ class AnalyzeCommand extends Command
         $dontReportConfig = config('shieldci.dont_report', []);
         $dontReport = is_array($dontReportConfig) ? array_values(array_filter($dontReportConfig, 'is_string')) : [];
 
-        // An incomplete analysis is only ever waived by a human. BaselineCommand adds every
-        // non-passed analyzer with no issues to the baseline's dont_report, and an errored
-        // result has no issues by construction, so a single baseline run taken while an
-        // analyzer was broken would otherwise write a permanent, invisible hole into the
-        // check below. Findings keep using the merged list; errors use the config list only.
+        // An incomplete analysis is only ever waived by a human. Findings keep using the
+        // merged list; errors use the config list only.
+        //
+        // BaselineCommand no longer writes an errored analyzer into the baseline's
+        // dont_report, so this no longer guards against a baseline generated today. It stays
+        // because baselines generated before that change are still on disk and still carry
+        // those entries, and nothing rewrites a baseline the user already has. Reading one
+        // would otherwise reopen the same permanent, invisible hole in the check below.
         $configDontReport = $dontReport;
 
         // If baseline was used, merge with baseline's dont_report

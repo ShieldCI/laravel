@@ -971,4 +971,52 @@ PHP;
             'default_assumption',
         ]);
     }
+
+    /** @test */
+    #[Test]
+    public function test_locates_the_connection_in_the_queue_config(): void
+    {
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'redis',
+    'connections' => [
+        'sync' => [
+            'driver' => 'sync',
+        ],
+
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => 'default',
+            'queue' => 'default',
+            'retry_after' => 60,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $location = $result->getIssues()[0]->location;
+
+        $this->assertNotNull($location);
+        $this->assertSame('config/queue.php', $location->file);
+        $this->assertNotNull($location->line);
+
+        // The reported connection, not the first one in the array and not the file's
+        // opening line, which is what a missing-file fallback used to answer.
+        $lines = file($tempDir.'/config/queue.php', FILE_IGNORE_NEW_LINES);
+        $this->assertIsArray($lines);
+        $this->assertStringContainsString("'redis' =>", $lines[$location->line - 1]);
+    }
 }

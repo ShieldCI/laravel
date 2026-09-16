@@ -45,8 +45,6 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $basePath = $this->getBasePath();
-
         $issues = [];
         $queueConfig = $this->getQueueConfig();
 
@@ -83,8 +81,7 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
 
             // retry_after must be at least (timeout + buffer)
             if ($retryAfter < $timeout + $minimumBuffer) {
-                $configFile = $this->getQueueConfigPath($basePath);
-                $location = $this->getConnectionLocation($configFile, $name);
+                $location = $this->getConnectionLocation($name);
 
                 $metadata = [
                     'connection' => $name,
@@ -496,13 +493,15 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
      * Unlike the other config analyzers this one reads its values out of the file itself,
      * so runAnalysis() has already returned 'Unable to read queue configuration' when the
      * file is absent. By the time a connection is reported the file is guaranteed to exist,
-     * which is why there is no unpublished-file branch here.
+     * so the helper's unpublished-file answer cannot come back null here.
      */
-    private function getConnectionLocation(string $configFile, string $connectionName): Location
+    private function getConnectionLocation(string $connectionName): ?Location
     {
-        return new Location(
-            $this->getRelativePath($configFile),
-            ConfigFileHelper::findKeyLine($configFile, $connectionName, 'connections')
+        return ConfigFileHelper::locateConfigKey(
+            $this->getBasePath(),
+            'queue.php',
+            $connectionName,
+            'connections'
         );
     }
 }

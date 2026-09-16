@@ -78,7 +78,6 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
-        $configFile = $this->getCacheConfigPath();
         $prefix = $this->getEffectivePrefix();
 
         // The prefix comes from the config repository, which merges the framework's own
@@ -86,9 +85,7 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
         // and Laravel 11+ invites deleting config files you do not customise. Only the
         // line reference is lost. Resolve the location once so both findings below
         // report the same one, and report none at all when the file is not there.
-        $location = file_exists($configFile)
-            ? new Location($this->getRelativePath($configFile), $this->getPrefixLineNumber($configFile))
-            : null;
+        $location = $this->getPrefixLocation();
 
         // Check if prefix is empty
         if ($prefix === '') {
@@ -129,35 +126,22 @@ class CachePrefixAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Get the path to the cache configuration file.
+     * Get the location of the prefix configuration key.
+     *
+     * A store-specific prefix needs the nested helper: the flat search's parent scope only
+     * ends at a top-level key, so on a store without its own 'prefix' it would run on into
+     * the next store and answer with that one's line.
      */
-    private function getCacheConfigPath(): string
+    private function getPrefixLocation(): ?Location
     {
         $basePath = $this->getBasePath();
-
-        return ConfigFileHelper::getConfigPath(
-            $basePath,
-            'cache.php',
-            fn ($file) => function_exists('config_path') ? config_path($file) : null
-        );
-    }
-
-    /**
-     * Get the line number for the prefix configuration key.
-     *
-     * The caller has already confirmed the file exists.
-     */
-    private function getPrefixLineNumber(string $configFile): int
-    {
         $store = $this->getDefaultStore();
 
         if ($this->hasStoreSpecificPrefix($store)) {
-            // Find stores.{store}.prefix (e.g., stores.redis.prefix). The helper takes the
-            // key to locate before the array to locate it in, so 'prefix' precedes $store.
-            return ConfigFileHelper::findNestedKeyLine($configFile, 'stores', 'prefix', $store);
+            return ConfigFileHelper::locateNestedConfigKey($basePath, 'cache.php', 'stores', 'prefix', $store);
         }
 
-        return ConfigFileHelper::findKeyLine($configFile, 'prefix');
+        return ConfigFileHelper::locateConfigKey($basePath, 'cache.php', 'prefix');
     }
 
     /**

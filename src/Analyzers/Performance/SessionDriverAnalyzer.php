@@ -236,20 +236,6 @@ class SessionDriverAnalyzer extends AbstractAnalyzer
      */
     private function getConfigLocation(): ?Location
     {
-        $basePath = $this->getBasePath();
-        $configPath = ConfigFileHelper::getConfigPath(
-            $basePath,
-            'session.php',
-            fn ($file) => function_exists('config_path') ? config_path($file) : null
-        );
-
-        if (! file_exists($configPath)) {
-            return null;
-        }
-
-        return new Location(
-            $this->getRelativePath($configPath),
-            ConfigFileHelper::findKeyLine($configPath, 'driver')
-        );
+        return ConfigFileHelper::locateConfigKey($this->getBasePath(), 'session.php', 'driver');
     }
 }

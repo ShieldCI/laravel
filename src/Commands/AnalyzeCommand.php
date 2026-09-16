@@ -230,12 +230,17 @@ class AnalyzeCommand extends Command
             // For streaming mode, output the report card — but skip it for a single-analyzer
             // run, where the percentage table degenerates to a meaningless 100%/0% summary
             // already conveyed by the streamed result line.
-            $this->newLine();
-            $this->line($this->color('Report Card', 'bright_yellow'));
-            $this->line($this->color('===========', 'bright_yellow'));
-            $this->newLine();
-            $this->outputReportCard($report);
-            $this->newLine();
+            // Guarded by the concrete type rather than added to ReporterInterface, which
+            // would break any third-party implementation. One that cannot render a card on
+            // its own simply does not get one here; toConsole() still includes it.
+            if ($reporter instanceof Reporter) {
+                $this->newLine();
+                $this->line($this->color('Report Card', 'bright_yellow'));
+                $this->line($this->color('===========', 'bright_yellow'));
+                $this->newLine();
+                $this->line($reporter->reportCard($report));
+                $this->newLine();
+            }
         }
 
         // Send to API if configured
@@ -712,195 +717,17 @@ class AnalyzeCommand extends Command
     }
 
     /**
-     * Output just the report card (used in streaming mode).
-     */
-    protected function outputReportCard(AnalysisReport $report): void
-    {
-        // Group results by category
-        $byCategory = [];
-        foreach ($report->results as $result) {
-            $metadata = $result->getMetadata();
-            $category = $metadata['category'] ?? 'Unknown';
-
-            // Extract category value
-            $categoryValue = null;
-            if (is_object($category) && isset($category->value)) {
-                $categoryValue = $category->value;
-            } elseif (is_string($category)) {
-                $categoryValue = $category;
-            }
-
-            // Use Category enum label for human-readable name
-            if ($categoryValue !== null) {
-                try {
-                    $category = Category::from($categoryValue)->label();
-                } catch (\ValueError $e) {
-                    $category = ucfirst(str_replace('_', ' ', $categoryValue));
-                }
-            } else {
-                $category = 'Unknown';
-            }
-
-            if (! isset($byCategory[$category])) {
-                $byCategory[$category] = [];
-            }
-
-            $byCategory[$category][] = $result;
-        }
-
-        // Filter out categories that only have skipped analyzers
-        $filteredCategories = [];
-        foreach ($byCategory as $category => $results) {
-            $hasNonSkipped = false;
-            foreach ($results as $result) {
-                if ($result->getStatus()->value !== 'skipped') {
-                    $hasNonSkipped = true;
-                    break;
-                }
-            }
-            if ($hasNonSkipped) {
-                $filteredCategories[$category] = $results;
-            }
-        }
-
-        if (empty($filteredCategories)) {
-            $filteredCategories = $byCategory;
-        }
-
-        // Calculate stats per category
-        $stats = [];
-        foreach ($filteredCategories as $category => $results) {
-            $stats[$category] = [
-                'passed' => 0,
-                'failed' => 0,
-                'warning' => 0,
-                'skipped' => 0,
-                'error' => 0,
-                'total' => count($results),
-            ];
-
-            foreach ($results as $result) {
-                $status = $result->getStatus()->value;
-                if ($status === 'skipped') {
-                    $stats[$category]['skipped']++;
-                } else {
-                    $stats[$category][$status]++;
-                }
-            }
-        }
-
-        // Calculate total
-        $totalAll = 0;
-        foreach ($filteredCategories as $results) {
-            $totalAll += count($results);
-        }
-
-        // Pre-compute totalSkipped so other rows can exclude it from their denominators
-        $totalSkipped = 0;
-        foreach (array_keys($filteredCategories) as $category) {
-            $totalSkipped += $stats[$category]['skipped'];
-        }
-
-        $categories = array_keys($filteredCategories);
-        $table = [];
-
-        // Header
-        $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';
-
-        // Build header row with green color
-        $statusCell = $this->color(str_pad(' Status', 16), 'bright_green');
-        $categoryCells = array_map(fn ($c) => $this->color(str_pad(' '.$c, 16), 'bright_green'), $categories);
-        $totalCell = $this->color(str_pad('     Total', 12), 'bright_green');
-
-        $table[] = '|'.$statusCell.'|'.implode('|', $categoryCells).'|'.$totalCell.'|';
-        $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';
-
-        $totalDenominator = $totalAll - $totalSkipped;
-
-        // Passed row with green color
-        $passedRow = '| '.$this->color('Passed        ', 'green').' |';
-        $totalPassed = 0;
-        foreach ($categories as $category) {
-            $passed = $stats[$category]['passed'];
-            $denominator = $stats[$category]['total'] - $stats[$category]['skipped'];
-            $pct = $denominator > 0 ? round(($passed / $denominator) * 100) : 0;
-            $passedRow .= str_pad("   {$passed}  ({$pct}%)", 16).'|';
-            $totalPassed += $passed;
-        }
-        $totalPct = $totalDenominator > 0 ? round(($totalPassed / $totalDenominator) * 100) : 0;
-        $passedRow .= str_pad(" {$totalPassed}  ({$totalPct}%)", 12).'|';
-        $table[] = $passedRow;
-
-        // Failed row with red color
-        $failedRow = '| '.$this->color('Failed        ', 'red').' |';
-        $totalFailed = 0;
-        foreach ($categories as $category) {
-            $failed = $stats[$category]['failed'];
-            $denominator = $stats[$category]['total'] - $stats[$category]['skipped'];
-            $pct = $denominator > 0 ? round(($failed / $denominator) * 100) : 0;
-            $failedRow .= str_pad("    {$failed}   ({$pct}%)", 16).'|';
-            $totalFailed += $failed;
-        }
-        $totalPct = $totalDenominator > 0 ? round(($totalFailed / $totalDenominator) * 100) : 0;
-        $failedRow .= str_pad("  {$totalFailed}  ({$totalPct}%)", 12).'|';
-        $table[] = $failedRow;
-
-        // Warning row with yellow color
-        $warningRow = '| '.$this->color('Warning       ', 'yellow').' |';
-        $totalWarnings = 0;
-        foreach ($categories as $category) {
-            $warnings = $stats[$category]['warning'];
-            $denominator = $stats[$category]['total'] - $stats[$category]['skipped'];
-            $pct = $denominator > 0 ? round(($warnings / $denominator) * 100) : 0;
-            $warningRow .= str_pad("    {$warnings}   ({$pct}%)", 16).'|';
-            $totalWarnings += $warnings;
-        }
-        $totalPct = $totalDenominator > 0 ? round(($totalWarnings / $totalDenominator) * 100) : 0;
-        $warningRow .= str_pad("  {$totalWarnings}  ({$totalPct}%)", 12).'|';
-        $table[] = $warningRow;
-
-        // Error row with bright red color
-        $errorRow = '| '.$this->color('Error         ', 'bright_red').' |';
-        $totalErrors = 0;
-        foreach ($categories as $category) {
-            $errors = $stats[$category]['error'];
-            $denominator = $stats[$category]['total'] - $stats[$category]['skipped'];
-            $pct = $denominator > 0 ? round(($errors / $denominator) * 100) : 0;
-            $errorRow .= str_pad("    {$errors}   ({$pct}%)", 16).'|';
-            $totalErrors += $errors;
-        }
-        $totalPct = $totalDenominator > 0 ? round(($totalErrors / $totalDenominator) * 100) : 0;
-        $errorRow .= str_pad("  {$totalErrors}   ({$totalPct}%)", 12).'|';
-        $table[] = $errorRow;
-
-        // Not Applicable row last, with gray color, no percentages
-        $skippedRow = '| '.$this->color('Not Applicable', 'gray').' |';
-        foreach ($categories as $category) {
-            $skipped = $stats[$category]['skipped'];
-            $skippedRow .= str_pad("    {$skipped}      ", 16).'|';
-        }
-        $skippedRow .= str_pad("  {$totalSkipped}      ", 12).'|';
-        $table[] = $skippedRow;
-
-        // Footer
-        $table[] = '+----------------+'.str_repeat('----------------+', count($categories)).'------------+';
-
-        $this->line(implode(PHP_EOL, $table));
-    }
-
-    /**
      * Apply ANSI color to text.
      */
     protected function color(string $text, string $color): string
     {
+        // Only what this command still renders itself: the Report Card heading and the two
+        // exit-code verdicts. Everything else moved to the Reporter with the table. Trimming
+        // this also retires a 'gray' that was 0;37 here and 0;90 there, so the two maps no
+        // longer define the same name differently.
         $colors = [
             'bright_yellow' => '1;33',
-            'green' => '0;32',
-            'bright_green' => '1;32',
-            'red' => '0;31',
             'bright_red' => '1;31',
-            'yellow' => '0;33',
-            'gray' => '0;37',
             'dim' => '2',
         ];
 

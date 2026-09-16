@@ -10,6 +10,7 @@ use Illuminate\Support\Collection;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Status;
+use ShieldCI\AnalyzersCore\ValueObjects\CodeSnippet;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\Enums\TriggerSource;
@@ -29,6 +30,28 @@ class Reporter implements ReporterInterface
      * command keep their existing output.
      */
     private bool $decorated = true;
+
+    /**
+     * Token ids rendered as keywords.
+     *
+     * Listed rather than derived: PHP exposes no "is this id a keyword" predicate, and
+     * inferring it from the token name or from the text would put a heuristic back where
+     * the tokeniser has already given a definite answer.
+     *
+     * @var list<int>
+     */
+    private const KEYWORD_TOKENS = [
+        T_ABSTRACT, T_ARRAY, T_AS, T_BREAK, T_CALLABLE, T_CASE, T_CATCH, T_CLASS,
+        T_CLONE, T_CONST, T_CONTINUE, T_DECLARE, T_DEFAULT, T_DO, T_ECHO, T_ELSE,
+        T_ELSEIF, T_EMPTY, T_ENDDECLARE, T_ENDFOR, T_ENDFOREACH, T_ENDIF, T_ENDSWITCH,
+        T_ENDWHILE, T_ENUM, T_EVAL, T_EXIT, T_EXTENDS, T_FINAL, T_FINALLY, T_FN, T_FOR,
+        T_FOREACH, T_FUNCTION, T_GLOBAL, T_GOTO, T_IF, T_IMPLEMENTS, T_INCLUDE,
+        T_INCLUDE_ONCE, T_INSTANCEOF, T_INSTEADOF, T_INTERFACE, T_ISSET, T_LIST,
+        T_LOGICAL_AND, T_LOGICAL_OR, T_LOGICAL_XOR, T_MATCH, T_NAMESPACE, T_NEW,
+        T_PRINT, T_PRIVATE, T_PROTECTED, T_PUBLIC, T_READONLY, T_REQUIRE,
+        T_REQUIRE_ONCE, T_RETURN, T_STATIC, T_SWITCH, T_THROW, T_TRAIT, T_TRY,
+        T_UNSET, T_USE, T_VAR, T_WHILE, T_YIELD, T_YIELD_FROM,
+    ];
 
     /**
      * Declare whether the destination renders escape sequences.
@@ -65,6 +88,7 @@ class Reporter implements ReporterInterface
     public function toConsole(AnalysisReport $report): string
     {
         $showRecommendations = config('shieldci.report.show_recommendations', true);
+        $showCodeSnippets = config('shieldci.report.show_code_snippets', true);
         $maxIssuesPerCheckRaw = config('shieldci.report.max_issues_per_check', 5);
         $maxIssuesPerCheck = $this->normalizeIntegerConfig($maxIssuesPerCheckRaw, 5);
 
@@ -171,6 +195,7 @@ class Reporter implements ReporterInterface
                     $issues = $result->getIssues();
                     if (! empty($issues)) {
                         $displayCount = $maxIssuesPerCheck;
+                        $previewed = [];
 
                         // Show issue locations
                         foreach (array_slice($issues, 0, $displayCount) as $issue) {
@@ -184,6 +209,17 @@ class Reporter implements ReporterInterface
                                 $output[] = $this->color($displayText, 'white', 'bg_red');
                             } else {
                                 $output[] = $this->color($displayText, 'magenta');
+                            }
+
+                            // One preview per location. This loop walks issues, not the
+                            // location groups streamResult() builds, so several issues on the
+                            // same line would otherwise repeat the same block.
+                            $key = $issue->location === null ? null : (string) $issue->location;
+
+                            if ($showCodeSnippets && $issue->codeSnippet !== null && $key !== null
+                                && ! in_array($key, $previewed, true)) {
+                                $previewed[] = $key;
+                                $output[] = $this->formatCodeSnippet($issue->codeSnippet);
                             }
                         }
 
@@ -814,6 +850,7 @@ class Reporter implements ReporterInterface
         string $category
     ): string {
         $showRecommendations = config('shieldci.report.show_recommendations', true);
+        $showCodeSnippets = config('shieldci.report.show_code_snippets', true);
         $maxIssuesPerCheckRaw = config('shieldci.report.max_issues_per_check', 5);
         $maxIssuesPerCheck = $this->normalizeIntegerConfig($maxIssuesPerCheckRaw, 5);
 
@@ -896,6 +933,10 @@ class Reporter implements ReporterInterface
                         $output[] = $this->color($locationText, 'magenta');
                     }
 
+                    if ($showCodeSnippets && $firstIssue->codeSnippet !== null) {
+                        $output[] = $this->formatCodeSnippet($firstIssue->codeSnippet);
+                    }
+
                     // Show individual messages when grouped (multiple at same location) or
                     // when the location has no line number (e.g. package-lock.json) and
                     // the message carries the only meaningful detail
@@ -940,6 +981,147 @@ class Reporter implements ReporterInterface
         $output[] = '';
 
         return implode(PHP_EOL, $output);
+    }
+
+    /**
+     * Render the code around an issue.
+     *
+     * Three things can turn the colour off, and they are not the same question. The
+     * destination may not render escape sequences at all, which isDecorated() answers for
+     * the whole run and which this class receives through setDecorated(); that one is not
+     * negotiable. snippet_plain_mode is a preference for a plain block even on a terminal,
+     * so the lines survive a copy into an issue tracker. snippet_syntax_highlighting turns
+     * off per token colour only, leaving the gutter and the target marker to do their job.
+     */
+    private function formatCodeSnippet(CodeSnippet $snippet): string
+    {
+        $lines = $snippet->getLines();
+
+        if ($lines === []) {
+            return '';
+        }
+
+        $plain = ! $this->decorated || (bool) config('shieldci.report.snippet_plain_mode', false);
+        $highlight = ! $plain && (bool) config('shieldci.report.snippet_syntax_highlighting', true);
+        $highlighted = $highlight ? $this->highlightPhpLines($lines) : [];
+
+        $targetLine = $snippet->getTargetLine();
+
+        $output = [''];
+        $output[] = $plain ? '  Code Preview:' : $this->color('  Code Preview:', 'gray');
+
+        foreach ($lines as $lineNumber => $lineContent) {
+            $isTarget = $lineNumber === $targetLine;
+
+            if ($plain) {
+                $output[] = '  '.sprintf('%4d', $lineNumber).($isTarget ? ' → ' : '   ').$lineContent;
+
+                continue;
+            }
+
+            $gutter = $this->color(sprintf('%4d', $lineNumber), $isTarget ? 'red' : 'gray');
+            $marker = $isTarget ? $this->color(' → ', 'red') : '   ';
+
+            if ($isTarget) {
+                // The target line carries the background, so it is never token coloured:
+                // two schemes on one line reads as damage rather than emphasis.
+                $content = $this->color($lineContent, 'white', 'bg_red');
+            } elseif ($highlight) {
+                $content = $highlighted[$lineNumber] ?? $lineContent;
+            } else {
+                $content = $this->color($lineContent, 'gray');
+            }
+
+            $output[] = "  {$gutter}{$marker}{$content}";
+        }
+
+        $output[] = '';
+
+        return implode(PHP_EOL, $output);
+    }
+
+    /**
+     * Token colour a block of source, answering the same line numbers it was given.
+     *
+     * The block is tokenised in one pass rather than line by line, because a string or a
+     * comment spanning several lines only tokenises correctly when the tokeniser can see
+     * all of it. A snippet is a fragment, so it can begin or end mid construct and
+     * CodeSnippet truncates at 250 characters; token_get_all() is lenient about both
+     * without TOKEN_PARSE, and anything it cannot place comes back uncoloured.
+     *
+     * This replaces a regex implementation that ran five passes in sequence, each matching
+     * inside the escape sequences its predecessors had written: the number pass rewrote the
+     * 0 inside every "\033[0;32m", so the terminal printed a literal ";32m", and the
+     * keyword pass recoloured keywords inside already yellow strings. Partitioning the
+     * input once retires the whole class of bug rather than reordering it.
+     *
+     * @param  array<int, string>  $lines
+     * @return array<int, string>
+     */
+    private function highlightPhpLines(array $lines): array
+    {
+        $firstLine = array_key_first($lines);
+
+        if ($firstLine === null) {
+            return [];
+        }
+
+        // token_get_all() needs an open tag, and counts it as line 1, so the first line of
+        // the block is line 2 of what the tokeniser sees.
+        $tokens = @token_get_all("<?php\n".implode("\n", $lines));
+        $offset = $firstLine - 2;
+
+        $rendered = [];
+        $line = 1;
+
+        foreach ($tokens as $token) {
+            if (is_array($token)) {
+                $id = $token[0];
+                $text = $token[1];
+                $line = $token[2];
+            } else {
+                $id = null;
+                $text = $token;
+            }
+
+            $color = $this->tokenColor($id, $text);
+
+            foreach (explode("\n", $text) as $index => $part) {
+                $number = $line + $index + $offset;
+                $rendered[$number] = ($rendered[$number] ?? '')
+                    .($part === '' || $color === null ? $part : $this->color($part, $color));
+            }
+
+            // An array token reports where it starts; a single character token has no line
+            // of its own and continues from wherever the last one ended.
+            $line += substr_count($text, "\n");
+        }
+
+        return array_intersect_key($rendered, $lines);
+    }
+
+    /**
+     * The colour the docs promise for a token, or null to leave it alone.
+     *
+     * Keywords are matched by token id rather than by word, which is the whole point of
+     * asking the tokeniser: `class` inside a string arrives as T_CONSTANT_ENCAPSED_STRING
+     * and a method named `list` arrives as T_STRING, so neither can be mistaken for the
+     * keyword it spells.
+     */
+    private function tokenColor(?int $id, string $text): ?string
+    {
+        if ($id === null || trim($text) === '') {
+            return null;
+        }
+
+        return match (true) {
+            $id === T_VARIABLE => 'green',
+            $id === T_CONSTANT_ENCAPSED_STRING, $id === T_ENCAPSED_AND_WHITESPACE => 'yellow',
+            $id === T_LNUMBER, $id === T_DNUMBER => 'magenta',
+            $id === T_COMMENT, $id === T_DOC_COMMENT => 'gray',
+            in_array($id, self::KEYWORD_TOKENS, true) => 'cyan',
+            default => null,
+        };
     }
 
     /**

@@ -20,6 +20,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Contracts\ClientInterface;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\Enums\AnalysisFailureReason;
+use ShieldCI\Enums\FailOn;
 use ShieldCI\Enums\SuppressionType;
 use ShieldCI\Enums\TriggerSource;
 use ShieldCI\Support\CiEnvironmentDetector;
@@ -133,6 +134,7 @@ class AnalyzeCommand extends Command
         // Validate ignore_errors config early (before analysis starts)
         $this->validateIgnoreErrorsConfig($manager);
         $this->warnIfUnrecognizedEnvironment();
+        $this->warnIfUnrecognizedFailOn();
 
         // Check if any categories are enabled
         $analyzersConfig = config('shieldci.analyzers', []);
@@ -1131,9 +1133,9 @@ class AnalyzeCommand extends Command
 
     protected function determineExitCode(AnalysisReport $report): int
     {
-        $failOn = config('shieldci.fail_on', 'high');
+        $failOn = FailOn::fromConfig(config('shieldci.fail_on', 'high'));
 
-        if ($failOn === 'never') {
+        if ($failOn === FailOn::Never) {
             return self::SUCCESS;
         }
 
@@ -1168,97 +1170,114 @@ class AnalyzeCommand extends Command
             return ! in_array($result->getAnalyzerId(), $dontReport, true);
         });
 
-        // An analyzer that errored produced no verdict, and the severity gating below cannot
-        // see it: AnalysisResult::error() carries no issues, and both loops decide by reading
-        // $issue->severity. Reporting success for an analysis that never completed is the
+        // A result that is not passing but names no issue cannot be graded by the severity
+        // loops below, which decide by reading $issue->severity and so have nothing to read.
+        // An errored analyzer produced no verdict at all; a failed or warning one produced a
+        // verdict whose detail it could not enumerate. Reporting success for either is the
         // defect this check exists to prevent. Checked before fail_threshold so the reason
         // the user is told is "phpstan never ran" rather than a score that it depressed.
         $blockingErrors = $report->errors()->filter(function ($result) use ($configDontReport) {
             return ! in_array($result->getAnalyzerId(), $configDontReport, true);
         });
 
-        if ($blockingErrors->isNotEmpty()) {
-            $this->reportIncompleteAnalysis($blockingErrors);
+        $ungraded = $criticalResults->filter(fn (ResultInterface $result) => $result->getIssues() === []);
+
+        // A warning only reaches the exit code at the two lowest thresholds, so an ungradable
+        // one must not block above them either.
+        if ($failOn->gradesWarnings()) {
+            $ungraded = $ungraded->merge(
+                $this->gradableWarnings($report, $dontReport)
+                    ->filter(fn (ResultInterface $result) => $result->getIssues() === [])
+            );
+        }
+
+        if ($blockingErrors->isNotEmpty() || $ungraded->isNotEmpty()) {
+            $this->reportUngradableResults($blockingErrors, $ungraded);
 
             return self::FAILURE;
         }
 
-        // Check threshold if configured
-        if ($threshold = config('shieldci.fail_threshold')) {
-            if ($report->score() < $threshold) {
+        // Check threshold if configured. The score compared here excludes dont_report
+        // analyzers, because dont_report is documented as "runs but does not affect the exit
+        // code" and AnalysisReport::score() has no knowledge of it, so a waived analyzer
+        // still dragged the score under the threshold. The reported score is deliberately
+        // left alone: it is uploaded to the platform, so it must not vary with one
+        // developer's local config.
+        $threshold = config('shieldci.fail_threshold');
+
+        if (is_numeric($threshold)) {
+            $score = $this->gatingScore($report, $dontReport);
+
+            if ($score < (float) $threshold) {
+                $this->reportThresholdFailure($score, (float) $threshold);
+
                 return self::FAILURE;
             }
         }
 
-        // Check severity levels based on fail_on configuration
-        $shouldFail = $criticalResults->some(function ($result) use ($failOn) {
-            $issues = $result->getIssues();
-            foreach ($issues as $issue) {
-                $severity = $issue->severity->value;
+        // Failures and warnings are graded by the same rule, so both consult FailOn::fails().
+        // They used to be separate switch statements, and the warning one had fallen a level
+        // behind: it matched only 'medium', letting a warning that carried a High or Critical
+        // issue through a threshold that a Medium one would have tripped.
+        $gradable = $criticalResults;
 
-                // Fail based on configured threshold
-                switch ($failOn) {
-                    case 'low':
-                        // Fail on any severity (low, medium, high, critical)
-                        return true;
-                    case 'medium':
-                        // Fail on medium, high, or critical
-                        if (in_array($severity, ['medium', 'high', 'critical'], true)) {
-                            return true;
-                        }
-                        break;
-                    case 'high':
-                        // Fail on high or critical
-                        if (in_array($severity, ['high', 'critical'], true)) {
-                            return true;
-                        }
-                        break;
-                    case 'critical':
-                        // Fail only on critical
-                        if ($severity === 'critical') {
-                            return true;
-                        }
-                        break;
-                }
-            }
-
-            return false;
-        });
-
-        // Also check warnings if fail_on includes lower severities
-        if (in_array($failOn, ['low', 'medium'], true)) {
-            $warningResults = $report->warnings()->filter(function ($result) use ($dontReport) {
-                return ! in_array($result->getAnalyzerId(), $dontReport, true);
-            });
-
-            $shouldFailOnWarnings = $warningResults->some(function ($result) use ($failOn) {
-                $issues = $result->getIssues();
-                foreach ($issues as $issue) {
-                    $severity = $issue->severity->value;
-
-                    if ($failOn === 'low') {
-                        // Fail on any severity (including low in warnings)
-                        return true;
-                    }
-                    if ($severity === 'medium') {
-                        // Fail on medium severity in warnings (failOn must be 'medium' at this point)
-                        return true;
-                    }
-                }
-
-                return false;
-            });
-
-            if ($shouldFailOnWarnings) {
-                return self::FAILURE;
-            }
+        if ($failOn->gradesWarnings()) {
+            $gradable = $gradable->merge($this->gradableWarnings($report, $dontReport));
         }
+
+        $shouldFail = $gradable->some(
+            fn (ResultInterface $result) => collect($result->getIssues())
+                ->contains(fn (Issue $issue) => $failOn->fails($issue->severity))
+        );
 
         if ($shouldFail) {
             return self::FAILURE;
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Warning results that dont_report has not waived.
+     *
+     * @param  array<int, string>  $dontReport
+     * @return Collection<int, ResultInterface>
+     */
+    private function gradableWarnings(AnalysisReport $report, array $dontReport): Collection
+    {
+        return $report->warnings()->filter(
+            fn (ResultInterface $result) => ! in_array($result->getAnalyzerId(), $dontReport, true)
+        );
+    }
+
+    /**
+     * The score fail_threshold is compared against.
+     *
+     * Differs from AnalysisReport::score() in one way: analyzers the user waived through
+     * dont_report are dropped from both sides of the ratio rather than counted as failures.
+     * dont_report is documented as "runs but does not affect the exit code", and score()
+     * knows nothing about it, so waiving an analyzer still sank the score and failed the
+     * build through this gate. Kept separate from score() so the number shown to the user
+     * and uploaded to the platform stays independent of local configuration.
+     *
+     * @param  array<int, string>  $dontReport
+     */
+    private function gatingScore(AnalysisReport $report, array $dontReport): int
+    {
+        $graded = $report->results->filter(
+            fn (ResultInterface $result) => $result->getStatus() !== Status::Skipped
+                && ! in_array($result->getAnalyzerId(), $dontReport, true)
+        );
+
+        if ($graded->isEmpty()) {
+            return 100;
+        }
+
+        $passed = $graded->filter(
+            fn (ResultInterface $result) => $result->getStatus() === Status::Passed
+        )->count();
+
+        return (int) round(($passed / $graded->count()) * 100);
     }
 
     /**
@@ -1274,9 +1293,76 @@ class AnalyzeCommand extends Command
      * a file instead, stdout is free and the verdict is the only thing telling an operator
      * why the command exited non-zero, so it is printed.
      *
+     * The two groups are named separately because they are not the same failure: an errored
+     * analyzer never produced a verdict, while an ungradable one reported a problem it could
+     * not attribute to a specific issue.
+     *
      * @param  Collection<int, ResultInterface>  $erroredResults
+     * @param  Collection<int, ResultInterface>  $ungradedResults
      */
-    private function reportIncompleteAnalysis(Collection $erroredResults): void
+    private function reportUngradableResults(Collection $erroredResults, Collection $ungradedResults): void
+    {
+        if (! $this->prosePermitted()) {
+            return;
+        }
+
+        $this->newLine();
+
+        if ($erroredResults->isNotEmpty()) {
+            $count = $erroredResults->count();
+            $noun = $count === 1 ? 'analyzer' : 'analyzers';
+            $ids = $erroredResults->map(fn (ResultInterface $result) => $result->getAnalyzerId())->implode(', ');
+
+            $this->line($this->color("✗ Analysis incomplete: {$count} {$noun} could not run ({$ids}).", 'bright_red'));
+        }
+
+        if ($ungradedResults->isNotEmpty()) {
+            $count = $ungradedResults->count();
+            $noun = $count === 1 ? 'analyzer' : 'analyzers';
+            $ids = $ungradedResults->map(fn (ResultInterface $result) => $result->getAnalyzerId())->implode(', ');
+
+            $this->line($this->color(
+                "✗ {$count} {$noun} reported a problem without naming an issue ({$ids}).",
+                'bright_red'
+            ));
+        }
+
+        $this->line($this->color(
+            "  Add an analyzer id to 'dont_report' in config/shieldci.php to stop it affecting the exit code.",
+            'dim'
+        ));
+    }
+
+    /**
+     * Name the score that failed the build, since the threshold branch is otherwise silent.
+     */
+    private function reportThresholdFailure(int $score, float $threshold): void
+    {
+        if (! $this->prosePermitted()) {
+            return;
+        }
+
+        $this->newLine();
+        $this->line($this->color(
+            sprintf('✗ Score %d%% is below the configured fail_threshold of %s%%.', $score, rtrim(rtrim(number_format($threshold, 2, '.', ''), '0'), '.')),
+            'bright_red'
+        ));
+        $this->line($this->color(
+            '  Analyzers listed in \'dont_report\' are excluded from this score.',
+            'dim'
+        ));
+    }
+
+    /**
+     * Whether a human-readable line may be written to stdout.
+     *
+     * False only when the JSON report is itself going to stdout, which appending prose would
+     * stop `shield:analyze --format=json | jq` from parsing. Such a consumer already has
+     * summary.errors and each result's status. When the report is written to a file instead,
+     * stdout is free and these lines are the only thing telling an operator why the command
+     * exited non-zero.
+     */
+    private function prosePermitted(): bool
     {
         $format = $this->option('format') ?: config('shieldci.report.format', 'console');
 
@@ -1286,20 +1372,31 @@ class AnalyzeCommand extends Command
             $outputFile = is_string($configOutput) ? $configOutput : null;
         }
 
-        if ($format === 'json' && ! $outputFile) {
+        return $format !== 'json' || (bool) $outputFile;
+    }
+
+    /**
+     * Warn if fail_on is set to a value this command does not understand.
+     *
+     * Reported before the analysis rather than from determineExitCode(), which runs after
+     * the report body has already gone to stdout. Advisory only: resolveFailOn() falls back
+     * to the default so the run still gates on something.
+     */
+    private function warnIfUnrecognizedFailOn(): void
+    {
+        $failOn = config('shieldci.fail_on', 'high');
+
+        if (is_string($failOn) && FailOn::tryFrom($failOn) !== null) {
             return;
         }
 
-        $ids = $erroredResults->map(fn (ResultInterface $result) => $result->getAnalyzerId())->implode(', ');
-        $count = $erroredResults->count();
-        $noun = $count === 1 ? 'analyzer' : 'analyzers';
-
-        $this->newLine();
-        $this->line($this->color("✗ Analysis incomplete: {$count} {$noun} could not run ({$ids}).", 'bright_red'));
-        $this->line($this->color(
-            "  Add an analyzer id to 'dont_report' in config/shieldci.php to stop it affecting the exit code.",
-            'dim'
+        $this->warn(sprintf(
+            "⚠️  fail_on '%s' is not one of %s. Falling back to '%s'.",
+            is_scalar($failOn) ? (string) $failOn : get_debug_type($failOn),
+            implode(', ', FailOn::values()),
+            FailOn::fromConfig($failOn)->value
         ));
+        $this->newLine();
     }
 
     /**
@@ -1673,11 +1770,10 @@ class AnalyzeCommand extends Command
             : [];
         $baselineDontReport = array_values(array_filter($baselineDontReportRaw, 'is_string'));
 
-        // Merge baseline dont_report with config dont_report
-        $configDontReport = config('shieldci.dont_report', []);
-        $configDontReportFiltered = is_array($configDontReport) ? array_values(array_filter($configDontReport, 'is_string')) : [];
-        $allDontReport = array_values(array_unique(array_merge($baselineDontReport, $configDontReportFiltered)));
-
+        // dont_report is deliberately not applied here. It is documented as "runs and shows
+        // in the report, but does not affect the exit code", so it belongs in
+        // determineExitCode() and nowhere else; filtering issues out of the report would
+        // hide them instead. A merged list used to be built here and never read.
         $this->info('📋 Filtering against baseline...');
         if (count($baselineDontReport) > 0) {
             $this->line('   ⚠️  Using '.count($baselineDontReport).' analyzer(s) from baseline dont_report');
@@ -1692,7 +1788,6 @@ class AnalyzeCommand extends Command
                 return $result;
             }
 
-            $baselineIssues = $baselineErrors[$analyzerId];
             $currentIssues = $result->getIssues();
 
             // Same guard as ignore_errors: a result with no issues has nothing to match
@@ -1702,6 +1797,8 @@ class AnalyzeCommand extends Command
             if ($currentIssues === []) {
                 return $result;
             }
+
+            $baselineIssues = $baselineErrors[$analyzerId];
 
             $suppressedRecords = [];
 

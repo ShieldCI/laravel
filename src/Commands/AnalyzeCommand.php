@@ -26,6 +26,7 @@ use ShieldCI\Enums\SuppressionType;
 use ShieldCI\Enums\TriggerSource;
 use ShieldCI\Support\CiEnvironmentDetector;
 use ShieldCI\Support\MemoryLimit;
+use ShieldCI\Support\Reporter;
 use ShieldCI\ValueObjects\AnalysisReport;
 use ShieldCI\ValueObjects\FailureNotification;
 use ShieldCI\ValueObjects\FilterResult;
@@ -101,6 +102,13 @@ class AnalyzeCommand extends Command
         ClientInterface $client,
         TriggerSource $triggeredBy,
     ): int {
+        // The Reporter builds strings and never sees the stream they land on, so it cannot
+        // decide this for itself. Guarded by the concrete type rather than added to
+        // ReporterInterface, which would break any third-party implementation.
+        if ($reporter instanceof Reporter) {
+            $reporter->setDecorated($this->outputIsDecorated());
+        }
+
         // Apply memory limit as a floor: raise a lower ambient limit, but never lower a
         // higher one (e.g. Vapor's 2048M runtime default or an unlimited CLI). Best-effort:
         // @-suppress the E_WARNING PHP 8.1+ raises when the current memory usage already
@@ -894,13 +902,28 @@ class AnalyzeCommand extends Command
             'dim' => '2',
         ];
 
-        if (! isset($colors[$color])) {
+        if (! $this->outputIsDecorated() || ! isset($colors[$color])) {
             return $text;
         }
 
         $code = $colors[$color];
 
         return "\033[{$code}m{$text}\033[0m";
+    }
+
+    /**
+     * Whether the destination renders escape sequences.
+     *
+     * Symfony already answers this, and answers it better than anything written here would:
+     * isDecorated() accounts for --no-ansi and --ansi, and the stream behind it follows
+     * NO_COLOR and FORCE_COLOR and checks that the stream is a terminal. Everything this
+     * command and the Reporter emit was written unconditionally, so a redirected run wrote
+     * raw escapes into the file, and --no-ansi changed only the handful of messages that go
+     * through Laravel's own info/warn/error helpers.
+     */
+    protected function outputIsDecorated(): bool
+    {
+        return $this->getOutput()->isDecorated();
     }
 
     /**

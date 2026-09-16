@@ -21,6 +21,26 @@ use ShieldCI\ValueObjects\AnalysisReport;
 class Reporter implements ReporterInterface
 {
     /**
+     * Whether escape sequences may be written.
+     *
+     * This class builds strings and never sees the stream they end up on, so it cannot work
+     * this out for itself: only the command knows whether --no-ansi was passed or where
+     * stdout is pointing. Defaults to true so the plain string builders used outside a
+     * command keep their existing output.
+     */
+    private bool $decorated = true;
+
+    /**
+     * Declare whether the destination renders escape sequences.
+     *
+     * Not on ReporterInterface, so a third-party implementation stays valid.
+     */
+    public function setDecorated(bool $decorated): void
+    {
+        $this->decorated = $decorated;
+    }
+
+    /**
      * @param  Collection<int, ResultInterface>  $results
      * @param  array<string, string>  $gitContext
      */
@@ -303,7 +323,7 @@ class Reporter implements ReporterInterface
             'bg_white' => '47',
         ];
 
-        if (! isset($colors[$color])) {
+        if (! $this->decorated || ! isset($colors[$color])) {
             return $text;
         }
 
@@ -322,7 +342,7 @@ class Reporter implements ReporterInterface
      */
     private function bold(string $text): string
     {
-        return "\033[1m{$text}\033[0m";
+        return $this->decorated ? "\033[1m{$text}\033[0m" : $text;
     }
 
     /**
@@ -364,7 +384,7 @@ class Reporter implements ReporterInterface
      */
     private function italic(string $text): string
     {
-        return "\033[3m{$text}\033[0m";
+        return $this->decorated ? "\033[3m{$text}\033[0m" : $text;
     }
 
     /**

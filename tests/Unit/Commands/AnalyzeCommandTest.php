@@ -157,6 +157,22 @@ class AnalyzeCommandTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_writes_no_escape_sequences_to_an_undecorated_destination(): void
+    {
+        // Everything this command and the Reporter emitted was written unconditionally, so a
+        // redirected or piped run received raw escapes. --no-ansi changed only the few
+        // messages that go through Laravel's own info/warn/error helpers.
+        $this->registerFailedAnalyzers();
+
+        Artisan::call('shield:analyze', ['--format' => 'console']);
+        $output = Artisan::output();
+
+        $this->assertStringNotContainsString("\033[", $output);
+        $this->assertStringContainsString('Report Card', $output);
+    }
+
+    /** @test */
+    #[Test]
     public function it_honours_the_configured_report_format(): void
     {
         // The --format option declared console as its own default, so it was never empty and

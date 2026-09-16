@@ -108,6 +108,51 @@ class ReporterTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_writes_no_escape_sequences_when_decoration_is_off(): void
+    {
+        $this->reporter->setDecorated(false);
+
+        $results = $this->resultsOf(
+            AnalysisResult::failed('test-analyzer', 'Something is wrong', [
+                new Issue(
+                    message: 'A finding',
+                    location: new Location('app/Thing.php', 10),
+                    severity: Severity::High,
+                    recommendation: 'Fix it',
+                ),
+            ]),
+            AnalysisResult::skipped('skipped-analyzer', 'Not applicable'),
+            AnalysisResult::error('broken-analyzer', 'Analysis failed: parser exploded'),
+        );
+
+        $report = $this->reporter->generate($results);
+        $output = $this->reporter->toConsole($report);
+
+        // The banner, the status labels, the report card and the issue lines were all
+        // written unconditionally, so a redirected run wrote raw escapes into the file.
+        $this->assertStringNotContainsString("\033[", $output);
+
+        // The content still has to be there; only the escapes go away.
+        $this->assertStringContainsString('ShieldCI', $output);
+        $this->assertStringContainsString('Report Card', $output);
+        $this->assertStringContainsString('parser exploded', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_still_writes_escape_sequences_by_default(): void
+    {
+        $results = $this->resultsOf(
+            AnalysisResult::passed('test-analyzer', 'All checks passed'),
+        );
+
+        $output = $this->reporter->toConsole($this->reporter->generate($results));
+
+        $this->assertStringContainsString("\033[", $output);
+    }
+
+    /** @test */
+    #[Test]
     public function it_can_format_to_json(): void
     {
         $results = $this->resultsOf(

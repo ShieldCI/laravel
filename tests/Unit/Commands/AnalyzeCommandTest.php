@@ -712,6 +712,75 @@ class AnalyzeCommandTest extends TestCase
 
     /** @test */
     #[Test]
+    public function a_real_throwing_analyzer_reports_its_exception_and_trace_in_json(): void
+    {
+        // AbstractAnalyzer::analyze() records the exception class and stack trace in the
+        // result's metadata. Enrichment used to replace that array, so the only account of
+        // why an analyzer could not run never reached the report.
+        $outputPath = sys_get_temp_dir().'/shieldci-errored-metadata-'.uniqid().'.json';
+        config(['shieldci.report.output_file' => $outputPath]);
+
+        $throwingAnalyzer = new AnalyzeCommandThrowingAnalyzer;
+
+        /** @phpstan-ignore-next-line */
+        $this->app->singleton(AnalyzerManager::class, function ($app) use ($throwingAnalyzer) {
+            /** @var MockInterface&AnalyzerManager $manager */
+            $manager = Mockery::mock(AnalyzerManager::class);
+            $manager->shouldReceive('getAnalyzers')->andReturn(collect([$throwingAnalyzer]));
+            $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
+            $manager->shouldReceive('clearParserCache')->andReturn(null);
+
+            return $manager;
+        });
+
+        Artisan::call('shield:analyze', ['--format' => 'json']);
+
+        $this->assertFileExists($outputPath);
+        /** @var array<string, mixed> $data */
+        $data = json_decode((string) file_get_contents($outputPath), true);
+        @unlink($outputPath);
+
+        $result = collect((array) $data['results'])->firstWhere('analyzer_id', 'throwing-analyzer');
+        $this->assertIsArray($result);
+
+        $metadata = $result['metadata'] ?? null;
+        $this->assertIsArray($metadata);
+        $this->assertSame(RuntimeException::class, $metadata['exception'] ?? null);
+        $this->assertIsString($metadata['trace'] ?? null);
+
+        // The analyzer's own fields still win, so nothing regressed for existing consumers.
+        $this->assertSame('throwing-analyzer', $metadata['id'] ?? null);
+        $this->assertSame('Throwing Analyzer', $metadata['name'] ?? null);
+    }
+
+    /** @test */
+    #[Test]
+    public function a_full_non_streaming_run_reports_time_to_fix(): void
+    {
+        // The JSON path built a six-key metadata array while every other site built seven,
+        // so timeToFix never reached a full --format=json run.
+        $outputPath = sys_get_temp_dir().'/shieldci-time-to-fix-'.uniqid().'.json';
+        config(['shieldci.report.output_file' => $outputPath]);
+
+        $this->registerFailedAnalyzers();
+
+        Artisan::call('shield:analyze', ['--format' => 'json']);
+
+        $this->assertFileExists($outputPath);
+        /** @var array<string, mixed> $data */
+        $data = json_decode((string) file_get_contents($outputPath), true);
+        @unlink($outputPath);
+
+        $result = collect((array) $data['results'])->firstWhere('analyzer_id', 'test-security-failed');
+        $this->assertIsArray($result);
+
+        $metadata = $result['metadata'] ?? null;
+        $this->assertIsArray($metadata);
+        $this->assertArrayHasKey('timeToFix', $metadata);
+    }
+
+    /** @test */
+    #[Test]
     public function a_zero_issue_failed_result_is_not_turned_into_a_pass_by_ignore_errors(): void
     {
         config(['shieldci.ignore_errors' => [

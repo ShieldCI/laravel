@@ -12,12 +12,15 @@ use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Results\AnalysisResult;
+use ShieldCI\Concerns\EnrichesResultMetadata;
 
 /**
  * Manages and runs analyzers.
  */
 class AnalyzerManager
 {
+    use EnrichesResultMetadata;
+
     /**
      * @param  array<class-string<AnalyzerInterface>>  $analyzerClasses
      */
@@ -324,23 +327,7 @@ class AnalyzerManager
                 $this->clearParserCache();
                 $metadata = $analyzer->getMetadata();
 
-                // Enrich result with analyzer metadata
-                return new AnalysisResult(
-                    analyzerId: $result->getAnalyzerId(),
-                    status: $result->getStatus(),
-                    message: $result->getMessage(),
-                    issues: $result->getIssues(),
-                    executionTime: $result->getExecutionTime(),
-                    metadata: [
-                        'id' => $metadata->id,
-                        'name' => $metadata->name,
-                        'description' => $metadata->description,
-                        'category' => $metadata->category,
-                        'severity' => $metadata->severity,
-                        'docsUrl' => $metadata->getDocsUrl(),
-                        'timeToFix' => $metadata->timeToFix,
-                    ],
-                );
+                return $this->enrichResult($result, $metadata);
             });
 
         // Add skipped analyzers to results
@@ -502,23 +489,7 @@ class AnalyzerManager
         $this->clearParserCache();
         $metadata = $analyzer->getMetadata();
 
-        // Enrich result with analyzer metadata (same as runAll)
-        return new AnalysisResult(
-            analyzerId: $result->getAnalyzerId(),
-            status: $result->getStatus(),
-            message: $result->getMessage(),
-            issues: $result->getIssues(),
-            executionTime: $result->getExecutionTime(),
-            metadata: [
-                'id' => $metadata->id,
-                'name' => $metadata->name,
-                'description' => $metadata->description,
-                'category' => $metadata->category,
-                'severity' => $metadata->severity,
-                'docsUrl' => $metadata->getDocsUrl(),
-                'timeToFix' => $metadata->timeToFix,
-            ],
-        );
+        return $this->enrichResult($result, $metadata);
     }
 
     /**

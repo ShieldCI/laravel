@@ -17,6 +17,7 @@ use ShieldCI\AnalyzersCore\Results\AnalysisResult;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\Support\InlineSuppressionParser;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\Concerns\EnrichesResultMetadata;
 use ShieldCI\Contracts\ClientInterface;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\Enums\AnalysisFailureReason;
@@ -34,6 +35,8 @@ use Symfony\Component\Console\Output\StreamOutput;
 
 class AnalyzeCommand extends Command
 {
+    use EnrichesResultMetadata;
+
     protected $signature = 'shield:analyze
                             {--analyzer= : Run specific analyzer(s). Comma-separated for multiple (e.g., sql-injection,xss-detection)}
                             {--category= : Run analyzers in category. Comma-separated for multiple (e.g., security,performance)}
@@ -300,23 +303,7 @@ class AnalyzeCommand extends Command
                 $manager->clearParserCache();
                 $metadata = $analyzer->getMetadata();
 
-                // Enrich result with metadata
-                $enrichedResult = new AnalysisResult(
-                    analyzerId: $result->getAnalyzerId(),
-                    status: $result->getStatus(),
-                    message: $result->getMessage(),
-                    issues: $result->getIssues(),
-                    executionTime: $result->getExecutionTime(),
-                    metadata: [
-                        'id' => $metadata->id,
-                        'name' => $metadata->name,
-                        'description' => $metadata->description,
-                        'category' => $metadata->category,
-                        'severity' => $metadata->severity,
-                        'docsUrl' => $metadata->getDocsUrl(),
-                        'timeToFix' => $metadata->timeToFix,
-                    ],
-                );
+                $enrichedResult = $this->enrichResult($result, $metadata);
 
                 // Apply ignore_errors and inline suppression filtering before streaming
                 $fr1 = $this->filterSingleResultAgainstIgnoreErrors($enrichedResult);
@@ -440,23 +427,7 @@ class AnalyzeCommand extends Command
                 $manager->clearParserCache();
                 $metadata = $analyzer->getMetadata();
 
-                // Enrich result with metadata
-                $enrichedResult = new AnalysisResult(
-                    analyzerId: $result->getAnalyzerId(),
-                    status: $result->getStatus(),
-                    message: $result->getMessage(),
-                    issues: $result->getIssues(),
-                    executionTime: $result->getExecutionTime(),
-                    metadata: [
-                        'id' => $metadata->id,
-                        'name' => $metadata->name,
-                        'description' => $metadata->description,
-                        'category' => $metadata->category,
-                        'severity' => $metadata->severity,
-                        'docsUrl' => $metadata->getDocsUrl(),
-                        'timeToFix' => $metadata->timeToFix,
-                    ],
-                );
+                $enrichedResult = $this->enrichResult($result, $metadata);
 
                 // Apply ignore_errors and inline suppression filtering before streaming
                 $fr1 = $this->filterSingleResultAgainstIgnoreErrors($enrichedResult);
@@ -687,22 +658,7 @@ class AnalyzeCommand extends Command
             if ($progressBar !== null) {
                 $progressBar->advance();
             }
-            // Enrich result with analyzer metadata (same as runAll)
-            $resultsList[] = new AnalysisResult(
-                analyzerId: $result->getAnalyzerId(),
-                status: $result->getStatus(),
-                message: $result->getMessage(),
-                issues: $result->getIssues(),
-                executionTime: $result->getExecutionTime(),
-                metadata: [
-                    'id' => $metadata->id,
-                    'name' => $metadata->name,
-                    'description' => $metadata->description,
-                    'category' => $metadata->category,
-                    'severity' => $metadata->severity,
-                    'docsUrl' => $metadata->getDocsUrl(),
-                ],
-            );
+            $resultsList[] = $this->enrichResult($result, $metadata);
         }
 
         if ($progressBar !== null) {

@@ -157,6 +157,32 @@ class AnalyzeCommandTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_honours_the_configured_report_format(): void
+    {
+        // The --format option declared console as its own default, so it was never empty and
+        // this config key, along with SHIELDCI_REPORT_FORMAT, could not be reached at all.
+        config(['shieldci.report.format' => 'json']);
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze')
+            ->assertSuccessful()
+            ->expectsOutputToContain('"summary"');
+    }
+
+    /** @test */
+    #[Test]
+    public function the_format_option_overrides_the_configured_format(): void
+    {
+        config(['shieldci.report.format' => 'json']);
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'console'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('Report Card');
+    }
+
+    /** @test */
+    #[Test]
     public function it_outputs_console_format(): void
     {
         $this->registerTestAnalyzers();
@@ -1877,19 +1903,20 @@ class AnalyzeCommandTest extends TestCase
     {
         $this->registerTestAnalyzers();
 
-        $outputPath = base_path('tests/shieldci-console-report.json');
-        if (file_exists($outputPath)) {
-            unlink($outputPath);
-        }
+        // validateOptions() rejects absolute paths, and saveReport() then writes the relative
+        // one verbatim, so it lands relative to the process working directory rather than
+        // base_path(). This test used to write there and clean up under base_path(), which is
+        // why an untracked tests/shieldci-console-report.json accumulated on every run.
+        $outputPath = 'tests/shieldci-console-report.json';
+        @unlink($outputPath);
 
         $this->artisan('shield:analyze', [
             '--format' => 'console',
-            '--output' => 'tests/shieldci-console-report.json',
+            '--output' => $outputPath,
         ])->assertSuccessful();
 
-        if (file_exists($outputPath)) {
-            unlink($outputPath);
-        }
+        $this->assertFileExists($outputPath);
+        @unlink($outputPath);
     }
 
     /** @test */

@@ -203,23 +203,13 @@ return [
     | Don't Report Analyzers
     |--------------------------------------------------------------------------
     |
-    | Analyzers listed here will run but won't affect the exit code.
-    | They will still appear in the report output.
-    | Useful for informational checks that shouldn't fail CI/CD.
+    | Analyzers listed here run and appear in the report, but do not affect the
+    | exit code or the score compared against fail_threshold. Useful for gradual
+    | adoption and informational checks.
     |
-    | Behavior:
-    | - Analyzers run normally and show in report
-    | - Issues are displayed in console/JSON output
-    | - Exit code is not affected (won't fail CI/CD)
-    | - Useful for gradual adoption or informational analyzers
-    |
-    | This can be manually configured here, or auto-populated by running
-    | 'php artisan shield:baseline'. Analyzers that fail but have no
-    | specific issues will be automatically added to the baseline's
-    | 'dont_report' array.
-    |
-    | When using --baseline flag, the baseline file's 'dont_report' will
-    | be merged with this config value.
+    | 'php artisan shield:baseline' adds analyzers that fail without naming a
+    | specific issue, and merges that list with this one under --baseline.
+    | Analyzers that could not run are never added, and are waived here only.
     |
     */
 
@@ -413,14 +403,15 @@ return [
     |   - 'high': Fail on High or Critical issues (default, recommended)
     |   - 'medium': Fail on Medium, High, or Critical issues
     |   - 'low': Fail on any issues (strict quality enforcement)
+    |   - anything else falls back to 'high', and the run says so
     |
-    | An analyzer that could not complete carries no issues, so no severity threshold can
-    | express it. It fails the run at every level except 'never'. Waive one by adding its
-    | id to 'dont_report' above.
+    | A non-passing result with no issues carries no severity to compare, so it
+    | fails at every level except 'never' ('low' and 'medium' only for a warning).
+    | Waive one via 'dont_report' above.
     |
     | fail_threshold: Minimum score to pass (0-100, optional)
-    |   - Set a percentage threshold for passing (e.g., 80 = require 80% pass rate)
-    |   - Both fail_on AND fail_threshold must pass for exit code 0
+    |   - e.g. 80 requires an 80% pass rate
+    |   - both fail_on and fail_threshold must pass for exit code 0
     |
     */
 

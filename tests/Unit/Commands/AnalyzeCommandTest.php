@@ -726,9 +726,149 @@ class AnalyzeCommandTest extends TestCase
         $exitCode = Artisan::call('shield:analyze', ['--format' => 'json']);
         $output = Artisan::output();
 
-        $this->assertSame(0, $exitCode);
+        // The subject here is the status, not the exit code: the result keeps its own
+        // message and stays failed rather than being rewritten to a pass. It also exits
+        // non-zero, because a failure that names no issue cannot be graded by severity.
+        $this->assertSame(1, $exitCode);
         $this->assertStringContainsString('"status": "failed"', $output);
         $this->assertStringNotContainsString('All issues are ignored via config', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_fails_when_a_failed_analyzer_names_no_issue(): void
+    {
+        // No severity exists for the gate to read, so without this the analyzer is
+        // invisible to it at every fail_on level.
+        $this->registerManagerWithResults([
+            AnalysisResult::failed('issueless-analyzer', 'Configuration is invalid'),
+        ]);
+
+        $exitCode = Artisan::call('shield:analyze', ['--format' => 'console']);
+        $output = Artisan::output();
+
+        $this->assertSame(1, $exitCode);
+        $this->assertStringContainsString('reported a problem without naming an issue', $output);
+        $this->assertStringContainsString('issueless-analyzer', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_succeeds_when_a_failed_analyzer_names_no_issue_and_fail_on_is_never(): void
+    {
+        config(['shieldci.fail_on' => 'never']);
+        $this->registerManagerWithResults([
+            AnalysisResult::failed('issueless-analyzer', 'Configuration is invalid'),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])->assertSuccessful();
+    }
+
+    /** @test */
+    #[Test]
+    public function it_succeeds_when_an_issueless_failure_is_in_dont_report(): void
+    {
+        config(['shieldci.dont_report' => ['issueless-analyzer']]);
+        $this->registerManagerWithResults([
+            AnalysisResult::failed('issueless-analyzer', 'Configuration is invalid'),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])->assertSuccessful();
+    }
+
+    /** @test */
+    #[Test]
+    public function an_issueless_warning_does_not_fail_the_build_at_the_default_threshold(): void
+    {
+        // A warning only reaches the exit code at fail_on low and medium, so an ungradable
+        // one must not block above them either.
+        $this->registerManagerWithResults([
+            AnalysisResult::warning('issueless-analyzer', 'Unable to read queue configuration'),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])->assertSuccessful();
+    }
+
+    /** @test */
+    #[Test]
+    public function an_issueless_warning_fails_the_build_when_fail_on_is_low(): void
+    {
+        config(['shieldci.fail_on' => 'low']);
+        $this->registerManagerWithResults([
+            AnalysisResult::warning('issueless-analyzer', 'Unable to read queue configuration'),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])->assertFailed();
+    }
+
+    /** @test */
+    #[Test]
+    public function a_warning_carrying_a_high_issue_fails_when_fail_on_is_medium(): void
+    {
+        // The branch used to match only 'medium', so a warning carrying something more
+        // severe passed a threshold that a Medium issue would have tripped.
+        config(['shieldci.fail_on' => 'medium']);
+        $this->registerWarningAnalyzersWithSeverity(Severity::High);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])->assertFailed();
+    }
+
+    /** @test */
+    #[Test]
+    public function dont_report_also_waives_an_analyzer_under_fail_threshold(): void
+    {
+        // dont_report is documented as "does not affect the exit code", but score() knows
+        // nothing about it, so a waived analyzer used to sink the score and fail the build
+        // through the threshold instead.
+        config([
+            'shieldci.dont_report' => ['test-security-failed'],
+            'shieldci.fail_threshold' => 100,
+        ]);
+        $this->registerFailedAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])->assertSuccessful();
+    }
+
+    /** @test */
+    #[Test]
+    public function it_names_the_score_that_failed_the_threshold(): void
+    {
+        config(['shieldci.fail_threshold' => 100]);
+        $this->registerFailedAnalyzers();
+
+        $exitCode = Artisan::call('shield:analyze', ['--format' => 'console']);
+        $output = Artisan::output();
+
+        $this->assertSame(1, $exitCode);
+        $this->assertStringContainsString('below the configured fail_threshold', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_falls_back_to_high_and_warns_when_fail_on_is_unrecognized(): void
+    {
+        // An unrecognized value used to leave the gate half on: no finding of any severity
+        // could fail the build, while errors and fail_threshold still could.
+        config(['shieldci.fail_on' => 'hgh']);
+        $this->registerFailedAnalyzers();
+
+        $exitCode = Artisan::call('shield:analyze', ['--format' => 'console']);
+        $output = Artisan::output();
+
+        $this->assertSame(1, $exitCode);
+        $this->assertStringContainsString("fail_on 'hgh' is not one of", $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function a_non_numeric_fail_threshold_does_not_fail_the_build(): void
+    {
+        // PHP 8 compares an int against a non-numeric string as strings, so '95' < 'high'
+        // held and a typo failed every build regardless of the score.
+        config(['shieldci.fail_threshold' => 'high']);
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])->assertSuccessful();
     }
 
     /** @test */

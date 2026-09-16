@@ -32,6 +32,8 @@ use ShieldCI\ValueObjects\FailureNotification;
 use ShieldCI\ValueObjects\FilterResult;
 use ShieldCI\ValueObjects\SuppressionRecord;
 use Symfony\Component\Console\Helper\ProgressBar;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
+use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Output\StreamOutput;
 
 class AnalyzeCommand extends Command
@@ -239,7 +241,7 @@ class AnalyzeCommand extends Command
         // Send to API if configured
         if ($this->shouldSendToApi()) {
             if ($this->isScopedRun()) {
-                $this->warn('⚠️  Skipping platform upload: --analyzer/--category produces a partial '
+                $this->warnOnStderr('⚠️  Skipping platform upload: --analyzer/--category produces a partial '
                     .'report that would skew your project score and history. Run a full scan '
                     .'(php artisan shield:analyze --report) to upload.');
             } else {
@@ -1033,7 +1035,7 @@ class AnalyzeCommand extends Command
 
         file_put_contents($path, $content);
 
-        $this->info("Report saved to: {$path}");
+        $this->lineOnStderr("<info>Report saved to: {$path}</info>");
     }
 
     /**
@@ -1087,22 +1089,22 @@ class AnalyzeCommand extends Command
      */
     protected function sendToApi(ClientInterface $client, ReporterInterface $reporter, AnalysisReport $report): void
     {
-        $this->info('Sending report to ShieldCI platform...');
+        $this->lineOnStderr('<info>Sending report to ShieldCI platform...</info>');
 
         try {
             $payload = $reporter->toApi($report);
             $response = $client->sendReport($payload);
 
             if (isset($response['success']) && $response['success'] === true) {
-                $this->info('Report sent successfully.');
+                $this->lineOnStderr('<info>Report sent successfully.</info>');
             } else {
                 $message = isset($response['message']) && is_string($response['message'])
                     ? $response['message']
                     : 'Unknown error';
-                $this->warn("Failed to send report: {$message}");
+                $this->warnOnStderr("Failed to send report: {$message}");
             }
         } catch (\Exception $e) {
-            $this->warn("Failed to send report to API: {$e->getMessage()}");
+            $this->warnOnStderr("Failed to send report to API: {$e->getMessage()}");
         }
     }
 
@@ -1346,6 +1348,42 @@ class AnalyzeCommand extends Command
     }
 
     /**
+     * The stream for anything that is not the report itself.
+     *
+     * Advisory lines used to go to stdout alongside the report, so
+     * `shield:analyze --format=json | jq` failed to parse whenever the run had anything to
+     * say: an unmapped APP_ENV, a malformed ignore_errors glob, a scoped upload, a baseline
+     * being applied. Diagnostics belong on stderr, which keeps them visible without putting
+     * them in the document.
+     *
+     * Falls back to the same stream when the output is not a console, which is what Symfony's
+     * own OutputStyle::getErrorOutput() does. That is also what keeps this testable: the test
+     * harness buffers a single stream, so a message written here is still observable there.
+     */
+    private function errorOutput(): OutputInterface
+    {
+        $output = $this->getOutput()->getOutput();
+
+        return $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
+    }
+
+    /**
+     * Write an advisory line to stderr, styled the way Command::warn() would style it.
+     */
+    private function warnOnStderr(string $message): void
+    {
+        $this->errorOutput()->writeln("<comment>{$message}</comment>");
+    }
+
+    /**
+     * Write a plain line to stderr.
+     */
+    private function lineOnStderr(string $message = ''): void
+    {
+        $this->errorOutput()->writeln($message);
+    }
+
+    /**
      * The report format, from --format or the configured default.
      *
      * The option used to declare console as its own default, which meant it was never
@@ -1397,13 +1435,13 @@ class AnalyzeCommand extends Command
             return;
         }
 
-        $this->warn(sprintf(
+        $this->warnOnStderr(sprintf(
             "⚠️  fail_on '%s' is not one of %s. Falling back to '%s'.",
             is_scalar($failOn) ? (string) $failOn : get_debug_type($failOn),
             implode(', ', FailOn::values()),
             FailOn::fromConfig($failOn)->value
         ));
-        $this->newLine();
+        $this->lineOnStderr();
     }
 
     /**
@@ -1423,8 +1461,8 @@ class AnalyzeCommand extends Command
             return;
         }
 
-        $this->warn("⚠️  APP_ENV '{$rawEnv}' is not a recognized standard environment. Environment-scoped analyzers may be skipped. Add a mapping in config/shieldci.php.");
-        $this->newLine();
+        $this->warnOnStderr("⚠️  APP_ENV '{$rawEnv}' is not a recognized standard environment. Environment-scoped analyzers may be skipped. Add a mapping in config/shieldci.php.");
+        $this->lineOnStderr();
     }
 
     /**
@@ -1513,11 +1551,11 @@ class AnalyzeCommand extends Command
 
         // Display warnings
         if (! empty($warnings)) {
-            $this->warn('⚠️  Configuration Warnings:');
+            $this->warnOnStderr('⚠️  Configuration Warnings:');
             foreach ($warnings as $warning) {
-                $this->line("   • {$warning}");
+                $this->lineOnStderr("   • {$warning}");
             }
-            $this->newLine();
+            $this->lineOnStderr();
         }
     }
 
@@ -1752,7 +1790,7 @@ class AnalyzeCommand extends Command
         $baselineFile = is_string($baselineFileRaw) ? $baselineFileRaw : null;
 
         if (! $baselineFile || ! file_exists($baselineFile)) {
-            $this->warn('⚠️  No baseline file found. Run "php artisan shield:baseline" to create one.');
+            $this->warnOnStderr('⚠️  No baseline file found. Run "php artisan shield:baseline" to create one.');
 
             return $report;
         }
@@ -1781,9 +1819,9 @@ class AnalyzeCommand extends Command
         // in the report, but does not affect the exit code", so it belongs in
         // determineExitCode() and nowhere else; filtering issues out of the report would
         // hide them instead. A merged list used to be built here and never read.
-        $this->info('📋 Filtering against baseline...');
+        $this->lineOnStderr('<info>📋 Filtering against baseline...</info>');
         if (count($baselineDontReport) > 0) {
-            $this->line('   ⚠️  Using '.count($baselineDontReport).' analyzer(s) from baseline dont_report');
+            $this->lineOnStderr('   ⚠️  Using '.count($baselineDontReport).' analyzer(s) from baseline dont_report');
         }
 
         // Filter results (ignore_errors already filtered in filterAgainstIgnoreErrors)

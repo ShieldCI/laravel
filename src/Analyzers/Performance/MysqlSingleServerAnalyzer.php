@@ -12,7 +12,6 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
-use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\DetectsDeploymentPlatform;
 
 /**
@@ -155,16 +154,12 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
         // other verdict here. As an errored result it carried no issue, which left it
         // unbaselineable and unsuppressible.
         if (! is_array($connections)) {
-            $configFile = $this->getDatabaseConfigPath();
-
             return $this->failed(
                 'Database connections configuration is invalid',
                 [
                     $this->createIssue(
                         message: 'Database connections configuration is not an array',
-                        location: file_exists($configFile)
-                            ? new Location($this->getRelativePath($configFile), ConfigFileHelper::findKeyLine($configFile, 'connections'))
-                            : null,
+                        location: ConfigFileHelper::locateConfigKey($this->getBasePath(), 'database.php', 'connections'),
                         severity: Severity::Medium,
                         recommendation: 'Define database.connections as an array keyed by connection name. Laravel cannot resolve any database connection from a non-array value, so every query fails at runtime.',
                         metadata: ['type' => get_debug_type($connections)]
@@ -247,19 +242,17 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
         // All of these indicate local connections that could use Unix sockets
         if ($this->isLocalhostConnection($host) && $this->isEmptySocket($unixSocket)) {
             $severity = $connectionName === $defaultConnection ? Severity::Medium : Severity::Low;
-            $configFile = $this->getDatabaseConfigPath();
-
             // The host and socket come from the config repository, which merges the
             // framework's own config/database.php, so they are correct whether or not the
             // app published the file - and Laravel 11+ invites deleting config files you
             // do not customise. Only the line reference is lost, so an unpublished file
             // yields no location instead of naming a file the reader cannot open.
-            $location = file_exists($configFile)
-                ? new Location(
-                    $this->getRelativePath($configFile),
-                    ConfigFileHelper::findKeyLine($configFile, $connectionName, 'connections')
-                )
-                : null;
+            $location = ConfigFileHelper::locateConfigKey(
+                $this->getBasePath(),
+                'database.php',
+                $connectionName,
+                'connections'
+            );
 
             return $this->createIssue(
                 message: "MySQL connection '{$connectionName}' uses TCP on localhost; if MySQL runs on the same host, Unix sockets can improve performance",
@@ -407,18 +400,6 @@ class MysqlSingleServerAnalyzer extends AbstractAnalyzer
         }
 
         return null;
-    }
-
-    /**
-     * Get the path to the database configuration file.
-     */
-    private function getDatabaseConfigPath(): string
-    {
-        return ConfigFileHelper::getConfigPath(
-            $this->getBasePath(),
-            'database.php',
-            fn ($file) => function_exists('config_path') ? config_path($file) : null
-        );
     }
 
     /**

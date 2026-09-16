@@ -63,14 +63,13 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         $defaultConnection = $this->config->get('queue.default');
-        $configFile = $this->getQueueConfigPath();
 
         // The connection and driver come from the config repository, which merges the
         // framework's own config/queue.php, so they are correct whether or not the app
         // published the file - and Laravel 11+ invites deleting config files you do not
         // customise. Only the line reference is lost, so an unpublished file yields no
         // location instead of naming a file the reader cannot open.
-        $configPublished = file_exists($configFile);
+        $basePath = $this->getBasePath();
 
         // Validate default connection is configured and is a string
         if ($defaultConnection === null || ! is_string($defaultConnection)) {
@@ -79,9 +78,7 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
                 [
                     $this->createIssue(
                         message: 'Queue default connection is not configured',
-                        location: $configPublished
-                            ? new Location($this->getRelativePath($configFile), ConfigFileHelper::findKeyLine($configFile, 'default'))
-                            : null,
+                        location: ConfigFileHelper::locateConfigKey($basePath, 'queue.php', 'default'),
                         severity: Severity::High,
                         recommendation: 'Set QUEUE_CONNECTION in your .env file or define queue.default in config/queue.php',
                         metadata: [
@@ -100,9 +97,7 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
                 [
                     $this->createIssue(
                         message: "Queue connection '{$defaultConnection}' is not defined in queue configuration",
-                        location: $configPublished
-                            ? new Location($this->getRelativePath($configFile), ConfigFileHelper::findKeyLine($configFile, $defaultConnection, 'connections'))
-                            : null,
+                        location: ConfigFileHelper::locateConfigKey($basePath, 'queue.php', $defaultConnection, 'connections'),
                         severity: Severity::High,
                         recommendation: 'Define the queue connection in config/queue.php or change the default connection to a valid queue connection.',
                         metadata: [
@@ -123,9 +118,7 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
                 [
                     $this->createIssue(
                         message: "Queue connection '{$defaultConnection}' has a driver that is not a string",
-                        location: $configPublished
-                            ? new Location($this->getRelativePath($configFile), ConfigFileHelper::findNestedKeyLine($configFile, 'connections', 'driver', $defaultConnection))
-                            : null,
+                        location: ConfigFileHelper::locateNestedConfigKey($basePath, 'queue.php', 'connections', 'driver', $defaultConnection),
                         severity: Severity::High,
                         recommendation: 'Set the connection driver to one of the queue drivers Laravel supports. Laravel cannot build a queue connection from a non-string driver, so every dispatched job fails at runtime.',
                         metadata: [
@@ -140,12 +133,7 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
         $issues = [];
 
         // Resolve the location once so every driver check reports the same one.
-        $location = $configPublished
-            ? new Location(
-                $this->getRelativePath($configFile),
-                ConfigFileHelper::findNestedKeyLine($configFile, 'connections', 'driver', $defaultConnection)
-            )
-            : null;
+        $location = ConfigFileHelper::locateNestedConfigKey($basePath, 'queue.php', 'connections', 'driver', $defaultConnection);
 
         // Use match expression for better type safety and clarity
         match ($driver) {
@@ -270,20 +258,6 @@ class QueueDriverAnalyzer extends AbstractAnalyzer
         // Other drivers (redis, sqs, beanstalkd, etc.) are generally acceptable
         // Parameters are kept for consistency with other assess methods
         // No issues to report for these drivers
-    }
-
-    /**
-     * Get the path to the queue configuration file.
-     */
-    private function getQueueConfigPath(): string
-    {
-        $basePath = $this->getBasePath();
-
-        return ConfigFileHelper::getConfigPath(
-            $basePath,
-            'queue.php',
-            fn ($file) => function_exists('config_path') ? config_path($file) : null
-        );
     }
 
     private function isLocalEnvironment(string $environment): bool

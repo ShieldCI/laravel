@@ -66,15 +66,12 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
 
         $environment = $this->getEnvironment();
 
-        $basePath = $this->getBasePath();
-        $configFile = ConfigFileHelper::getConfigPath($basePath, 'cache.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
-
         // The store and driver below come from the config repository, which merges the
         // framework's own config/cache.php, so they are correct whether or not the app
         // published the file - and Laravel 11+ invites deleting config files you do not
         // customise. Only the line reference is lost, so an unpublished file degrades the
         // location to null instead of aborting an analysis that already has its answer.
-        $configPublished = file_exists($configFile);
+        $basePath = $this->getBasePath();
 
         // Use injected config repository to get runtime values (respects .env and config:cache)
         $defaultStore = $this->config->get('cache.default');
@@ -86,9 +83,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
         if (! is_string($defaultStore)) {
             $issues[] = $this->createIssue(
                 message: 'Cache default store is not a string',
-                location: $configPublished
-                    ? new Location($this->getRelativePath($configFile), ConfigFileHelper::findKeyLine($configFile, 'default'))
-                    : null,
+                location: ConfigFileHelper::locateConfigKey($basePath, 'cache.php', 'default'),
                 severity: Severity::Critical,
                 recommendation: 'Set the default cache store to the name of a store defined in config/cache.php. Laravel cannot resolve a store from a non-string value, so every cache read and write fails at runtime.',
                 metadata: ['type' => get_debug_type($defaultStore), 'environment' => $environment]
@@ -103,9 +98,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
         if ($driver === null) {
             $issues[] = $this->createIssue(
                 message: "Cache store '{$defaultStore}' is not defined in cache configuration",
-                location: $configPublished
-                    ? new Location($this->getRelativePath($configFile), ConfigFileHelper::findKeyLine($configFile, 'default'))
-                    : null,
+                location: ConfigFileHelper::locateConfigKey($basePath, 'cache.php', 'default'),
                 severity: Severity::Critical,
                 recommendation: 'Define the cache store in config/cache.php or change the default store in your .env file (CACHE_STORE, or CACHE_DRIVER on Laravel 10 and earlier)',
                 metadata: ['store' => $defaultStore, 'environment' => $environment]
@@ -117,9 +110,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
         if (! is_string($driver)) {
             $issues[] = $this->createIssue(
                 message: "Cache store '{$defaultStore}' has a driver that is not a string",
-                location: $configPublished
-                    ? new Location($this->getRelativePath($configFile), ConfigFileHelper::findNestedKeyLine($configFile, 'stores', 'driver', $defaultStore))
-                    : null,
+                location: ConfigFileHelper::locateNestedConfigKey($basePath, 'cache.php', 'stores', 'driver', $defaultStore),
                 severity: Severity::Critical,
                 recommendation: 'Set the store driver to one of the cache drivers Laravel supports. Laravel cannot build a cache store from a non-string driver, so every cache read and write fails at runtime.',
                 metadata: ['store' => $defaultStore, 'type' => get_debug_type($driver), 'environment' => $environment]
@@ -129,12 +120,7 @@ class CacheDriverAnalyzer extends AbstractAnalyzer
         }
 
         // Resolve the location once so every driver check reports the same one.
-        $location = $configPublished
-            ? new Location(
-                $this->getRelativePath($configFile),
-                ConfigFileHelper::findNestedKeyLine($configFile, 'stores', 'driver', $defaultStore)
-            )
-            : null;
+        $location = ConfigFileHelper::locateNestedConfigKey($basePath, 'cache.php', 'stores', 'driver', $defaultStore);
 
         // Use match expression for better type safety and clarity
         match ($driver) {

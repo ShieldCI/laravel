@@ -282,20 +282,6 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Get the path to the database configuration file.
-     */
-    private function getDatabaseConfigPath(): string
-    {
-        $basePath = $this->getBasePath();
-
-        return ConfigFileHelper::getConfigPath(
-            $basePath,
-            'database.php',
-            fn ($file) => function_exists('config_path') ? config_path($file) : null
-        );
-    }
-
-    /**
      * Get the location of the database configuration file.
      *
      * The connections come from the config repository, which merges the framework's own
@@ -306,16 +292,11 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
      */
     private function getDatabaseConfigLocation(string $connectionName): ?Location
     {
-        $configFile = $this->getDatabaseConfigPath();
-
-        if (! file_exists($configFile)) {
-            return null;
-        }
-
-        // Find the connection name as a key within the 'connections' array
-        return new Location(
-            $this->getRelativePath($configFile),
-            ConfigFileHelper::findKeyLine($configFile, $connectionName, 'connections')
+        return ConfigFileHelper::locateConfigKey(
+            $this->getBasePath(),
+            'database.php',
+            $connectionName,
+            'connections'
         );
     }
 

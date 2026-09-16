@@ -129,20 +129,6 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Get the path to the cache configuration file.
-     */
-    private function getCacheConfigPath(): string
-    {
-        $basePath = $this->getBasePath();
-
-        return ConfigFileHelper::getConfigPath(
-            $basePath,
-            'cache.php',
-            fn ($file) => function_exists('config_path') ? config_path($file) : null
-        );
-    }
-
-    /**
      * Get the location of the cache configuration file.
      *
      * The driver comes from the config repository, which merges the framework's own
@@ -153,16 +139,7 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
      */
     private function getCacheConfigLocation(): ?Location
     {
-        $configFile = $this->getCacheConfigPath();
-
-        if (! file_exists($configFile)) {
-            return null;
-        }
-
-        return new Location(
-            $this->getRelativePath($configFile),
-            ConfigFileHelper::findKeyLine($configFile, 'default')
-        );
+        return ConfigFileHelper::locateConfigKey($this->getBasePath(), 'cache.php', 'default');
     }
 
     /**

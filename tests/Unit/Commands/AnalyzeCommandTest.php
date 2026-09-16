@@ -169,6 +169,7 @@ class AnalyzeCommandTest extends TestCase
             'app.env' => 'production-eu',
             'shieldci.ignore_errors' => ['no-such-analyzer' => [['path' => 'app/X.php']]],
             'shieldci.fail_on' => 'hgh',
+            'shieldci.paths.analyze' => [],
         ]);
         $this->registerTestAnalyzers();
 
@@ -196,6 +197,7 @@ class AnalyzeCommandTest extends TestCase
         $this->assertStringContainsString('is not a recognized standard environment', $stderr);
         $this->assertStringContainsString('Configuration Warnings', $stderr);
         $this->assertStringContainsString("fail_on 'hgh' is not one of", $stderr);
+        $this->assertStringContainsString('paths.analyze is empty', $stderr);
     }
 
     /** @test */
@@ -5398,6 +5400,57 @@ PHP);
         $this->artisan('shield:analyze', ['--format' => 'json'])
             ->assertSuccessful()
             ->doesntExpectOutputToContain('is not a recognized standard environment');
+    }
+
+    /** @test */
+    #[Test]
+    public function it_warns_when_analyze_paths_are_empty(): void
+    {
+        // An unusable paths.analyze is substituted, not obeyed, so without this line the run
+        // silently scans directories the user did not write. Reported before the analysis
+        // for the same reason fail_on is: afterwards the report is already on stdout.
+        config(['shieldci.paths.analyze' => []]);
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('paths.analyze is empty. Falling back to app, config, database, routes, resources/views.');
+    }
+
+    /** @test */
+    #[Test]
+    public function it_warns_when_analyze_paths_are_not_a_list(): void
+    {
+        config(['shieldci.paths.analyze' => 'app']);
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('paths.analyze is a string, not a list of directories.');
+    }
+
+    /** @test */
+    #[Test]
+    public function it_warns_when_analyze_paths_hold_no_directory_names(): void
+    {
+        config(['shieldci.paths.analyze' => [42, null]]);
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->expectsOutputToContain('paths.analyze holds no directory names.');
+    }
+
+    /** @test */
+    #[Test]
+    public function it_does_not_warn_when_analyze_paths_are_usable(): void
+    {
+        config(['shieldci.paths.analyze' => ['app', 'routes']]);
+        $this->registerTestAnalyzers();
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful()
+            ->doesntExpectOutputToContain('paths.analyze');
     }
 
     // ─── clearAstParserCache() call site tests ────────────────────────

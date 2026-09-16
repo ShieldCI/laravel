@@ -7,6 +7,7 @@ namespace ShieldCI\Support;
 use Composer\InstalledVersions;
 use DateTimeImmutable;
 use Illuminate\Support\Collection;
+use ShieldCI\AnalyzerManager;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Status;
@@ -677,8 +678,12 @@ class Reporter implements ReporterInterface
      */
     private function buildConfiguration(): array
     {
+        // Effective, not configured: AnalyzerManager substitutes the shipped defaults for an
+        // unusable paths.analyze, so reporting the raw [] would name directories the run did
+        // not walk and omit the ones it did.
         $rawPaths = config('shieldci.paths.analyze', []);
-        $paths = is_array($rawPaths) ? array_values(array_filter($rawPaths, 'is_string')) : [];
+        $configuredPaths = is_array($rawPaths) ? array_values(array_filter($rawPaths, 'is_string')) : [];
+        $paths = $configuredPaths === [] ? AnalyzerManager::DEFAULT_ANALYZE_PATHS : $configuredPaths;
 
         $rawExcluded = config('shieldci.excluded_paths', []);
         $excludedPaths = is_array($rawExcluded) ? array_values(array_filter($rawExcluded, 'is_string')) : [];

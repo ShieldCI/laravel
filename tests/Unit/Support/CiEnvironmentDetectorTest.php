@@ -346,6 +346,12 @@ class CiEnvironmentDetectorTest extends TestCase
     public function it_returns_null_for_detached_head_state(): void
     {
         $detector = $this->makeDetectorWithMockGit('HEAD', 'abc1234');
+
+        // Assert the mock is actually answering before reading anything into its silence:
+        // a null branch is what this test wants, but it is also what a mock that never ran
+        // would produce, which is why a broken mock stayed invisible here for so long.
+        $this->assertSame('abc1234', $detector->resolveCommit(null));
+
         $this->assertNull($detector->resolveBranch(null));
     }
 
@@ -393,22 +399,45 @@ class CiEnvironmentDetectorTest extends TestCase
 
     // ─────────────────────────────────────────────────────────────────────────
     // Mock git helpers
+    //
+    // These hand the script to /bin/sh as an argument rather than writing a temp file and
+    // chmod'ing it 0755. On macOS the first execution of a freshly written executable
+    // blocks on a Gatekeeper scan - measured at ~3.9s wall against 0.02s CPU - and
+    // getProcess() allows 2 seconds, so a mock named with uniqid() raced a scan it could
+    // never win. runGitCommand() catches the resulting ProcessTimedOutException and
+    // returns null, which is indistinguishable from "not in a git repository" (#364).
+    // /bin/sh is a system binary that is already trusted, so nothing is scanned and
+    // nothing is left behind in the temp directory.
     // ─────────────────────────────────────────────────────────────────────────
 
     private function makeDetectorWithMockGit(string $branch, string $commit): CiEnvironmentDetector
     {
-        $scriptPath = $this->createMockGitScript($branch, $commit);
-
-        return new class($scriptPath) extends CiEnvironmentDetector
+        return new class($branch, $commit) extends CiEnvironmentDetector
         {
-            public function __construct(private string $scriptPath) {}
+            /**
+             * Echoes the branch for `--abbrev-ref`, the commit otherwise.
+             *
+             * Both values arrive as positional arguments rather than interpolated into the
+             * script, so the shell never parses them and no escaping is needed.
+             */
+            private const SCRIPT = 'if [ "$1" = "--abbrev-ref" ]; then echo "$2"; else echo "$3"; fi';
+
+            public function __construct(private string $branch, private string $commit) {}
 
             protected function getProcess(array $command): Process
             {
                 // Map git subcommand to the mock script args
                 $arg = in_array('--abbrev-ref', $command) ? '--abbrev-ref' : '--sha';
 
-                return (new Process([$this->scriptPath, $arg]))->setTimeout(2);
+                return (new Process([
+                    '/bin/sh',
+                    '-c',
+                    self::SCRIPT,
+                    '_',
+                    $arg,
+                    $this->branch,
+                    $this->commit,
+                ]))->setTimeout(2);
             }
         };
     }
@@ -426,45 +455,13 @@ class CiEnvironmentDetectorTest extends TestCase
 
     private function makeDetectorWithFailingGit(): CiEnvironmentDetector
     {
-        $scriptPath = $this->createFailingGitScript();
-
-        return new class($scriptPath) extends CiEnvironmentDetector
+        return new class extends CiEnvironmentDetector
         {
-            public function __construct(private string $scriptPath) {}
-
             protected function getProcess(array $command): Process
             {
-                return (new Process([$this->scriptPath]))->setTimeout(2);
+                return (new Process(['/bin/sh', '-c', 'exit 128']))->setTimeout(2);
             }
         };
-    }
-
-    private function createMockGitScript(string $branch, string $commit): string
-    {
-        $path = sys_get_temp_dir().'/mock-git-'.uniqid();
-        $branch = escapeshellarg($branch);
-        $commit = escapeshellarg($commit);
-
-        file_put_contents($path, <<<BASH
-#!/bin/bash
-if [ "\$1" = "--abbrev-ref" ]; then
-    echo {$branch}
-else
-    echo {$commit}
-fi
-BASH);
-        chmod($path, 0755);
-
-        return $path;
-    }
-
-    private function createFailingGitScript(): string
-    {
-        $path = sys_get_temp_dir().'/mock-git-fail-'.uniqid();
-        file_put_contents($path, "#!/bin/bash\nexit 128\n");
-        chmod($path, 0755);
-
-        return $path;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

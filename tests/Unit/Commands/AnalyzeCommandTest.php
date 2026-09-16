@@ -381,6 +381,29 @@ class AnalyzeCommandTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_fails_the_run_when_the_report_directory_cannot_be_created(): void
+    {
+        $this->registerTestAnalyzers();
+
+        // A regular file where the directory should be: mkdir cannot create it and cannot
+        // report that it already exists either.
+        $file = sys_get_temp_dir().'/shieldci-not-a-dir-'.uniqid();
+        touch($file);
+
+        config(['shieldci.report.output_file' => $file.'/report.json']);
+
+        $exitCode = Artisan::call('shield:analyze');
+        $output = Artisan::output();
+
+        @unlink($file);
+
+        $this->assertSame(1, $exitCode);
+        $this->assertStringContainsString('Could not create the report directory', $output);
+        $this->assertStringNotContainsString('Report saved to', $output);
+    }
+
+    /** @test */
+    #[Test]
     public function it_notes_that_the_report_file_is_json_when_console_format_is_explicit(): void
     {
         $this->registerTestAnalyzers();

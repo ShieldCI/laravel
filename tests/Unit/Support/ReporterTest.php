@@ -108,6 +108,69 @@ class ReporterTest extends TestCase
 
     /** @test */
     #[Test]
+    public function the_report_card_counts_errored_analyzers(): void
+    {
+        // Nothing asserted the Error row before this. The only test that mentioned 'Error'
+        // was satisfied by the per-analyzer status label, and the row's own literal is
+        // present with a zero count in every report, so a broken count could not fail it.
+        $this->reporter->setDecorated(false);
+
+        $results = $this->resultsOf(
+            AnalysisResult::passed('a', 'fine'),
+            AnalysisResult::passed('b', 'fine'),
+            AnalysisResult::error('c', 'Analysis failed: parser exploded'),
+        );
+
+        $card = $this->reporter->reportCard($this->reporter->generate($results));
+
+        // One of three gradable analyzers errored.
+        $this->assertMatchesRegularExpression('/\|\s*Error\s*\|[^|]*\b1\s+\(33%\)/', $card);
+        // ... and the passed row has to agree with it.
+        $this->assertMatchesRegularExpression('/\|\s*Passed\s*\|[^|]*\b2\s+\(67%\)/', $card);
+    }
+
+    /** @test */
+    #[Test]
+    public function the_report_card_excludes_skipped_analyzers_from_the_error_percentage(): void
+    {
+        // Skipped analyzers leave the denominator entirely, so adding one must not move the
+        // Error percentage.
+        $this->reporter->setDecorated(false);
+
+        $results = $this->resultsOf(
+            AnalysisResult::passed('a', 'fine'),
+            AnalysisResult::passed('b', 'fine'),
+            AnalysisResult::error('c', 'Analysis failed: parser exploded'),
+            AnalysisResult::skipped('d', 'Not applicable'),
+        );
+
+        $card = $this->reporter->reportCard($this->reporter->generate($results));
+
+        $this->assertMatchesRegularExpression('/\|\s*Error\s*\|[^|]*\b1\s+\(33%\)/', $card);
+        $this->assertMatchesRegularExpression('/\|\s*Not Applicable\s*\|[^|]*\b1\b/', $card);
+    }
+
+    /** @test */
+    #[Test]
+    public function the_streaming_and_full_console_cards_agree(): void
+    {
+        // The command carried a second copy of this table for the streaming path. The two
+        // agreed on every number and disagreed on colour, so the same run rendered
+        // differently depending on which path produced it.
+        $this->reporter->setDecorated(false);
+
+        $results = $this->resultsOf(
+            AnalysisResult::passed('a', 'fine'),
+            AnalysisResult::error('c', 'Analysis failed: parser exploded'),
+        );
+
+        $report = $this->reporter->generate($results);
+
+        $this->assertStringContainsString($this->reporter->reportCard($report), $this->reporter->toConsole($report));
+    }
+
+    /** @test */
+    #[Test]
     public function it_writes_no_escape_sequences_when_decoration_is_off(): void
     {
         $this->reporter->setDecorated(false);

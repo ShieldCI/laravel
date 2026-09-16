@@ -225,7 +225,10 @@ class Reporter implements ReporterInterface
         $output[] = $this->color('Report Card', 'bright_yellow');
         $output[] = $this->color('===========', 'bright_yellow');
         $output[] = '';
-        $output[] = $this->generateReportCard($report, $filteredCategories);
+        // Passes the unfiltered grouping: generateReportCard() applies the same
+        // skipped-category filter itself, and running it twice on the same data was a
+        // no-op that read as though the two filters might differ.
+        $output[] = $this->generateReportCard($report, $byCategory);
         $output[] = '';
 
         return implode(PHP_EOL, $output);
@@ -433,6 +436,21 @@ class Reporter implements ReporterInterface
     }
 
     /**
+     * Render the report card on its own.
+     *
+     * The streaming path prints only this table, having already streamed each result, so it
+     * needs an entry point that does its own grouping. AnalyzeCommand used to carry a second
+     * copy of the whole table for that. The two agreed on every number and disagreed on
+     * colour, so the same run rendered differently depending on which path produced it.
+     *
+     * Not on ReporterInterface, so a third-party implementation stays valid.
+     */
+    public function reportCard(AnalysisReport $report): string
+    {
+        return $this->generateReportCard($report, $this->groupByCategory($report->results));
+    }
+
+    /**
      * Generate report card table.
      *
      * @param  array<string, array<int, ResultInterface>>  $byCategory
@@ -511,7 +529,7 @@ class Reporter implements ReporterInterface
         }
 
         // Passed row
-        $passedRow = '| Passed         |';
+        $passedRow = '| '.$this->padVisible($this->color('Passed', 'green'), 14).' |';
         $totalPassed = 0;
         foreach ($categories as $category) {
             $passed = $stats[$category]['passed'];
@@ -526,7 +544,7 @@ class Reporter implements ReporterInterface
         $table[] = $passedRow;
 
         // Failed row
-        $failedRow = '| Failed         |';
+        $failedRow = '| '.$this->padVisible($this->color('Failed', 'red'), 14).' |';
         $totalFailed = 0;
         foreach ($categories as $category) {
             $failed = $stats[$category]['failed'];
@@ -540,7 +558,7 @@ class Reporter implements ReporterInterface
         $table[] = $failedRow;
 
         // Warning row
-        $warningRow = '| Warning        |';
+        $warningRow = '| '.$this->padVisible($this->color('Warning', 'yellow'), 14).' |';
         $totalWarnings = 0;
         foreach ($categories as $category) {
             $warnings = $stats[$category]['warning'];
@@ -554,7 +572,7 @@ class Reporter implements ReporterInterface
         $table[] = $warningRow;
 
         // Error row
-        $errorRow = '| Error          |';
+        $errorRow = '| '.$this->padVisible($this->color('Error', 'bright_red'), 14).' |';
         $totalErrors = 0;
         foreach ($categories as $category) {
             $errors = $stats[$category]['error'];
@@ -568,7 +586,7 @@ class Reporter implements ReporterInterface
         $table[] = $errorRow;
 
         // Not Applicable row last, no percentages
-        $skippedRow = '| Not Applicable |';
+        $skippedRow = '| '.$this->padVisible($this->color('Not Applicable', 'gray'), 14).' |';
         foreach ($categories as $category) {
             $skipped = $stats[$category]['skipped'];
             $skippedRow .= str_pad("    {$skipped}      ", 16).'|';

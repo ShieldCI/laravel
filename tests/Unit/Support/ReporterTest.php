@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Enums\Status;
 use ShieldCI\AnalyzersCore\Results\AnalysisResult;
+use ShieldCI\AnalyzersCore\ValueObjects\CodeSnippet;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Enums\TriggerSource;
@@ -167,6 +168,209 @@ class ReporterTest extends TestCase
         $report = $this->reporter->generate($results);
 
         $this->assertStringContainsString($this->reporter->reportCard($report), $this->reporter->toConsole($report));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_renders_a_code_preview_for_an_issue_with_a_snippet(): void
+    {
+        $output = $this->consoleWithSnippet();
+
+        $this->assertStringContainsString('Code Preview:', $output);
+        $this->assertStringContainsString('→', $output);
+
+        // The target line carries the gutter, the marker and the background; the line above
+        // it is token coloured instead.
+        $this->assertStringContainsString("\033[0;31m  44\033[0m", $output);
+        $this->assertStringContainsString("\033[0;37;41m        \$data = \$request->all();\033[0m", $output);
+        $this->assertStringContainsString("\033[0;36mfunction\033[0m", $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_renders_no_code_preview_for_a_snippet_with_no_lines(): void
+    {
+        // Issue::fromArray() rebuilds a CodeSnippet from a stored report, where the lines
+        // may not have survived, so an empty block is reachable without a file behind it.
+        $output = $this->consoleWithSnippet([]);
+
+        $this->assertStringNotContainsString('Code Preview:', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_renders_no_code_preview_when_snippets_are_disabled(): void
+    {
+        config(['shieldci.report.show_code_snippets' => false]);
+
+        $this->assertStringNotContainsString('Code Preview:', $this->consoleWithSnippet());
+    }
+
+    /** @test */
+    #[Test]
+    public function it_renders_a_plain_code_preview_in_plain_mode(): void
+    {
+        config(['shieldci.report.snippet_plain_mode' => true]);
+
+        // Decoration is on, so the rest of the report is still coloured. Only the block is
+        // plain, which is the whole point of the key: the lines survive a copy into an
+        // issue tracker even when the terminal can render colour.
+        $output = $this->consoleWithSnippet();
+
+        $this->assertStringContainsString("\033[", $output);
+        $this->assertStringContainsString('  Code Preview:'.PHP_EOL, $output);
+        $this->assertStringContainsString('    44 → '.'        $data = $request->all();', $output);
+        $this->assertStringContainsString('    43   '.'        public function update()', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_leaves_the_code_uncoloured_when_syntax_highlighting_is_off(): void
+    {
+        config(['shieldci.report.snippet_syntax_highlighting' => false]);
+
+        $output = $this->consoleWithSnippet();
+
+        $this->assertStringContainsString('Code Preview:', $output);
+
+        // The gutter still marks the target line; only per token colour goes away.
+        $this->assertStringContainsString("\033[0;90m  43\033[0m", $output);
+        $this->assertStringNotContainsString("\033[0;36mpublic\033[0m", $output);
+        $this->assertStringNotContainsString("\033[0;32m\$request\033[0m", $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_writes_no_escape_sequences_in_a_code_preview_when_decoration_is_off(): void
+    {
+        $this->reporter->setDecorated(false);
+
+        // Both keys are at their defaults, so highlighting is nominally on. isDecorated()
+        // is the outer gate and neither key can talk past it.
+        $output = $this->consoleWithSnippet();
+
+        $this->assertStringContainsString('Code Preview:', $output);
+        $this->assertStringNotContainsString("\033[", $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_colours_a_keyword_inside_a_string_as_part_of_the_string(): void
+    {
+        $output = $this->consoleWithSnippet([
+            43 => '        $label = "the public class";',
+            44 => '        $data = $request->all();',
+        ]);
+
+        // The tokeniser sees one string, so the regex era's habit of recolouring keywords
+        // inside an already yellow literal cannot come back.
+        $this->assertStringContainsString("\033[0;33m\"the public class\"\033[0m", $output);
+        $this->assertStringNotContainsString("\033[0;36mpublic\033[0m", $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_does_not_write_an_escape_sequence_inside_another(): void
+    {
+        // The regex highlighter ran a number pass last, which matched the 0 inside every
+        // "\033[0;32m" it had already written and spliced a second sequence into it.
+        $output = $this->consoleWithSnippet([
+            43 => '        $count = 42;',
+            44 => '        $data = $request->all();',
+        ]);
+
+        $this->assertStringContainsString("\033[0;35m42\033[0m", $output);
+        $this->assertStringNotContainsString("\033[\033[", $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_colours_a_string_that_spans_several_lines(): void
+    {
+        // Tokenising line by line would end the literal at the newline and colour the rest
+        // of the block as code.
+        $output = $this->consoleWithSnippet([
+            43 => '        $sql = "select *',
+            44 => '            from users";',
+            45 => '        $data = $request->all();',
+        ], 45);
+
+        $this->assertStringContainsString("\033[0;33m\"select *\033[0m", $output);
+        $this->assertStringContainsString("\033[0;33m            from users\"\033[0m", $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_renders_one_code_preview_for_issues_sharing_a_location(): void
+    {
+        $location = new Location('app/Http/Controllers/UserController.php', 44);
+        $snippet = new CodeSnippet('app/Http/Controllers/UserController.php', 44, [
+            43 => '        // one',
+            44 => '        $data = $request->all();',
+        ]);
+
+        $results = $this->resultsOf(
+            AnalysisResult::failed('test-analyzer', 'Two findings on one line', [
+                new Issue('First', $location, Severity::High, 'Fix it', [], $snippet),
+                new Issue('Second', $location, Severity::High, 'Fix it too', [], $snippet),
+            ]),
+        );
+
+        $output = $this->reporter->toConsole($this->reporter->generate($results));
+
+        $this->assertSame(1, substr_count($output, 'Code Preview:'));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_renders_a_code_preview_in_streamed_output(): void
+    {
+        $result = AnalysisResult::failed('test-analyzer', 'Mass assignment', [
+            new Issue(
+                'Unguarded update',
+                new Location('app/Http/Controllers/UserController.php', 44),
+                Severity::High,
+                'Whitelist the columns',
+                [],
+                new CodeSnippet('app/Http/Controllers/UserController.php', 44, [
+                    43 => '        $user = auth()->user();',
+                    44 => '        $data = $request->all();',
+                ]),
+            ),
+        ]);
+
+        $output = $this->reporter->streamResult($result, 1, 1, 'Security');
+
+        $this->assertStringContainsString('Code Preview:', $output);
+        $this->assertStringContainsString('44', $output);
+    }
+
+    /**
+     * A console report for one failed issue carrying a snippet.
+     *
+     * @param  array<int, string>|null  $lines
+     */
+    private function consoleWithSnippet(?array $lines = null, int $targetLine = 44): string
+    {
+        $lines ??= [
+            43 => '        public function update()',
+            44 => '        $data = $request->all();',
+        ];
+
+        $results = $this->resultsOf(
+            AnalysisResult::failed('test-analyzer', 'Mass assignment', [
+                new Issue(
+                    'Unguarded update',
+                    new Location('app/Http/Controllers/UserController.php', $targetLine),
+                    Severity::High,
+                    'Whitelist the columns',
+                    [],
+                    new CodeSnippet('app/Http/Controllers/UserController.php', $targetLine, $lines),
+                ),
+            ]),
+        );
+
+        return $this->reporter->toConsole($this->reporter->generate($results));
     }
 
     /** @test */

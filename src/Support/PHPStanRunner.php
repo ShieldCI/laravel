@@ -8,6 +8,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use ShieldCI\AnalyzersCore\Support\PlatformDetector;
 use ShieldCI\Concerns\ReadsConfigArrays;
+use Symfony\Component\Process\PhpExecutableFinder;
 use Symfony\Component\Process\Process;
 
 /**
@@ -143,8 +144,23 @@ class PHPStanRunner
         $this->tempConfigFile = $configFile;
 
         try {
+            // The interpreter is named rather than inherited. vendor/bin/phpstan is a
+            // Composer proxy whose "#!/usr/bin/env php" shebang resolves against PATH, so
+            // executing it directly hands the analysis to whichever php the kernel finds
+            // first instead of the one running this command. A project installed against a
+            // newer PHP than that one then aborts inside Composer's platform_check.php
+            // before PHPStan produces a single line, and the whole run surfaces only as
+            // "produced no analysable output". PHPStan spawns its own parallel workers from
+            // PHP_BINARY, so naming the parent settles the entire process tree.
+            //
+            // find(false) is required: with arguments included the finder appends " -qrr"
+            // under phpdbg, which is not a path. PHP_BINARY covers the SAPIs it declines to
+            // answer for.
+            $php = (new PhpExecutableFinder)->find(false) ?: PHP_BINARY;
+
             // Build PHPStan command
             $command = [
+                $php,
                 $this->basePath.'/vendor/bin/phpstan',
                 'analyse',
                 '--configuration='.$configFile,

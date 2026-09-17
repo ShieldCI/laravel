@@ -93,9 +93,53 @@ class PHPStanRunner
     public function analyze(string|array $paths, int $level = 5, int $timeout = 300, ?string $memoryLimit = null, array $parameters = []): self
     {
         $paths = is_array($paths) ? $paths : [$paths];
+        $includes = $this->resolveIncludes();
 
-        // Generate config with Larastan/Carbon extensions
-        $configFile = $this->generateConfig($level, $parameters);
+        $process = $this->runPhpstan($includes, $paths, $level, $timeout, $memoryLimit, $parameters);
+
+        // PHPStan refuses to start when a config file is included twice, and the extensions
+        // added here are commonly loaded already: Larastan's install instructions put its
+        // extension in the project's phpstan.neon, and phpstan/extension-installer loads
+        // both on its own. A duplicate stays loaded through the project's own setup, so
+        // dropping ours changes nothing about the analysis except that it runs.
+        $loadedElsewhere = $this->includesLoadedElsewhere($process->getErrorOutput(), $includes);
+
+        if ($loadedElsewhere !== []) {
+            $process = $this->runPhpstan(
+                array_values(array_diff($includes, $loadedElsewhere)),
+                $paths,
+                $level,
+                $timeout,
+                $memoryLimit,
+                $parameters
+            );
+        }
+
+        // Parse JSON output
+        $decoded = json_decode($process->getOutput(), true);
+
+        // PathNotFoundException, "No files found to analyse." and fatal errors all
+        // abort before the JSON formatter runs, so there is no report to read and no
+        // per-file evidence of the failure. Record the reason in the report's own
+        // non-file-specific "errors" list rather than handing back an empty report
+        // that reads as clean.
+        $this->result = is_array($decoded)
+            ? $this->toStringKeyedArray($decoded)
+            : ['files' => [], 'errors' => [$this->describeAbortedRun($process)]];
+
+        return $this;
+    }
+
+    /**
+     * Run PHPStan once against a generated config that includes the given files.
+     *
+     * @param  list<string>  $includes
+     * @param  array<string>  $paths
+     * @param  array<string, bool>  $parameters
+     */
+    private function runPhpstan(array $includes, array $paths, int $level, int $timeout, ?string $memoryLimit, array $parameters): Process
+    {
+        $configFile = $this->generateConfig($includes, $level, $parameters);
         $this->tempConfigFile = $configFile;
 
         try {
@@ -126,23 +170,50 @@ class PHPStanRunner
             $process->setTimeout($timeout);
             $process->run();
 
-            // Parse JSON output
-            $decoded = json_decode($process->getOutput(), true);
-
-            // PathNotFoundException, "No files found to analyse." and fatal errors all
-            // abort before the JSON formatter runs, so there is no report to read and no
-            // per-file evidence of the failure. Record the reason in the report's own
-            // non-file-specific "errors" list rather than handing back an empty report
-            // that reads as clean.
-            $this->result = is_array($decoded)
-                ? $this->toStringKeyedArray($decoded)
-                : ['files' => [], 'errors' => [$this->describeAbortedRun($process)]];
+            return $process;
         } finally {
             // Clean up temp config file
             $this->cleanupTempConfig();
         }
+    }
 
-        return $this;
+    /**
+     * The runner's own includes that PHPStan reported as included more than once.
+     *
+     * PHPStan resolves the whole include tree before it starts (nested includes, their
+     * %placeholders%, PHP configs and whatever phpstan/extension-installer adds) and
+     * aborts with every duplicated path listed on stderr, in the same shape since 1.x.
+     * That report is the only complete answer to whether an extension is already loaded,
+     * so it is read here rather than reproduced.
+     *
+     * Only the runner's own includes are returned. A file the project's setup includes
+     * twice by itself is a config plain PHPStan rejects too, and dropping ours cannot
+     * repair it, so that run is left to be reported as the failure it is.
+     *
+     * @param  list<string>  $includes
+     * @return list<string>
+     */
+    private function includesLoadedElsewhere(string $errorOutput, array $includes): array
+    {
+        $header = strpos($errorOutput, 'included multiple times:');
+
+        if ($header === false) {
+            return [];
+        }
+
+        preg_match_all('/^- (.+)$/m', substr($errorOutput, $header), $matches);
+
+        // PHPStan prints paths normalised lexically, which need not match the spelling of
+        // the base path these includes were built from, so both sides are resolved.
+        $reported = array_map(
+            static fn (string $path): string => realpath(trim($path)) ?: trim($path),
+            $matches[1]
+        );
+
+        return array_values(array_filter(
+            $includes,
+            static fn (string $include): bool => in_array(realpath($include) ?: $include, $reported, true)
+        ));
     }
 
     /**
@@ -186,17 +257,15 @@ class PHPStanRunner
     }
 
     /**
-     * Generate a temporary PHPStan configuration file with Larastan extensions.
+     * Config files the generated config includes, in include order.
      *
-     * The generated config includes:
      * - Larastan extension (for Eloquent magic methods, facades, etc.)
      * - Carbon extension (for Carbon types and iterators)
      * - User's existing config if present
+     *
+     * @return list<string>
      */
-    /**
-     * @param  array<string, bool>  $parameters
-     */
-    private function generateConfig(int $level, array $parameters = []): string
+    private function resolveIncludes(): array
     {
         $includes = [];
 
@@ -222,7 +291,18 @@ class PHPStanRunner
             $includes[] = $userConfigDist;
         }
 
-        // The user's config is included above but its level is replaced by ours, so their
+        return $includes;
+    }
+
+    /**
+     * Generate a temporary PHPStan configuration file including the given config files.
+     *
+     * @param  list<string>  $includes
+     * @param  array<string, bool>  $parameters
+     */
+    private function generateConfig(array $includes, int $level, array $parameters): string
+    {
+        // The user's config is among the includes, but its level is replaced by ours, so their
         // ignoreErrors patterns are matched against a level they were never written for. At
         // a lower level most of them stop matching, and PHPStan reports each one in its
         // top-level errors list, which reads as an analysis that did not complete. Nothing

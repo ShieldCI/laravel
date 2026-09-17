@@ -492,6 +492,83 @@ class PHPStanRunnerTest extends TestCase
         $this->assertStringNotContainsString('includes:', $capturedConfig);
     }
 
+    public function test_retries_without_an_extension_the_users_config_already_includes(): void
+    {
+        // Larastan's own install instructions put this include in the project's phpstan.neon,
+        // and PHPStan refuses to start when the generated config includes the file again.
+        $larastan = $this->createExtension('vendor/larastan/larastan/extension.neon');
+        file_put_contents($this->tempDir.'/phpstan.neon', "includes:\n    - ./vendor/larastan/larastan/extension.neon\n");
+
+        $this->createMockPHPStanRejectingDuplicateIncludes(
+            ['larastan/larastan/extension.neon'],
+            "This file is included multiple times:\n- {$larastan}"
+        );
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $this->assertSame([], $runner->getAnalysisErrors());
+        $this->assertCount(1, $runner->getIssues());
+        $this->assertSame(2, $this->getInvocationCount());
+
+        $capturedConfig = $this->getCapturedConfig();
+        $this->assertStringNotContainsString('larastan/larastan/extension.neon', $capturedConfig);
+        $this->assertStringContainsString($this->tempDir.'/phpstan.neon', $capturedConfig);
+    }
+
+    public function test_drops_every_extension_reported_as_duplicated(): void
+    {
+        // phpstan/extension-installer loads both extensions itself, whether or not the
+        // project has a phpstan.neon, so PHPStan reports them together.
+        $larastan = $this->createExtension('vendor/larastan/larastan/extension.neon');
+        $carbon = $this->createExtension('vendor/nesbot/carbon/extension.neon');
+        file_put_contents($this->tempDir.'/phpstan.neon', "parameters:\n    level: 9\n");
+
+        $this->createMockPHPStanRejectingDuplicateIncludes(
+            ['larastan/larastan/extension.neon', 'nesbot/carbon/extension.neon'],
+            "These files are included multiple times:\n- {$larastan}\n- {$carbon}\n\n"
+                ."It can lead to unexpected results. If you're using phpstan/extension-installer, "
+                .'make sure you have removed corresponding neon files from your project config file.'
+        );
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $this->assertSame([], $runner->getAnalysisErrors());
+        $this->assertCount(1, $runner->getIssues());
+        $this->assertSame(2, $this->getInvocationCount());
+
+        $capturedConfig = $this->getCapturedConfig();
+        $this->assertStringNotContainsString('larastan/larastan/extension.neon', $capturedConfig);
+        $this->assertStringNotContainsString('nesbot/carbon/extension.neon', $capturedConfig);
+        $this->assertStringContainsString($this->tempDir.'/phpstan.neon', $capturedConfig);
+    }
+
+    public function test_does_not_retry_when_the_duplicated_file_is_not_one_of_the_runners_includes(): void
+    {
+        // A project config that includes one of its own files twice is rejected by plain
+        // PHPStan too. Dropping the runner's includes cannot repair that, so the run is
+        // reported as the failure it is.
+        $this->createExtension('vendor/larastan/larastan/extension.neon');
+        file_put_contents($this->tempDir.'/phpstan.neon', "parameters:\n    level: 9\n");
+
+        $this->createMockPHPStanRejectingDuplicateIncludes(
+            ['includes:'],
+            "This file is included multiple times:\n- {$this->tempDir}/config/shared.neon"
+        );
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $errors = $runner->getAnalysisErrors();
+
+        $this->assertSame(1, $this->getInvocationCount());
+        $this->assertCount(1, $errors);
+        $this->assertStringContainsString('included multiple times', $errors[0]);
+        $this->assertStringContainsString('config/shared.neon', $errors[0]);
+        $this->assertTrue($runner->getIssues()->isEmpty());
+    }
+
     public function test_config_includes_correct_level(): void
     {
         $this->createMockPHPStanWithConfigCapture();
@@ -1292,6 +1369,107 @@ BASH;
         $this->assertIsString($content, 'Captured config file should be readable');
 
         return $content;
+    }
+
+    /**
+     * Create an empty extension config under the base path and return its path.
+     */
+    private function createExtension(string $relativePath): string
+    {
+        $path = $this->tempDir.'/'.$relativePath;
+
+        if (! is_dir(dirname($path))) {
+            mkdir(dirname($path), 0755, true);
+        }
+
+        file_put_contents($path, "# Extension\n");
+
+        return $path;
+    }
+
+    /**
+     * Create a mock PHPStan script that refuses any config containing one of the needles.
+     *
+     * Mirrors PHPStan's DuplicateIncludedFilesException, which is written to stderr and
+     * ends the run with exit code 1 before anything is analysed. A config containing none
+     * of the needles gets a report with one issue instead. Every invocation is counted and
+     * its config captured, so the capture always belongs to the last run.
+     *
+     * @param  array<string>  $needles
+     */
+    private function createMockPHPStanRejectingDuplicateIncludes(array $needles, string $stderr): void
+    {
+        $vendorBinDir = $this->tempDir.'/vendor/bin';
+
+        if (! is_dir($vendorBinDir)) {
+            mkdir($vendorBinDir, 0755, true);
+        }
+
+        $json = json_encode([
+            'totals' => ['errors' => 0, 'file_errors' => 1],
+            'files' => [
+                '/app/Services/ReportService.php' => [
+                    'messages' => [
+                        ['message' => 'Undefined variable: $report', 'line' => 12, 'ignorable' => true],
+                    ],
+                ],
+            ],
+            'errors' => [],
+        ], JSON_PRETTY_PRINT);
+
+        $capturedConfigPath = $this->tempDir.'/captured_config.neon';
+        $invocationsPath = $this->tempDir.'/invocations.txt';
+        $patterns = implode(' ', array_map(
+            static fn (string $needle): string => '-e '.escapeshellarg($needle),
+            $needles
+        ));
+
+        $script = <<<BASH
+#!/bin/bash
+echo run >> "{$invocationsPath}"
+
+for arg in "\$@"; do
+    case \$arg in
+        --configuration=*)
+            CONFIG_FILE="\${arg#*=}"
+            ;;
+    esac
+done
+
+cp "\$CONFIG_FILE" "{$capturedConfigPath}"
+
+if grep -qF {$patterns} "\$CONFIG_FILE"; then
+cat >&2 <<'EOF'
+{$stderr}
+EOF
+exit 1
+fi
+
+cat <<'EOF'
+{$json}
+EOF
+exit 1
+BASH;
+
+        file_put_contents($vendorBinDir.'/phpstan', $script);
+        chmod($vendorBinDir.'/phpstan', 0755);
+    }
+
+    /**
+     * How many times the mock PHPStan script has been run.
+     */
+    private function getInvocationCount(): int
+    {
+        $path = $this->tempDir.'/invocations.txt';
+
+        if (! file_exists($path)) {
+            return 0;
+        }
+
+        $content = file_get_contents($path);
+        $this->assertIsString($content, 'Invocation log should be readable');
+
+        return substr_count($content, "run\n");
     }
 
     /**

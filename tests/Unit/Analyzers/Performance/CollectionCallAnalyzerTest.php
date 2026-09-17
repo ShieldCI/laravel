@@ -12,9 +12,10 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 /**
- * The analyzer drives a real PHPStan process, so these tests stand up an executable
- * stub at vendor/bin/phpstan that prints a canned report. That runs the real JSON
- * parsing and the real matching, which a mocked support object never did.
+ * The analyzer drives a real PHPStan process, so these tests stand up a stub at
+ * vendor/bin/phpstan that prints a canned report. That runs the real JSON parsing and the
+ * real matching, which a mocked support object never did. The runner names the interpreter
+ * and hands it the stub as a script, so the stub is PHP rather than shell.
  */
 class CollectionCallAnalyzerTest extends AnalyzerTestCase
 {
@@ -289,22 +290,25 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('base path could not be determined', $result->getMessage());
     }
 
-    public function test_reports_an_error_when_the_phpstan_binary_cannot_be_executed(): void
+    public function test_reports_the_fatal_from_a_child_that_dies_before_writing_a_report(): void
     {
-        $tempDir = $this->createStubbedProject();
-
-        // isAvailable() only proves the file is there. A present but unrunnable binary
-        // does not throw: the launch fails and the run lands on the aborted-run path.
-        // The exact exit code is left unasserted because it is environment-dependent
-        // (126 where a shell reports "not executable", 127 where it reports "not found").
-        $this->writePHPStanStub($tempDir, "#!/bin/bash\necho hi\n");
-        chmod($tempDir.'/vendor/bin/phpstan', 0644);
-
-        $result = $this->runAnalyzer($tempDir, ['app']);
+        // Replaces a test that made the stub unlaunchable by dropping its exec bit. The
+        // runner names the interpreter now, so neither the exec bit nor the first line
+        // decides whether the child starts, and that premise is gone. What is worth
+        // pinning is the shape an interpreter mismatch produced: a php that the project
+        // was not installed for, Composer's platform_check.php aborting the run, a fatal
+        // on stderr, nothing on stdout.
+        $result = $this->analyzeAbortedRun(
+            'PHP Fatal error:  Uncaught RuntimeException: Composer detected issues in your '
+                .'platform: Your Composer dependencies require a PHP version ">= 8.4.0". '
+                .'You are running 8.3.21. in /tmp/project/vendor/composer/platform_check.php:22',
+            255
+        );
 
         $this->assertError($result);
         $this->assertStringContainsString('PHPStan produced no analysable output', $result->getMessage());
-        $this->assertStringContainsString('exit code', $result->getMessage());
+        $this->assertStringContainsString('exit code 255', $result->getMessage());
+        $this->assertStringContainsString('Composer detected issues in your platform', $result->getMessage());
     }
 
     public function test_reports_an_error_when_the_run_exceeds_the_configured_timeout(): void
@@ -315,7 +319,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         config(['shieldci.timeout' => 1]);
 
         $tempDir = $this->createStubbedProject();
-        $this->writePHPStanStub($tempDir, "#!/bin/bash\nsleep 10\n");
+        $this->writePHPStanStub($tempDir, "sleep(10);\n");
 
         $result = $this->runAnalyzer($tempDir, ['app']);
 
@@ -374,9 +378,9 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $tempDir = $this->createStubbedProject();
 
         $this->writePHPStanStub($tempDir, sprintf(
-            "#!/bin/bash\nprintf '%%s' %s\nprintf '%%s' %s >&2\nexit %d\n",
-            escapeshellarg($stdout),
-            escapeshellarg($stderr),
+            "fwrite(STDOUT, %s);\nfwrite(STDERR, %s);\nexit(%d);\n",
+            var_export($stdout, true),
+            var_export($stderr, true),
             $exitCode
         ));
 
@@ -393,9 +397,15 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $tempDir = $this->createStubbedProject();
         $capturePath = $tempDir.'/captured_args.txt';
 
+        // array_slice($argv, 1) drops the stub's own path, exactly as "$@" dropped $0.
         $this->writePHPStanStub($tempDir, sprintf(
-            "#!/bin/bash\nprintf '%%s\\n' \"$@\" > %s\necho '{\"totals\":{\"errors\":0,\"file_errors\":0},\"files\":{},\"errors\":[]}'\n",
-            escapeshellarg($capturePath)
+            <<<'PHP'
+            file_put_contents(%s, implode("\n", array_slice($argv, 1))."\n");
+
+            echo '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}';
+
+            PHP,
+            var_export($capturePath, true)
         ));
 
         $this->runAnalyzer($tempDir, $paths);
@@ -432,11 +442,10 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         return $this->createTempDirectory($files);
     }
 
-    private function writePHPStanStub(string $tempDir, string $script): void
+    private function writePHPStanStub(string $tempDir, string $php): void
     {
         @mkdir($tempDir.'/vendor/bin', 0755, true);
-        file_put_contents($tempDir.'/vendor/bin/phpstan', $script);
-        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+        file_put_contents($tempDir.'/vendor/bin/phpstan', "<?php\n\n".$php);
     }
 
     /**
@@ -493,18 +502,16 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             $files[$file]['messages'][] = $entry;
         }
 
-        $json = json_encode([
+        $json = (string) json_encode([
             'totals' => ['errors' => count($analysisErrors), 'file_errors' => count($issues)],
             'files' => $files,
             'errors' => array_values($analysisErrors),
         ], JSON_PRETTY_PRINT);
 
-        return <<<BASH
-        #!/bin/bash
-        cat <<'EOF'
-        {$json}
-        EOF
-        exit {$exitCode}
-        BASH;
+        return sprintf(
+            "echo %s;\nexit(%d);\n",
+            var_export($json, true),
+            $exitCode
+        );
     }
 }

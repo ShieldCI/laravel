@@ -85,12 +85,7 @@ PHP;
         $tempDir = $this->createTempDirectory(['app/Services/ValidService.php' => $code]);
 
         // Create mock PHPStan that returns no issues
-        @mkdir($tempDir.'/vendor/bin', 0755, true);
-        file_put_contents(
-            $tempDir.'/vendor/bin/phpstan',
-            $this->createMockPHPStanScript([])
-        );
-        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+        $this->writePHPStanStub($tempDir, $this->createMockPHPStanScript([]));
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -121,18 +116,13 @@ PHP;
         $filePath = $tempDir.'/app/Services/InvalidService.php';
 
         // Create mock PHPStan that returns undefined variable issue
-        @mkdir($tempDir.'/vendor/bin', 0755, true);
-        file_put_contents(
-            $tempDir.'/vendor/bin/phpstan',
-            $this->createMockPHPStanScript([
-                [
-                    'file' => $filePath,
-                    'line' => 9,
-                    'message' => 'Undefined variable: $undefinedVariable',
-                ],
-            ])
-        );
-        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+        $this->writePHPStanStub($tempDir, $this->createMockPHPStanScript([
+            [
+                'file' => $filePath,
+                'line' => 9,
+                'message' => 'Undefined variable: $undefinedVariable',
+            ],
+        ]));
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -165,18 +155,13 @@ PHP;
         $filePath = $tempDir.'/app/Services/UserService.php';
 
         // Create mock PHPStan that returns method call issue
-        @mkdir($tempDir.'/vendor/bin', 0755, true);
-        file_put_contents(
-            $tempDir.'/vendor/bin/phpstan',
-            $this->createMockPHPStanScript([
-                [
-                    'file' => $filePath,
-                    'line' => 10,
-                    'message' => 'Call to an undefined method stdClass::undefinedMethod().',
-                ],
-            ])
-        );
-        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+        $this->writePHPStanStub($tempDir, $this->createMockPHPStanScript([
+            [
+                'file' => $filePath,
+                'line' => 10,
+                'message' => 'Call to an undefined method stdClass::undefinedMethod().',
+            ],
+        ]));
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -209,18 +194,13 @@ PHP;
         $filePath = $tempDir.'/app/Services/CalculatorService.php';
 
         // Create mock PHPStan that returns missing return issue
-        @mkdir($tempDir.'/vendor/bin', 0755, true);
-        file_put_contents(
-            $tempDir.'/vendor/bin/phpstan',
-            $this->createMockPHPStanScript([
-                [
-                    'file' => $filePath,
-                    'line' => 8,
-                    'message' => 'Method App\Services\CalculatorService::calculate() should return int but return statement is missing.',
-                ],
-            ])
-        );
-        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+        $this->writePHPStanStub($tempDir, $this->createMockPHPStanScript([
+            [
+                'file' => $filePath,
+                'line' => 8,
+                'message' => 'Method App\Services\CalculatorService::calculate() should return int but return statement is missing.',
+            ],
+        ]));
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -258,23 +238,18 @@ PHP;
         $filePath = $tempDir.'/app/Services/ServiceWithIssues.php';
 
         // Create mock PHPStan with both issues
-        @mkdir($tempDir.'/vendor/bin', 0755, true);
-        file_put_contents(
-            $tempDir.'/vendor/bin/phpstan',
-            $this->createMockPHPStanScript([
-                [
-                    'file' => $filePath,
-                    'line' => 9,
-                    'message' => 'Undefined variable: $undefinedVariable',
-                ],
-                [
-                    'file' => $filePath,
-                    'line' => 13,
-                    'message' => 'Method should return int but return statement is missing.',
-                ],
-            ])
-        );
-        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+        $this->writePHPStanStub($tempDir, $this->createMockPHPStanScript([
+            [
+                'file' => $filePath,
+                'line' => 9,
+                'message' => 'Undefined variable: $undefinedVariable',
+            ],
+            [
+                'file' => $filePath,
+                'line' => 13,
+                'message' => 'Method should return int but return statement is missing.',
+            ],
+        ]));
 
         // Disable undefined-variable category
         $analyzer = $this->createAnalyzer([
@@ -325,23 +300,18 @@ PHP;
         $filePath = $tempDir.'/app/Services/ServiceWithMultipleIssues.php';
 
         // Create mock PHPStan with both issues
-        @mkdir($tempDir.'/vendor/bin', 0755, true);
-        file_put_contents(
-            $tempDir.'/vendor/bin/phpstan',
-            $this->createMockPHPStanScript([
-                [
-                    'file' => $filePath,
-                    'line' => 9,
-                    'message' => 'Undefined variable: $undefinedVariable',
-                ],
-                [
-                    'file' => $filePath,
-                    'line' => 15,
-                    'message' => 'Call to an undefined method stdClass::undefinedMethod().',
-                ],
-            ])
-        );
-        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+        $this->writePHPStanStub($tempDir, $this->createMockPHPStanScript([
+            [
+                'file' => $filePath,
+                'line' => 9,
+                'message' => 'Undefined variable: $undefinedVariable',
+            ],
+            [
+                'file' => $filePath,
+                'line' => 15,
+                'message' => 'Call to an undefined method stdClass::undefinedMethod().',
+            ],
+        ]));
 
         // Only enable undefined-variable category
         $analyzer = $this->createAnalyzer([
@@ -400,12 +370,7 @@ PHP;
         $tempDir = $this->createTempDirectory(['app/Services/StrictService.php' => $code]);
 
         // Create mock PHPStan (no issues for this test - just verify level config)
-        @mkdir($tempDir.'/vendor/bin', 0755, true);
-        file_put_contents(
-            $tempDir.'/vendor/bin/phpstan',
-            $this->createMockPHPStanScript([])
-        );
-        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+        $this->writePHPStanStub($tempDir, $this->createMockPHPStanScript([]));
 
         // Use level 8 (stricter)
         $analyzer = $this->createAnalyzer([
@@ -458,18 +423,13 @@ PHP;
         $appFilePath = $tempDir.'/app/Services/AppService.php';
 
         // Create mock PHPStan with only app issues (not src issues)
-        @mkdir($tempDir.'/vendor/bin', 0755, true);
-        file_put_contents(
-            $tempDir.'/vendor/bin/phpstan',
-            $this->createMockPHPStanScript([
-                [
-                    'file' => $appFilePath,
-                    'line' => 9,
-                    'message' => 'Undefined variable: $undefinedVariable',
-                ],
-            ])
-        );
-        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+        $this->writePHPStanStub($tempDir, $this->createMockPHPStanScript([
+            [
+                'file' => $appFilePath,
+                'line' => 9,
+                'message' => 'Undefined variable: $undefinedVariable',
+            ],
+        ]));
 
         // Only analyze 'app' directory
         $analyzer = $this->createAnalyzer([
@@ -542,18 +502,13 @@ PHP;
         $tempDir = $this->createTempDirectory(['app/Models/Deal.php' => $code]);
         $filePath = $tempDir.'/app/Models/Deal.php';
 
-        @mkdir($tempDir.'/vendor/bin', 0755, true);
-        file_put_contents(
-            $tempDir.'/vendor/bin/phpstan',
-            $this->createMockPHPStanScript([
-                [
-                    'file' => $filePath,
-                    'line' => 10,
-                    'message' => 'Call to an undefined method Illuminate\Database\Eloquent\Builder<Illuminate\Database\Eloquent\Model>::sent().',
-                ],
-            ])
-        );
-        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+        $this->writePHPStanStub($tempDir, $this->createMockPHPStanScript([
+            [
+                'file' => $filePath,
+                'line' => 10,
+                'message' => 'Call to an undefined method Illuminate\Database\Eloquent\Builder<Illuminate\Database\Eloquent\Model>::sent().',
+            ],
+        ]));
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -593,15 +548,10 @@ PHP;
     {
         $tempDir = $this->createTempDirectory(['app/Services/ValidService.php' => "<?php\nclass ValidService {}"]);
 
-        @mkdir($tempDir.'/vendor/bin', 0755, true);
         // Sleeps 2s — exceeds the 1s timeout so the process is killed on time.
         // If string '1' fell back to the hardcoded 300 (the bug), the mock would
         // complete before the timeout and the result would be passed, not error.
-        file_put_contents(
-            $tempDir.'/vendor/bin/phpstan',
-            "#!/bin/bash\nsleep 2\necho '{}'"
-        );
-        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+        $this->writePHPStanStub($tempDir, "sleep(2);\necho '{}';\n");
 
         // env() returns strings, so SHIELDCI_TIMEOUT=600 arrives as '1' here.
         // is_int('1') = false → without the is_numeric fix it falls back to 300.
@@ -629,15 +579,17 @@ PHP;
         $tempDir = $this->createTempDirectory(['app/Services/ValidService.php' => "<?php\nclass ValidService {}"]);
         $argsFile = $tempDir.'/captured_args.txt';
 
-        @mkdir($tempDir.'/vendor/bin', 0755, true);
         // Records the arguments PHPStan was invoked with, then returns empty JSON.
-        $script = <<<BASH
-#!/bin/bash
-printf '%s\\n' "\$@" > "{$argsFile}"
-echo '{"files":[]}'
-BASH;
-        file_put_contents($tempDir.'/vendor/bin/phpstan', $script);
-        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+        // array_slice($argv, 1) drops the stub's own path, exactly as "$@" dropped $0.
+        $this->writePHPStanStub($tempDir, sprintf(
+            <<<'PHP'
+            file_put_contents(%s, implode("\n", array_slice($argv, 1))."\n");
+
+            echo '{"files":[]}';
+
+            PHP,
+            var_export($argsFile, true)
+        ));
 
         $configRepo = new Repository([
             'shieldci' => [
@@ -1192,18 +1144,27 @@ PHP;
             $prepared[] = $issue;
         }
 
-        @mkdir($tempDir.'/vendor/bin', 0755, true);
-        file_put_contents(
-            $tempDir.'/vendor/bin/phpstan',
-            $this->createMockPHPStanScript($prepared, $analysisErrors)
-        );
-        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+        $this->writePHPStanStub($tempDir, $this->createMockPHPStanScript($prepared, $analysisErrors));
 
         $analyzer = $this->createAnalyzer($config);
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['app']);
 
         return $analyzer->analyze();
+    }
+
+    /**
+     * Write the stub PHPStan the runner will launch.
+     *
+     * PHPStanRunner names the PHP interpreter and hands it this path as the script to run,
+     * so the stub is a PHP file: a shell script would be parsed as PHP and leave a syntax
+     * error where the report belongs. Nothing execs the file, so no mode is set.
+     */
+    private function writePHPStanStub(string $tempDir, string $php): void
+    {
+        @mkdir($tempDir.'/vendor/bin', 0755, true);
+
+        file_put_contents($tempDir.'/vendor/bin/phpstan', "<?php\n\n".$php);
     }
 
     /**
@@ -1252,14 +1213,10 @@ PHP;
             'errors' => array_values($analysisErrors),
         ];
 
-        $json = json_encode($output, JSON_PRETTY_PRINT);
-
-        return <<<BASH
-#!/bin/bash
-cat <<'EOF'
-{$json}
-EOF
-BASH;
+        return sprintf(
+            "echo %s;\n",
+            var_export((string) json_encode($output, JSON_PRETTY_PRINT), true)
+        );
     }
 
     /**
@@ -1276,13 +1233,15 @@ BASH;
 
         $argumentLog = $tempDir.'/phpstan-arguments.txt';
 
-        @mkdir($tempDir.'/vendor/bin', 0755, true);
-        file_put_contents($tempDir.'/vendor/bin/phpstan', <<<BASH
-#!/bin/bash
-printf '%s\n' "\$@" > '{$argumentLog}'
-echo '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}'
-BASH);
-        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+        $this->writePHPStanStub($tempDir, sprintf(
+            <<<'PHP'
+            file_put_contents(%s, implode("\n", array_slice($argv, 1))."\n");
+
+            echo '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}';
+
+            PHP,
+            var_export($argumentLog, true)
+        ));
 
         $analyzer = new PHPStanAnalyzer(new Repository(['shieldci' => $shieldci]));
         $analyzer->setBasePath($tempDir);
@@ -1314,20 +1273,13 @@ PHP;
 
         $tempDir = $this->createTempDirectory(['app/Services/ExampleService.php' => $code]);
 
-        $script = <<<BASH
-#!/bin/bash
-cat <<'STDOUT_EOF'
-{$stdout}
-STDOUT_EOF
-cat >&2 <<'STDERR_EOF'
-{$stderr}
-STDERR_EOF
-exit {$exitCode}
-BASH;
-
-        @mkdir($tempDir.'/vendor/bin', 0755, true);
-        file_put_contents($tempDir.'/vendor/bin/phpstan', $script);
-        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+        // The appended newlines stand in for the ones the heredocs used to add.
+        $this->writePHPStanStub($tempDir, sprintf(
+            "fwrite(STDOUT, %s);\nfwrite(STDERR, %s);\nexit(%d);\n",
+            var_export($stdout."\n", true),
+            var_export($stderr."\n", true),
+            $exitCode
+        ));
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);

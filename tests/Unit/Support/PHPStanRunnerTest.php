@@ -1021,17 +1021,8 @@ class PHPStanRunnerTest extends TestCase
 
     public function test_handles_invalid_json_output_from_phpstan(): void
     {
-        $vendorBinDir = $this->tempDir.'/vendor/bin';
-        mkdir($vendorBinDir, 0755, true);
-
         // Create a mock PHPStan that outputs invalid JSON
-        $script = <<<'BASH'
-#!/bin/bash
-echo "This is not valid JSON"
-BASH;
-
-        file_put_contents($vendorBinDir.'/phpstan', $script);
-        chmod($vendorBinDir.'/phpstan', 0755);
+        $this->writePHPStanStub("echo \"This is not valid JSON\\n\";\n");
 
         $runner = new PHPStanRunner($this->tempDir);
         $runner->analyze(['app']);
@@ -1159,12 +1150,8 @@ BASH;
 
     public function test_analyze_respects_custom_timeout(): void
     {
-        $vendorBinDir = $this->tempDir.'/vendor/bin';
-        mkdir($vendorBinDir, 0755, true);
-
-        // Mock that sleeps 3 seconds — longer than our 1s timeout
-        file_put_contents($vendorBinDir.'/phpstan', "#!/bin/bash\nsleep 3\n");
-        chmod($vendorBinDir.'/phpstan', 0755);
+        // Mock that sleeps 3 seconds, longer than our 1s timeout
+        $this->writePHPStanStub("sleep(3);\n");
 
         $this->expectException(ProcessTimedOutException::class);
 
@@ -1202,6 +1189,60 @@ BASH;
         $this->assertStringNotContainsString('--memory-limit', $this->getCapturedArgs());
     }
 
+    /**
+     * The subprocess runs under the interpreter that is running this analysis.
+     *
+     * vendor/bin/phpstan is a Composer proxy whose "#!/usr/bin/env php" shebang resolves
+     * against PATH, so executing it directly handed the analysis to whichever php came
+     * first there. Against a project installed for a newer PHP, Composer's platform_check.php
+     * then killed the child before it analysed anything and the run surfaced only as
+     * "produced no analysable output (exit code 255)". Reporting its own PHP_BINARY back
+     * through the report is the only way the stub can say which interpreter ran it.
+     *
+     * The stub carries no shebang and is not executable, so neither its first line nor its
+     * mode takes any part in the decision.
+     */
+    public function test_analyze_runs_phpstan_under_the_interpreter_running_this_process(): void
+    {
+        $this->writePHPStanStub(<<<'PHP'
+        echo json_encode([
+            'totals' => ['errors' => 0, 'file_errors' => 1],
+            'files' => [
+                '/app/Interpreter.php' => [
+                    'messages' => [['message' => PHP_BINARY, 'line' => 1, 'ignorable' => true]],
+                ],
+            ],
+            'errors' => [],
+        ]);
+
+        PHP);
+
+        $stub = $this->tempDir.'/vendor/bin/phpstan';
+        chmod($stub, 0644);
+        $this->assertFalse(is_executable($stub), 'The stub must not be executable for this test to mean anything');
+
+        // PhpExecutableFinder answers from the PHP_BINARY environment variable before it
+        // looks at the running SAPI, so a shell that exports one would be deciding this
+        // assertion instead of the runner. ComposerValidatorTest empties PATH for the same
+        // reason. Full paths, not basenames: the reported bug was two binaries both called
+        // "php".
+        $saved = getenv('PHP_BINARY');
+        putenv('PHP_BINARY');
+
+        $runner = new PHPStanRunner($this->tempDir);
+
+        try {
+            $runner->analyze(['app']);
+        } finally {
+            putenv($saved === false ? 'PHP_BINARY' : 'PHP_BINARY='.$saved);
+        }
+
+        $issue = $runner->getIssues()->first();
+
+        $this->assertNotNull($issue);
+        $this->assertSame(PHP_BINARY, $issue['message']);
+    }
+
     public function test_is_valid_memory_limit_accepts_php_ini_formats(): void
     {
         $this->assertTrue(PHPStanRunner::isValidMemoryLimit('512M'));
@@ -1215,6 +1256,26 @@ BASH;
         $this->assertFalse(PHPStanRunner::isValidMemoryLimit('not-a-size'));
         $this->assertFalse(PHPStanRunner::isValidMemoryLimit('512MB'));
         $this->assertFalse(PHPStanRunner::isValidMemoryLimit('1.5G'));
+    }
+
+    /**
+     * Write the stub PHPStan the runner will launch.
+     *
+     * The runner names the PHP interpreter and hands it this path as the script to run, so
+     * the stub is a PHP file: a shell script would be parsed as PHP and leave a syntax error
+     * where the report belongs. Nothing execs the file, so no mode is set. On macOS the first
+     * execution of a freshly written executable blocks on a Gatekeeper scan, ~3.9s wall
+     * against 0.02s CPU (#364), and this file no longer has a first execution.
+     */
+    private function writePHPStanStub(string $php): void
+    {
+        $vendorBinDir = $this->tempDir.'/vendor/bin';
+
+        if (! is_dir($vendorBinDir)) {
+            mkdir($vendorBinDir, 0755, true);
+        }
+
+        file_put_contents($vendorBinDir.'/phpstan', "<?php\n\n".$php);
     }
 
     /**
@@ -1232,12 +1293,6 @@ BASH;
      */
     private function createMockPHPStan(array $issues, array $analysisErrors = [], int $exitCode = 0): void
     {
-        $vendorBinDir = $this->tempDir.'/vendor/bin';
-
-        if (! is_dir($vendorBinDir)) {
-            mkdir($vendorBinDir, 0755, true);
-        }
-
         $files = [];
         foreach ($issues as $issue) {
             $file = $issue['file'];
@@ -1271,18 +1326,11 @@ BASH;
             'errors' => array_values($analysisErrors),
         ];
 
-        $json = json_encode($output, JSON_PRETTY_PRINT);
-
-        $script = <<<BASH
-#!/bin/bash
-cat <<'EOF'
-{$json}
-EOF
-exit {$exitCode}
-BASH;
-
-        file_put_contents($vendorBinDir.'/phpstan', $script);
-        chmod($vendorBinDir.'/phpstan', 0755);
+        $this->writePHPStanStub(sprintf(
+            "echo %s;\nexit(%d);\n",
+            var_export((string) json_encode($output, JSON_PRETTY_PRINT), true),
+            $exitCode
+        ));
     }
 
     /**
@@ -1294,22 +1342,13 @@ BASH;
      */
     private function createFailingMockPHPStan(string $stderr, int $exitCode = 1): void
     {
-        $vendorBinDir = $this->tempDir.'/vendor/bin';
-
-        if (! is_dir($vendorBinDir)) {
-            mkdir($vendorBinDir, 0755, true);
-        }
-
-        $script = <<<BASH
-#!/bin/bash
-cat >&2 <<'EOF'
-{$stderr}
-EOF
-exit {$exitCode}
-BASH;
-
-        file_put_contents($vendorBinDir.'/phpstan', $script);
-        chmod($vendorBinDir.'/phpstan', 0755);
+        // The appended newline stands in for the one the heredoc used to add, so what
+        // reaches condenseOutput() is byte for byte what it saw before.
+        $this->writePHPStanStub(sprintf(
+            "fwrite(STDERR, %s);\nexit(%d);\n",
+            var_export($stderr."\n", true),
+            $exitCode
+        ));
     }
 
     /**
@@ -1317,9 +1356,6 @@ BASH;
      */
     private function createMockPHPStanWithConfigCapture(): void
     {
-        $vendorBinDir = $this->tempDir.'/vendor/bin';
-        mkdir($vendorBinDir, 0755, true);
-
         $output = [
             'totals' => [
                 'errors' => 0,
@@ -1329,32 +1365,28 @@ BASH;
             'errors' => [],
         ];
 
-        $json = json_encode($output, JSON_PRETTY_PRINT);
-        $capturedConfigPath = $this->tempDir.'/captured_config.neon';
+        // Stub that captures the config file before printing the report. The is_file()
+        // guard is load bearing: the CLI SAPI writes warnings to stdout, where one would
+        // land in the middle of the JSON and turn a config assertion into an unreadable
+        // "no analysable output".
+        $this->writePHPStanStub(sprintf(
+            <<<'PHP'
+            foreach (array_slice($argv, 1) as $arg) {
+                if (str_starts_with($arg, '--configuration=')) {
+                    $config = substr($arg, strlen('--configuration='));
 
-        // Script that captures the config file content before outputting JSON
-        $script = <<<BASH
-#!/bin/bash
+                    if (is_file($config)) {
+                        copy($config, %s);
+                    }
+                }
+            }
 
-# Parse the --configuration flag to get the config file path
-for arg in "\$@"; do
-    case \$arg in
-        --configuration=*)
-            CONFIG_FILE="\${arg#*=}"
-            if [ -f "\$CONFIG_FILE" ]; then
-                cp "\$CONFIG_FILE" "{$capturedConfigPath}"
-            fi
-            ;;
-    esac
-done
+            echo %s;
 
-cat <<'EOF'
-{$json}
-EOF
-BASH;
-
-        file_put_contents($vendorBinDir.'/phpstan', $script);
-        chmod($vendorBinDir.'/phpstan', 0755);
+            PHP,
+            var_export($this->tempDir.'/captured_config.neon', true),
+            var_export((string) json_encode($output, JSON_PRETTY_PRINT), true)
+        ));
     }
 
     /**
@@ -1399,13 +1431,7 @@ BASH;
      */
     private function createMockPHPStanRejectingDuplicateIncludes(array $needles, string $stderr): void
     {
-        $vendorBinDir = $this->tempDir.'/vendor/bin';
-
-        if (! is_dir($vendorBinDir)) {
-            mkdir($vendorBinDir, 0755, true);
-        }
-
-        $json = json_encode([
+        $json = (string) json_encode([
             'totals' => ['errors' => 0, 'file_errors' => 1],
             'files' => [
                 '/app/Services/ReportService.php' => [
@@ -1417,42 +1443,45 @@ BASH;
             'errors' => [],
         ], JSON_PRETTY_PRINT);
 
-        $capturedConfigPath = $this->tempDir.'/captured_config.neon';
-        $invocationsPath = $this->tempDir.'/invocations.txt';
-        $patterns = implode(' ', array_map(
-            static fn (string $needle): string => '-e '.escapeshellarg($needle),
-            $needles
+        // str_contains() is what grep -qF was doing: a fixed substring test, not a pattern
+        // match. Both arms exit 1, because PHPStan does too whenever it reports anything.
+        $this->writePHPStanStub(sprintf(
+            <<<'PHP'
+            file_put_contents(%s, "run\n", FILE_APPEND);
+
+            $config = '';
+
+            foreach (array_slice($argv, 1) as $arg) {
+                if (str_starts_with($arg, '--configuration=')) {
+                    $config = substr($arg, strlen('--configuration='));
+                }
+            }
+
+            $contents = '';
+
+            if (is_file($config)) {
+                copy($config, %s);
+                $contents = (string) file_get_contents($config);
+            }
+
+            foreach (%s as $needle) {
+                if (str_contains($contents, $needle)) {
+                    fwrite(STDERR, %s);
+
+                    exit(1);
+                }
+            }
+
+            echo %s;
+            exit(1);
+
+            PHP,
+            var_export($this->tempDir.'/invocations.txt', true),
+            var_export($this->tempDir.'/captured_config.neon', true),
+            var_export($needles, true),
+            var_export($stderr."\n", true),
+            var_export($json, true)
         ));
-
-        $script = <<<BASH
-#!/bin/bash
-echo run >> "{$invocationsPath}"
-
-for arg in "\$@"; do
-    case \$arg in
-        --configuration=*)
-            CONFIG_FILE="\${arg#*=}"
-            ;;
-    esac
-done
-
-cp "\$CONFIG_FILE" "{$capturedConfigPath}"
-
-if grep -qF {$patterns} "\$CONFIG_FILE"; then
-cat >&2 <<'EOF'
-{$stderr}
-EOF
-exit 1
-fi
-
-cat <<'EOF'
-{$json}
-EOF
-exit 1
-BASH;
-
-        file_put_contents($vendorBinDir.'/phpstan', $script);
-        chmod($vendorBinDir.'/phpstan', 0755);
     }
 
     /**
@@ -1477,9 +1506,6 @@ BASH;
      */
     private function createMockPHPStanWithArgCapture(): void
     {
-        $vendorBinDir = $this->tempDir.'/vendor/bin';
-        mkdir($vendorBinDir, 0755, true);
-
         $output = [
             'totals' => [
                 'errors' => 0,
@@ -1489,21 +1515,18 @@ BASH;
             'errors' => [],
         ];
 
-        $json = json_encode($output, JSON_PRETTY_PRINT);
-        $capturedArgsPath = $this->tempDir.'/captured_args.txt';
+        // Stub that records each argument on its own line, then prints the report.
+        // array_slice($argv, 1) drops the stub's own path, exactly as "$@" dropped $0.
+        $this->writePHPStanStub(sprintf(
+            <<<'PHP'
+            file_put_contents(%s, implode("\n", array_slice($argv, 1))."\n");
 
-        // Script that records each argument on its own line, then outputs JSON.
-        $script = <<<BASH
-#!/bin/bash
-printf '%s\\n' "\$@" > "{$capturedArgsPath}"
+            echo %s;
 
-cat <<'EOF'
-{$json}
-EOF
-BASH;
-
-        file_put_contents($vendorBinDir.'/phpstan', $script);
-        chmod($vendorBinDir.'/phpstan', 0755);
+            PHP,
+            var_export($this->tempDir.'/captured_args.txt', true),
+            var_export((string) json_encode($output, JSON_PRETTY_PRINT), true)
+        ));
     }
 
     /**

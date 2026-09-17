@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.15.0
+
+### Added
+- `report.snippet_plain_mode` and `report.snippet_syntax_highlighting` now govern a real code preview rendered under each console finding (#380)
+
+### Changed
+- `fat-model`, `nesting-depth`, `method-length`, `helper-function-abuse` and `env-example-documented` warn instead of failing a default `fail_on: high` build, and `authentication-authorization` reports an unprotected route as Critical, after every analyzer's severity metadata was audited against the findings it emits (#347)
+- `php-side-filtering` reports High rather than Critical, since Critical is reserved for security exposure, data loss, or an app that cannot serve requests (#349)
+- `shield:analyze` exits 1 when an analyzer could not complete; add the analyzer id to `dont_report` in `config/shieldci.php` to waive one (#351)
+- Requires `guzzlehttp/guzzle ^7.0|^8.0` (was `^7.0`), so installing on a Laravel 13 app no longer fails or downgrades the app's guzzle (#359)
+- A malformed config value is now a suppressible finding rather than an analysis error, and a missing prerequisite reports skipped, across `cache-driver`, `queue-driver`, `session-driver`, `mysql-single-server`, `view-caching`, `config-caching`, `collection-call` and `phpstan` (#362)
+- Requires `shieldci/analyzers-core ^2.3` (was `^2.1`) for the config-location helpers the unpublished-config fixes now resolve through (#373)
+
+### Fixed
+- `logic-in-blade` flags `file_get_contents()` as an API call only when the argument spells out a remote target, so `{!! file_get_contents(public_path('img/logo.svg')) !!}` is no longer reported (#341)
+- `phpstan` reports an error instead of a clean pass when a run does not finish, such as an internal error or a configured path that does not exist (#342)
+- `collection-call` works in an installed package at all: its shipped config included Larastan by a path resolving inside `vendor/shieldci/laravel/vendor`, so PHPStan aborted and the analyzer reported a pass on every real install (#345)
+- `phpstan` no longer reports the Larastan 2.9.0 env-call finding twice, once under Other PHPStan Issues and once through `env-call-outside-config` (#350)
+- `phpstan` no longer reads the unmatched ignore patterns in a project's own `phpstan.neon` as an analysis that did not complete (#354)
+- `cache-driver` assesses the driver when `config/cache.php` has not been published, instead of erroring out on a stock Laravel 11+ skeleton (#356)
+- Eight analyzers omit the issue location when the config file they report on is not published, rather than pointing into a file merged from the framework or fabricating line 1 (#361)
+- The exit-code gate now sees a failure that names no issue, waives `dont_report` analyzers under `fail_threshold`, and falls back to the documented default on an unrecognised `fail_on` (#363)
+- `shield:baseline` no longer waives an analyzer that could not run by writing it into the baseline's `dont_report`, and names the analyzers the baseline does not cover (#365)
+- A failed analyzer's exception class and stack trace survive into the JSON report, and `timeToFix` reaches `--format=json` (#366)
+- `shieldci.report.format` and `SHIELDCI_REPORT_FORMAT` take effect: `--format` declared a default of its own, so the config fallback behind it was unreachable (#370)
+- `shield:analyze` writes no ANSI escapes to a piped or redirected run, and honours `--no-ansi`, `NO_COLOR` and `FORCE_COLOR` throughout rather than for a handful of messages (#372)
+- `shield:analyze --format=json` keeps advisories such as a baseline notice or an unmapped `APP_ENV` on stderr, so the report on stdout stays parseable (#374)
+- `--output` writes to the path it validated, resolved against `base_path()`, and always as JSON rather than console art (#379)
+- An empty or missing `shieldci.paths.analyze` falls back to the shipped paths, instead of leaving 108 file analyzers scanning nothing and reporting a pass (#382)
+
 ## v1.14.0
 
 ### Added

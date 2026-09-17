@@ -17,6 +17,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Concerns\AnalyzesMiddleware;
 use ShieldCI\Concerns\InspectsCode;
+use ShieldCI\Concerns\LocatesMiddlewareFile;
 
 /**
  * Validates cookie security configuration.
@@ -31,6 +32,7 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
 {
     use AnalyzesMiddleware;
     use InspectsCode;
+    use LocatesMiddlewareFile;
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -344,24 +346,38 @@ class CookieSecurityAnalyzer extends AbstractFileAnalyzer
 
                 // Only create issue if we're certain it's not registered
                 if (! $isRegistered) {
-                    $kernelFile = $this->buildPath('app', 'Http', 'Kernel.php');
-                    $bootstrapApp = $this->buildPath('bootstrap', 'app.php');
-                    $configFile = file_exists($kernelFile) ? $kernelFile : (file_exists($bootstrapApp) ? $bootstrapApp : $kernelFile);
+                    // The finding comes from the running application, so it stands whether
+                    // or not either middleware file is on disk. Only the place to go and fix
+                    // it depends on that, and an absent file is not a place.
+                    $middlewareFile = $this->resolveMiddlewareFile();
 
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: 'EncryptCookies middleware is not registered',
-                        filePath: $configFile,
-                        lineNumber: null,
-                        severity: Severity::Critical,
-                        recommendation: 'Without EncryptCookies, cookies are stored in plaintext and can be read or tampered with by the client. Register it so the app encrypts cookies — in the web middleware group (the Laravel 11+ default) or the global middleware stack in app/Http/Kernel.php (Laravel 9/10).',
-                        metadata: [
-                            'file' => file_exists($kernelFile) ? 'Kernel.php' : 'bootstrap/app.php',
-                            'middleware' => 'EncryptCookies',
-                            'status' => 'missing',
-                            'detection_method' => 'runtime',
-                            'code' => 'encrypt-cookies',
-                        ]
-                    );
+                    $message = 'EncryptCookies middleware is not registered';
+                    $recommendation = 'Without EncryptCookies, cookies are stored in plaintext and can be read or tampered with by the client. Register it so the app encrypts cookies — in the web middleware group (the Laravel 11+ default) or the global middleware stack in app/Http/Kernel.php (Laravel 9/10).';
+                    $metadata = [
+                        'middleware' => 'EncryptCookies',
+                        'status' => 'missing',
+                        'detection_method' => 'runtime',
+                        'code' => 'encrypt-cookies',
+                    ];
+
+                    $issues[] = $middlewareFile === null
+                        ? $this->createIssue(
+                            message: $message,
+                            location: null,
+                            severity: Severity::Critical,
+                            recommendation: $recommendation,
+                            metadata: $metadata
+                        )
+                        : $this->createIssueWithSnippet(
+                            message: $message,
+                            filePath: $middlewareFile,
+                            lineNumber: null,
+                            severity: Severity::Critical,
+                            recommendation: $recommendation,
+                            metadata: [
+                                'file' => $this->middlewareFileIsHttpKernel($middlewareFile) ? 'Kernel.php' : 'bootstrap/app.php',
+                            ] + $metadata
+                        );
                 }
 
                 return true; // Runtime check completed successfully

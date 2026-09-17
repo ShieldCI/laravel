@@ -18,11 +18,11 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Concerns\AnalyzesMiddleware;
 use ShieldCI\Concerns\DetectsLaravelVersion;
+use ShieldCI\Concerns\LocatesMiddlewareFile;
 
 /**
  * Detects unused global HTTP middleware in the application.
@@ -38,6 +38,7 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
 {
     use AnalyzesMiddleware;
     use DetectsLaravelVersion;
+    use LocatesMiddlewareFile;
 
     /**
      * @var array<int, array{name: string, class: string, reason: string, recommendation: string}>
@@ -71,31 +72,49 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
     {
         $this->unusedMiddleware = [];
 
+        // Resolved once, and before the checks, because the CORS recommendation
+        // names this file too and must not contradict the reported location.
+        $middlewareFile = $this->resolveMiddlewareFile();
+
         $this->checkTrustProxiesMiddleware();
         $this->checkTrustHostsMiddleware();
-        $this->checkCorsMiddleware();
+        $this->checkCorsMiddleware($middlewareFile);
 
         if (count($this->unusedMiddleware) === 0) {
             return $this->passed('No unused global middleware detected');
         }
 
-        $kernelPath = $this->getMiddlewareFilePath();
-        $middlewareLine = $this->findMiddlewareArrayLine($kernelPath);
+        $middlewareLine = $middlewareFile === null
+            ? null
+            : $this->findMiddlewareArrayLine($middlewareFile);
 
         $issues = [];
         foreach ($this->unusedMiddleware as $middleware) {
-            $issues[] = $this->createIssueWithSnippet(
-                message: "Unused global middleware detected: {$middleware['name']}",
-                filePath: $kernelPath,
-                lineNumber: $middlewareLine,
-                severity: $this->metadata()->severity,
-                recommendation: $middleware['recommendation'],
-                metadata: [
-                    'middleware_class' => $middleware['class'],
-                    'middleware_name' => $middleware['name'],
-                    'reason' => $middleware['reason'],
-                ]
-            );
+            $message = "Unused global middleware detected: {$middleware['name']}";
+            $metadata = [
+                'middleware_class' => $middleware['class'],
+                'middleware_name' => $middleware['name'],
+                'reason' => $middleware['reason'],
+            ];
+
+            // createIssueWithSnippet() always builds a Location, so a project with
+            // neither candidate file has to go through createIssue() instead.
+            $issues[] = $middlewareFile === null
+                ? $this->createIssue(
+                    message: $message,
+                    location: null,
+                    severity: $this->metadata()->severity,
+                    recommendation: $middleware['recommendation'],
+                    metadata: $metadata
+                )
+                : $this->createIssueWithSnippet(
+                    message: $message,
+                    filePath: $middlewareFile,
+                    lineNumber: $middlewareLine,
+                    severity: $this->metadata()->severity,
+                    recommendation: $middleware['recommendation'],
+                    metadata: $metadata
+                );
         }
 
         $summary = sprintf('Found %d unused global middleware', count($this->unusedMiddleware));
@@ -201,7 +220,7 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
         }
     }
 
-    private function checkCorsMiddleware(): void
+    private function checkCorsMiddleware(?string $middlewareFile): void
     {
         // Check if CORS middleware is registered (Laravel 9+ or Fruitcake package)
         $hasCors = (class_exists(HandleCors::class) && $this->appUsesGlobalMiddleware(HandleCors::class))
@@ -223,15 +242,11 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
             /** @phpstan-ignore-next-line Class may not exist (optional dependency) */
             $middlewareClass = class_exists(HandleCors::class) ? HandleCors::class : FruitcakeHandleCors::class;
 
-            $recommendation = $this->isLaravel11OrNewer()
-                ? 'Remove HandleCors from the withMiddleware() callback in bootstrap/app.php, as no CORS paths are configured. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths in config/cors.php.'
-                : 'Remove HandleCors middleware from the global middleware stack in app/Http/Kernel.php, as no CORS paths are configured. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths that require CORS handling in config/cors.php.';
-
             $this->addUnusedMiddleware(
                 class_basename($middlewareClass),
                 $middlewareClass,
                 'No CORS paths are configured',
-                $recommendation
+                $this->corsRemovalRecommendation($middlewareFile)
             );
         }
     }
@@ -297,57 +312,50 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
     }
 
     /**
-     * Get the path to the middleware configuration file.
-     * Returns bootstrap/app.php for Laravel 11+, otherwise app/Http/Kernel.php.
+     * Find the line the global middleware stack is declared on, or null when it
+     * cannot be located in the file.
+     *
+     * Returning null rather than 1 is the point: a reader cannot tell a fabricated 1
+     * from a declaration genuinely on line 1, and createIssueWithSnippet() accepts a
+     * null line, naming the file without pretending to know where in it to look.
+     *
+     * The previous Kernel.php lookup went through ConfigFileHelper::findKeyLine(),
+     * which searches for a `'middleware' =>` config entry and answers 1 by contract
+     * when it finds nothing - so the `$lineNumber < 1` guard below it never fired and
+     * the property scan it guarded was unreachable. That scan is now the lookup.
      */
-    private function getMiddlewareFilePath(): string
+    private function findMiddlewareArrayLine(string $filePath): ?int
     {
-        $basePath = $this->getBasePath();
+        $pattern = $this->middlewareFileIsHttpKernel($filePath)
+            ? '/protected\s+\$middleware\s*=/'  // Laravel 9/10: the $middleware property
+            : '/withMiddleware\s*\(/';           // Laravel 11+: the withMiddleware() callback
 
-        if ($this->isLaravel11OrNewer()) {
-            return $basePath.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'app.php';
+        foreach (FileParser::getLines($filePath) as $lineNum => $line) {
+            if (preg_match($pattern, $line) === 1) {
+                return $lineNum + 1;
+            }
         }
 
-        return $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Kernel.php';
+        return null;
     }
 
     /**
-     * Find the relevant line number in the middleware configuration file.
-     * For bootstrap/app.php, finds withMiddleware(). For Kernel.php, finds $middleware property.
-     * Falls back to line 1 if not found.
+     * Version-correct removal instructions, keyed off the file actually found rather
+     * than off the running framework, so the advice cannot name a different file than
+     * the issue location does.
      */
-    private function findMiddlewareArrayLine(string $filePath): int
+    private function corsRemovalRecommendation(?string $middlewareFile): string
     {
-        if (! file_exists($filePath)) {
-            return 1;
+        if ($middlewareFile === null) {
+            return 'Remove HandleCors from the global middleware stack, as no CORS paths are configured. '
+                .'In Laravel 11+ that is the withMiddleware() callback in bootstrap/app.php; in Laravel 9/10 it is the $middleware array in app/Http/Kernel.php. '
+                .'This middleware runs on every request unnecessarily. Only add it back when you configure specific paths in config/cors.php.';
         }
 
-        // Laravel 11+: look for withMiddleware callback in bootstrap/app.php
-        if (str_ends_with($filePath, 'app.php')) {
-            $lines = FileParser::getLines($filePath);
-            foreach ($lines as $lineNum => $line) {
-                if (preg_match('/withMiddleware\s*\(/', $line) === 1) {
-                    return $lineNum + 1;
-                }
-            }
-
-            return 1;
+        if ($this->middlewareFileIsHttpKernel($middlewareFile)) {
+            return 'Remove HandleCors middleware from the global middleware stack in app/Http/Kernel.php, as no CORS paths are configured. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths that require CORS handling in config/cors.php.';
         }
 
-        // Laravel 9/10: look for protected $middleware property in Kernel.php
-        $lineNumber = ConfigFileHelper::findKeyLine($filePath, 'middleware');
-
-        if ($lineNumber < 1) {
-            $lines = FileParser::getLines($filePath);
-            foreach ($lines as $lineNum => $line) {
-                if (preg_match('/protected\s+\$middleware\s*=/', $line) === 1) {
-                    return $lineNum + 1;
-                }
-            }
-
-            return 1;
-        }
-
-        return $lineNumber;
+        return 'Remove HandleCors from the withMiddleware() callback in bootstrap/app.php, as no CORS paths are configured. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths in config/cors.php.';
     }
 }

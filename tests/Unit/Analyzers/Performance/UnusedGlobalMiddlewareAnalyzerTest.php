@@ -851,13 +851,11 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         }
     }
 
-    public function test_reports_bootstrap_app_path_on_laravel_11(): void
+    public function test_reports_the_bootstrap_app_of_a_new_skeleton_project(): void
     {
-        if (! class_exists(Middleware::class)) {
-            $this->markTestSkipped('bootstrap/app.php path and withMiddleware() recommendations only apply to Laravel 11+.');
-        }
-
-        // Create a temp dir that mimics a Laravel 11+ project (no Kernel.php, has bootstrap/app.php)
+        // No runtime version guard: the fixture below decides the answer, so this holds
+        // on every row of the Laravel 9-13 matrix rather than only on 11+.
+        // Mimics a Laravel 11+ project: bootstrap/app.php, no Kernel.php.
         $tempDir = sys_get_temp_dir().DIRECTORY_SEPARATOR.'shieldci_test_'.uniqid();
         mkdir($tempDir.DIRECTORY_SEPARATOR.'bootstrap', 0777, true);
 
@@ -973,5 +971,135 @@ PHP;
         $this->assertWarning($result);
         $this->assertIssueCount(1, $result);
         $this->assertHasIssueContaining('HandleCors', $result);
+    }
+
+    // =========================================================================
+    // Issue Location — the reported file comes from the scanned project
+    // =========================================================================
+
+    public function test_reports_the_http_kernel_when_the_project_has_one(): void
+    {
+        $dir = $this->createTempDirectory([
+            'app/Http/Kernel.php' => $this->kernelFixture(),
+        ]);
+
+        $result = $this->withBasePath($dir, fn () => $this->analyzerWithUnusedCors()->analyze());
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        $location = $issues[0]->location;
+        $this->assertNotNull($location);
+        $this->assertSame('app/Http/Kernel.php', $location->file);
+        $this->assertStringContainsString('app/Http/Kernel.php', $issues[0]->recommendation);
+        $this->assertStringNotContainsString('withMiddleware', $issues[0]->recommendation);
+    }
+
+    public function test_prefers_the_http_kernel_over_a_legacy_bootstrap_app(): void
+    {
+        // Laravel <= 10 ships both files. app/Http/Kernel.php holds the middleware
+        // stack; bootstrap/app.php is the old `new Application(...)` bootstrapper and
+        // holds nothing to edit. Probing bootstrap/app.php first would answer with it.
+        $dir = $this->createTempDirectory([
+            'app/Http/Kernel.php' => $this->kernelFixture(),
+            'bootstrap/app.php' => <<<'PHP'
+                <?php
+
+                $app = new Illuminate\Foundation\Application(
+                    $_ENV['APP_BASE_PATH'] ?? dirname(__DIR__)
+                );
+
+                return $app;
+                PHP,
+        ]);
+
+        $result = $this->withBasePath($dir, fn () => $this->analyzerWithUnusedCors()->analyze());
+
+        $location = $result->getIssues()[0]->location;
+        $this->assertNotNull($location);
+        $this->assertSame('app/Http/Kernel.php', $location->file);
+    }
+
+    public function test_points_at_the_global_middleware_array_rather_than_line_one(): void
+    {
+        $dir = $this->createTempDirectory([
+            'app/Http/Kernel.php' => $this->kernelFixture(),
+        ]);
+
+        $result = $this->withBasePath($dir, fn () => $this->analyzerWithUnusedCors()->analyze());
+
+        $location = $result->getIssues()[0]->location;
+        $this->assertNotNull($location);
+        $this->assertNotNull($location->line);
+
+        $lines = file($dir.'/app/Http/Kernel.php', FILE_IGNORE_NEW_LINES);
+        $this->assertIsArray($lines);
+        $this->assertStringContainsString('protected $middleware', $lines[$location->line - 1]);
+    }
+
+    public function test_omits_the_location_when_no_middleware_file_exists(): void
+    {
+        $result = $this->withBasePath(
+            $this->createTempDirectory([]),
+            fn () => $this->analyzerWithUnusedCors()->analyze()
+        );
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertNull($issues[0]->location);
+        // The finding still stands; only the file reference is unavailable.
+        $this->assertStringContainsString('HandleCors', $issues[0]->message);
+    }
+
+    /**
+     * An analyzer whose only finding is the unused HandleCors middleware, so the
+     * assertions above are about the reported file rather than about detection.
+     */
+    private function analyzerWithUnusedCors(): UnusedGlobalMiddlewareAnalyzer
+    {
+        /** @var Application&MockInterface $app */
+        $app = Mockery::mock(Application::class);
+
+        /** @var ConfigRepository&MockInterface $config */
+        $config = Mockery::mock(ConfigRepository::class);
+
+        /** @var Router&MockInterface $router */
+        $router = Mockery::mock(Router::class);
+
+        $kernel = new class extends \Illuminate\Foundation\Http\Kernel
+        {
+            public function __construct() {}
+
+            /** @var array<int, string> */
+            protected $middleware = [
+                HandleCors::class,
+            ];
+        };
+
+        $config->shouldReceive('get')->with('cors.paths', [])->andReturn([]);
+        $config->shouldReceive('get')->with('trustedproxy.proxies')->andReturn(null);
+
+        return new UnusedGlobalMiddlewareAnalyzer($app, $config, $router, $kernel);
+    }
+
+    /**
+     * A Laravel 9/10 HTTP kernel whose $middleware array is deliberately not on line 1.
+     */
+    private function kernelFixture(): string
+    {
+        return <<<'PHP'
+            <?php
+
+            namespace App\Http;
+
+            use Illuminate\Foundation\Http\Kernel as HttpKernel;
+
+            class Kernel extends HttpKernel
+            {
+                protected $middleware = [
+                    \Illuminate\Http\Middleware\HandleCors::class,
+                ];
+            }
+            PHP;
     }
 }

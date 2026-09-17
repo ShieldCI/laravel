@@ -937,7 +937,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $files = [];
 
         foreach ($this->getFilesToAnalyze() as $file) {
-            if (str_ends_with($file->getFilename(), '.blade.php')) {
+            // A .blade.php file reports its extension as php, so the inherited
+            // shouldAnalyzeFile() accepts it and applies excluded_paths.
+            if (str_ends_with($file->getFilename(), '.blade.php') && $this->shouldAnalyzeFile($file)) {
                 $files[] = $file->getPathname();
             }
         }
@@ -955,12 +957,36 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $files = [];
 
         foreach ($this->getFilesToAnalyze() as $file) {
-            if ($file->getExtension() === 'js') {
+            if ($file->getExtension() === 'js' && ! $this->isExcluded($file->getPathname())) {
                 $files[] = $file->getPathname();
             }
         }
 
         return $files;
+    }
+
+    /**
+     * Whether excluded_paths covers a file the inherited shouldAnalyzeFile() cannot judge.
+     *
+     * shouldAnalyzeFile() answers false for anything that is not PHP, so a JavaScript
+     * file has to be tested against the patterns here. This follows the same rule:
+     * patterns are written relative to the base path ('resources/js/vendor/*'), and the
+     * absolute pathname is also tried, for patterns written against it.
+     *
+     * Widening shouldAnalyzeFile() to accept JavaScript instead would leak .js files into
+     * getPhpFiles(), and from there into the route file scan.
+     */
+    private function isExcluded(string $path): bool
+    {
+        $relativePath = ltrim($this->getRelativePath($path), '/');
+
+        foreach ($this->excludePatterns as $pattern) {
+            if ($this->matchesPattern($relativePath, $pattern) || $this->matchesPattern($path, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -974,44 +1000,5 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             $this->getPhpFiles(),
             fn (string $f) => str_contains($f, '/routes/')
         );
-    }
-
-    /**
-     * Override to include blade and JS files.
-     */
-    protected function shouldAnalyzeFile(\SplFileInfo $file): bool
-    {
-        // Include PHP files
-        if ($file->getExtension() === 'php') {
-            return parent::shouldAnalyzeFile($file);
-        }
-
-        // Include blade files
-        if (str_ends_with($file->getFilename(), '.blade.php')) {
-            $path = $file->getPathname();
-
-            foreach ($this->excludePatterns as $pattern) {
-                if ($this->matchesPattern($path, $pattern)) {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        // Include JS files
-        if ($file->getExtension() === 'js') {
-            $path = $file->getPathname();
-
-            foreach ($this->excludePatterns as $pattern) {
-                if ($this->matchesPattern($path, $pattern)) {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        return false;
     }
 }

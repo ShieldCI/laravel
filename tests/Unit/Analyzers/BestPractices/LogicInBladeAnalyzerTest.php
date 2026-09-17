@@ -6,13 +6,12 @@ namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\BestPractices\LogicInBladeAnalyzer;
-use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class LogicInBladeAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    protected function createAnalyzer(): LogicInBladeAnalyzer
     {
         $config = new Repository([
             'shieldci' => [
@@ -113,6 +112,32 @@ BLADE;
         $result = $analyzer->analyze();
 
         $this->assertHasIssueContaining('Inline PHP found in Blade template', $result);
+    }
+
+    public function test_skips_blade_files_under_excluded_paths(): void
+    {
+        $blade = <<<'BLADE'
+<?php $label = strtoupper($status); ?>
+<span>{{ $label }}</span>
+BLADE;
+
+        $tempDir = $this->createTempDirectory([
+            'views/legacy/badge.blade.php' => $blade,
+            'views/current/badge.blade.php' => $blade,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+        $analyzer->setExcludePatterns(['views/legacy/*']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertHasIssueContaining('Inline PHP found in Blade template', $result);
+
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringStartsWith('views/current/', $issue->location->file ?? '');
+        }
     }
 
     public function test_ignores_presentational_findings_in_a_relocated_pagination_view(): void

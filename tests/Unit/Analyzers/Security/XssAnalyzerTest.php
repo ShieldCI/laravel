@@ -15,12 +15,11 @@ use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\URL;
 use Psr\Http\Message\ResponseInterface;
 use ShieldCI\Analyzers\Security\XssAnalyzer;
-use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class XssAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    protected function createAnalyzer(): XssAnalyzer
     {
         /** @var Router $router */
         $router = $this->app?->make('router');
@@ -138,6 +137,31 @@ BLADE;
 
         $this->assertFailed($result);
         $this->assertIssueCount(1, $result);
+    }
+
+    public function test_skips_blade_files_under_excluded_paths(): void
+    {
+        config(['shieldci.ci_mode' => true]);
+
+        $bladeCode = <<<'BLADE'
+<div>{!! request('headline') !!}</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory([
+            'resources/views/legacy/banner.blade.php' => $bladeCode,
+            'resources/views/current/banner.blade.php' => $bladeCode,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+        $analyzer->setExcludePatterns(['resources/views/legacy/*']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertStringStartsWith('resources/views/current/', $result->getIssues()[0]->location->file ?? '');
     }
 
     public function test_detects_echo_with_superglobals(): void

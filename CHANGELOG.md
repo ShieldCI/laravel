@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.15.1
+
+### Fixed
+- `logic-in-blade`, `csrf-protection` and `xss-vulnerabilities` honour `excluded_paths` when scanning Blade views and JavaScript files (#385)
+- `unused-global-middleware` and `cookie` name the middleware file the project actually has, `app/Http/Kernel.php` or `bootstrap/app.php`, instead of choosing by Laravel version or naming a file that is not there (#387)
+- `phpstan` and `collection-call-optimization` run on projects whose `phpstan.neon` or `phpstan/extension-installer` already loads Larastan, instead of aborting with "This file is included multiple times" (#388)
+
 ## v1.15.0
 
 ### Added

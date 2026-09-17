@@ -149,6 +149,7 @@ class AnalyzeCommand extends Command
         $this->warnIfUnrecognizedEnvironment();
         $this->warnIfUnrecognizedFailOn();
         $this->warnIfConsoleFormatIsWrittenToFile();
+        $this->warnIfAnalyzePathsUnusable();
 
         // Check if any categories are enabled
         $analyzersConfig = config('shieldci.analyzers', []);
@@ -1366,6 +1367,41 @@ class AnalyzeCommand extends Command
         }
 
         $this->warnOnStderr("⚠️  APP_ENV '{$rawEnv}' is not a recognized standard environment. Environment-scoped analyzers may be skipped. Add a mapping in config/shieldci.php.");
+        $this->lineOnStderr();
+    }
+
+    /**
+     * Warn if paths.analyze holds nothing analysis can use.
+     *
+     * Reported before the analysis rather than alongside the report, which is already on
+     * stdout by the time the scan has happened against directories the user did not write.
+     * Advisory only: AnalyzerManager substitutes the shipped defaults so the run still walks
+     * something. Without the substitution an unusable value left every file analyzer on its
+     * base path, which is either the whole application root or, on analyzers-core 2.3.0 and
+     * earlier, nothing at all reported as a pass.
+     */
+    private function warnIfAnalyzePathsUnusable(): void
+    {
+        $configured = config('shieldci.paths.analyze', []);
+        $paths = is_array($configured) ? array_values(array_filter($configured, 'is_string')) : [];
+
+        if ($paths !== []) {
+            return;
+        }
+
+        if (! is_array($configured)) {
+            $reason = sprintf('is a %s, not a list of directories', get_debug_type($configured));
+        } elseif ($configured === []) {
+            $reason = 'is empty';
+        } else {
+            $reason = 'holds no directory names';
+        }
+
+        $this->warnOnStderr(sprintf(
+            '⚠️  paths.analyze %s. Falling back to %s.',
+            $reason,
+            implode(', ', AnalyzerManager::DEFAULT_ANALYZE_PATHS)
+        ));
         $this->lineOnStderr();
     }
 

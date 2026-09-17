@@ -6,6 +6,7 @@ namespace ShieldCI\Tests\Unit\Support;
 
 use Composer\InstalledVersions;
 use PHPUnit\Framework\Attributes\Test;
+use ShieldCI\AnalyzerManager;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Enums\Status;
@@ -2024,6 +2025,24 @@ class ReporterTest extends TestCase
         $this->assertEquals('512M', $c['memory_limit']);
         $this->assertEquals('high', $c['fail_on']);
         $this->assertNull($c['fail_threshold']);
+    }
+
+    /** @test */
+    #[Test]
+    public function api_payload_reports_the_paths_an_unusable_config_falls_back_to(): void
+    {
+        // The snapshot is the effective configuration, not the written one. AnalyzerManager
+        // substitutes the shipped defaults for an unusable paths.analyze, so a payload
+        // repeating the raw [] would name none of the directories the run walked.
+        config(['shieldci.paths.analyze' => []]);
+
+        $results = $this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed'));
+        $payload = $this->reporter->toApi($this->reporter->generate($results));
+
+        $this->assertSame(
+            AnalyzerManager::DEFAULT_ANALYZE_PATHS,
+            $payload['configuration']['paths']
+        );
     }
 
     /** @test */

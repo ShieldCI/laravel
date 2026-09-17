@@ -22,6 +22,17 @@ class AnalyzerManager
     use EnrichesResultMetadata;
 
     /**
+     * The directories analysis walks when nothing usable is configured.
+     *
+     * Mirrors config/shieldci.php's paths.analyze, which is what every application that has
+     * not touched the key already gets through mergeConfigFrom(). A test pins the two
+     * together so the list cannot drift.
+     *
+     * @var array<int, string>
+     */
+    public const DEFAULT_ANALYZE_PATHS = ['app', 'config', 'database', 'routes', 'resources/views'];
+
+    /**
      * @param  array<class-string<AnalyzerInterface>>  $analyzerClasses
      */
     public function __construct(
@@ -125,10 +136,23 @@ class AnalyzerManager
         $ciExcludeAnalyzers = is_array($ciExcludeAnalyzersConfig) ? $ciExcludeAnalyzersConfig : [];
         $this->cachedCiExcludeAnalyzers = $ciExcludeAnalyzers;
 
+        // An unusable paths.analyze resolves to the shipped defaults, not to [].
+        //
+        // [] was read below as "do not call setPaths()", which left the analyzer on
+        // AbstractFileAnalyzer's no-paths default: its base path. That is a walk of the whole
+        // application root per analyzer on current analyzers-core, and on 2.3.0 and earlier a
+        // scan of nothing reported as a pass. Neither is what an empty or malformed key means.
+        //
+        // Four shapes land here: a non-array, an empty array, a missing key, and a list
+        // holding no strings. The configured value itself is left untouched so that
+        // AnalyzeCommand can still tell the user it is being ignored.
         $pathsConfig = $this->config->get('shieldci.paths.analyze', []);
-        /** @var array<string> $pathsToAnalyze */
-        $pathsToAnalyze = is_array($pathsConfig) && ! empty($pathsConfig) ? $pathsConfig : [];
-        $this->cachedPathsToAnalyze = $pathsToAnalyze;
+        $configuredPaths = is_array($pathsConfig)
+            ? array_values(array_filter($pathsConfig, 'is_string'))
+            : [];
+        $this->cachedPathsToAnalyze = $configuredPaths === []
+            ? self::DEFAULT_ANALYZE_PATHS
+            : $configuredPaths;
 
         $excludedPathsConfig = $this->config->get('shieldci.excluded_paths', []);
         /** @var array<string> $excludedPaths */
@@ -176,7 +200,7 @@ class AnalyzerManager
                             $analyzer->setBasePath(base_path());
                         }
 
-                        if (method_exists($analyzer, 'setPaths') && ! empty($this->cachedPathsToAnalyze)) {
+                        if (method_exists($analyzer, 'setPaths')) {
                             $analyzer->setPaths($this->cachedPathsToAnalyze);
                         }
 

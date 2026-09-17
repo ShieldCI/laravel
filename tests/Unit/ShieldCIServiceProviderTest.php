@@ -17,6 +17,8 @@ use ShieldCI\Analyzers\Security\FillableForeignKeyAnalyzer;
 use ShieldCI\Analyzers\Security\LoginThrottlingAnalyzer;
 use ShieldCI\Analyzers\Security\MassAssignmentAnalyzer;
 use ShieldCI\Analyzers\Security\XssAnalyzer;
+use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
+use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Contracts\ReporterInterface;
@@ -218,6 +220,31 @@ class ShieldCIServiceProviderTest extends TestCase
 
         // Should have discovered at least some analyzers
         $this->assertGreaterThan(0, $manager->count());
+    }
+
+    /** @test */
+    #[Test]
+    public function file_analyzers_get_the_shipped_paths_when_a_published_config_omits_analyze(): void
+    {
+        // mergeConfigFrom() is a shallow array_merge, so an application's `paths` array
+        // replaces the package's entirely. A published config that keeps `paths` but drops
+        // `analyze` leaves the key absent without the user ever touching it, which is the
+        // trigger of ShieldCI/laravel#378 most likely to be hit by accident. Driven through
+        // the real container rather than a mocked Config so the merge is the one that ships.
+        config(['shieldci.paths' => ['exclude' => ['storage']]]);
+
+        $this->app->forgetInstance(AnalyzerManager::class);
+        $manager = $this->app->make(AnalyzerManager::class);
+        $this->assertInstanceOf(AnalyzerManager::class, $manager);
+
+        $analyzer = $manager->getAnalyzers()->first(
+            static fn (AnalyzerInterface $candidate): bool => $candidate instanceof AbstractFileAnalyzer
+        );
+        $this->assertInstanceOf(AbstractFileAnalyzer::class, $analyzer);
+
+        $paths = new \ReflectionProperty(AbstractFileAnalyzer::class, 'paths');
+
+        $this->assertSame(AnalyzerManager::DEFAULT_ANALYZE_PATHS, $paths->getValue($analyzer));
     }
 
     /** @test */

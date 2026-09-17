@@ -535,13 +535,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         $levelConfig = $this->config->get('shieldci.analyzers.reliability.phpstan.level', 5);
         $level = is_int($levelConfig) ? $levelConfig : (is_numeric($levelConfig) ? (int) $levelConfig : 5);
 
-        // Use PHPStan-specific paths if configured, otherwise fall back to global paths
-        $pathsConfig = $this->config->get(
-            'shieldci.analyzers.reliability.phpstan.paths',
-            $this->config->get('shieldci.paths.analyze', ['app'])
-        );
-        /** @var array<string> $paths */
-        $paths = is_array($pathsConfig) ? $pathsConfig : [$pathsConfig];
+        $paths = $this->resolvePaths();
 
         $enabledCategories = array_values(array_filter((array) $this->config->get('shieldci.analyzers.reliability.phpstan.categories', array_keys(self::ISSUE_CATEGORIES)), 'is_string'));
         $disabledCategories = array_values(array_filter((array) $this->config->get('shieldci.analyzers.reliability.phpstan.disabled_categories', []), 'is_string'));
@@ -641,6 +635,46 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         }
 
         return $this->resultBySeverity($message, $allIssueObjects, $metadata);
+    }
+
+    /**
+     * The directories PHPStan analyses: its own key, else the global list, else app/.
+     *
+     * Each level is resolved on usability rather than on presence. A get() default only
+     * fires for a key that is absent, so a key holding [] used to survive both fallbacks
+     * and reach PHPStanRunner as an empty list, which appended no path argument at all and
+     * left PHPStan to abort before it produced a report.
+     *
+     * app/ stays the last resort here rather than AnalyzerManager::DEFAULT_ANALYZE_PATHS:
+     * static analysis over config/, database/ and resources/views is a separate decision
+     * from what the file analyzers walk.
+     *
+     * @return array<int, string>
+     */
+    private function resolvePaths(): array
+    {
+        $keys = [
+            'shieldci.analyzers.reliability.phpstan.paths',
+            'shieldci.paths.analyze',
+        ];
+
+        foreach ($keys as $key) {
+            $configured = $this->config->get($key);
+
+            if (is_string($configured) && $configured !== '') {
+                return [$configured];
+            }
+
+            if (is_array($configured)) {
+                $paths = array_values(array_filter($configured, 'is_string'));
+
+                if ($paths !== []) {
+                    return $paths;
+                }
+            }
+        }
+
+        return ['app'];
     }
 
     /**

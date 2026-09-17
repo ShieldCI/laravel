@@ -492,6 +492,35 @@ PHP;
         }
     }
 
+    /**
+     * PHPStan used to be invoked with no path argument at all when both keys held [].
+     *
+     * The nested get() defaults that were supposed to catch this only fire for a key that is
+     * absent, so a published config emptying either one survived both of them and reached
+     * PHPStanRunner as an empty list. PHPStan aborts before it writes a report in that state,
+     * which the analyzer can only report as a failed run.
+     */
+    public function test_falls_back_to_app_when_both_configured_path_lists_are_empty(): void
+    {
+        $recorded = $this->analyzeWithRecordedPhpstanArguments([
+            'analyzers' => ['reliability' => ['enabled' => true, 'phpstan' => ['paths' => []]]],
+            'paths' => ['analyze' => []],
+        ]);
+
+        $this->assertContains('app', $recorded);
+    }
+
+    public function test_prefers_the_global_paths_when_only_the_phpstan_list_is_empty(): void
+    {
+        $recorded = $this->analyzeWithRecordedPhpstanArguments([
+            'analyzers' => ['reliability' => ['enabled' => true, 'phpstan' => ['paths' => []]]],
+            'paths' => ['analyze' => ['app', 'routes']],
+        ]);
+
+        $this->assertContains('app', $recorded);
+        $this->assertContains('routes', $recorded);
+    }
+
     public function test_provides_eloquent_scope_recommendation_for_builder_method_calls(): void
     {
         $code = <<<'PHP'
@@ -1231,6 +1260,37 @@ cat <<'EOF'
 {$json}
 EOF
 BASH;
+    }
+
+    /**
+     * Run the analyzer against a PHPStan binary that records the arguments it was handed.
+     *
+     * @param  array<string, mixed>  $shieldci
+     * @return list<string>
+     */
+    private function analyzeWithRecordedPhpstanArguments(array $shieldci): array
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Services/AppService.php' => "<?php\n\nnamespace App\\Services;\n\nclass AppService {}\n",
+        ]);
+
+        $argumentLog = $tempDir.'/phpstan-arguments.txt';
+
+        @mkdir($tempDir.'/vendor/bin', 0755, true);
+        file_put_contents($tempDir.'/vendor/bin/phpstan', <<<BASH
+#!/bin/bash
+printf '%s\n' "\$@" > '{$argumentLog}'
+echo '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}'
+BASH);
+        chmod($tempDir.'/vendor/bin/phpstan', 0755);
+
+        $analyzer = new PHPStanAnalyzer(new Repository(['shieldci' => $shieldci]));
+        $analyzer->setBasePath($tempDir);
+        $analyzer->analyze();
+
+        $this->assertFileExists($argumentLog, 'PHPStan was never invoked');
+
+        return array_values(array_filter(explode("\n", (string) file_get_contents($argumentLog))));
     }
 
     /**

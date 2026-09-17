@@ -586,8 +586,91 @@ class AnalyzerManagerTest extends TestCase
         $analyzer = $analyzers->first();
         $this->assertInstanceOf(FileTestAnalyzer::class, $analyzer);
         $this->assertNotNull($analyzer->basePath);
-        $this->assertNotEmpty($analyzer->paths);
+        $this->assertSame(['app', 'src'], $analyzer->paths);
         $this->assertNotEmpty($analyzer->excludePatterns);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_falls_back_to_the_shipped_paths_when_analyze_is_empty(): void
+    {
+        // An unusable paths.analyze used to mean "skip setPaths()", which left the analyzer
+        // on AbstractFileAnalyzer's no-paths default: its base path, so either a walk of the
+        // whole application root or, before ShieldCI/analyzers-core#62, a silent scan of
+        // nothing reported as a pass. Asserted on the resolved list rather than on a file
+        // count, which would change meaning with the analyzers-core version.
+        $manager = $this->createManagerWithConfig(
+            [FileTestAnalyzer::class],
+            ['paths.analyze' => []],
+        );
+
+        $analyzer = $manager->getAnalyzers()->first();
+
+        $this->assertInstanceOf(FileTestAnalyzer::class, $analyzer);
+        $this->assertSame(AnalyzerManager::DEFAULT_ANALYZE_PATHS, $analyzer->paths);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_falls_back_to_the_shipped_paths_when_analyze_is_not_an_array(): void
+    {
+        $manager = $this->createManagerWithConfig(
+            [FileTestAnalyzer::class],
+            ['paths.analyze' => 'app'],
+        );
+
+        $analyzer = $manager->getAnalyzers()->first();
+
+        $this->assertInstanceOf(FileTestAnalyzer::class, $analyzer);
+        $this->assertSame(AnalyzerManager::DEFAULT_ANALYZE_PATHS, $analyzer->paths);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_falls_back_to_the_shipped_paths_when_no_entry_is_a_directory_name(): void
+    {
+        $manager = $this->createManagerWithConfig(
+            [FileTestAnalyzer::class],
+            ['paths.analyze' => [null, 42, ['app']]],
+        );
+
+        $analyzer = $manager->getAnalyzers()->first();
+
+        $this->assertInstanceOf(FileTestAnalyzer::class, $analyzer);
+        $this->assertSame(AnalyzerManager::DEFAULT_ANALYZE_PATHS, $analyzer->paths);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_keeps_the_usable_entries_of_a_partly_malformed_paths_list(): void
+    {
+        $manager = $this->createManagerWithConfig(
+            [FileTestAnalyzer::class],
+            ['paths.analyze' => ['app', 42, 'routes']],
+        );
+
+        $analyzer = $manager->getAnalyzers()->first();
+
+        $this->assertInstanceOf(FileTestAnalyzer::class, $analyzer);
+        $this->assertSame(['app', 'routes'], $analyzer->paths);
+    }
+
+    /** @test */
+    #[Test]
+    public function its_default_paths_are_the_ones_the_published_config_ships(): void
+    {
+        // The fallback is only right while it matches what vendor:publish ships, which is
+        // what every application that has not touched the key already gets through
+        // mergeConfigFrom().
+        $published = require __DIR__.'/../../config/shieldci.php';
+
+        $this->assertIsArray($published);
+        $this->assertArrayHasKey('paths', $published);
+        $paths = $published['paths'];
+
+        $this->assertIsArray($paths);
+        $this->assertArrayHasKey('analyze', $paths);
+        $this->assertSame(AnalyzerManager::DEFAULT_ANALYZE_PATHS, $paths['analyze']);
     }
 
     /** @test */

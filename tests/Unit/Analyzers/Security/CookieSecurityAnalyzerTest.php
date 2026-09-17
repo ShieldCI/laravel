@@ -4,8 +4,13 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
+use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Routing\Router;
+use ReflectionProperty;
 use ShieldCI\Analyzers\Security\CookieSecurityAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class CookieSecurityAnalyzerTest extends AnalyzerTestCase
@@ -1018,5 +1023,80 @@ PHP;
         }
 
         $this->assertTrue($hasSnippet, 'At least one issue should have a code snippet attached');
+    }
+
+    // ==================== ISSUE LOCATION ====================
+
+    public function test_omits_the_location_when_the_project_has_no_middleware_file(): void
+    {
+        $result = $this->analyzeProjectWithoutEncryptCookies([]);
+
+        $issue = $this->issueContaining('EncryptCookies middleware is not registered', $result);
+        $this->assertNull($issue->location);
+        $this->assertArrayNotHasKey('file', $issue->metadata);
+    }
+
+    public function test_reports_the_bootstrap_app_when_that_is_the_only_middleware_file(): void
+    {
+        $result = $this->analyzeProjectWithoutEncryptCookies([
+            'bootstrap/app.php' => "<?php\n\nreturn Application::configure(basePath: dirname(__DIR__))->create();\n",
+        ]);
+
+        $issue = $this->issueContaining('EncryptCookies middleware is not registered', $result);
+        $location = $issue->location;
+        $this->assertNotNull($location);
+        $this->assertSame('bootstrap/app.php', $location->file);
+        $this->assertSame('bootstrap/app.php', $issue->metadata['file']);
+    }
+
+    /**
+     * Analyse a project that has a secure session config but no EncryptCookies
+     * registration, so the only finding is the one whose location is under test.
+     *
+     * The runtime branch that raises it only engages when the application's base path
+     * matches the analyzer's, so both levers are pulled.
+     *
+     * @param  array<string, string>  $files
+     */
+    private function analyzeProjectWithoutEncryptCookies(array $files): ResultInterface
+    {
+        $dir = $this->createTempDirectory($files + [
+            'config/session.php' => "<?php\n\nreturn [\n    'http_only' => true,\n    'secure' => true,\n    'same_site' => 'lax',\n];\n",
+        ]);
+
+        // Testbench registers EncryptCookies in the default `web` group; clear the groups
+        // so the runtime check reaches the "not registered" branch under test.
+        // EncryptCookies ships in the framework-default `web` group, which the analyzer
+        // reads from the kernel and the router both. An application that genuinely does
+        // not register it has neither, so clear both to reach that branch.
+        //
+        // The kernel is resolved first on purpose: its constructor syncs $middlewareGroups
+        // onto the router, so clearing the router before that would simply be undone.
+        $kernel = app(Kernel::class);
+        (new ReflectionProperty($kernel, 'middlewareGroups'))->setValue($kernel, []);
+
+        $router = app(Router::class);
+        foreach (array_keys($router->getMiddlewareGroups()) as $group) {
+            $router->middlewareGroup((string) $group, []);
+        }
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($dir);
+
+        return $this->withBasePath($dir, fn () => $analyzer->analyze());
+    }
+
+    private function issueContaining(string $text, ResultInterface $result): Issue
+    {
+        foreach ($result->getIssues() as $issue) {
+            if (str_contains($issue->message, $text)) {
+                return $issue;
+            }
+        }
+
+        $this->fail(sprintf('No issue containing "%s". Got: %s', $text, implode(' | ', array_map(
+            fn (Issue $issue) => $issue->message,
+            $result->getIssues()
+        ))));
     }
 }

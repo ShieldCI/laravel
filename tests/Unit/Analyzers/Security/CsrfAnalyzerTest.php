@@ -5,13 +5,13 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
 use ShieldCI\Analyzers\Security\CsrfAnalyzer;
-use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class CsrfAnalyzerTest extends AnalyzerTestCase
 {
-    protected function createAnalyzer(): AnalyzerInterface
+    protected function createAnalyzer(): CsrfAnalyzer
     {
         return new CsrfAnalyzer($this->parser);
     }
@@ -1925,6 +1925,90 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertCount(1, $result->getIssues()); // Only /between route
+    }
+
+    // ==================== Excluded Paths Tests (3 tests) ====================
+
+    public function test_skips_blade_files_under_excluded_paths(): void
+    {
+        $blade = <<<'BLADE'
+<form method="POST" action="/newsletter">
+    <input type="email" name="email">
+</form>
+BLADE;
+
+        $tempDir = $this->createTempDirectory([
+            'resources/views/legacy/signup.blade.php' => $blade,
+            'resources/views/current/signup.blade.php' => $blade,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+        $analyzer->setExcludePatterns(['resources/views/legacy/*']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssuesOnlyUnder('resources/views/current/', $result);
+    }
+
+    public function test_skips_javascript_files_under_excluded_paths(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'resources/js/legacy/newsletter.js' => $this->unprotectedFetch(),
+            'resources/js/current/newsletter.js' => $this->unprotectedFetch(),
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+        $analyzer->setExcludePatterns(['resources/js/legacy/*']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssuesOnlyUnder('resources/js/current/', $result);
+    }
+
+    public function test_skips_javascript_files_under_absolute_excluded_paths(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'resources/js/legacy/newsletter.js' => $this->unprotectedFetch(),
+            'resources/js/current/newsletter.js' => $this->unprotectedFetch(),
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+        $analyzer->setExcludePatterns([$tempDir.'/resources/js/legacy/*']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssuesOnlyUnder('resources/js/current/', $result);
+    }
+
+    private function unprotectedFetch(): string
+    {
+        return <<<'JS'
+fetch('/newsletter', {
+    method: 'POST',
+    body: JSON.stringify({ email: 'reader@example.test' })
+});
+JS;
+    }
+
+    /**
+     * @param  non-empty-string  $directory
+     */
+    private function assertIssuesOnlyUnder(string $directory, ResultInterface $result): void
+    {
+        $this->assertNotEmpty($result->getIssues());
+
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringStartsWith($directory, $issue->location->file ?? '');
+        }
     }
 
     // ==================== shouldRun Tests (4 tests) ====================

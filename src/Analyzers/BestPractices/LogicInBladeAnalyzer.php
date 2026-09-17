@@ -138,7 +138,9 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         $files = [];
 
         foreach ($this->getFilesToAnalyze() as $file) {
-            if (! str_ends_with($file->getFilename(), '.blade.php')) {
+            // A .blade.php file reports its extension as php, so the inherited
+            // shouldAnalyzeFile() accepts it and applies excluded_paths.
+            if (! str_ends_with($file->getFilename(), '.blade.php') || ! $this->shouldAnalyzeFile($file)) {
                 continue;
             }
 

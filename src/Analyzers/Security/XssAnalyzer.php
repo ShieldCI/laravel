@@ -28,7 +28,6 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\AnalyzesHeaders;
 use ShieldCI\Concerns\AnalyzesMiddleware;
 use ShieldCI\Concerns\FindsLoginRoute;
-use SplFileInfo;
 use Throwable;
 
 /**
@@ -547,19 +546,6 @@ class XssAnalyzer extends AbstractFileAnalyzer
         return false;
     }
 
-    protected function shouldAnalyzeFile(SplFileInfo $file): bool
-    {
-        if ($file->getExtension() === 'php' && ! $this->isBladeFile($file)) {
-            return parent::shouldAnalyzeFile($file);
-        }
-
-        if ($this->isBladeFile($file)) {
-            return ! $this->isExcludedPath($file->getPathname());
-        }
-
-        return false;
-    }
-
     /**
      * Check if the line might contain user input.
      */
@@ -989,22 +975,6 @@ class XssAnalyzer extends AbstractFileAnalyzer
         }
 
         return array_values($files);
-    }
-
-    private function isBladeFile(SplFileInfo $file): bool
-    {
-        return str_ends_with($file->getFilename(), '.blade.php');
-    }
-
-    private function isExcludedPath(string $path): bool
-    {
-        foreach ($this->excludePatterns as $pattern) {
-            if ($this->matchesPattern($path, $pattern)) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private function fetchHttpResponse(string $url): ?ResponseInterface

@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.15.2
+
+### Fixed
+- `phpstan` and `collection-call-optimization` run on projects that require a newer PHP than the `php` first on `PATH`, instead of aborting with "PHPStan produced no analysable output" (#390)
+
 ## v1.15.1
 
 ### Fixed

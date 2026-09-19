@@ -45,11 +45,25 @@ class MethodLengthAnalyzer extends AbstractFileAnalyzer
     public const SIMPLE_ACCESSOR_MAX_LINES = 10;
 
     /**
-     * Maximum number of top-level statements a method may have to still qualify as a
-     * declarative fluent-builder (e.g. Filament form()/table()/panel(), migration up()).
-     * Such methods derive their length from configuration size, not branching logic.
+     * Maximum number of top-level statements (comments excluded) a method may have and
+     * still qualify as a declarative fluent-builder.
+     *
+     * The bound is deliberately generous: six RateLimiter::for() blocks are no less
+     * declarative than five, so the limit is not there to reward brevity. It is there
+     * because the exemption is a shape heuristic, and past some size a run of calls is
+     * far more likely to be an imperative method than a configuration block.
      */
-    public const MAX_DECLARATIVE_STATEMENTS = 5;
+    public const MAX_DECLARATIVE_STATEMENTS = 15;
+
+    /**
+     * Maximum number of non-builder "setup" statements a declarative method may carry.
+     *
+     * A declarative method may need up to three locals before it declares: a value
+     * extracted for readability, or the type-narrowing assignment static analysis
+     * obliges. A method built mostly from such statements is imperative and stays
+     * flagged.
+     */
+    public const MAX_SETUP_STATEMENTS = 3;
 
     private int $threshold;
 
@@ -294,16 +308,21 @@ class MethodLengthVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        $stmts = $node->stmts;
-        if ($stmts === null || $stmts === []) {
-            return false;
-        }
+        // Comments parse as Stmt\Nop. They carry no code, so they are dropped before
+        // anything counts statements: otherwise a trailing "// TODO" after the return
+        // falls through to the control-flow branch below and disqualifies the method,
+        // making the exemption turn on which side of the return a note was written.
+        $stmts = array_values(array_filter(
+            $node->stmts ?? [],
+            static fn (Stmt $stmt): bool => ! $stmt instanceof Stmt\Nop
+        ));
 
-        if (count($stmts) > MethodLengthAnalyzer::MAX_DECLARATIVE_STATEMENTS) {
+        if ($stmts === [] || count($stmts) > MethodLengthAnalyzer::MAX_DECLARATIVE_STATEMENTS) {
             return false;
         }
 
         $hasChainOrArray = false;
+        $setupStatements = 0;
 
         foreach ($stmts as $stmt) {
             if ($stmt instanceof Stmt\Return_) {
@@ -325,12 +344,21 @@ class MethodLengthVisitor extends NodeVisitorAbstract
                 $expr = $expr->expr;
             }
 
-            if (! $this->isBuilderExpression($expr)) {
-                return false;
+            if ($this->isBuilderExpression($expr)) {
+                if ($this->isFluentChainOrArray($expr)) {
+                    $hasChainOrArray = true;
+                }
+
+                continue;
             }
 
-            if ($this->isFluentChainOrArray($expr)) {
-                $hasChainOrArray = true;
+            // Not a builder: treat it as setup rather than disqualifying the method
+            // outright. A declarative method may carry a few such statements, but one
+            // built from them is imperative and must stay flagged.
+            $setupStatements++;
+
+            if ($setupStatements > MethodLengthAnalyzer::MAX_SETUP_STATEMENTS) {
+                return false;
             }
         }
 

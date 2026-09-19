@@ -8,6 +8,7 @@ use Illuminate\Config\Repository;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Analyzers\CodeQuality\MethodLengthAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
@@ -1151,5 +1152,249 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    /**
+     * Analyse a single fixture file and return the result.
+     *
+     * @param  array<string, mixed>  $config
+     */
+    private function analyzeFixture(string $relativePath, string $code, array $config = []): ResultInterface
+    {
+        $tempDir = $this->createTempDirectory([$relativePath => $code]);
+
+        $analyzer = $this->createAnalyzer($config);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        return $analyzer->analyze();
+    }
+
+    /** @test */
+    #[Test]
+    public function test_declarative_array_stays_exempt_after_a_narrowing_assignment(): void
+    {
+        // A resource's toArray() is declarative: its length tracks how many fields it
+        // declares, not branching logic. Prefixing the return with the type-narrowing
+        // assignment that static analysis at level 9 obliges you to write must not
+        // change that. Before the fix, the leading PropertyFetch defeated the
+        // exemption and the method was flagged.
+        $entries = str_repeat("            'key' => \$this->value,\n", 60);
+
+        $code = <<<PHP
+<?php
+
+namespace App\Http\Resources;
+
+use Illuminate\Http\Resources\Json\JsonResource;
+
+class OrderResource extends JsonResource
+{
+    public function toArray(\$request): array
+    {
+        /** @var \Illuminate\Support\Carbon|null \$placedAt */
+        \$placedAt = \$this->placed_at;
+
+        return [
+            'placed_at' => \$placedAt?->toIso8601String(),
+{$entries}
+        ];
+    }
+}
+PHP;
+
+        $path = 'app/Http/Resources/OrderResource.php';
+
+        $this->assertPassed($this->analyzeFixture($path, $code));
+
+        // Re-run with the exemption switched off. Passing on its own would also be the
+        // result if the fixture were never analysed, so proving the method is flagged
+        // without the exemption is what shows the exemption is doing the work.
+        $withoutExemption = $this->analyzeFixture($path, $code, [
+            'method-length' => ['ignore_fluent_chains' => false],
+        ]);
+
+        $this->assertWarning($withoutExemption);
+        $this->assertHasIssueContaining('toArray', $withoutExemption);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_declarative_builder_is_exempt_regardless_of_statement_count(): void
+    {
+        // Six RateLimiter::for() blocks are no less declarative than five. The old
+        // hard cap of five statements meant a shorter six-statement method was
+        // flagged while a longer five-statement one was exempt.
+        $block = <<<'PHP'
+        RateLimiter::for('%s', function (Request $request) {
+            return Limit::perMinute(60)
+                ->by($request->user()?->id ?: $request->ip())
+                ->response(function () {
+                    return response(
+                        'Too many requests',
+                        429,
+                        ['Retry-After' => 60]
+                    );
+                });
+        });
+
+PHP;
+
+        $blocks = '';
+        foreach (['api', 'web', 'uploads', 'reports', 'exports', 'webhooks'] as $name) {
+            $blocks .= sprintf($block, $name);
+        }
+
+        $code = <<<PHP
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\ServiceProvider;
+
+class AppServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+{$blocks}
+    }
+}
+PHP;
+
+        $path = 'app/Providers/AppServiceProvider.php';
+
+        $this->assertPassed($this->analyzeFixture($path, $code));
+
+        $withoutExemption = $this->analyzeFixture($path, $code, [
+            'method-length' => ['ignore_fluent_chains' => false],
+        ]);
+
+        $this->assertWarning($withoutExemption);
+        $this->assertHasIssueContaining('boot', $withoutExemption);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_still_flags_a_long_imperative_call_sequence(): void
+    {
+        // Regression guard for the statement-count bound. Every statement here is a
+        // method call, so each one looks like a builder, and the array argument makes
+        // the method carry the fluent-DSL signature. Nothing in the per-statement
+        // checks separates this from configuration: only the count does.
+        $statements = '';
+        for ($i = 0; $i < 55; $i++) {
+            $statements .= "        \$this->log('step', ['index' => {$i}]);\n";
+        }
+
+        $code = <<<PHP
+<?php
+
+namespace App\Services;
+
+class ReportBuilder
+{
+    public function buildReport(\$input)
+    {
+{$statements}
+    }
+}
+PHP;
+
+        $result = $this->analyzeFixture('app/Services/ReportBuilder.php', $code);
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('buildReport', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_trailing_comment_does_not_defeat_the_exemption(): void
+    {
+        // A comment parses as Stmt\Nop, which is neither a Return_ nor an Expression.
+        // Without filtering it out, a note written after the return disqualifies the
+        // method while the same note written above it does not.
+        $fields = str_repeat("                TextInput::make('field')->required(),\n", 60);
+
+        $code = <<<PHP
+<?php
+
+namespace App\Filament\Resources;
+
+use Filament\Forms\Components\TextInput;
+use Filament\Forms\Form;
+
+class UserResource
+{
+    public function form(Form \$form): Form
+    {
+        return \$form
+            ->schema([
+{$fields}
+            ]);
+
+        // TODO: add the archived-at column once the migration lands
+    }
+}
+PHP;
+
+        $path = 'app/Filament/Resources/UserResource.php';
+
+        $this->assertPassed($this->analyzeFixture($path, $code));
+
+        $withoutExemption = $this->analyzeFixture($path, $code, [
+            'method-length' => ['ignore_fluent_chains' => false],
+        ]);
+
+        $this->assertWarning($withoutExemption);
+        $this->assertHasIssueContaining('form', $withoutExemption);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_setup_statements_are_budgeted_not_unlimited(): void
+    {
+        // Three locals before the declaration are allowed; a fourth means the method is
+        // built from setup rather than carrying a little, so it stays flagged. Nothing
+        // else in the suite is sensitive to MAX_SETUP_STATEMENTS: the sixty-scalar
+        // fixture is rejected for having no array or chain at all, at any budget.
+        $entries = str_repeat("            'key' => \$this->value,\n", 60);
+
+        $fixture = function (int $locals) use ($entries): string {
+            $setup = '';
+            for ($i = 0; $i < $locals; $i++) {
+                $setup .= "        \$local{$i} = \$this->attributes['field{$i}'];\n";
+            }
+
+            return <<<PHP
+<?php
+
+namespace App\Http\Resources;
+
+use Illuminate\Http\Resources\Json\JsonResource;
+
+class InvoiceResource extends JsonResource
+{
+    public function toArray(\$request): array
+    {
+{$setup}
+        return [
+{$entries}
+        ];
+    }
+}
+PHP;
+        };
+
+        $path = 'app/Http/Resources/InvoiceResource.php';
+
+        $this->assertPassed($this->analyzeFixture($path, $fixture(3)));
+
+        $overBudget = $this->analyzeFixture($path, $fixture(4));
+
+        $this->assertWarning($overBudget);
+        $this->assertHasIssueContaining('toArray', $overBudget);
     }
 }

@@ -123,7 +123,7 @@ Package operations: 0 installs, 5 updates, 0 removals
   - Updating vendor/package2 (v2.0.0 => v2.1.0)
 OUTPUT;
 
-        $composerJsonPath = sys_get_temp_dir().'/composer_both_'.uniqid().'.json';
+        $composerJsonPath = $this->uniqueTempPath('composer_both_').'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
@@ -185,7 +185,7 @@ Package operations: 0 installs, 2 updates, 0 removals
   - Updating phpunit/phpunit (v9.0.0 => v9.1.0)
 OUTPUT;
 
-        $composerJsonPath = sys_get_temp_dir().'/composer_dev_'.uniqid().'.json';
+        $composerJsonPath = $this->uniqueTempPath('composer_dev_').'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
@@ -242,7 +242,7 @@ OUTPUT;
 Package operations: 0 installs, 5 updates, 0 removals
 OUTPUT;
 
-        $composerJsonPath = sys_get_temp_dir().'/composer_dev_'.uniqid().'.json';
+        $composerJsonPath = $this->uniqueTempPath('composer_dev_').'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
@@ -309,7 +309,7 @@ Lock file operations: 0 installs, 1 update, 0 removals
   - Upgrading vendor/package1 (1.0.0 => 1.0.1)
 OUTPUT;
 
-        $composerJsonPath = sys_get_temp_dir().'/composer_format_'.uniqid().'.json';
+        $composerJsonPath = $this->uniqueTempPath('composer_format_').'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
@@ -364,7 +364,7 @@ Package operations: 0 installs, 0 updates, 1 removal
   - Removing vendor/old-package (v1.0.0)
 OUTPUT;
 
-        $composerJsonPath = sys_get_temp_dir().'/composer_removals_'.uniqid().'.json';
+        $composerJsonPath = $this->uniqueTempPath('composer_removals_').'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
@@ -416,7 +416,7 @@ Package operations: 0 installs, 1 update, 0 removals
   - Updating vendor/prod-package (v1.0.0 => v1.0.1)
 OUTPUT;
 
-        $composerJsonPath = sys_get_temp_dir().'/composer_prod_cmd_'.uniqid().'.json';
+        $composerJsonPath = $this->uniqueTempPath('composer_prod_cmd_').'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
@@ -447,7 +447,7 @@ OUTPUT;
 Package operations: 0 installs, 1 update, 0 removals
 OUTPUT;
 
-        $composerJsonPath = sys_get_temp_dir().'/composer_dev_'.uniqid().'.json';
+        $composerJsonPath = $this->uniqueTempPath('composer_dev_').'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
@@ -549,7 +549,7 @@ Package operations: 0 installs, 1 update, 0 removals
   - Updating vendor/prod-pkg (v1.0.0 => v1.0.1)
 OUTPUT;
 
-        $composerJsonPath = sys_get_temp_dir().'/composer_both_rec_'.uniqid().'.json';
+        $composerJsonPath = $this->uniqueTempPath('composer_both_rec_').'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
@@ -583,7 +583,7 @@ Package operations: 2 updates, 1 install
   - Installing vendor/package2 (v1.0.0)
 OUTPUT;
 
-        $composerJsonPath = sys_get_temp_dir().'/composer_order_'.uniqid().'.json';
+        $composerJsonPath = $this->uniqueTempPath('composer_order_').'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
@@ -609,7 +609,7 @@ Package operations: 0 installs, 3 updates
   - Updating vendor/prod-pkg (v1.0.0 => v1.0.1)
 OUTPUT;
 
-        $composerJsonPath = sys_get_temp_dir().'/composer_missing_'.uniqid().'.json';
+        $composerJsonPath = $this->uniqueTempPath('composer_missing_').'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
@@ -635,7 +635,7 @@ Package operations: 0 installs, 1 update, 0 removals
   - Updating vendor/package (v1.0.0 => v1.0.1)
 OUTPUT;
 
-        $composerJsonPath = sys_get_temp_dir().'/composer_singular_'.uniqid().'.json';
+        $composerJsonPath = $this->uniqueTempPath('composer_singular_').'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
@@ -663,7 +663,7 @@ Lock file operations: 2 updates, 0 removals
   - Upgrading vendor/package2 (2.0.0 => 2.1.0)
 OUTPUT;
 
-        $composerJsonPath = sys_get_temp_dir().'/composer_lockfile_'.uniqid().'.json';
+        $composerJsonPath = $this->uniqueTempPath('composer_lockfile_').'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',
@@ -727,7 +727,7 @@ Package operations: 0 installs, 1 update, 0 removals
   - Updating vendor/prod-package (v1.0.0 => v1.0.1)
 OUTPUT;
 
-        $composerJsonPath = sys_get_temp_dir().'/composer_nodev_'.uniqid().'.json';
+        $composerJsonPath = $this->uniqueTempPath('composer_nodev_').'.json';
 
         $analyzer = $this->createAnalyzer(
             composerLockPath: '/path/to/composer.lock',

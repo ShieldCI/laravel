@@ -856,7 +856,7 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         // No runtime version guard: the fixture below decides the answer, so this holds
         // on every row of the Laravel 9-13 matrix rather than only on 11+.
         // Mimics a Laravel 11+ project: bootstrap/app.php, no Kernel.php.
-        $tempDir = sys_get_temp_dir().DIRECTORY_SEPARATOR.'shieldci_test_'.uniqid();
+        $tempDir = $this->uniqueTempPath('shieldci_test_');
         mkdir($tempDir.DIRECTORY_SEPARATOR.'bootstrap', 0777, true);
 
         $bootstrapAppContent = <<<'PHP'

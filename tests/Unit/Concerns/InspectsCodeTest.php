@@ -207,7 +207,7 @@ class InspectsCodeTest extends TestCase
     #[Test]
     public function it_handles_empty_directory(): void
     {
-        $tempDir = sys_get_temp_dir().'/inspects-code-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('inspects-code-test-');
         mkdir($tempDir);
 
         try {

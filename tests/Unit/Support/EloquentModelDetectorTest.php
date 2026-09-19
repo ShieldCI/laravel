@@ -9,9 +9,12 @@ use PhpParser\Node\Stmt\Class_;
 use PHPUnit\Framework\TestCase;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Support\EloquentModelDetector;
+use ShieldCI\Tests\Concerns\CreatesTemporaryPaths;
 
 class EloquentModelDetectorTest extends TestCase
 {
+    use CreatesTemporaryPaths;
+
     private EloquentModelDetector $detector;
 
     /** @var array<int, string> */
@@ -38,7 +41,7 @@ class EloquentModelDetectorTest extends TestCase
      */
     private function createTempDir(array $files): string
     {
-        $dir = sys_get_temp_dir().'/eloquent_model_detector_test_'.uniqid();
+        $dir = $this->uniqueTempPath('eloquent_model_detector_test_');
         mkdir($dir, 0755, true);
         $this->tempDirs[] = $dir;
 

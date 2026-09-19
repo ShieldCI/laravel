@@ -145,24 +145,28 @@ abstract class AnalyzerTestCase extends TestCase
      */
     protected function createTempDirectory(array $files): string
     {
-        $tempDir = sys_get_temp_dir().'/shieldci_test_'.uniqid();
-        mkdir($tempDir, 0755, true);
+        $tempDir = $this->makeTempDirectory();
 
         foreach ($files as $filename => $content) {
             $filepath = $tempDir.'/'.$filename;
             $dirname = dirname($filepath);
 
-            if (! is_dir($dirname)) {
-                mkdir($dirname, 0755, true);
+            // Checked for the same reason the directory itself is: an unchecked failure
+            // here emits a warning that Testbench rethrows as an ErrorException naming
+            // whichever test happened to be running, which reads as a behaviour change
+            // rather than a full disk or a bad permission.
+            if (! is_dir($dirname) && ! @mkdir($dirname, 0755, true)) {
+                throw new \RuntimeException(
+                    "Unable to create fixture directory {$dirname}: {$this->lastErrorMessage()}"
+                );
             }
 
-            file_put_contents($filepath, $content === false ? '' : $content);
+            if (@file_put_contents($filepath, $content === false ? '' : $content) === false) {
+                throw new \RuntimeException(
+                    "Unable to write fixture file {$filepath}: {$this->lastErrorMessage()}"
+                );
+            }
         }
-
-        // Register cleanup
-        $this->beforeApplicationDestroyed(function () use ($tempDir) {
-            $this->removeDirectory($tempDir);
-        });
 
         return $tempDir;
     }
@@ -192,32 +196,5 @@ abstract class AnalyzerTestCase extends TestCase
         } finally {
             $application->setBasePath($originalBasePath);
         }
-    }
-
-    /**
-     * Recursively remove a directory.
-     */
-    protected function removeDirectory(string $dir): void
-    {
-        if (! is_dir($dir)) {
-            return;
-        }
-
-        $files = array_diff(scandir($dir), ['.', '..']);
-
-        foreach ($files as $file) {
-            $path = $dir.'/'.$file;
-
-            // Handle symlinks first (is_link check before is_dir)
-            if (is_link($path)) {
-                unlink($path);
-            } elseif (is_dir($path)) {
-                $this->removeDirectory($path);
-            } else {
-                unlink($path);
-            }
-        }
-
-        rmdir($dir);
     }
 }

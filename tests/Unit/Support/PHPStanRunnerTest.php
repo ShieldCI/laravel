@@ -7,17 +7,20 @@ namespace ShieldCI\Tests\Unit\Support;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use ShieldCI\Support\PHPStanRunner;
+use ShieldCI\Tests\Concerns\CreatesTemporaryPaths;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
 use Symfony\Component\Process\Process;
 
 class PHPStanRunnerTest extends TestCase
 {
+    use CreatesTemporaryPaths;
+
     private string $tempDir;
 
     protected function setUp(): void
     {
         parent::setUp();
-        $this->tempDir = sys_get_temp_dir().'/phpstan_runner_test_'.uniqid();
+        $this->tempDir = $this->uniqueTempPath('phpstan_runner_test_');
         mkdir($this->tempDir, 0755, true);
     }
 

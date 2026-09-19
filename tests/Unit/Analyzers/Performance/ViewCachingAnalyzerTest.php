@@ -22,7 +22,7 @@ class ViewCachingAnalyzerTest extends AnalyzerTestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $this->compiledPath = sys_get_temp_dir().'/shieldci_compiled_'.uniqid();
+        $this->compiledPath = $this->uniqueTempPath('shieldci_compiled_');
         @mkdir($this->compiledPath, 0755, true);
     }
 

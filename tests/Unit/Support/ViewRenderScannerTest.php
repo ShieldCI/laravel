@@ -7,9 +7,12 @@ namespace ShieldCI\Tests\Unit\Support;
 use PHPUnit\Framework\TestCase;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Support\ViewRenderScanner;
+use ShieldCI\Tests\Concerns\CreatesTemporaryPaths;
 
 class ViewRenderScannerTest extends TestCase
 {
+    use CreatesTemporaryPaths;
+
     private function write(string $dir, string $rel, string $php): string
     {
         $path = $dir.'/'.$rel;
@@ -21,7 +24,7 @@ class ViewRenderScannerTest extends TestCase
 
     public function test_records_binding_with_type_and_eager_loads(): void
     {
-        $dir = sys_get_temp_dir().'/vrs_'.uniqid();
+        $dir = $this->uniqueTempPath('vrs_');
         $controller = $this->write($dir, 'Controller.php', <<<'PHP'
         <?php
         class CityController {
@@ -44,7 +47,7 @@ class ViewRenderScannerTest extends TestCase
 
     public function test_with_chain_form_is_recognized(): void
     {
-        $dir = sys_get_temp_dir().'/vrs_'.uniqid();
+        $dir = $this->uniqueTempPath('vrs_');
         $controller = $this->write($dir, 'C.php', <<<'PHP'
         <?php
         class C {
@@ -67,7 +70,7 @@ class ViewRenderScannerTest extends TestCase
     {
         // A literal or expression cannot be traced back to a typed variable, so the binding
         // records no type — which makes the merge policy drop it rather than guess.
-        $dir = sys_get_temp_dir().'/vrs_'.uniqid();
+        $dir = $this->uniqueTempPath('vrs_');
         $controller = $this->write($dir, 'C.php', <<<'PHP'
         <?php
         class C {
@@ -87,7 +90,7 @@ class ViewRenderScannerTest extends TestCase
 
     public function test_dynamic_view_name_is_skipped(): void
     {
-        $dir = sys_get_temp_dir().'/vrs_'.uniqid();
+        $dir = $this->uniqueTempPath('vrs_');
         $controller = $this->write($dir, 'C.php', <<<'PHP'
         <?php
         class C { public function x() { $t = 'a.b'; return view($t, ['u' => $u]); } }
@@ -99,7 +102,7 @@ class ViewRenderScannerTest extends TestCase
 
     public function test_file_the_parser_returns_no_ast_for_is_skipped_without_error(): void
     {
-        $dir = sys_get_temp_dir().'/vrs_'.uniqid();
+        $dir = $this->uniqueTempPath('vrs_');
         $empty = $this->write($dir, 'Empty.php', "<?php\n");
 
         $registry = (new ViewRenderScanner(new AstParser))->scan([$empty], $dir.'/resources/views');
@@ -109,7 +112,7 @@ class ViewRenderScannerTest extends TestCase
 
     public function test_view_call_inside_top_level_function_uses_file_basename_as_source(): void
     {
-        $dir = sys_get_temp_dir().'/vrs_'.uniqid();
+        $dir = $this->uniqueTempPath('vrs_');
         $file = $this->write($dir, 'helpers.php', <<<'PHP'
         <?php
         function renderCity() {
@@ -129,7 +132,7 @@ class ViewRenderScannerTest extends TestCase
 
     public function test_view_call_with_no_arguments_is_skipped(): void
     {
-        $dir = sys_get_temp_dir().'/vrs_'.uniqid();
+        $dir = $this->uniqueTempPath('vrs_');
         $file = $this->write($dir, 'C.php', <<<'PHP'
         <?php
         class C {
@@ -146,7 +149,7 @@ class ViewRenderScannerTest extends TestCase
 
     public function test_doubly_chained_with_calls_are_both_recorded(): void
     {
-        $dir = sys_get_temp_dir().'/vrs_'.uniqid();
+        $dir = $this->uniqueTempPath('vrs_');
         $file = $this->write($dir, 'C.php', <<<'PHP'
         <?php
         class C {
@@ -169,7 +172,7 @@ class ViewRenderScannerTest extends TestCase
 
     public function test_array_literal_second_argument_records_bindings(): void
     {
-        $dir = sys_get_temp_dir().'/vrs_'.uniqid();
+        $dir = $this->uniqueTempPath('vrs_');
         $file = $this->write($dir, 'C.php', <<<'PHP'
         <?php
         class C {
@@ -201,7 +204,7 @@ class ViewRenderScannerTest extends TestCase
 
     public function test_second_argument_that_is_neither_array_nor_compact_yields_no_bindings(): void
     {
-        $dir = sys_get_temp_dir().'/vrs_'.uniqid();
+        $dir = $this->uniqueTempPath('vrs_');
         $file = $this->write($dir, 'C.php', <<<'PHP'
         <?php
         class C {
@@ -219,7 +222,7 @@ class ViewRenderScannerTest extends TestCase
 
     public function test_with_array_form_records_binding(): void
     {
-        $dir = sys_get_temp_dir().'/vrs_'.uniqid();
+        $dir = $this->uniqueTempPath('vrs_');
         $file = $this->write($dir, 'C.php', <<<'PHP'
         <?php
         class C {
@@ -240,7 +243,7 @@ class ViewRenderScannerTest extends TestCase
 
     public function test_with_call_with_unrecognized_arity_yields_no_bindings(): void
     {
-        $dir = sys_get_temp_dir().'/vrs_'.uniqid();
+        $dir = $this->uniqueTempPath('vrs_');
         $file = $this->write($dir, 'C.php', <<<'PHP'
         <?php
         class C {

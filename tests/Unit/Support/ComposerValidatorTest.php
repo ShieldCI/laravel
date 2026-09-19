@@ -31,7 +31,7 @@ class ComposerValidatorTest extends TestCase
         $validator = new ComposerValidator;
 
         // Create a temp directory without composer.json
-        $tempDir = sys_get_temp_dir().'/shieldci-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('shieldci-test-');
         mkdir($tempDir);
 
         try {
@@ -52,7 +52,7 @@ class ComposerValidatorTest extends TestCase
         $validator = new ComposerValidator;
 
         // Create a temp directory with invalid composer.json
-        $tempDir = sys_get_temp_dir().'/shieldci-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('shieldci-test-');
         mkdir($tempDir);
         file_put_contents($tempDir.'/composer.json', '{ invalid json }');
 
@@ -88,7 +88,7 @@ class ComposerValidatorTest extends TestCase
         $reflection->setAccessible(true);
 
         // Create a temp directory with a composer.phar
-        $tempDir = sys_get_temp_dir().'/shieldci-phar-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('shieldci-phar-test-');
         mkdir($tempDir);
         file_put_contents($tempDir.'/composer.phar', '<?php echo "fake composer";');
 
@@ -113,7 +113,7 @@ class ComposerValidatorTest extends TestCase
     {
         $validator = new ComposerValidator;
 
-        $tempDir = sys_get_temp_dir().'/shieldci-avail-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('shieldci-avail-test-');
         mkdir($tempDir);
         file_put_contents($tempDir.'/composer.phar', '<?php echo "fake composer";');
 
@@ -132,7 +132,7 @@ class ComposerValidatorTest extends TestCase
         $validator = new ComposerValidator;
 
         // Temp dir with no composer.phar, and an empty PATH so ExecutableFinder finds nothing.
-        $tempDir = sys_get_temp_dir().'/shieldci-noavail-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('shieldci-noavail-test-');
         mkdir($tempDir);
 
         $originalPath = getenv('PATH');
@@ -153,7 +153,7 @@ class ComposerValidatorTest extends TestCase
         $validator = new ComposerValidator;
 
         // Temp dir with no composer.phar, and an empty PATH so ExecutableFinder finds nothing.
-        $tempDir = sys_get_temp_dir().'/shieldci-novalidate-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('shieldci-novalidate-test-');
         mkdir($tempDir);
 
         $originalPath = getenv('PATH');
@@ -178,7 +178,7 @@ class ComposerValidatorTest extends TestCase
         $validator = new ComposerValidator;
 
         // Create a temp directory with minimal composer.json
-        $tempDir = sys_get_temp_dir().'/shieldci-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('shieldci-test-');
         mkdir($tempDir);
         file_put_contents($tempDir.'/composer.json', json_encode([
             'name' => 'test/package',

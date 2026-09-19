@@ -18,7 +18,7 @@ class InlineSuppressionParserTest extends TestCase
     {
         parent::setUp();
         $this->parser = new InlineSuppressionParser;
-        $this->tempDir = sys_get_temp_dir().'/shieldci-suppression-test-'.uniqid();
+        $this->tempDir = $this->uniqueTempPath('shieldci-suppression-test-');
         mkdir($this->tempDir, 0755, true);
     }
 

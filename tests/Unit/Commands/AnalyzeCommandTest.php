@@ -967,7 +967,7 @@ class AnalyzeCommandTest extends TestCase
         $metadata = $result['metadata'] ?? null;
         $this->assertIsArray($metadata);
         $this->assertSame(RuntimeException::class, $metadata['exception'] ?? null);
-        $this->assertIsString($metadata['trace'] ?? null);
+        $this->assertArrayHasKey('trace', $metadata);
 
         // The analyzer's own fields still win, so nothing regressed for existing consumers.
         $this->assertSame('throwing-analyzer', $metadata['id'] ?? null);

@@ -976,6 +976,83 @@ class AnalyzeCommandTest extends TestCase
 
     /** @test */
     #[Test]
+    public function a_credential_on_the_stack_never_reaches_the_report(): void
+    {
+        // analyzers-core#64: a caught exception was recorded with getTraceAsString(), which
+        // renders every frame's arguments, so a credential on the stack when an analyzer threw
+        // was written to the report file and POSTed to /api/reports. Core strips it at the
+        // source now; this asserts our half of the path keeps it stripped - enrichment merging
+        // into that metadata, and saveReport() writing it out.
+        //
+        // Both directives are forced because php.ini-production, which setup-php installs by
+        // default, has both the other way: no frame arguments, and stringified ones truncated
+        // to nothing. With either at its production value this test passes against the very
+        // core that leaked.
+        $ignoreArgs = ini_get('zend.exception_ignore_args');
+        $paramMaxLen = ini_get('zend.exception_string_param_max_len');
+        $this->assertNotFalse($ignoreArgs);
+        $this->assertNotFalse($paramMaxLen);
+
+        try {
+            ini_set('zend.exception_ignore_args', '0');
+            ini_set('zend.exception_string_param_max_len', '15');
+
+            // Proof the forcing took. Without it every assertion below passes for the wrong
+            // reason: PHP never carried the credential into the trace in the first place.
+            $this->assertStringContainsString(
+                AnalyzeCommandThrowingAnalyzer::CREDENTIAL,
+                AnalyzeCommandThrowingAnalyzer::credentialBearingTrace(),
+            );
+
+            $outputPath = $this->uniqueTempPath('shieldci-credential-').'.json';
+            config(['shieldci.report.output_file' => $outputPath]);
+
+            Http::fake([
+                'api.test.shieldci.com/api/reports' => Http::response(['success' => true]),
+            ]);
+
+            $throwingAnalyzer = new AnalyzeCommandThrowingAnalyzer;
+
+            /** @phpstan-ignore-next-line */
+            $this->app->singleton(AnalyzerManager::class, function ($app) use ($throwingAnalyzer) {
+                /** @var MockInterface&AnalyzerManager $manager */
+                $manager = Mockery::mock(AnalyzerManager::class);
+                $manager->shouldReceive('getAnalyzers')->andReturn(collect([$throwingAnalyzer]));
+                $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
+                $manager->shouldReceive('clearParserCache')->andReturn(null);
+
+                return $manager;
+            });
+
+            Artisan::call('shield:analyze', ['--format' => 'json', '--report' => true]);
+
+            $this->assertFileExists($outputPath);
+            $contents = (string) file_get_contents($outputPath);
+            @unlink($outputPath);
+
+            $uploaded = Http::recorded()
+                ->map(fn (array $pair): string => $pair[0]->body())
+                ->implode("\n");
+
+            // The raw document rather than the decoded array: a substring search finds the value
+            // wherever it landed, including keys nothing here thinks to look at.
+            $this->assertStringNotContainsString(AnalyzeCommandThrowingAnalyzer::CREDENTIAL, $contents);
+            $this->assertStringNotContainsString(AnalyzeCommandThrowingAnalyzer::CREDENTIAL, $uploaded);
+
+            // ...and the trace of that very frame did arrive, so the two assertions above are
+            // about redaction and not about a trace that went missing. The frame's function name
+            // survives both the old string rendering and the structured list, so this claims
+            // nothing about which shape analyzers-core produces.
+            $this->assertStringContainsString('parseWithConnection', $contents);
+            $this->assertStringContainsString('parseWithConnection', $uploaded);
+        } finally {
+            ini_set('zend.exception_ignore_args', $ignoreArgs);
+            ini_set('zend.exception_string_param_max_len', $paramMaxLen);
+        }
+    }
+
+    /** @test */
+    #[Test]
     public function a_full_non_streaming_run_reports_time_to_fix(): void
     {
         // The JSON path built a six-key metadata array while every other site built seven,
@@ -5604,9 +5681,22 @@ class AnalyzeCommandAstCacheAnalyzer implements AnalyzerInterface
  * A real analyzer that throws, to exercise the error path the framework builds rather than a
  * hand-made error result: AbstractAnalyzer::analyze() is final and converts any Throwable
  * into an errored result, which is the most common way an error reaches the exit code.
+ *
+ * It throws from a frame whose arguments carry a credential, because that is the shape
+ * analyzers-core#64 leaked: getTraceAsString() rendered every frame's arguments, so a value on
+ * the stack when an analyzer threw was written into the report and POSTed to /api/reports. The
+ * credential is an argument and never part of the message, which is the half a denylist over
+ * free-form text can still miss.
  */
 class AnalyzeCommandThrowingAnalyzer extends AbstractAnalyzer
 {
+    /**
+     * Eleven characters, so it survives zend.exception_string_param_max_len's fifteen-character
+     * truncation, and alphanumeric, so json_encode() does not escape it out of reach of a raw
+     * substring search over the report.
+     */
+    public const CREDENTIAL = 'hunter2pass';
+
     protected function metadata(): AnalyzerMetadata
     {
         return new AnalyzerMetadata(
@@ -5618,7 +5708,26 @@ class AnalyzeCommandThrowingAnalyzer extends AbstractAnalyzer
         );
     }
 
-    protected function runAnalysis(): ResultInterface
+    protected function runAnalysis(): never
+    {
+        $this->parseWithConnection('mysql:host=db.internal;dbname=prod', 'root', self::CREDENTIAL);
+    }
+
+    /**
+     * The analyzer's own throw, rendered the way analyzers-core used to record it. A test asserts
+     * the credential is in here before asserting it is not in the report, so that "absent from
+     * the report" is a finding rather than a php.ini that captured no frame arguments at all.
+     */
+    public static function credentialBearingTrace(): string
+    {
+        try {
+            (new self)->runAnalysis();
+        } catch (RuntimeException $e) {
+            return $e->getTraceAsString();
+        }
+    }
+
+    private function parseWithConnection(string $dsn, string $user, string $password): never
     {
         throw new RuntimeException('parser exploded');
     }

@@ -39,7 +39,7 @@
         "illuminate/view": "^9.0|^10.0|^11.0|^12.0|^13.0",
         "larastan/larastan": "^2.0|^3.0",
         "phpstan/phpstan": "^1.10|^2.0",
-        "shieldci/analyzers-core": "^2.3"
+        "shieldci/analyzers-core": "^2.5"
     },
     "require-dev": {
         "phpunit/phpunit": "^9.0|^10.0|^11.0|^12.0|^13.0",

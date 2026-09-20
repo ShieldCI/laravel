@@ -733,7 +733,7 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
      */
     private function createAnalyzerWithLoggingFixture(array $configValues, ?string $loggingContents): AnalyzerInterface
     {
-        $dir = sys_get_temp_dir().'/shieldci_debuglog_'.uniqid();
+        $dir = $this->uniqueTempPath('shieldci_debuglog_');
         mkdir($dir.'/config', 0777, true);
         $this->tempDirs[] = $dir;
 

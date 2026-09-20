@@ -9,9 +9,12 @@ use Illuminate\Support\Collection;
 use Orchestra\Testbench\TestCase as Orchestra;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\ShieldCIServiceProvider;
+use ShieldCI\Tests\Concerns\CreatesTemporaryPaths;
 
 abstract class TestCase extends Orchestra
 {
+    use CreatesTemporaryPaths;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -45,6 +48,32 @@ abstract class TestCase extends Orchestra
         $config->set('shieldci.token', 'test-token');
         $config->set('shieldci.project_id', 'test-project-id');
         $config->set('shieldci.api_url', 'https://api.test.shieldci.com');
+    }
+
+    /**
+     * Create a uniquely named temporary directory, removed when the test finishes.
+     */
+    protected function makeTempDirectory(string $prefix = 'shieldci_test_'): string
+    {
+        $dir = $this->uniqueTempPath($prefix);
+
+        // No is_dir() fallback: the path carries this process id and eight random bytes,
+        // so it cannot already exist, and treating "it is there already" as success would
+        // hand two tests the same fixture directory. The @ is load-bearing rather than
+        // lazy: Testbench bootstraps HandleExceptions, which rethrows any reported
+        // warning as an ErrorException, so without it mkdir() never returns and the
+        // failure surfaces as an unrelated-looking exception instead of this message.
+        if (! @mkdir($dir, 0755, true)) {
+            throw new \RuntimeException(
+                "Unable to create temporary test directory {$dir}: {$this->lastErrorMessage()}"
+            );
+        }
+
+        $this->beforeApplicationDestroyed(function () use ($dir): void {
+            $this->removeDirectory($dir);
+        });
+
+        return $dir;
     }
 
     /**

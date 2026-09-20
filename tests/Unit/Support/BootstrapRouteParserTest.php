@@ -7,9 +7,12 @@ namespace ShieldCI\Tests\Unit\Support;
 use PHPUnit\Framework\TestCase;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Support\BootstrapRouteParser;
+use ShieldCI\Tests\Concerns\CreatesTemporaryPaths;
 
 class BootstrapRouteParserTest extends TestCase
 {
+    use CreatesTemporaryPaths;
+
     private AstParser $parser;
 
     protected function setUp(): void
@@ -25,7 +28,7 @@ class BootstrapRouteParserTest extends TestCase
      */
     private function createTempDir(array $files = []): string
     {
-        $tempDir = sys_get_temp_dir().'/bootstrap_route_parser_test_'.uniqid();
+        $tempDir = $this->uniqueTempPath('bootstrap_route_parser_test_');
         mkdir($tempDir, 0755, true);
 
         foreach ($files as $filename => $content) {

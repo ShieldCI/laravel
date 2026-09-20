@@ -364,7 +364,7 @@ class AnalyzeCommandTest extends TestCase
 
         // Reached through the config key, which bypasses validateOptions() entirely. The
         // directory exists and is readable, so only the write itself fails.
-        $directory = sys_get_temp_dir().'/shieldci-readonly-'.uniqid();
+        $directory = $this->uniqueTempPath('shieldci-readonly-');
         mkdir($directory, 0555, true);
 
         config(['shieldci.report.output_file' => $directory.'/report.json']);
@@ -389,7 +389,7 @@ class AnalyzeCommandTest extends TestCase
 
         // A regular file where the directory should be: mkdir cannot create it and cannot
         // report that it already exists either.
-        $file = sys_get_temp_dir().'/shieldci-not-a-dir-'.uniqid();
+        $file = $this->uniqueTempPath('shieldci-not-a-dir-');
         touch($file);
 
         config(['shieldci.report.output_file' => $file.'/report.json']);
@@ -938,7 +938,7 @@ class AnalyzeCommandTest extends TestCase
         // AbstractAnalyzer::analyze() records the exception class and stack trace in the
         // result's metadata. Enrichment used to replace that array, so the only account of
         // why an analyzer could not run never reached the report.
-        $outputPath = sys_get_temp_dir().'/shieldci-errored-metadata-'.uniqid().'.json';
+        $outputPath = $this->uniqueTempPath('shieldci-errored-metadata-').'.json';
         config(['shieldci.report.output_file' => $outputPath]);
 
         $throwingAnalyzer = new AnalyzeCommandThrowingAnalyzer;
@@ -980,7 +980,7 @@ class AnalyzeCommandTest extends TestCase
     {
         // The JSON path built a six-key metadata array while every other site built seven,
         // so timeToFix never reached a full --format=json run.
-        $outputPath = sys_get_temp_dir().'/shieldci-time-to-fix-'.uniqid().'.json';
+        $outputPath = $this->uniqueTempPath('shieldci-time-to-fix-').'.json';
         config(['shieldci.report.output_file' => $outputPath]);
 
         $this->registerFailedAnalyzers();
@@ -2288,7 +2288,7 @@ class AnalyzeCommandTest extends TestCase
     {
         $this->registerTestAnalyzers();
 
-        $readOnlyDir = base_path('tests/readonly-'.uniqid());
+        $readOnlyDir = base_path('tests/readonly-'.getmypid().'_'.bin2hex(random_bytes(8)));
         mkdir($readOnlyDir, 0555);
 
         $relativeDir = str_replace(base_path().'/', '', $readOnlyDir);
@@ -2453,7 +2453,7 @@ class AnalyzeCommandTest extends TestCase
 
     private function createTempPhpFile(string $content): string
     {
-        $dir = sys_get_temp_dir().'/shieldci-cmd-test-'.uniqid();
+        $dir = $this->uniqueTempPath('shieldci-cmd-test-');
         mkdir($dir, 0755, true);
         $path = $dir.'/test_'.uniqid().'.php';
         file_put_contents($path, $content);
@@ -4803,7 +4803,7 @@ PHP);
     #[Test]
     public function json_output_includes_suppressed_issues_for_config_suppression(): void
     {
-        $outputPath = sys_get_temp_dir().'/shieldci-suppression-config-test-'.uniqid().'.json';
+        $outputPath = $this->uniqueTempPath('shieldci-suppression-config-test-').'.json';
 
         config([
             'shieldci.fail_on' => 'never',
@@ -4872,7 +4872,7 @@ PHP);
             ],
         );
 
-        $outputPath = sys_get_temp_dir().'/shieldci-suppression-inline-test-'.uniqid().'.json';
+        $outputPath = $this->uniqueTempPath('shieldci-suppression-inline-test-').'.json';
 
         $this->registerManagerWithResults([$result]);
         config([
@@ -4906,8 +4906,8 @@ PHP);
     {
         $this->registerFailedAnalyzers();
 
-        $baselinePath = sys_get_temp_dir().'/test-baseline-suppression-'.uniqid().'.json';
-        $outputPath = sys_get_temp_dir().'/shieldci-suppression-baseline-test-'.uniqid().'.json';
+        $baselinePath = $this->uniqueTempPath('test-baseline-suppression-').'.json';
+        $outputPath = $this->uniqueTempPath('shieldci-suppression-baseline-test-').'.json';
 
         $issueHash = hash('sha256', json_encode([
             'file' => '/app/Vulnerable.php',
@@ -4956,7 +4956,7 @@ PHP);
     #[Test]
     public function json_summary_includes_suppressed_issues_counts(): void
     {
-        $outputPath = sys_get_temp_dir().'/shieldci-suppression-summary-test-'.uniqid().'.json';
+        $outputPath = $this->uniqueTempPath('shieldci-suppression-summary-test-').'.json';
 
         config([
             'shieldci.fail_on' => 'never',
@@ -5008,7 +5008,7 @@ PHP);
     #[Test]
     public function suppressed_issues_is_empty_array_when_no_suppression_occurs(): void
     {
-        $outputPath = sys_get_temp_dir().'/shieldci-suppression-empty-test-'.uniqid().'.json';
+        $outputPath = $this->uniqueTempPath('shieldci-suppression-empty-test-').'.json';
 
         $this->registerTestAnalyzers();
         config(['shieldci.report.output_file' => $outputPath]);
@@ -5271,7 +5271,7 @@ PHP);
     #[Test]
     public function filter_against_baseline_forwards_configuration(): void
     {
-        $outputPath = sys_get_temp_dir().'/shieldci-baseline-cfg-'.uniqid().'.json';
+        $outputPath = $this->uniqueTempPath('shieldci-baseline-cfg-').'.json';
         $baselinePath = base_path('tests/test-config-fwd-baseline.json');
 
         file_put_contents($baselinePath, json_encode([
@@ -5323,7 +5323,7 @@ PHP);
     #[Test]
     public function handle_forwards_configuration_through_suppressed_issues_inject(): void
     {
-        $outputPath = sys_get_temp_dir().'/shieldci-handle-cfg-'.uniqid().'.json';
+        $outputPath = $this->uniqueTempPath('shieldci-handle-cfg-').'.json';
 
         config([
             'shieldci.fail_on' => 'never',

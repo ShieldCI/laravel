@@ -7,12 +7,15 @@ namespace ShieldCI\Tests\Unit\Support;
 use Illuminate\Filesystem\Filesystem;
 use PHPUnit\Framework\TestCase;
 use ShieldCI\Support\Composer;
+use ShieldCI\Tests\Concerns\CreatesTemporaryPaths;
 
 /**
  * @covers \ShieldCI\Support\Composer
  */
 class ComposerTest extends TestCase
 {
+    use CreatesTemporaryPaths;
+
     public function test_find_package_line_number_in_composer_lock(): void
     {
         // Create a composer.lock with package on specific line
@@ -213,7 +216,7 @@ class ComposerTest extends TestCase
 
     public function test_get_lock_file_returns_path_when_exists(): void
     {
-        $tempDir = sys_get_temp_dir().'/composer-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('composer-test-');
         mkdir($tempDir);
         file_put_contents($tempDir.'/composer.lock', '{}');
 
@@ -229,7 +232,7 @@ class ComposerTest extends TestCase
 
     public function test_get_lock_file_returns_null_when_missing(): void
     {
-        $tempDir = sys_get_temp_dir().'/composer-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('composer-test-');
         mkdir($tempDir);
 
         try {
@@ -243,7 +246,7 @@ class ComposerTest extends TestCase
 
     public function test_get_json_file_returns_path_when_exists(): void
     {
-        $tempDir = sys_get_temp_dir().'/composer-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('composer-test-');
         mkdir($tempDir);
         file_put_contents($tempDir.'/composer.json', '{}');
 
@@ -259,7 +262,7 @@ class ComposerTest extends TestCase
 
     public function test_get_json_file_returns_null_when_missing(): void
     {
-        $tempDir = sys_get_temp_dir().'/composer-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('composer-test-');
         mkdir($tempDir);
 
         try {
@@ -273,7 +276,7 @@ class ComposerTest extends TestCase
 
     public function test_get_json_returns_parsed_content(): void
     {
-        $tempDir = sys_get_temp_dir().'/composer-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('composer-test-');
         mkdir($tempDir);
         file_put_contents($tempDir.'/composer.json', json_encode([
             'name' => 'test/package',
@@ -295,7 +298,7 @@ class ComposerTest extends TestCase
 
     public function test_get_json_returns_null_when_no_file(): void
     {
-        $tempDir = sys_get_temp_dir().'/composer-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('composer-test-');
         mkdir($tempDir);
 
         try {
@@ -309,7 +312,7 @@ class ComposerTest extends TestCase
 
     public function test_are_dev_packages_installed_returns_true_when_installed_json_absent(): void
     {
-        $tempDir = sys_get_temp_dir().'/composer-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('composer-test-');
         mkdir($tempDir);
 
         try {
@@ -323,7 +326,7 @@ class ComposerTest extends TestCase
 
     public function test_are_dev_packages_installed_returns_true_when_dev_key_is_true(): void
     {
-        $tempDir = sys_get_temp_dir().'/composer-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('composer-test-');
         mkdir($tempDir.'/vendor/composer', recursive: true);
         file_put_contents(
             $tempDir.'/vendor/composer/installed.json',
@@ -345,7 +348,7 @@ class ComposerTest extends TestCase
     public function test_are_dev_packages_installed_returns_false_when_dev_key_is_false(): void
     {
         // Simulates: `composer install --no-dev` was run (Composer 2.x sets "dev": false)
-        $tempDir = sys_get_temp_dir().'/composer-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('composer-test-');
         mkdir($tempDir.'/vendor/composer', recursive: true);
         file_put_contents(
             $tempDir.'/vendor/composer/installed.json',
@@ -370,7 +373,7 @@ class ComposerTest extends TestCase
             $this->markTestSkipped('Cannot test unreadable file as root — chmod 000 has no effect');
         }
 
-        $tempDir = sys_get_temp_dir().'/composer-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('composer-test-');
         mkdir($tempDir.'/vendor/composer', recursive: true);
         $installedJson = $tempDir.'/vendor/composer/installed.json';
         file_put_contents($installedJson, json_encode(['packages' => [], 'dev' => false]));
@@ -392,7 +395,7 @@ class ComposerTest extends TestCase
     public function test_are_dev_packages_installed_returns_true_when_dev_key_absent(): void
     {
         // Simulates Composer 1.x format: installed.json is a flat array with no "dev" key
-        $tempDir = sys_get_temp_dir().'/composer-test-'.uniqid();
+        $tempDir = $this->uniqueTempPath('composer-test-');
         mkdir($tempDir.'/vendor/composer', recursive: true);
         file_put_contents(
             $tempDir.'/vendor/composer/installed.json',

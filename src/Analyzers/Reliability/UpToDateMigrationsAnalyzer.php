@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\SanitizesErrorMessages;
 
 /**
  * Checks that all migrations are up to date.
@@ -22,6 +23,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
  */
 class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
 {
+    use SanitizesErrorMessages;
+
     /**
      * Migration status checks are deployment-specific, not applicable in CI.
      */
@@ -147,7 +150,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                         recommendation: $this->getDatabaseErrorRecommendation($e),
                         metadata: [
                             'exception' => get_class($e),
-                            'error' => $e->getMessage(),
+                            'error' => $this->sanitizedErrorMessage($e->getMessage()),
                             'error_type' => 'database_connection',
                             'code' => 'database-error',
                         ]
@@ -156,14 +159,14 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                 : $this->failed(
                     'Unable to check migration status',
                     [$this->createIssueWithSnippet(
-                        message: 'Migration status check failed: '.$e->getMessage(),
+                        message: 'Migration status check failed: '.$this->sanitizedErrorMessage($e->getMessage()),
                         filePath: $migrationsPath,
                         lineNumber: null,
                         severity: $this->metadata()->severity,
-                        recommendation: 'Ensure the database connection is working and the migrations table exists. If this is a new installation, run "php artisan migrate:install" followed by "php artisan migrate". Error: '.$e->getMessage(),
+                        recommendation: 'Ensure the database connection is working and the migrations table exists. If this is a new installation, run "php artisan migrate:install" followed by "php artisan migrate". Error: '.$this->sanitizedErrorMessage($e->getMessage()),
                         metadata: [
                             'exception' => get_class($e),
-                            'error' => $e->getMessage(),
+                            'error' => $this->sanitizedErrorMessage($e->getMessage()),
                             'code' => 'migration-check-error',
                         ]
                     )]
@@ -286,7 +289,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
             'Database connection error detected. Ensure your database configuration is correct in config/database.php and .env file. '.
             'Verify the database server is running and accessible. If this is a new installation, run "php artisan migrate:install" to create the migrations table. '.
             'Error: %s',
-            $e->getMessage()
+            $this->sanitizedErrorMessage($e->getMessage())
         );
     }
 }

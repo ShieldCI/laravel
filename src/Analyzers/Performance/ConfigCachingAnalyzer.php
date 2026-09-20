@@ -14,6 +14,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\DetectsDeploymentPlatform;
+use ShieldCI\Concerns\SanitizesErrorMessages;
 
 /**
  * Analyzes configuration caching setup using Laravel's proper API.
@@ -28,6 +29,7 @@ use ShieldCI\Concerns\DetectsDeploymentPlatform;
 class ConfigCachingAnalyzer extends AbstractAnalyzer
 {
     use DetectsDeploymentPlatform;
+    use SanitizesErrorMessages;
 
     /**
      * Config caching checks are not applicable in CI environments.
@@ -99,7 +101,7 @@ class ConfigCachingAnalyzer extends AbstractAnalyzer
             $configIsCached = $this->app->configurationIsCached();
         } catch (\Throwable $e) {
             return $this->error(
-                sprintf('Failed to check configuration cache status: %s', $e->getMessage())
+                sprintf('Failed to check configuration cache status: %s', $this->sanitizedErrorMessage($e->getMessage()))
             );
         }
 

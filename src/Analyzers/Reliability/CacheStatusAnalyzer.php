@@ -14,6 +14,7 @@ use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\MessageHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\SanitizesErrorMessages;
 
 /**
  * Checks that the application cache is working properly.
@@ -26,6 +27,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class CacheStatusAnalyzer extends AbstractFileAnalyzer
 {
+    use SanitizesErrorMessages;
+
     /**
      * Cache connectivity checks are not applicable in CI environments.
      */
@@ -121,7 +124,7 @@ class CacheStatusAnalyzer extends AbstractFileAnalyzer
                     metadata: [
                         'cache_driver' => $this->getCacheDriver(),
                         'exception' => get_class($e),
-                        'error' => $e->getMessage(),
+                        'error' => $this->sanitizedErrorMessage($e->getMessage()),
                     ]
                 )]
             );

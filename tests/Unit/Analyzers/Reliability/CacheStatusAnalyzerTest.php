@@ -554,6 +554,52 @@ PHP;
         $this->assertEquals('Test error', $metadata['error']);
     }
 
+    public function test_redacts_connection_credentials_from_failure_metadata(): void
+    {
+        // The recommendation was already redacted; this metadata key held the same text raw,
+        // and a cache driver that cannot connect names its connection string in the message.
+        $cacheConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'array',
+    'stores' => [
+        'array' => [
+            'driver' => 'array',
+            'serialize' => false,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/cache.php' => $cacheConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        config(['cache.default' => 'array']);
+        config(['cache.stores.array.driver' => 'array']);
+
+        Cache::shouldReceive('put')->andThrow(
+            new RuntimeException('Connection to redis://cacheuser:hunter2pass@10.0.0.7:6379 failed')
+        );
+        Cache::shouldReceive('forget')->andReturnTrue();
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+
+        $error = $issues[0]->metadata['error'] ?? null;
+        $this->assertIsString($error);
+        $this->assertStringNotContainsString('hunter2pass', $error);
+        $this->assertStringNotContainsString('10.0.0.7', $error);
+        $this->assertStringContainsString('failed', $error);
+    }
+
     public function test_includes_driver_info_in_metadata(): void
     {
         $cacheConfig = <<<'PHP'

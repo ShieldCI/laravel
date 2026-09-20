@@ -249,6 +249,34 @@ OUTPUT;
 
     /** @test */
     #[Test]
+    public function test_redacts_connection_credentials_from_the_database_error_recommendation(): void
+    {
+        // A PDO failure names the user and host it failed against, and this recommendation
+        // quotes the message back verbatim.
+        $analyzer = $this->createAnalyzer();
+
+        $error = new \PDOException('Access denied for user "deploy"@"10.0.0.5" password=hunter2pass');
+
+        $reflection = new \ReflectionClass($analyzer);
+        $method = $reflection->getMethod('getDatabaseErrorRecommendation');
+        $method->setAccessible(true);
+
+        $result = $method->invoke($analyzer, $error);
+
+        $this->assertIsString($result);
+        $this->assertStringNotContainsString('hunter2pass', $result);
+        $this->assertStringNotContainsString('10.0.0.5', $result);
+        $this->assertStringContainsString('Access denied', $result);
+
+        // Classification reads the raw message, so it must still recognise this as a database
+        // error even though what gets emitted is redacted.
+        $isDatabaseError = $reflection->getMethod('isDatabaseError');
+        $isDatabaseError->setAccessible(true);
+        $this->assertTrue($isDatabaseError->invoke($analyzer, $error));
+    }
+
+    /** @test */
+    #[Test]
     public function test_gets_migrations_path_uses_database_path_helper(): void
     {
         $analyzer = $this->createAnalyzer();

@@ -14,6 +14,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\ParsesPHPStanResults;
+use ShieldCI\Concerns\SanitizesErrorMessages;
 use ShieldCI\Support\PHPStanRunner;
 
 /**
@@ -44,6 +45,7 @@ use ShieldCI\Support\PHPStanRunner;
 class PHPStanAnalyzer extends AbstractFileAnalyzer
 {
     use ParsesPHPStanResults;
+    use SanitizesErrorMessages;
 
     /**
      * Category key used for errors that match nothing else.
@@ -570,11 +572,8 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
             $categorizedIssues = $this->categorizeIssues($runner->getIssues(), $activeCategories);
         } catch (\Throwable $e) {
             return $this->error(
-                sprintf('PHPStan analysis failed: %s', $e->getMessage()),
-                [
-                    'exception' => get_class($e),
-                    'error_message' => $e->getMessage(),
-                ]
+                sprintf('PHPStan analysis failed: %s', $this->sanitizedErrorMessage($e->getMessage())),
+                ['exception' => get_class($e)]
             );
         }
 

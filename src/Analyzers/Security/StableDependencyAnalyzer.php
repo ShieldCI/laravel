@@ -12,6 +12,7 @@ use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\SanitizesErrorMessages;
 use ShieldCI\Support\Composer;
 use Throwable;
 
@@ -26,6 +27,8 @@ use Throwable;
  */
 class StableDependencyAnalyzer extends AbstractFileAnalyzer
 {
+    use SanitizesErrorMessages;
+
     public function __construct(
         private Composer $composer
     ) {}
@@ -95,7 +98,7 @@ class StableDependencyAnalyzer extends AbstractFileAnalyzer
                 }
             } catch (Throwable $exception) {
                 return $this->error(
-                    sprintf('Unable to verify dependency stability: %s', $exception->getMessage())
+                    sprintf('Unable to verify dependency stability: %s', $this->sanitizedErrorMessage($exception->getMessage()))
                 );
             }
         }

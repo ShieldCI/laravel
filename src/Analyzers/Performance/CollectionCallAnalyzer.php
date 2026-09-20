@@ -10,6 +10,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Concerns\ParsesPHPStanResults;
+use ShieldCI\Concerns\SanitizesErrorMessages;
 use ShieldCI\Support\PHPStanRunner;
 
 /**
@@ -27,6 +28,7 @@ use ShieldCI\Support\PHPStanRunner;
 class CollectionCallAnalyzer extends AbstractFileAnalyzer
 {
     use ParsesPHPStanResults;
+    use SanitizesErrorMessages;
 
     /**
      * Larastan's error identifier for the rule this analyzer reads.
@@ -128,7 +130,7 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             return $this->error(
                 sprintf(
                     'PHPStan analysis failed: %s. Ensure PHPStan and Larastan are properly configured.',
-                    $e->getMessage()
+                    $this->sanitizedErrorMessage($e->getMessage())
                 )
             );
         }

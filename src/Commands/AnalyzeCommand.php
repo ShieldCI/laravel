@@ -18,6 +18,7 @@ use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\Support\InlineSuppressionParser;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Concerns\EnrichesResultMetadata;
+use ShieldCI\Concerns\SanitizesErrorMessages;
 use ShieldCI\Contracts\ClientInterface;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\Enums\AnalysisFailureReason;
@@ -39,6 +40,7 @@ use Symfony\Component\Console\Output\StreamOutput;
 class AnalyzeCommand extends Command
 {
     use EnrichesResultMetadata;
+    use SanitizesErrorMessages;
 
     protected $signature = 'shield:analyze
                             {--analyzer= : Run specific analyzer(s). Comma-separated for multiple (e.g., sql-injection,xss-detection)}
@@ -779,7 +781,11 @@ class AnalyzeCommand extends Command
                 laravelVersion: app()->version(),
                 packageVersion: $this->resolvePackageVersion(),
                 reason: $reason,
-                errorMessage: $errorMessage,
+                // Sanitized here rather than in FailureNotification, which stays a plain value
+                // object. Of the four callers only the uncaught-exception one carries free-form
+                // text; doing it here rather than at that call site makes it the contract every
+                // caller gets, including any added later.
+                errorMessage: $this->sanitizedErrorMessage($errorMessage),
                 triggeredBy: $triggeredBy,
                 occurredAt: new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
                 metadata: $this->buildFailureMetadata(),

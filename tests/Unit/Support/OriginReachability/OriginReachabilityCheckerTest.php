@@ -11,6 +11,7 @@ use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
+use GuzzleHttp\Psr7\Utils;
 use Illuminate\Contracts\Config\Repository;
 use PHPUnit\Framework\Attributes\Test;
 use Psr\Http\Message\RequestInterface;
@@ -143,6 +144,75 @@ class OriginReachabilityCheckerTest extends AnalyzerTestCase
         $this->assertNotNull($probe);
         $this->assertSame(OriginOutcome::ConnectedNon2xx, $probe->outcome);
         $this->assertSame('https://example.com/login', $probe->redirectLocation);
+    }
+
+    /**
+     * A 3xx carries no Location when it is not a redirect at all — a 304 Not Modified is
+     * the common one. There is nowhere for it to have sent the request, so the origin
+     * answered and that answer is the evidence.
+     */
+    /** @test */
+    #[Test]
+    public function it_treats_a_3xx_without_a_location_as_connected_non_2xx(): void
+    {
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(304, ['ETag' => '"abc123"'])])
+        );
+
+        $report = $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])]);
+        $probe = $report->probeFor('https://example.com');
+
+        $this->assertNotNull($probe);
+        $this->assertSame(OriginOutcome::ConnectedNon2xx, $probe->outcome);
+        $this->assertNull($probe->redirectLocation);
+        $this->assertSame('"abc123"', $probe->header('etag'));
+        $this->assertTrue($probe->hasEvidence());
+    }
+
+    /**
+     * A relative Location names no host, so the redirect stays on the origin that was
+     * probed and must not be reported as having handed the request elsewhere.
+     */
+    /** @test */
+    #[Test]
+    public function it_treats_a_relative_redirect_as_staying_on_the_origin(): void
+    {
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(302, ['Location' => '/login'])])
+        );
+
+        $report = $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])]);
+        $probe = $report->probeFor('https://example.com');
+
+        $this->assertNotNull($probe);
+        $this->assertSame(OriginOutcome::ConnectedNon2xx, $probe->outcome);
+        $this->assertSame('/login', $probe->redirectLocation);
+    }
+
+    /**
+     * The status and the headers are evidence in their own right. A body that cannot be
+     * read costs the body prefix and nothing else — it must not throw the probe away, or
+     * an unreadable body would look the same as an origin that never answered.
+     */
+    /** @test */
+    #[Test]
+    public function it_keeps_the_status_and_headers_when_the_body_cannot_be_read(): void
+    {
+        $body = Utils::streamFor('never readable');
+        $response = new Response(200, ['X-Frame-Options' => 'DENY'], $body);
+        $body->detach();
+
+        $checker = new OriginReachabilityChecker($this->clientReplaying([$response]));
+
+        $report = $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])]);
+        $probe = $report->probeFor('https://example.com');
+
+        $this->assertNotNull($probe);
+        $this->assertSame(OriginOutcome::Connected2xx, $probe->outcome);
+        $this->assertSame(200, $probe->statusCode);
+        $this->assertSame('DENY', $probe->header('X-Frame-Options'));
+        $this->assertNull($probe->bodyPrefix);
+        $this->assertTrue($probe->hasEvidence());
     }
 
     /** @test */
@@ -387,6 +457,41 @@ class OriginReachabilityCheckerTest extends AnalyzerTestCase
         $this->assertTrue($probe->loopback);
         $this->assertSame([], $report->loopbackInProduction());
         $this->assertSame(Status::Passed, $report->status());
+    }
+
+    /**
+     * localhost is only one of the spellings that name this machine. An IPv6 loopback or a
+     * wildcard bind address is the same finding in production, and missing one of them
+     * would let exactly the case this guards against slip through.
+     */
+    /** @test */
+    #[Test]
+    public function it_recognises_every_loopback_spelling_as_this_machine(): void
+    {
+        $checker = new OriginReachabilityChecker($this->clientReplaying([
+            new Response(200, [], 'ok'),
+            new Response(200, [], 'ok'),
+            new Response(200, [], 'ok'),
+        ]));
+
+        $report = $checker->probe([
+            new DeclaredOrigin('http://[::1]:8000', [DeclaredOrigin::SOURCE_APP_URL]),
+            new DeclaredOrigin('http://0.0.0.0:8080', [DeclaredOrigin::SOURCE_ASSET_URL]),
+            new DeclaredOrigin('https://app.example.com', [DeclaredOrigin::SOURCE_VITE_MANIFEST]),
+        ], 'production');
+
+        $ipv6 = $report->probeFor('http://[::1]:8000');
+        $wildcard = $report->probeFor('http://0.0.0.0:8080');
+        $public = $report->probeFor('https://app.example.com');
+
+        $this->assertNotNull($ipv6);
+        $this->assertNotNull($wildcard);
+        $this->assertNotNull($public);
+        $this->assertTrue($ipv6->loopback);
+        $this->assertTrue($wildcard->loopback);
+        $this->assertFalse($public->loopback);
+        $this->assertCount(2, $report->loopbackInProduction());
+        $this->assertSame(Status::Warning, $report->status());
     }
 
     /**

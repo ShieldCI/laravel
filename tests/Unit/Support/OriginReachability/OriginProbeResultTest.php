@@ -6,6 +6,7 @@ namespace ShieldCI\Tests\Unit\Support\OriginReachability;
 
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use ShieldCI\AnalyzersCore\Enums\Status;
 use ShieldCI\Support\OriginReachability\DeclaredOrigin;
 use ShieldCI\Support\OriginReachability\OriginOutcome;
 use ShieldCI\Support\OriginReachability\OriginProbeResult;
@@ -138,6 +139,33 @@ class OriginProbeResultTest extends TestCase
         $this->assertSame('app.url', $origin->describeSources());
         $this->assertSame('an unnamed declaration', (new DeclaredOrigin('https://example.com'))->describeSources());
         $this->assertSame('', (new DeclaredOrigin('not-a-url'))->host());
+    }
+
+    /**
+     * A failure that carried no message still has to produce a finding that names the
+     * outcome. Reporting an empty reason would leave the reader unable to tell an
+     * unreachable origin from a reached one.
+     */
+    /** @test */
+    #[Test]
+    public function a_report_states_the_outcome_when_a_failure_carried_no_message(): void
+    {
+        $report = new OriginReachabilityReport([
+            new OriginProbeResult(
+                declaredOrigin: new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL]),
+                probedUrl: 'https://example.com/',
+                outcome: OriginOutcome::TransportFailure,
+            ),
+        ]);
+
+        $findings = $report->findings();
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(
+            'https://example.com (declared by app.url) could not be reached — transport failure. No evidence was obtained about this origin.',
+            $findings[0]
+        );
+        $this->assertSame(Status::Warning, $report->status());
     }
 
     /** @test */

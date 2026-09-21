@@ -199,6 +199,24 @@ class DeclaredOriginResolverTest extends AnalyzerTestCase
     }
 
     /**
+     * A URL malformed enough that parse_url() refuses it outright — a non-numeric port is
+     * the everyday way to get there, usually an unsubstituted placeholder in an env file.
+     * It declares no origin, so nothing is probed for it.
+     */
+    /** @test */
+    #[Test]
+    public function it_ignores_a_declaration_that_cannot_be_parsed_at_all(): void
+    {
+        $basePath = $this->createTempDirectory(['composer.json' => '{}']);
+
+        $this->assertFalse(parse_url('http://example.com:port'), 'fixture must be unparseable for this test to mean anything');
+
+        $origins = $this->resolver()->resolve($basePath, 'http://example.com:port', 'https://');
+
+        $this->assertSame([], $this->originStrings($origins));
+    }
+
+    /**
      * Nothing declared is itself the absence of evidence, not a pass: the resolver says so
      * by returning no origins, and the report turns that into a warning.
      */

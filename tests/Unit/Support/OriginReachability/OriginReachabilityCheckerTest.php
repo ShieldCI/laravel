@@ -1,0 +1,591 @@
+<?php
+
+declare(strict_types=1);
+
+namespace ShieldCI\Tests\Unit\Support\OriginReachability;
+
+use GuzzleHttp\Client;
+use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
+use GuzzleHttp\Psr7\Request;
+use GuzzleHttp\Psr7\Response;
+use Illuminate\Contracts\Config\Repository;
+use PHPUnit\Framework\Attributes\Test;
+use Psr\Http\Message\RequestInterface;
+use Psr\Http\Message\ResponseInterface;
+use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Status;
+use ShieldCI\Support\OriginReachability\DeclaredOrigin;
+use ShieldCI\Support\OriginReachability\OriginOutcome;
+use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
+use ShieldCI\Tests\AnalyzerTestCase;
+
+/**
+ * Extends AnalyzerTestCase only for createTempDirectory(); there is no analyzer here, the
+ * same way SeededTableScannerTest borrows the fixture helper.
+ */
+class OriginReachabilityCheckerTest extends AnalyzerTestCase
+{
+    protected function createAnalyzer(): AnalyzerInterface
+    {
+        throw new \LogicException('No analyzer under test.');
+    }
+
+    /**
+     * Build a client whose handler replays the queued responses (or throws the queued
+     * exceptions) in order, and record every request it is asked to send so tests can
+     * assert on how many probes actually left the helper.
+     *
+     * Requests are recorded by a middleware of our own rather than Guzzle's history
+     * middleware, which takes its container as a widened array|ArrayAccess reference; this
+     * keeps $recorded a plain list of requests the assertions can count.
+     *
+     * @param  array<int, ResponseInterface|\Throwable>  $queue
+     * @param  array<int, RequestInterface>  $recorded
+     *
+     * @param-out array<int, RequestInterface> $recorded
+     */
+    private function clientReplaying(array $queue, array &$recorded = []): Client
+    {
+        $stack = HandlerStack::create(new MockHandler($queue));
+
+        $stack->push(static function (callable $handler) use (&$recorded): callable {
+            return static function (RequestInterface $request, array $options) use ($handler, &$recorded) {
+                $recorded[] = $request;
+
+                return $handler($request, $options);
+            };
+        });
+
+        return new Client(['handler' => $stack]);
+    }
+
+    /**
+     * A transport-level failure as Guzzle's cURL handler reports one.
+     *
+     * The cURL error number lives in the message text on purpose: Guzzle 8 dropped the
+     * handler context that used to carry it, and this package supports Guzzle 7 and 8, so
+     * the text is the only place both majors put it.
+     */
+    private function connectException(string $message): ConnectException
+    {
+        return new ConnectException($message, new Request('GET', 'https://example.com/'));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_classifies_a_2xx_response_as_connected(): void
+    {
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, ['X-Frame-Options' => 'DENY'], 'hello world')])
+        );
+
+        $report = $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])]);
+
+        $probe = $report->probeFor('https://example.com');
+
+        $this->assertNotNull($probe);
+        $this->assertSame(OriginOutcome::Connected2xx, $probe->outcome);
+        $this->assertSame(200, $probe->statusCode);
+        $this->assertSame('DENY', $probe->header('x-frame-options'));
+        $this->assertSame('hello world', $probe->bodyPrefix);
+        $this->assertTrue($probe->hasEvidence());
+    }
+
+    /** @test */
+    #[Test]
+    public function it_classifies_a_non_2xx_response_as_connected_but_not_ok(): void
+    {
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(503, ['Retry-After' => '120'], 'maintenance')])
+        );
+
+        $report = $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])]);
+        $probe = $report->probeFor('https://example.com');
+
+        $this->assertNotNull($probe);
+        $this->assertSame(OriginOutcome::ConnectedNon2xx, $probe->outcome);
+        $this->assertSame(503, $probe->statusCode);
+        $this->assertSame('120', $probe->header('Retry-After'));
+        $this->assertTrue($probe->hasEvidence());
+    }
+
+    /** @test */
+    #[Test]
+    public function it_classifies_a_redirect_to_another_host_as_redirected_off_host(): void
+    {
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(302, ['Location' => 'https://cdn.elsewhere.test/home'])])
+        );
+
+        $report = $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])]);
+        $probe = $report->probeFor('https://example.com');
+
+        $this->assertNotNull($probe);
+        $this->assertSame(OriginOutcome::RedirectedOffHost, $probe->outcome);
+        $this->assertSame('https://cdn.elsewhere.test/home', $probe->redirectLocation);
+        $this->assertSame(302, $probe->statusCode);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_treats_a_redirect_that_stays_on_the_same_host_as_connected_non_2xx(): void
+    {
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(301, ['Location' => 'https://example.com/login'])])
+        );
+
+        $report = $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])]);
+        $probe = $report->probeFor('https://example.com');
+
+        $this->assertNotNull($probe);
+        $this->assertSame(OriginOutcome::ConnectedNon2xx, $probe->outcome);
+        $this->assertSame('https://example.com/login', $probe->redirectLocation);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_classifies_a_certificate_failure_as_a_tls_failure(): void
+    {
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([$this->connectException('cURL error 60: SSL certificate problem: self signed certificate')])
+        );
+
+        $report = $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])]);
+        $probe = $report->probeFor('https://example.com');
+
+        $this->assertNotNull($probe);
+        $this->assertSame(OriginOutcome::TlsFailure, $probe->outcome);
+        $this->assertFalse($probe->hasEvidence());
+        $this->assertNull($probe->statusCode);
+        $this->assertStringContainsString('SSL certificate problem', (string) $probe->failureMessage);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_classifies_an_unresolvable_host_as_a_dns_failure(): void
+    {
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([$this->connectException('cURL error 6: Could not resolve host: example.invalid')])
+        );
+
+        $report = $checker->probe([new DeclaredOrigin('https://example.invalid', [DeclaredOrigin::SOURCE_APP_URL])]);
+        $probe = $report->probeFor('https://example.invalid');
+
+        $this->assertNotNull($probe);
+        $this->assertSame(OriginOutcome::DnsFailure, $probe->outcome);
+        $this->assertFalse($probe->hasEvidence());
+    }
+
+    /** @test */
+    #[Test]
+    public function it_classifies_a_refused_connection_as_connection_refused(): void
+    {
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([$this->connectException('cURL error 7: Failed to connect to example.com port 443: Connection refused')])
+        );
+
+        $report = $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])]);
+        $probe = $report->probeFor('https://example.com');
+
+        $this->assertNotNull($probe);
+        $this->assertSame(OriginOutcome::ConnectionRefused, $probe->outcome);
+        $this->assertFalse($probe->hasEvidence());
+    }
+
+    /** @test */
+    #[Test]
+    public function it_classifies_an_expired_request_as_a_timeout(): void
+    {
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([$this->connectException('cURL error 28: Operation timed out after 10000 milliseconds')])
+        );
+
+        $report = $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])]);
+        $probe = $report->probeFor('https://example.com');
+
+        $this->assertNotNull($probe);
+        $this->assertSame(OriginOutcome::Timeout, $probe->outcome);
+        $this->assertFalse($probe->hasEvidence());
+    }
+
+    /** @test */
+    #[Test]
+    public function it_classifies_transport_errors_it_cannot_name_without_pretending_to_know_which_one(): void
+    {
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([$this->connectException('cURL error 55: Failed sending data to the peer')])
+        );
+
+        $report = $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])]);
+        $probe = $report->probeFor('https://example.com');
+
+        $this->assertNotNull($probe);
+        $this->assertSame(OriginOutcome::TransportFailure, $probe->outcome);
+        $this->assertFalse($probe->hasEvidence());
+    }
+
+    /**
+     * The cURL error number decides, not the wording: libcurl's text varies by version and
+     * platform, so a message carrying none of the familiar phrases must still land in the
+     * right state.
+     */
+    /** @test */
+    #[Test]
+    public function it_names_a_failure_from_the_curl_error_number_alone(): void
+    {
+        $checker = new OriginReachabilityChecker($this->clientReplaying([
+            $this->connectException('cURL error 35: handshake failure alert'),
+            $this->connectException('cURL error 7: unable to reach the host'),
+        ]));
+
+        $report = $checker->probe([
+            new DeclaredOrigin('https://handshake.test', [DeclaredOrigin::SOURCE_APP_URL]),
+            new DeclaredOrigin('https://unreachable.test', [DeclaredOrigin::SOURCE_ASSET_URL]),
+        ]);
+
+        $handshake = $report->probeFor('https://handshake.test');
+        $unreachable = $report->probeFor('https://unreachable.test');
+
+        $this->assertNotNull($handshake);
+        $this->assertNotNull($unreachable);
+        $this->assertSame(OriginOutcome::TlsFailure, $handshake->outcome);
+        $this->assertSame(OriginOutcome::ConnectionRefused, $unreachable->outcome);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_classifies_transport_errors_from_handlers_that_report_no_errno(): void
+    {
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([$this->connectException('php_network_getaddresses: getaddrinfo failed: Name or service not known')])
+        );
+
+        $report = $checker->probe([new DeclaredOrigin('https://example.invalid', [DeclaredOrigin::SOURCE_APP_URL])]);
+        $probe = $report->probeFor('https://example.invalid');
+
+        $this->assertNotNull($probe);
+        $this->assertSame(OriginOutcome::DnsFailure, $probe->outcome);
+    }
+
+    /**
+     * The reason this helper exists. A probe that never reached anything must not be
+     * reportable as success: an analyzer that turns silence into a pass is the defect
+     * being removed, so the only honest verdict from zero responses is a warning that
+     * says no evidence was obtained.
+     */
+    /** @test */
+    #[Test]
+    public function it_never_reports_passed_when_no_response_was_obtained(): void
+    {
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([$this->connectException('cURL error 6: Could not resolve host: example.com')])
+        );
+
+        $report = $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])]);
+
+        $this->assertSame(Status::Warning, $report->status());
+        $this->assertFalse($report->hasEvidence());
+        $this->assertCount(1, $report->withoutEvidence());
+        $this->assertSame([], $report->withEvidence());
+        $this->assertStringContainsString('no evidence', strtolower(implode(' ', $report->findings())));
+        $this->assertStringContainsString('https://example.com', implode(' ', $report->findings()));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_never_reports_passed_when_nothing_was_declared(): void
+    {
+        $checker = new OriginReachabilityChecker($this->clientReplaying([]));
+
+        $report = $checker->probe([]);
+
+        $this->assertSame(Status::Warning, $report->status());
+        $this->assertFalse($report->hasEvidence());
+        $this->assertStringContainsString('no evidence', strtolower(implode(' ', $report->findings())));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_never_reports_passed_when_only_some_origins_answered(): void
+    {
+        $checker = new OriginReachabilityChecker($this->clientReplaying([
+            new Response(200, [], 'ok'),
+            $this->connectException('cURL error 7: Connection refused'),
+        ]));
+
+        $report = $checker->probe([
+            new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL]),
+            new DeclaredOrigin('https://assets.example.net', [DeclaredOrigin::SOURCE_ASSET_URL]),
+        ]);
+
+        $this->assertSame(Status::Warning, $report->status());
+        $this->assertTrue($report->hasEvidence());
+        $this->assertCount(1, $report->withEvidence());
+        $this->assertCount(1, $report->withoutEvidence());
+        $this->assertStringContainsString('https://assets.example.net', implode(' ', $report->findings()));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_reports_passed_when_every_declared_origin_answered(): void
+    {
+        $checker = new OriginReachabilityChecker($this->clientReplaying([
+            new Response(200, [], 'ok'),
+            new Response(503, [], 'down'),
+        ]));
+
+        $report = $checker->probe([
+            new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL]),
+            new DeclaredOrigin('https://assets.example.net', [DeclaredOrigin::SOURCE_ASSET_URL]),
+        ]);
+
+        // A 503 is still evidence: the origin answered, and what it answered is for the
+        // calling rule to judge. The report only says whether a response was captured.
+        $this->assertSame(Status::Passed, $report->status());
+        $this->assertSame([], $report->findings());
+        $this->assertTrue($report->hasEvidence());
+    }
+
+    /** @test */
+    #[Test]
+    public function it_treats_a_production_app_url_on_localhost_as_a_finding_of_its_own(): void
+    {
+        $checker = new OriginReachabilityChecker($this->clientReplaying([new Response(200, [], 'ok')]));
+
+        $report = $checker->probe(
+            [new DeclaredOrigin('http://localhost', [DeclaredOrigin::SOURCE_APP_URL])],
+            'production'
+        );
+
+        $probe = $report->probeFor('http://localhost');
+
+        $this->assertNotNull($probe);
+        $this->assertTrue($probe->loopback);
+        $this->assertSame(Status::Warning, $report->status());
+        $this->assertCount(1, $report->loopbackInProduction());
+        $this->assertStringContainsString('app.url', implode(' ', $report->findings()));
+        $this->assertStringContainsString('localhost', implode(' ', $report->findings()));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_accepts_a_loopback_origin_outside_production(): void
+    {
+        $checker = new OriginReachabilityChecker($this->clientReplaying([new Response(200, [], 'ok')]));
+
+        $report = $checker->probe(
+            [new DeclaredOrigin('http://127.0.0.1:8000', [DeclaredOrigin::SOURCE_APP_URL])],
+            'local'
+        );
+
+        $probe = $report->probeFor('http://127.0.0.1:8000');
+
+        $this->assertNotNull($probe);
+        $this->assertTrue($probe->loopback);
+        $this->assertSame([], $report->loopbackInProduction());
+        $this->assertSame(Status::Passed, $report->status());
+    }
+
+    /**
+     * De-duplication: several declarations naming the same host must cost one request,
+     * not one per declaration.
+     */
+    /** @test */
+    #[Test]
+    public function it_makes_one_request_for_two_declarations_sharing_a_host(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'ok')], $recorded)
+        );
+
+        $report = $checker->probe([
+            new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL]),
+            new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_ASSET_URL]),
+        ]);
+
+        $this->assertCount(1, $recorded);
+        $this->assertCount(1, $report->probes());
+
+        $probe = $report->probeFor('https://example.com');
+        $this->assertNotNull($probe);
+        $this->assertSame(
+            [DeclaredOrigin::SOURCE_APP_URL, DeclaredOrigin::SOURCE_ASSET_URL],
+            $probe->declaredOrigin->sources
+        );
+    }
+
+    /** @test */
+    #[Test]
+    public function it_probes_an_origin_once_even_when_asked_a_second_time(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'ok')], $recorded)
+        );
+
+        $origins = [new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])];
+
+        $first = $checker->probe($origins);
+        $second = $checker->probe($origins);
+
+        $this->assertCount(1, $recorded);
+        $this->assertEquals($first->probes(), $second->probes());
+    }
+
+    /** @test */
+    #[Test]
+    public function it_attributes_a_reused_probe_to_every_declaration_that_named_the_origin(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'ok')], $recorded)
+        );
+
+        $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])]);
+        $report = $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_ASSET_URL])]);
+
+        $probe = $report->probeFor('https://example.com');
+
+        $this->assertCount(1, $recorded);
+        $this->assertNotNull($probe);
+        $this->assertSame([DeclaredOrigin::SOURCE_ASSET_URL], $probe->declaredOrigin->sources);
+        $this->assertSame(200, $probe->statusCode);
+    }
+
+    /**
+     * Constructed with no client and no resolver it builds its own, and still sends
+     * nothing when there is nothing declared — so this makes no network call.
+     */
+    /** @test */
+    #[Test]
+    public function it_builds_its_own_client_and_resolver_when_none_are_injected(): void
+    {
+        $basePath = $this->createTempDirectory(['composer.json' => '{}']);
+
+        $report = (new OriginReachabilityChecker)->check($basePath, null, null);
+
+        $this->assertSame([], $report->probes());
+        $this->assertSame(Status::Warning, $report->status());
+    }
+
+    /** @test */
+    #[Test]
+    public function it_sends_one_unauthenticated_get_that_does_not_follow_redirects(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(302, ['Location' => 'https://elsewhere.test/'])], $recorded)
+        );
+
+        $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])]);
+
+        $this->assertCount(1, $recorded);
+
+        $request = $recorded[0];
+
+        $this->assertSame('GET', $request->getMethod());
+        $this->assertSame('https://example.com/', (string) $request->getUri());
+        $this->assertFalse($request->hasHeader('Authorization'));
+        $this->assertFalse($request->hasHeader('Cookie'));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_checks_every_origin_the_application_declares_in_its_configuration(): void
+    {
+        $manifest = json_encode([
+            'resources/js/app.js' => ['file' => 'https://cdn.example.net/build/app-abc123.js'],
+        ]);
+
+        $basePath = $this->createTempDirectory([
+            'composer.json' => '{}',
+            'public/build/manifest.json' => $manifest,
+        ]);
+
+        $config = $this->configWith([
+            'app.url' => 'https://example.com',
+            'app.asset_url' => 'https://example.com/assets',
+            'app.env' => 'production',
+        ]);
+
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'app'), new Response(200, [], 'cdn')], $recorded)
+        );
+
+        $report = $checker->checkApplication($basePath, $config);
+
+        // app.url and app.asset_url share a host, so they cost one request between them.
+        $this->assertCount(2, $recorded);
+        $this->assertSame(Status::Passed, $report->status());
+        $this->assertSame('production', $report->environment());
+
+        $app = $report->probeFor('https://example.com');
+        $this->assertNotNull($app);
+        $this->assertSame(
+            [DeclaredOrigin::SOURCE_APP_URL, DeclaredOrigin::SOURCE_ASSET_URL],
+            $app->declaredOrigin->sources
+        );
+
+        $cdn = $report->probeFor('https://cdn.example.net');
+        $this->assertNotNull($cdn);
+        $this->assertSame([DeclaredOrigin::SOURCE_VITE_MANIFEST], $cdn->declaredOrigin->sources);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_warns_without_sending_anything_when_configuration_declares_no_origin(): void
+    {
+        $basePath = $this->createTempDirectory(['composer.json' => '{}']);
+
+        $config = $this->configWith(['app.url' => null, 'app.asset_url' => null, 'app.env' => 'production']);
+
+        $recorded = [];
+        $checker = new OriginReachabilityChecker($this->clientReplaying([], $recorded));
+
+        $report = $checker->checkApplication($basePath, $config);
+
+        $this->assertSame([], $recorded);
+        $this->assertSame(Status::Warning, $report->status());
+        $this->assertFalse($report->hasEvidence());
+    }
+
+    /** @test */
+    #[Test]
+    public function it_flags_a_production_app_url_that_points_at_this_machine(): void
+    {
+        $basePath = $this->createTempDirectory(['composer.json' => '{}']);
+
+        $config = $this->configWith([
+            'app.url' => 'http://localhost',
+            'app.asset_url' => null,
+            'app.env' => 'production',
+        ]);
+
+        $checker = new OriginReachabilityChecker($this->clientReplaying([new Response(200, [], 'ok')]));
+
+        $report = $checker->checkApplication($basePath, $config);
+
+        $this->assertSame(Status::Warning, $report->status());
+        $this->assertCount(1, $report->loopbackInProduction());
+    }
+
+    /**
+     * @param  array<string, string|null>  $values
+     */
+    private function configWith(array $values): Repository
+    {
+        /** @var Repository $config */
+        $config = $this->app->make('config');
+
+        foreach ($values as $key => $value) {
+            $config->set($key, $value);
+        }
+
+        return $config;
+    }
+}

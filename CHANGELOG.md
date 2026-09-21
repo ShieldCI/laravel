@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.15.3
+
+### Changed
+- Requires `shieldci/analyzers-core ^2.5` (was `^2.3`), so a failed analyzer's stack trace no longer records each frame's arguments (#398)
+
+### Fixed
+- `method-length` no longer loses a method's declarative exemption to a leading assignment or a trailing comment (#394)
+- `method-length` exempts up to 15 declarative statements rather than 5, so six `RateLimiter::for()` blocks are no longer flagged (#394)
+- An analyzer that catches its own failure truncates and redacts the message, so `database-status` no longer reports a raw PDO error (#401)
+
 ## v1.15.2
 
 ### Fixed

@@ -13,6 +13,7 @@ use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
 use ShieldCI\AnalyzersCore\Support\MessageHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\SanitizesErrorMessages;
 use ShieldCI\Support\DatabaseConnectionChecker;
 use ShieldCI\Support\DatabaseConnectionResult;
 
@@ -26,6 +27,8 @@ use ShieldCI\Support\DatabaseConnectionResult;
  */
 class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
 {
+    use SanitizesErrorMessages;
+
     /**
      * Database connectivity checks are not applicable in CI environments.
      */
@@ -70,7 +73,11 @@ class DatabaseStatusAnalyzer extends AbstractFileAnalyzer
                 $severity = $this->determineSeverity($connectionName, $defaultConnection, $result);
 
                 $issues[] = $this->createIssue(
-                    message: $result->message ?? "Cannot connect to database '{$connectionName}'",
+                    // The raw message stays on $result for isTransientError() and
+                    // buildRecommendation() to match on; only this copy is emitted.
+                    message: $result->message === null
+                        ? "Cannot connect to database '{$connectionName}'"
+                        : $this->sanitizedErrorMessage($result->message),
                     location: $configLocation,
                     severity: $severity,
                     recommendation: $this->buildRecommendation($connectionName, $result),

@@ -119,6 +119,43 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
         $this->assertSame('Unable to determine default database connection', $result->getMessage());
     }
 
+    public function test_redacts_connection_credentials_from_the_issue_message(): void
+    {
+        // The recommendation was already redacted; the issue message carried the same PDO text
+        // verbatim, which is the half that reaches the report.
+        $tempDir = $this->createTempDirectory([
+            'config/database.php' => $this->databaseConfig(),
+        ]);
+
+        $this->applyDatabaseConfig();
+
+        $checker = Mockery::mock(DatabaseConnectionChecker::class);
+        $checker->shouldReceive('check')->andReturn(new DatabaseConnectionResult(
+            false,
+            'SQLSTATE[HY000] [1045] Access denied for user "deploy"@"10.0.0.5" password=hunter2pass',
+            'PDOException'
+        ));
+
+        $analyzer = $this->createAnalyzer($checker);
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringNotContainsString('hunter2pass', $issues[0]->message);
+        $this->assertStringNotContainsString('10.0.0.5', $issues[0]->message);
+
+        // Still says what went wrong - redaction, not suppression.
+        $this->assertStringContainsString('Access denied', $issues[0]->message);
+
+        // And the severity branch still reads the raw message off the result, so the analyzer
+        // has not lost the ability to classify what it just redacted.
+        $this->assertStringContainsString('Access denied', $issues[0]->recommendation);
+    }
+
     public function test_limits_error_message_length_in_recommendation(): void
     {
         $tempDir = $this->createTempDirectory([

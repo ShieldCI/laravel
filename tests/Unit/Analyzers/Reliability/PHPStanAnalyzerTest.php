@@ -9,6 +9,7 @@ use ShieldCI\Analyzers\Reliability\PHPStanAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
+use Symfony\Component\Process\Exception\ProcessTimedOutException;
 
 class PHPStanAnalyzerTest extends AnalyzerTestCase
 {
@@ -572,6 +573,11 @@ PHP;
 
         $this->assertError($result);
         $this->assertStringContainsString('exceeded the timeout of 1', $result->getMessage());
+
+        // The catch used to repeat the same text into an error_message metadata key. Nothing
+        // read it, and it was the one copy that skipped the message sanitizer.
+        $this->assertArrayNotHasKey('error_message', $result->getMetadata());
+        $this->assertSame(ProcessTimedOutException::class, $result->getMetadata()['exception'] ?? null);
     }
 
     public function test_passes_configured_memory_limit_to_phpstan(): void

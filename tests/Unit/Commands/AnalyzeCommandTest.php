@@ -4409,6 +4409,58 @@ PHP);
 
     /** @test */
     #[Test]
+    public function a_failure_notification_carries_no_credentials_from_the_exception(): void
+    {
+        // notifyFailure() is the command's outermost report of why a run died, and the only
+        // one of its callers that passes free-form text is this one.
+        /** @var AnalyzerInterface&MockInterface $throwingAnalyzer */
+        $throwingAnalyzer = Mockery::mock(AnalyzerInterface::class);
+        $throwingAnalyzer->shouldReceive('getId')->andReturn('throwing-analyzer');
+        $throwingAnalyzer->shouldReceive('getMetadata')->andReturn(new AnalyzerMetadata(
+            id: 'throwing-analyzer',
+            name: 'Throwing Analyzer',
+            description: 'An analyzer that throws',
+            category: Category::Security,
+            severity: Severity::High,
+        ));
+        $throwingAnalyzer->shouldReceive('analyze')->andThrow(
+            new RuntimeException('connect failed: mysql://deploy:hunter2pass@10.0.0.5/app')
+        );
+        $throwingAnalyzer->shouldReceive('shouldRun')->andReturn(true);
+        $throwingAnalyzer->shouldReceive('getSkipReason')->andReturn('');
+
+        /** @phpstan-ignore-next-line */
+        $this->app->singleton(AnalyzerManager::class, function () use ($throwingAnalyzer) {
+            /** @var MockInterface&AnalyzerManager $manager */
+            $manager = Mockery::mock(AnalyzerManager::class);
+
+            $manager->shouldReceive('getAnalyzers')->andReturn(collect([$throwingAnalyzer]));
+            $manager->shouldReceive('getByCategory')->with(Mockery::any())->andReturn(collect());
+            $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
+            $manager->shouldReceive('clearParserCache')->andReturn(null);
+
+            return $manager;
+        });
+
+        Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => Http::response(['success' => true]),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json', '--report' => true])->assertFailed();
+
+        $uploaded = Http::recorded()
+            ->map(fn (array $pair): string => $pair[0]->body())
+            ->implode("\n");
+
+        $this->assertStringNotContainsString('hunter2pass', $uploaded);
+        $this->assertStringNotContainsString('10.0.0.5', $uploaded);
+
+        // Still reports the failure rather than swallowing it.
+        $this->assertStringContainsString('connect failed', $uploaded);
+    }
+
+    /** @test */
+    #[Test]
     public function it_silently_handles_failure_notification_api_error(): void
     {
         $this->registerTestAnalyzers();

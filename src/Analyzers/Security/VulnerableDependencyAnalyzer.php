@@ -12,6 +12,7 @@ use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\SanitizesErrorMessages;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryAnalyzerInterface;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryFetcherInterface;
 use ShieldCI\Support\SecurityAdvisories\ComposerDependencyReader;
@@ -27,6 +28,8 @@ use Throwable;
  */
 class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
 {
+    use SanitizesErrorMessages;
+
     public static bool $runInCI = false;
 
     public function __construct(
@@ -69,7 +72,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
         try {
             $dependencies = $this->dependencyReader->read($composerLock);
         } catch (Throwable $exception) {
-            return $this->error('Unable to read composer.lock: '.$exception->getMessage());
+            return $this->error('Unable to read composer.lock: '.$this->sanitizedErrorMessage($exception->getMessage()));
         }
 
         if (empty($dependencies)) {
@@ -78,7 +81,7 @@ class VulnerableDependencyAnalyzer extends AbstractFileAnalyzer
             try {
                 $advisories = $this->advisoryFetcher->fetch($dependencies);
             } catch (Throwable $exception) {
-                return $this->error('Unable to fetch security advisories: '.$exception->getMessage());
+                return $this->error('Unable to fetch security advisories: '.$this->sanitizedErrorMessage($exception->getMessage()));
             }
         }
 

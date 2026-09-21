@@ -12,6 +12,7 @@ use ShieldCI\AnalyzersCore\Support\PlatformDetector;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\DetectsDeploymentPlatform;
+use ShieldCI\Concerns\SanitizesErrorMessages;
 use ShieldCI\Support\Composer;
 
 /**
@@ -29,6 +30,7 @@ use ShieldCI\Support\Composer;
 class UpToDateDependencyAnalyzer extends AbstractAnalyzer
 {
     use DetectsDeploymentPlatform;
+    use SanitizesErrorMessages;
 
     /**
      * Patterns indicating Composer is performing operations (updates available).
@@ -249,7 +251,7 @@ class UpToDateDependencyAnalyzer extends AbstractAnalyzer
             }
         } catch (\Throwable $e) {
             return $this->error(
-                sprintf('Unable to check dependency status: %s', $e->getMessage()),
+                sprintf('Unable to check dependency status: %s', $this->sanitizedErrorMessage($e->getMessage())),
                 []
             );
         }

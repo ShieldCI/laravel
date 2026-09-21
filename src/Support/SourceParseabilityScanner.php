@@ -117,7 +117,14 @@ class SourceParseabilityScanner
         $source = @file_get_contents($absolutePath);
 
         if ($source === false) {
-            return null;
+            // Reported rather than skipped: the suite was going to read this file, and
+            // silence here would be the same silence the helper exists to remove.
+            return new UnparseableFile(
+                path: $relativePath,
+                line: 1,
+                parserMessage: 'File could not be read',
+                cause: ParseFailureCause::Unreadable,
+            );
         }
 
         $lineMap = null;
@@ -206,7 +213,13 @@ class SourceParseabilityScanner
                 continue;
             }
 
-            $relativePath = $this->relativePath($basePath, $file->getPathname());
+            // The iterator is rooted at $absoluteDirectory, so every pathname it yields
+            // starts with it: the remainder is the path below $directory.
+            $relativePath = $directory.'/'.str_replace(
+                '\\',
+                '/',
+                substr($file->getPathname(), strlen($absoluteDirectory) + 1)
+            );
 
             if (! $this->isSkipped($relativePath)) {
                 $files[] = $relativePath;
@@ -239,17 +252,5 @@ class SourceParseabilityScanner
     private function normaliseBasePath(string $basePath): string
     {
         return rtrim($basePath, '/'.DIRECTORY_SEPARATOR);
-    }
-
-    private function relativePath(string $basePath, string $absolutePath): string
-    {
-        $normalised = str_replace('\\', '/', $absolutePath);
-        $prefix = str_replace('\\', '/', $basePath).'/';
-
-        if (str_starts_with($normalised, $prefix)) {
-            return substr($normalised, strlen($prefix));
-        }
-
-        return $normalised;
     }
 }

@@ -8,6 +8,7 @@ use PhpParser\ParserFactory;
 use PhpParser\PhpVersion;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Enums\ParseFailureCause;
+use ShieldCI\Support\BladeCompilerFactory;
 use ShieldCI\Support\SourceParseabilityScanner;
 use ShieldCI\Tests\AnalyzerTestCase;
 
@@ -114,6 +115,10 @@ class SourceParseabilityScannerTest extends AnalyzerTestCase
             ParseFailureCause::UnsupportedSyntax->recommendation()
         );
         $this->assertSame('Unsupported by the pinned parser', ParseFailureCause::UnsupportedSyntax->label());
+
+        // A file that never reached a parser is a third situation with a third fix.
+        $this->assertSame('Unreadable', ParseFailureCause::Unreadable->label());
+        $this->assertStringContainsString('read access', ParseFailureCause::Unreadable->recommendation());
     }
 
     public function test_enumerates_the_directories_and_blade_templates_the_suite_reads(): void
@@ -171,6 +176,59 @@ class SourceParseabilityScannerTest extends AnalyzerTestCase
         $this->assertSame(3, $failures[0]->line);
         $this->assertSame(ParseFailureCause::SyntaxError, $failures[0]->cause);
         $this->assertStringContainsString('Syntax error', $failures[0]->parserMessage);
+    }
+
+    public function test_reports_a_file_it_is_not_allowed_to_read(): void
+    {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->markTestSkipped('Running as root, which bypasses the permission bits this test needs.');
+        }
+
+        $basePath = $this->createTempDirectory([
+            'app/Unreadable.php' => "<?php\n\nclass Unreadable {}\n",
+        ]);
+
+        $path = $basePath.'/app/Unreadable.php';
+        $this->assertTrue(chmod($path, 0000), 'Could not make the fixture unreadable.');
+
+        try {
+            $failures = (new SourceParseabilityScanner)->scan($basePath);
+        } finally {
+            // Restore before the assertions so a failure still leaves a removable fixture.
+            chmod($path, 0644);
+        }
+
+        // The file is enumerated, so staying silent about it would be the very defect
+        // this helper exists to close.
+        $this->assertCount(1, $failures);
+        $this->assertSame('app/Unreadable.php', $failures[0]->path);
+        $this->assertSame(ParseFailureCause::Unreadable, $failures[0]->cause);
+        $this->assertStringContainsString('could not be read', $failures[0]->parserMessage);
+    }
+
+    public function test_reports_a_blade_template_that_cannot_be_compiled_at_all(): void
+    {
+        // @classComponentOpening collides with a BladeCompiler method that requires four
+        // arguments, so compilation throws before any PHP exists to hand to the parser.
+        $template = "<div>\n@classComponentOpening('x')\n</div>\n";
+
+        $this->assertNull(
+            BladeCompilerFactory::compile($template),
+            'Precondition: this template must be one Blade cannot compile.'
+        );
+
+        $basePath = $this->createTempDirectory([
+            'resources/views/uncompilable.blade.php' => $template,
+        ]);
+
+        $failures = (new SourceParseabilityScanner)->scan($basePath);
+
+        $this->assertCount(1, $failures);
+        $this->assertSame('resources/views/uncompilable.blade.php', $failures[0]->path);
+        // No compiled PHP means no line map, so the report falls back to the file itself.
+        $this->assertSame(1, $failures[0]->line);
+        $this->assertStringContainsString('could not be compiled', $failures[0]->parserMessage);
+        $this->assertSame(ParseFailureCause::SyntaxError, $failures[0]->cause);
     }
 
     public function test_a_blade_template_with_valid_php_is_not_reported(): void

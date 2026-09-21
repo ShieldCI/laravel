@@ -19,11 +19,15 @@ enum ParseFailureCause: string
     /** The running PHP accepts this file; the pinned parser is the one that cannot read it. */
     case UnsupportedSyntax = 'unsupported_syntax';
 
+    /** The file never reached a parser at all: its bytes could not be read. */
+    case Unreadable = 'unreadable';
+
     public function label(): string
     {
         return match ($this) {
             self::SyntaxError => 'Syntax error',
             self::UnsupportedSyntax => 'Unsupported by the pinned parser',
+            self::Unreadable => 'Unreadable',
         };
     }
 
@@ -32,6 +36,7 @@ enum ParseFailureCause: string
         return match ($this) {
             self::SyntaxError => 'Fix the syntax error so the file can be analyzed. Until then the file is invisible to every AST-based check.',
             self::UnsupportedSyntax => 'The running PHP accepts this file but the pinned nikic/php-parser does not, so the file uses a language feature newer than the parser. Upgrade nikic/php-parser so the analyzers can read it.',
+            self::Unreadable => 'Grant the user running the analysis read access to this file, or exclude it. Its contents were never loaded, so nothing was checked.',
         };
     }
 }

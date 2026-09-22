@@ -280,6 +280,13 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         }
 
         foreach ($lines as $lineNumber => $line) {
+            // A line inside a block body is PHP the author already owns, so a "<?php" on it is
+            // either their own nested tag or text in a string. The opening line is never
+            // inside, which is what keeps a real raw tag reported against the line that has it.
+            if (isset($phpBlocks['insideBlock'][$lineNumber + 1])) {
+                continue;
+            }
+
             // Suppress Blade component directives (@props, @aware) — they compile to
             // framework-internal PHP (e.g. array_filter for ComponentSlot detection)
             // that would otherwise trigger false-positive "business logic" warnings.

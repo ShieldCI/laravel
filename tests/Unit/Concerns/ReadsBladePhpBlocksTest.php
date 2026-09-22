@@ -142,6 +142,92 @@ class ReadsBladePhpBlocksTest extends TestCase
             'the call form after a tab' => ["@php\t(\$x = 1)\n"],
         ];
     }
+
+    /**
+     * A raw "<?php ... ?>" opens PHP mode exactly as a @php block does, so its body needs the
+     * comment marker form. It is not a @php block, though, so it contributes no "blocks" entry
+     * and can never be an unpaired opener.
+     *
+     * The annotation is not redundant with the attribute: composer allows phpunit ^9
+     * through ^13, and the CI matrix resolves 9 on Laravel 9, which reads only the
+     * annotation, while 12 dropped annotations and reads only the attribute.
+     *
+     * @param  list<int>  $expected
+     *
+     * @dataProvider rawTagProvider
+     */
+    #[DataProvider('rawTagProvider')]
+    public function test_a_raw_php_tag_opens_php_mode(string $blade, array $expected): void
+    {
+        $blocks = ConcreteReadsBladePhpBlocks::read($blade);
+
+        $this->assertSame($expected, array_keys($blocks['insideBlock']));
+        $this->assertSame([], $blocks['blocks']);
+        $this->assertSame([], $blocks['unpairedOpeners']);
+    }
+
+    /**
+     * @return array<string, array{string, list<int>}>
+     */
+    public static function rawTagProvider(): array
+    {
+        return [
+            // The opening line stays outside: a marker goes in front of it, which is still
+            // markup. That is what keeps LogicInBladeAnalyzer reporting the line that has it.
+            'a block spanning lines' => ["<div>\n<?php\n    \$c = 1;\n?>\n</div>\n", [3, 4]],
+            'a block opened and closed on one line' => ["<div>\n<?php \$c = 1; ?>\n</div>\n", []],
+            'two blocks' => ["<?php\n\$a = 1;\n?>\n<p>x</p>\n<?php\n\$b = 2;\n?>\n", [2, 3, 6, 7]],
+            // A pairing regex would close on the close token inside the string and hand the
+            // rest of the body back to the markup marker. PHP's lexer knows it is a string.
+            'a close token inside a string' => ["<div>\n<?php\n    \$s = '?>';\n    \$t = 2;\n?>\n</div>\n", [3, 4, 5]],
+            // Inside a line comment it really does close the mode, so the span ends there.
+            'a close token inside a line comment' => ["<div>\n<?php\n    // ends here ?>\n<p>markup</p>\n</div>\n", [3]],
+            // Nothing closes it, so PHP mode runs to the end of the file.
+            'an opener with no closer' => ["<div>\n<?php\n    \$t = 2;\n", [3, 4]],
+            'the short echo tag' => ["<div>\n<?=\n    \$t\n?>\n</div>\n", [3, 4]],
+        ];
+    }
+
+    /**
+     * A heredoc body takes no marker of either form. An injected line joins the string, and
+     * once the closing identifier is indented it also becomes the body's least indented line,
+     * which makes PHP reject the block outright.
+     *
+     * The annotation is not redundant with the attribute: composer allows phpunit ^9
+     * through ^13, and the CI matrix resolves 9 on Laravel 9, which reads only the
+     * annotation, while 12 dropped annotations and reads only the attribute.
+     *
+     * @param  list<int>  $expected
+     *
+     * @dataProvider heredocProvider
+     */
+    #[DataProvider('heredocProvider')]
+    public function test_a_heredoc_body_takes_no_marker(string $blade, array $expected): void
+    {
+        $blocks = ConcreteReadsBladePhpBlocks::read($blade);
+
+        $this->assertSame($expected, array_keys($blocks['noMarker']));
+
+        // Always a subset of insideBlock, which is why a caller has to test it first.
+        foreach ($expected as $line) {
+            $this->assertArrayHasKey($line, $blocks['insideBlock']);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, list<int>}>
+     */
+    public static function heredocProvider(): array
+    {
+        return [
+            'inside a raw tag' => ["<?php\n    \$s = <<<EOT\n    hi\n    EOT;\n?>\n", [3, 4]],
+            // A @php block carries no PHP tag, so the lexer only sees this one because the
+            // delimiters are swapped for real tags first.
+            'inside a @php block' => ["<div>\n@php\n    \$s = <<<EOT\n    hi\n    EOT;\n@endphp\n</div>\n", [4, 5]],
+            'a nowdoc inside a @php block' => ["<div>\n@php\n    \$s = <<<'EOT'\n    hi\n    EOT;\n@endphp\n</div>\n", [4, 5]],
+            'no heredoc at all' => ["<div>\n@php\n    \$x = 1;\n@endphp\n</div>\n", []],
+        ];
+    }
 }
 
 class ConcreteReadsBladePhpBlocks
@@ -151,6 +237,7 @@ class ConcreteReadsBladePhpBlocks
     /**
      * @return array{
      *     insideBlock: array<int, true>,
+     *     noMarker: array<int, true>,
      *     blocks: list<array{open: int, close: int, size: int}>,
      *     unpairedOpeners: list<int>
      * }

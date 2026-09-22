@@ -407,6 +407,73 @@ class BladeCompilerFactoryTest extends TestCase
     }
 
     /**
+     * PHP mode can already be open where a marker lands, and the markup form then nests an
+     * open tag inside PHP. A @php block and a @switch header were the known cases; a raw
+     * "<?php" the author wrote straight into the template is the third (#415), and a heredoc
+     * body is a place where neither form is safe.
+     *
+     * The annotation is not redundant with the attribute: composer allows phpunit ^9
+     * through ^13, and the CI matrix resolves 9 on Laravel 9, which reads only the
+     * annotation, while 12 dropped annotations and reads only the attribute.
+     *
+     * @dataProvider phpModeTemplateProvider
+     */
+    #[DataProvider('phpModeTemplateProvider')]
+    public function test_php_already_being_open_still_compiles_to_parseable_php(string $blade): void
+    {
+        $result = BladeCompilerFactory::compile($blade);
+
+        $this->assertNotNull($result, 'Blade could not compile a template that is valid.');
+
+        $this->assertNotEmpty(
+            (new AstParser)->parseCode($result['compiledPhp']),
+            'Compiled PHP did not parse, so every AST-based analyzer would skip this template.'
+        );
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function phpModeTemplateProvider(): array
+    {
+        return [
+            'a raw tag spanning lines' => ["<div>\n<?php\n    \$c = 'red';\n?>\n<p>{{ \$c }}</p>\n</div>\n"],
+            'a raw tag on one line' => ["<div>\n<?php \$c = 'red'; ?>\n<p>{{ \$c }}</p>\n</div>\n"],
+            'two raw tags' => ["<div>\n<?php\n\$a = 1;\n?>\n<p>x</p>\n<?php\n\$b = 2;\n?>\n</div>\n"],
+            // Only PHP's lexer knows a close token inside a string does not close the mode.
+            'a close token inside a string' => ["<div>\n<?php\n    \$s = '?>';\n    \$t = 2;\n?>\n<p>{{ \$t }}</p>\n</div>\n"],
+            'a close token inside a block comment' => ["<div>\n<?php\n    /* not a close token */\n    \$t = 2;\n?>\n<p>{{ \$t }}</p>\n</div>\n"],
+            'a raw tag with no closer' => ["<div>\n<?php\n    \$t = 2;\n"],
+            'the short echo tag' => ["<div>\n<?=\n    \$t\n?>\n<p>after</p>\n</div>\n"],
+            // A split @foreach after the raw tag: the continuation tracking has to survive it.
+            'a raw tag before a split directive' => ["<div>\n<?php\n\$u = [];\n?>\n@foreach (\n    \$u as \$x\n)\n{{ \$x }}\n@endforeach\n</div>\n"],
+            'a heredoc inside a raw tag' => ["<div>\n<?php\n    \$s = <<<EOT\n    hi\n    EOT;\n?>\n<p>{{ \$s }}</p>\n</div>\n"],
+            // Indented is the shape that breaks: a marker at column zero becomes the body's
+            // least indented line and PHP rejects the closing identifier.
+            'an indented heredoc inside a @php block' => ["<div>\n@php\n    \$s = <<<EOT\n    hi\n    EOT;\n@endphp\n<p>{{ \$s }}</p>\n</div>\n"],
+            'an indented nowdoc inside a @php block' => ["<div>\n@php\n    \$s = <<<'EOT'\n    hi\n    EOT;\n@endphp\n<p>{{ \$s }}</p>\n</div>\n"],
+        ];
+    }
+
+    /**
+     * A raw tag must not shift what follows it: the markup after the close token keeps its own
+     * Blade line, so a finding there is reported where the author wrote it.
+     */
+    public function test_markup_after_a_raw_tag_keeps_its_own_line(): void
+    {
+        // The raw tag opens on Blade line 2 and closes on 4; the paragraph is line 5.
+        $blade = "<div>\n<?php\n    \$c = 'red';\n?>\n<p>{{ \$c }}</p>\n</div>\n";
+
+        $result = BladeCompilerFactory::compile($blade);
+
+        $this->assertNotNull($result);
+
+        $echo = $this->compiledLineContaining($result['compiledPhp'], 'echo e($c)');
+
+        $this->assertSame(5, $result['lineMap'][$echo] ?? null);
+    }
+
+    /**
      * The 1-indexed compiled line holding $needle.
      */
     private function compiledLineContaining(string $compiledPhp, string $needle): int

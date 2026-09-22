@@ -285,6 +285,92 @@ class BladeCompilerFactoryTest extends TestCase
     }
 
     /**
+     * @switch is the only directive that leaves PHP mode open: it compiles to an open tag that
+     * the first @case closes. A markup marker in between opens PHP inside PHP, so the compiled
+     * output does not parse and both Blade analyzers skip the template without saying so.
+     *
+     * The annotation is not redundant with the attribute: composer allows phpunit ^9
+     * through ^13, and the CI matrix resolves 9 on Laravel 9, which reads only the
+     * annotation, while 12 dropped annotations and reads only the attribute.
+     *
+     * @dataProvider switchTemplateProvider
+     */
+    #[DataProvider('switchTemplateProvider')]
+    public function test_a_switch_still_compiles_to_parseable_php(string $blade): void
+    {
+        $result = BladeCompilerFactory::compile($blade);
+
+        $this->assertNotNull($result, 'Blade could not compile a template that is valid.');
+
+        $this->assertNotEmpty(
+            (new AstParser)->parseCode($result['compiledPhp']),
+            'Compiled PHP did not parse, so every AST-based analyzer would skip this template.'
+        );
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function switchTemplateProvider(): array
+    {
+        return [
+            'one case' => ["<div>\n@switch (\$a)\n@case(1)\n    one\n@break\n@endswitch\n</div>\n"],
+            'several cases and a default' => ["<div>\n@switch (\$a)\n@case(1)\n    one\n@break\n@case(2)\n    two\n@break\n@default\n    other\n@endswitch\n</div>\n"],
+            // Blade's own statement matcher allows horizontal space before the parenthesis.
+            'no space before the parenthesis' => ["<div>\n@switch(\$a)\n@case(1)\n    one\n@break\n@endswitch\n</div>\n"],
+            'switch and case on one line' => ["<div>\n@switch (\$a) @case(1) one @break @endswitch\n</div>\n"],
+            'blank lines before the first case' => ["<div>\n@switch (\$a)\n\n\n@case(1)\n    one\n@break\n@endswitch\n</div>\n"],
+            'a blade comment before the first case' => ["<div>\n@switch (\$a)\n{{-- pick one --}}\n@case(1)\n    one\n@break\n@endswitch\n</div>\n"],
+            'switch with a split expression' => ["<div>\n@switch (\n    \$a\n)\n@case(1)\n    one\n@break\n@endswitch\n</div>\n"],
+            'case with a split expression' => ["<div>\n@switch (\$a)\n@case(\n    1\n)\n    one\n@break\n@endswitch\n</div>\n"],
+            'a switch nested in a case' => ["<div>\n@switch (\$a)\n@case(1)\n@switch (\$b)\n@case(2)\n    two\n@break\n@endswitch\n@break\n@endswitch\n</div>\n"],
+            'a switch inside a foreach' => ["<div>\n@foreach (\$rows as \$row)\n@switch (\$row->type)\n@case(1)\n    {{ \$row->name }}\n@break\n@endswitch\n@endforeach\n</div>\n"],
+            'two switches in one template' => ["<div>\n@switch (\$a)\n@case(1)\n    one\n@break\n@endswitch\n@switch (\$b)\n@case(2)\n    two\n@break\n@endswitch\n</div>\n"],
+            // The call form is self-closing, so the lines after it are still markup and the
+            // switch header that follows has to be recognised from that state.
+            'a switch after an inline @php call' => ["<div>\n@php(\$a = 1)\n@switch (\$a)\n@case(1)\n    one\n@break\n@endswitch\n</div>\n"],
+        ];
+    }
+
+    /**
+     * The first @case is a statement of its own rather than a continuation of the @switch line,
+     * so it keeps its own number instead of inheriting the one above it.
+     */
+    public function test_a_case_keeps_its_own_line_and_does_not_shift_what_follows(): void
+    {
+        // @switch opens on Blade line 2, its first @case is line 3, that case's body line 4,
+        // and the second @case line 6.
+        $blade = "<div>\n    @switch (\$status)\n        @case('a')\n            {{ \$a }}\n            @break\n        @case('b')\n            {{ \$b }}\n            @break\n    @endswitch\n</div>\n";
+
+        $result = BladeCompilerFactory::compile($blade);
+
+        $this->assertNotNull($result);
+
+        $firstCase = $this->compiledLineContaining($result['compiledPhp'], "case ('a')");
+        $firstBody = $this->compiledLineContaining($result['compiledPhp'], 'echo e($a)');
+        $secondCase = $this->compiledLineContaining($result['compiledPhp'], "case ('b')");
+
+        $this->assertSame(3, $result['lineMap'][$firstCase] ?? null);
+        $this->assertSame(4, $result['lineMap'][$firstBody] ?? null);
+        $this->assertSame(6, $result['lineMap'][$secondCase] ?? null);
+    }
+
+    /**
+     * Only the real directive opens a header. An escaped @@switch renders as text, so reading it
+     * as one would leave the comment marker form running through the markup after it.
+     */
+    public function test_an_escaped_switch_does_not_open_a_header(): void
+    {
+        $blade = "<div>\n<p>@@switch (\$a) is written literally</p>\n{{ \$x }}\n<p>after</p>\n</div>\n";
+
+        $result = BladeCompilerFactory::compile($blade);
+
+        $this->assertNotNull($result);
+
+        $this->assertStringNotContainsString('// __BLADE_LINE_', $result['compiledPhp']);
+    }
+
+    /**
      * The 1-indexed compiled line holding $needle.
      */
     private function compiledLineContaining(string $compiledPhp, string $needle): int

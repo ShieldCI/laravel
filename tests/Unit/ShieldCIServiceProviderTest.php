@@ -9,6 +9,7 @@ use PHPUnit\Framework\Attributes\Test;
 use Psr\Log\LoggerInterface;
 use ShieldCI\AnalyzerManager;
 use ShieldCI\Analyzers\BestPractices\ChunkMissingAnalyzer;
+use ShieldCI\Analyzers\BestPractices\EloquentNPlusOneAnalyzer;
 use ShieldCI\Analyzers\BestPractices\FatModelAnalyzer;
 use ShieldCI\Analyzers\BestPractices\LogicInBladeAnalyzer;
 use ShieldCI\Analyzers\BestPractices\ServiceContainerResolutionAnalyzer;
@@ -74,6 +75,7 @@ class ShieldCIServiceProviderTest extends TestCase
             FatModelAnalyzer::class => 'parser',
             ServiceContainerResolutionAnalyzer::class => 'parser',
             ChunkMissingAnalyzer::class => 'parser',
+            EloquentNPlusOneAnalyzer::class => 'parser',
             CsrfAnalyzer::class => 'parser',
             DebugModeAnalyzer::class => 'parser',
             XssAnalyzer::class => 'parser',

@@ -16,6 +16,7 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
@@ -35,8 +36,16 @@ use ShieldCI\Support\ViewRenderScanner;
  */
 class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * @param  AstParser  $parser  Narrowed from ParserInterface because the Blade path names
+     *                             the template it compiled and translates the failing line
+     *                             back to it, and only the concrete parser declares those
+     *                             parameters. PHP passes extra arguments to a userland method
+     *                             without complaint, so a wider hint would let an
+     *                             implementation that ignores both regress this silently.
+     */
     public function __construct(
-        private ParserInterface $parser
+        private AstParser $parser
     ) {}
 
     protected function metadata(): AnalyzerMetadata
@@ -201,7 +210,24 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $ast = $this->parser->parseCode($compiled['compiledPhp']);
+        // The parsed source is compiled output, so name the Blade file it came from and map
+        // any failing compiled line back through the same line map the issue loops below
+        // use. Without both, a template this analyzer silently skips is logged as an
+        // anonymous blob of PHP naming no file, and two such blobs from two templates
+        // collapse into one entry under the content-hash key the parser falls back to.
+        //
+        // The suffix is BladeCompilerFactory's so that logic-in-blade, which compiles the
+        // same templates, produces an identical key: one skipped template, one entry.
+        //
+        // An unmapped line returns 0, which core normalises to a null line. That is
+        // deliberately not what the issue loops do with the same lookup: a finding it cannot
+        // place is dropped, because a wrong Blade line is worse than none, whereas a failure
+        // it cannot place must still be recorded.
+        $ast = $this->parser->parseCode(
+            $compiled['compiledPhp'],
+            $file.BladeCompilerFactory::COMPILED_ORIGIN_SUFFIX,
+            fn (int $compiledLine): int => $compiled['lineMap'][$compiledLine] ?? 0,
+        );
         if ($ast === []) {
             return;
         }

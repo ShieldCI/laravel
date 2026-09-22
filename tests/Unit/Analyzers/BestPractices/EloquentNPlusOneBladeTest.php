@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
+use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\BestPractices\EloquentNPlusOneAnalyzer;
+use ShieldCI\Analyzers\BestPractices\LogicInBladeAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\AnalyzersCore\Enums\ParseFailureCause;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -16,6 +19,19 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
     private const CITY_MODEL = "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass City extends Model { public function airports(){ return \$this->hasMany(Airport::class); } }";
 
     private const AIRPORT_MODEL = "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Airport extends Model {}";
+
+    private const CITY_CONTROLLER = "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\City;\nclass CityController { public function index(){ \$cities = City::all(); return view('cities.index', compact('cities')); } }";
+
+    /**
+     * A template that compiles cleanly but whose compiled PHP will not parse: Blade copies a
+     * block body through verbatim, so an incomplete assignment inside one survives compilation
+     * and only fails at the parser.
+     *
+     * The relationship access on line 5 is not decoration. Without it the template would
+     * report nothing even if it parsed, and the "nothing was reported" assertion below would
+     * hold for the wrong reason.
+     */
+    private const BROKEN_VIEW = "@foreach(\$cities as \$city)\n  @php\n    \$total = ;\n  @endphp\n  {{ \$city->airports->count() }}\n@endforeach\n";
 
     protected function createAnalyzer(): AnalyzerInterface
     {
@@ -465,5 +481,104 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
         $location = $issues[0]->location;
         $this->assertNotNull($location);
         $this->assertStringEndsWith('index.blade.php', $location->file);
+    }
+
+    /**
+     * A template whose compiled PHP will not parse is skipped exactly as before, so nothing
+     * is reported from it. What is new is that the skip is recorded: against the Blade file
+     * it came from, marked as compiled output, and at the Blade line the failure maps to
+     * rather than the compiled-PHP line, which is a line nobody wrote.
+     *
+     * The render site is load-bearing. analyzeBladeFile() returns before it reads or compiles
+     * anything when no scanned file binds a variable into the view, so a fixture without
+     * CityController would prove nothing about the parse. compact('cities') is what registers
+     * the binding; a bare view('cities.index') registers none.
+     *
+     * The parser is this test's own rather than the container singleton, which the analyzer's
+     * required constructor argument makes possible. The whole log can then be asserted on:
+     * three files were parsed and only the compiled template failed.
+     */
+    public function test_a_template_it_cannot_parse_is_recorded_against_that_template(): void
+    {
+        $dir = $this->createTempDirectory([
+            'app/Models/City.php' => self::CITY_MODEL,
+            'app/Models/Airport.php' => self::AIRPORT_MODEL,
+            'app/Http/Controllers/CityController.php' => self::CITY_CONTROLLER,
+            'resources/views/cities/index.blade.php' => self::BROKEN_VIEW,
+        ]);
+
+        $parser = new AstParser;
+        $analyzer = new EloquentNPlusOneAnalyzer($parser);
+        $analyzer->setBasePath($dir);
+        $analyzer->setPaths(['app', 'resources/views']);
+
+        $result = $analyzer->analyze();
+
+        // Unchanged behaviour: no AST means nothing to traverse, so nothing is reported.
+        $this->assertSame([], $this->airportIssues($result));
+
+        $failures = $parser->failures();
+        $this->assertCount(1, $failures, 'One unparseable template must leave exactly one entry.');
+
+        // Spelled out rather than read off BladeCompilerFactory: a test that reused the
+        // constant could not catch the constant changing.
+        $suffix = ' (compiled)';
+        $path = (string) $failures[0]->path;
+
+        $this->assertStringEndsWith($suffix, $path, 'The origin must say the parsed source was compiled output.');
+
+        // Compared through realpath() because the analyzer records the path it was handed,
+        // which on macOS is /var/... where realpath() gives /private/var/....
+        $this->assertSame(
+            (string) realpath($dir.'/resources/views/cities/index.blade.php'),
+            (string) realpath(substr($path, 0, -strlen($suffix))),
+            'The unparseable template must be recorded against its own origin.'
+        );
+
+        $this->assertSame(ParseFailureCause::SyntaxError, $failures[0]->cause);
+        $this->assertSame(3, $failures[0]->line, 'The line must be the Blade line, not the compiled-PHP line.');
+    }
+
+    /**
+     * Both Blade analyzers compile the same templates, so they have to spell the origin the
+     * same way. The failure log keys on that string and keeps the first sighting of each key,
+     * so one broken template must leave one entry however many analyzers met it, rather than
+     * an attributable entry plus a duplicate keyed by a hash of the compiled PHP.
+     *
+     * Driven over one parser handed to both, with the same base path and paths, because
+     * identical origins are exactly what is being asserted.
+     */
+    public function test_both_blade_analyzers_leave_one_entry_for_one_broken_template(): void
+    {
+        $dir = $this->createTempDirectory([
+            'app/Models/City.php' => self::CITY_MODEL,
+            'app/Models/Airport.php' => self::AIRPORT_MODEL,
+            'app/Http/Controllers/CityController.php' => self::CITY_CONTROLLER,
+            'resources/views/cities/index.blade.php' => self::BROKEN_VIEW,
+        ]);
+
+        $parser = new AstParser;
+
+        $nPlusOne = new EloquentNPlusOneAnalyzer($parser);
+        $nPlusOne->setBasePath($dir);
+        $nPlusOne->setPaths(['app', 'resources/views']);
+        $nPlusOne->analyze();
+
+        $logicInBlade = new LogicInBladeAnalyzer(new Repository([]), $parser);
+        $logicInBlade->setBasePath($dir);
+        $logicInBlade->setPaths(['app', 'resources/views']);
+        $logicInBlade->analyze();
+
+        $failures = $parser->failures();
+
+        $this->assertCount(
+            1,
+            $failures,
+            'Two analyzers over one broken template must agree on its origin, leaving one entry.'
+        );
+        $this->assertStringEndsWith(
+            '/resources/views/cities/index.blade.php (compiled)',
+            (string) $failures[0]->path
+        );
     }
 }

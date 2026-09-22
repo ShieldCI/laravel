@@ -72,6 +72,9 @@ class AnalyzeCommand extends Command
         $this->suppressionParser = new InlineSuppressionParser;
         $this->suppressedIssues = [];
 
+        // A command invocation is one run; the shared parser's failure log outlives it.
+        $manager->resetParseFailures();
+
         // Activate CI mode for this run if --ci flag is passed
         if ($this->option('ci')) {
             config(['shieldci.ci_mode' => true]);

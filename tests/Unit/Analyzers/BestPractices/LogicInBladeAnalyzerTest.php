@@ -7,6 +7,8 @@ namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 use Illuminate\Config\Repository;
 use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\BestPractices\LogicInBladeAnalyzer;
+use ShieldCI\AnalyzersCore\Enums\ParseFailureCause;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Tests\AnalyzerTestCase;
 
@@ -26,7 +28,7 @@ class LogicInBladeAnalyzerTest extends AnalyzerTestCase
             ],
         ]);
 
-        return new LogicInBladeAnalyzer($config);
+        return new LogicInBladeAnalyzer($config, app(AstParser::class));
     }
 
     public function test_passes_with_simple_blade_syntax(): void
@@ -1165,7 +1167,7 @@ BLADE;
             ],
         ]);
 
-        $analyzer = new LogicInBladeAnalyzer($config);
+        $analyzer = new LogicInBladeAnalyzer($config, app(AstParser::class));
 
         $blade = <<<'BLADE'
 <div>
@@ -2647,7 +2649,7 @@ BLADE;
 
         $analyzer = new LogicInBladeAnalyzer(new Repository([
             'shieldci' => ['analyzers' => ['best-practices' => ['logic-in-blade' => $config]]],
-        ]));
+        ]), app(AstParser::class));
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['views']);
 
@@ -3621,6 +3623,81 @@ BLADE;
         $this->assertSame(15, $issues[1]->location?->line);
         $this->assertSame(11, $issues[0]->metadata['block_lines']);
         $this->assertSame(11, $issues[1]->metadata['block_lines']);
+    }
+
+    public function test_it_compiles_through_the_shared_container_parser(): void
+    {
+        // Resolved through the container rather than constructed with the singleton:
+        // handing it the parser and then asserting it holds that parser would only
+        // catch a constructor that discarded its own argument.
+        $analyzer = app(LogicInBladeAnalyzer::class);
+
+        $parser = new \ReflectionProperty(LogicInBladeAnalyzer::class, 'astParser');
+
+        $this->assertSame(
+            app(AstParser::class),
+            $parser->getValue($analyzer),
+            'The analyzer must parse compiled Blade through the container singleton, not a private instance.'
+        );
+    }
+
+    /**
+     * The point of the consolidation: a template whose compiled PHP will not parse is
+     * skipped exactly as before (pass 2 finds no logic in it), but the skip is now
+     * recorded on the shared parser, named after the Blade file it came from and at the
+     * Blade line the failure maps to, not the compiled line.
+     *
+     * The origin carries a "(compiled)" marker because what failed to parse is generated
+     * output, not the bytes the author wrote.
+     */
+    public function test_a_template_it_cannot_parse_is_recorded_on_the_shared_parser(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $total = ;
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/broken.blade.php' => $blade]);
+
+        $shared = app(AstParser::class);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $analyzer->analyze();
+
+        // Selected by path rather than asserted on the whole log: the parser is a
+        // process-wide singleton, so counting every failure would couple this test to
+        // anything else the run happens to parse.
+        //
+        // Paths are compared through realpath() because the analyzer records the path it
+        // was handed, which on macOS is /var/... where realpath() gives /private/var/....
+        $suffix = ' (compiled)';
+        $byTemplate = [];
+
+        foreach ($shared->failures() as $entry) {
+            $path = (string) $entry->path;
+
+            if (str_ends_with($path, $suffix)) {
+                $byTemplate[(string) realpath(substr($path, 0, -strlen($suffix)))] = $entry;
+            }
+        }
+
+        $expected = (string) realpath($tempDir.'/views/broken.blade.php');
+
+        $this->assertArrayHasKey(
+            $expected,
+            $byTemplate,
+            'The unparseable template must be recorded against its own origin, marked as compiled output.'
+        );
+
+        $failure = $byTemplate[$expected];
+        $this->assertSame(ParseFailureCause::SyntaxError, $failure->cause);
+        $this->assertSame(3, $failure->line, 'The line must be the Blade line, not the compiled-PHP line.');
     }
 
     /**

@@ -107,6 +107,31 @@ class AnalyzerManager
         gc_collect_cycles();
     }
 
+    /**
+     * Discard parse failures recorded by a previous run.
+     *
+     * The failure log on the shared parser accumulates for the life of the instance,
+     * and the instance is a container singleton, so it outlives a single command. Two
+     * runs in one process (Artisan::call() from a host app's test suite, Octane, a
+     * queued job, or shield:baseline followed by shield:analyze) would otherwise report
+     * the first run's unparseable files as part of the second's.
+     *
+     * Core documents resetFailures() as belonging to whatever orchestrates a run, which
+     * is this class and AnalyzeCommand. It is deliberately not called from run(), which
+     * AnalyzeCommand invokes once per analyzer inside a single run.
+     */
+    public function resetParseFailures(): void
+    {
+        try {
+            $parser = $this->container->make(ParserInterface::class);
+            if (method_exists($parser, 'resetFailures')) {
+                $parser->resetFailures();
+            }
+        } catch (\Throwable) {
+            // Parser not bound or predates the failure log: nothing to reset.
+        }
+    }
+
     private function initConfigCache(): void
     {
         if ($this->configCacheInitialized) {
@@ -342,6 +367,8 @@ class AnalyzerManager
      */
     public function runAll(): Collection
     {
+        $this->resetParseFailures();
+
         $results = $this->getAnalyzers()
             ->map(function (AnalyzerInterface $analyzer) {
                 $result = $analyzer->analyze();

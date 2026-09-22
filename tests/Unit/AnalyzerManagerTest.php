@@ -1039,9 +1039,13 @@ class AnalyzerManagerTest extends TestCase
         foreach ($manager->getAnalyzers() as $analyzer) {
             if ($analyzer instanceof EnvCallAnalyzer) {
                 $sawEnvCall = true;
-                $staticParser = (new \ReflectionProperty(EnvCallAnalyzer::class, 'staticParser'))
+                // It used to hold two private parsers and null them after each run. It now
+                // holds the singleton instead, which is the stronger property: there is no
+                // private cache to release, and the files it could not parse are recorded
+                // where the run can read them back.
+                $parser = (new \ReflectionProperty(EnvCallAnalyzer::class, 'parser'))
                     ->getValue($analyzer);
-                $this->assertNull($staticParser, 'EnvCallAnalyzer must release its lazily created parser after analyze().');
+                $this->assertSame($singleton, $parser, 'EnvCallAnalyzer must hold the shared parser singleton.');
             }
 
             if ($analyzer instanceof MassAssignmentAnalyzer) {

@@ -16,6 +16,9 @@ use Psr\Http\Message\ResponseInterface;
 use ShieldCI\Analyzers\Security\EnvHttpAccessibilityAnalyzer;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Enums\Status;
+use ShieldCI\Support\OriginReachability\DeclaredOrigin;
+use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class EnvHttpAccessibilityAnalyzerTest extends AnalyzerTestCase
@@ -41,16 +44,14 @@ class EnvHttpAccessibilityAnalyzerTest extends AnalyzerTestCase
 
         /** @var Router $router */
         $router = $this->app?->make('router');
-        $analyzer = new EnvHttpAccessibilityAnalyzer($router);
 
-        if (! empty($responses)) {
-            $mock = new MockHandler($responses);
-            $handlerStack = HandlerStack::create($mock);
-            $client = new Client(['handler' => $handlerStack]);
-            $analyzer->setHttpClient($client);
-        }
+        // The analyzer no longer owns a client: it asks the shared origin checker, and the
+        // checker is where a mock handler goes. Tests that queue no responses still get a
+        // checker, so nothing reaches the network by accident.
+        $mock = new MockHandler($responses);
+        $client = new Client(['handler' => HandlerStack::create($mock)]);
 
-        return $analyzer;
+        return new EnvHttpAccessibilityAnalyzer($router, new OriginReachabilityChecker($client));
     }
 
     public function test_skips_when_no_url_configured(): void
@@ -279,8 +280,11 @@ ENV;
         $analyzer = $this->createAnalyzer($responses);
         $result = $analyzer->analyze();
 
-        // Should pass because we couldn't verify it's accessible
-        $this->assertPassed($result);
+        // A probe that never completed is not proof the file is absent. A .env wide open to
+        // the internet must not read as green because the scanner could not reach the host.
+        $this->assertNotSame(Status::Passed, $result->getStatus());
+        $this->assertStringNotContainsString('properly configured', $result->getMessage());
+        $this->assertStringContainsString('produced no response', $result->getMessage());
     }
 
     public function test_passes_when_response_doesnt_contain_env_indicators(): void
@@ -705,17 +709,38 @@ ENV;
         config(['app.url' => 'https://example.com']);
         config(['shieldci.guest_url' => '/']);
 
-        // Only need one response since duplicate URLs should be skipped
-        $responses = [
-            new Response(404),
-        ];
+        // The eight .env candidates are eight distinct URLs, so nothing is deduplicated
+        // within one run and eight responses are consumed. The previous version of this
+        // test queued one response and passed only because the seven "mock queue is empty"
+        // exceptions were swallowed by the same catch that hid every real network failure:
+        // it asserted the defect, under a name that suggested otherwise.
+        $responses = array_fill(0, 8, new Response(404));
 
         $analyzer = $this->createAnalyzer($responses);
         $result = $analyzer->analyze();
 
-        // If it tries to test duplicates, MockHandler will throw exception
-        // for missing responses. If we get here, test passed.
         $this->assertPassed($result);
+    }
+
+    /** Asking the same path twice costs one request, because the shared checker caches it. */
+    public function test_repeating_a_path_costs_one_request(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+
+        $origin = new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL]);
+        $mock = new MockHandler([new Response(404)]);
+        $checker = new OriginReachabilityChecker(new Client(['handler' => HandlerStack::create($mock)]));
+
+        $checker->probe([$origin], null, [], '/.env');
+        $checker->probe([$origin], null, [], '/.env');
+
+        // A second request would empty the queue and throw, which the checker would report
+        // as a transport failure rather than a 404.
+        $probe = $checker->probe([$origin], null, [], '/.env')->probeFor('https://example.com');
+
+        $this->assertNotNull($probe);
+        $this->assertSame(404, $probe->statusCode);
     }
 
     public function test_handles_empty_response_body(): void
@@ -805,8 +830,10 @@ ENV;
         $analyzer = $this->createAnalyzer($responses);
         $result = $analyzer->analyze();
 
-        // Should pass because error means not accessible
-        $this->assertPassed($result);
+        // Same rule for a non-Guzzle throwable: an error is an absence of evidence, not
+        // evidence of absence.
+        $this->assertNotSame(Status::Passed, $result->getStatus());
+        $this->assertStringNotContainsString('properly configured', $result->getMessage());
     }
 
     // ==================== Configuration Edge Cases ====================
@@ -883,5 +910,75 @@ ENV;
         $reason = $analyzer->getSkipReason();
         $this->assertStringContainsString('production/staging', $reason);
         $this->assertStringContainsString('local', $reason);
+    }
+
+    /**
+     * The case most easily missed: some paths answered and some did not. Seven clean 404s
+     * alongside one refused connection is not the same as eight clean 404s, and the run may
+     * not claim the web server is properly configured while a location went unchecked.
+     */
+    public function test_partial_answers_do_not_certify_the_locations_that_went_unchecked(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+
+        $request = new Request('GET', 'https://example.com/.env');
+        $responses = array_fill(0, 7, new Response(404));
+        $responses[] = new ConnectException('cURL error 7: Connection refused', $request);
+
+        $result = $this->createAnalyzer($responses)->analyze();
+
+        $this->assertNotSame(Status::Passed, $result->getStatus());
+        $this->assertStringNotContainsString('properly configured', $result->getMessage());
+        $this->assertStringContainsString('1 of 8', $result->getMessage());
+    }
+
+    /**
+     * An exposed .env still fails even when other locations could not be checked, and the
+     * summary says both things. Finding the file is the more urgent fact; the unchecked
+     * locations must not be silently dropped from the report.
+     */
+    public function test_an_exposed_env_is_still_reported_when_other_locations_are_unchecked(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+
+        $envBody = "APP_NAME=Test\nAPP_KEY=base64:test\nDB_HOST=localhost";
+        $request = new Request('GET', 'https://example.com/.env');
+
+        $responses = [new Response(200, ['Server' => 'nginx/1.18'], $envBody)];
+        $responses = array_merge($responses, array_fill(0, 7, new ConnectException('cURL error 28: timed out', $request)));
+
+        $result = $this->createAnalyzer($responses)->analyze();
+
+        $this->assertFailed($result);
+        $this->assertStringContainsString('publicly accessible at 1 location', $result->getMessage());
+        $this->assertStringContainsString('7 further locations could not be checked', $result->getMessage());
+    }
+
+    /**
+     * Certificate verification stays on.
+     *
+     * This analyzer used to set verify => false to tolerate self-signed certificates in
+     * staging, but it runs in production too, and "the web server is properly configured"
+     * asserted over a connection whose peer was never authenticated is a claim about a host
+     * that was never identified. An untrusted certificate is now a transport failure
+     * carrying no evidence, which is more than the pass it used to produce.
+     */
+    public function test_an_untrusted_certificate_is_not_a_clean_result(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+
+        $request = new Request('GET', 'https://example.com/.env');
+        $responses = array_fill(0, 8, new ConnectException(
+            'cURL error 60: SSL certificate problem: self signed certificate',
+            $request
+        ));
+
+        $result = $this->createAnalyzer($responses)->analyze();
+
+        $this->assertNotSame(Status::Passed, $result->getStatus());
+        $this->assertStringNotContainsString('properly configured', $result->getMessage());
     }
 }

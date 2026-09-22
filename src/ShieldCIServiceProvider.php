@@ -20,6 +20,7 @@ use ShieldCI\Commands\BaselineCommand;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\Http\Client\ShieldCIClient;
 use ShieldCI\Support\Composer;
+use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
 use ShieldCI\Support\PathFilter;
 use ShieldCI\Support\Reporter;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryAnalyzer;
@@ -95,6 +96,11 @@ class ShieldCIServiceProvider extends ServiceProvider
             );
         });
         $this->app->singleton(ComposerDependencyReader::class);
+
+        // Singleton for the same reason AstParser is one: the checker caches each origin's
+        // probe on the instance, so an analyzer holding its own copy re-requests every
+        // origin the run has already asked about.
+        $this->app->singleton(OriginReachabilityChecker::class);
 
         // Register path filter
         $this->app->singleton(PathFilter::class, function ($app) {

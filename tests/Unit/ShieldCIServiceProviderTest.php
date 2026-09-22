@@ -24,6 +24,7 @@ use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\ShieldCIServiceProvider;
 use ShieldCI\Support\Composer;
+use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
 use ShieldCI\Support\PathFilter;
 use ShieldCI\Support\Reporter;
 use ShieldCI\Support\SecurityAdvisories\AdvisoryAnalyzerInterface;
@@ -210,6 +211,21 @@ class ShieldCIServiceProviderTest extends TestCase
         $filter2 = $this->app->make(PathFilter::class);
 
         $this->assertSame($filter1, $filter2);
+    }
+
+    /**
+     * The checker caches one probe per origin on the instance. An analyzer resolving its own
+     * copy would start from an empty cache and re-request every origin the run had already
+     * asked about, which is the same escape the AstParser binding above exists to close.
+     */
+    /** @test */
+    #[Test]
+    public function it_uses_singleton_for_the_origin_reachability_checker(): void
+    {
+        $checker1 = $this->app->make(OriginReachabilityChecker::class);
+        $checker2 = $this->app->make(OriginReachabilityChecker::class);
+
+        $this->assertSame($checker1, $checker2);
     }
 
     /** @test */

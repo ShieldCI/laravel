@@ -21,6 +21,7 @@ use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\Concerns\ReadsBladePhpBlocks;
 use ShieldCI\Concerns\ReadsConfigArrays;
 use ShieldCI\Support\BladeCompilerFactory;
 
@@ -37,6 +38,7 @@ use ShieldCI\Support\BladeCompilerFactory;
  */
 class LogicInBladeAnalyzer extends AbstractFileAnalyzer
 {
+    use ReadsBladePhpBlocks;
     use ReadsConfigArrays;
 
     public const DEFAULT_MAX_PHP_BLOCK_LINES = 10;
@@ -208,79 +210,76 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         $lines = FileParser::getLines($file);
 
         // Pass 1: Structural checks on raw Blade (PHP block size, inline PHP, unclosed blocks)
-        $this->analyzeBladeStructure($file, $lines, $issues);
+        $this->analyzeBladeStructure($file, $content, $lines, $issues);
 
         // Pass 2: Logic detection via compiled PHP AST
         $this->analyzeBladeLogic($file, $content, $issues);
     }
 
     /**
-     * Pass 1: Structural checks using regex on raw Blade source.
+     * Pass 1: Structural checks on raw Blade source.
      *
      * Detects:
      * - @php blocks exceeding max line threshold
      * - Inline <?php tags
      * - Unclosed @php blocks
      *
+     * Where the @php blocks are comes from ReadsBladePhpBlocks, which mirrors the regex Blade
+     * itself pairs openers with, rather than from a per-line test for the substring "@php".
+     * A substring is not a directive, so "@@php", a "@php" written in a sentence and a "@php"
+     * inside an HTML comment each raised an unclosed block against a template that renders
+     * exactly as written (#411), and a block opened and closed on one line swallowed every
+     * line after it. BladeCompilerFactory reads the same trait, so the two cannot disagree.
+     *
      * @param  array<int, string>  $lines
      * @param  array<int, Issue>  $issues
      */
-    private function analyzeBladeStructure(string $file, array $lines, array &$issues): void
+    private function analyzeBladeStructure(string $file, string $content, array $lines, array &$issues): void
     {
-        $inPhpBlock = false;
-        $phpBlockStart = 0;
-        $phpBlockLines = 0;
+        $phpBlocks = self::readBladePhpBlocks($content);
+
+        foreach ($phpBlocks['blocks'] as $block) {
+            if ($block['size'] <= $this->maxPhpBlockLines) {
+                continue;
+            }
+
+            $this->reportedLines[$block['open'] - 1] = true;
+
+            $issues[] = $this->createIssueWithSnippet(
+                message: sprintf(
+                    'PHP block has %d lines (max recommended: %d)',
+                    $block['size'],
+                    $this->maxPhpBlockLines
+                ),
+                filePath: $file,
+                lineNumber: $block['open'],
+                severity: Severity::Medium,
+                recommendation: 'Move complex PHP logic to controllers, view composers, or presenter classes. Blade templates should focus on presentation only',
+                metadata: [
+                    'block_lines' => $block['size'],
+                    'max_lines' => $this->maxPhpBlockLines,
+                    'block_start' => $block['open'],
+                    'code' => 'blade-php-block-too-long',
+                ]
+            );
+        }
+
+        foreach ($phpBlocks['unpairedOpeners'] as $openLine) {
+            $issues[] = $this->createIssueWithSnippet(
+                message: 'Unclosed @php block detected',
+                filePath: $file,
+                lineNumber: $openLine,
+                severity: Severity::High,
+                recommendation: 'Every @php directive must have a matching @endphp',
+                metadata: [
+                    'block_start' => $openLine,
+                    'lines_counted' => max(0, count($lines) - $openLine),
+                    'code' => 'blade-unclosed-php-block',
+                ]
+            );
+        }
 
         foreach ($lines as $lineNumber => $line) {
-            $trimmed = trim($line);
-
-            // Check for @php block start
-            if (preg_match('/@php\b/', $trimmed)) {
-                // Single-statement @php(expr) — self-closing, no @endphp needed
-                if (preg_match('/@php\s*\(/', $trimmed)) {
-                    continue;
-                }
-
-                $inPhpBlock = true;
-                $phpBlockStart = $lineNumber + 1;
-                $phpBlockLines = 0;
-
-                continue;
-            }
-
-            // Check for @php block end
-            if (preg_match('/@endphp\b/', $trimmed)) {
-                if ($phpBlockLines > $this->maxPhpBlockLines) {
-                    $this->reportedLines[$phpBlockStart - 1] = true;
-
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: sprintf(
-                            'PHP block has %d lines (max recommended: %d)',
-                            $phpBlockLines,
-                            $this->maxPhpBlockLines
-                        ),
-                        filePath: $file,
-                        lineNumber: $phpBlockStart,
-                        severity: Severity::Medium,
-                        recommendation: 'Move complex PHP logic to controllers, view composers, or presenter classes. Blade templates should focus on presentation only',
-                        metadata: [
-                            'block_lines' => $phpBlockLines,
-                            'max_lines' => $this->maxPhpBlockLines,
-                            'block_start' => $phpBlockStart,
-                            'code' => 'blade-php-block-too-long',
-                        ]
-                    );
-                }
-                $inPhpBlock = false;
-
-                continue;
-            }
-
-            // Count lines in PHP block
-            if ($inPhpBlock) {
-                $phpBlockLines++;
-            }
-
             // Suppress Blade component directives (@props, @aware) — they compile to
             // framework-internal PHP (e.g. array_filter for ComponentSlot detection)
             // that would otherwise trigger false-positive "business logic" warnings.
@@ -301,22 +300,6 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
                     metadata: ['line' => $lineNumber + 1, 'code' => 'blade-inline-php']
                 );
             }
-        }
-
-        // Unclosed @php block
-        if ($inPhpBlock) {
-            $issues[] = $this->createIssueWithSnippet(
-                message: 'Unclosed @php block detected',
-                filePath: $file,
-                lineNumber: $phpBlockStart,
-                severity: Severity::High,
-                recommendation: 'Every @php directive must have a matching @endphp',
-                metadata: [
-                    'block_start' => $phpBlockStart,
-                    'lines_counted' => $phpBlockLines,
-                    'code' => 'blade-unclosed-php-block',
-                ]
-            );
         }
     }
 

@@ -6,6 +6,7 @@ namespace ShieldCI\Support;
 
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\View\Compilers\BladeCompiler;
+use ShieldCI\Concerns\ReadsBladePhpBlocks;
 
 /**
  * Standalone Blade-to-PHP compiler with original line number tracking.
@@ -16,6 +17,8 @@ use Illuminate\View\Compilers\BladeCompiler;
  */
 class BladeCompilerFactory
 {
+    use ReadsBladePhpBlocks;
+
     /**
      * Compile Blade source to PHP with line-number tracking.
      *
@@ -48,10 +51,12 @@ class BladeCompilerFactory
      * Why // not block comments: block comments cannot nest in PHP, so user's own
      * block comments would conflict with marker block comments.
      *
-     * Why @php(...) is not a block opening: the inline call form compiles to a self-contained
-     * <?php ... ?> and never has an @endphp to close it, so reading it as a block would latch
-     * the comment form for the rest of the file and skip the tracking below. The same test
-     * lives in LogicInBladeAnalyzer::analyzeBladeStructure(); keep the two spellings in step.
+     * Why ReadsBladePhpBlocks decides which lines are inside a block: a per-line test for the
+     * substring "@php" cannot tell a directive from a mention of one, so "@@php", a "@php"
+     * written in prose and a "@php" inside an HTML comment each latched the comment form for
+     * the rest of the file and the compiled PHP stopped parsing (#411). The trait reads the
+     * spans Blade itself reads, over the whole source, and LogicInBladeAnalyzer reads the same
+     * trait, so the two have no spelling of their own left to drift apart.
      *
      * Why @switch needs the comment form too: it compiles to an open tag that stays open,
      * because the first @case is what closes it. A markup marker on any line in between opens
@@ -60,8 +65,13 @@ class BladeCompilerFactory
      *
      * Why the comment form is safe there: it takes its own line ahead of the directive, and the
      * continuation tracking below still runs for it. What #406 got wrong was not the form but
-     * the @php branch skipping carryOver(), which let a marker land inside a @foreach header
-     * Blade had re-flowed onto one line and orphan the @endforeach.
+     * which lines got it: a mention of @php latched the form on, so a marker landed inside a
+     * re-flowed @foreach header and orphaned the @endforeach.
+     *
+     * Why a block body skips that tracking: the body is PHP, not Blade, and PHP spells error
+     * suppression "@". Reading "@file_get_contents(" as a directive expression would open a
+     * bracket that belongs to no directive and leak that state past the @endphp. Blade copies
+     * a block body verbatim, so there is no Blade expression in there to track.
      *
      * Why some lines get no marker: a directive expression or an echo may span lines
      * ("@include('v', [\n 'k' => 1,\n])"). A marker on a continuation line lands inside
@@ -72,7 +82,7 @@ class BladeCompilerFactory
     private static function injectLineMarkers(string $bladeSource): string
     {
         $lines = explode("\n", $bladeSource);
-        $inPhpBlock = false;
+        $phpBlocks = self::readBladePhpBlocks($bladeSource);
         $inSwitchHeader = false;
         $openBrackets = 0;
         $openEcho = null;
@@ -82,22 +92,9 @@ class BladeCompilerFactory
             $lineNum = $index + 1;
             $trimmed = trim($line);
 
-            if (! $inPhpBlock && preg_match('/@php\b/', $trimmed)
-                && ! preg_match('/@php\s*\(/', $trimmed)
-                && ! str_contains($trimmed, '@endphp')) {
-                $inPhpBlock = true;
-                $marked[] = "<?php /* __BLADE_LINE_{$lineNum}__ */ ?>".$line;
-
-                continue;
-            }
-
-            if ($inPhpBlock) {
+            if (isset($phpBlocks['insideBlock'][$lineNum])) {
                 $marked[] = "// __BLADE_LINE_{$lineNum}__";
                 $marked[] = $line;
-
-                if (str_contains($trimmed, '@endphp')) {
-                    $inPhpBlock = false;
-                }
 
                 continue;
             }

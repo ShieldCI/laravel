@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use Illuminate\Config\Repository;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\BestPractices\LogicInBladeAnalyzer;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -3532,5 +3533,111 @@ BLADE;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    // =========================================================================
+    // @PHP BLOCK DETECTION (#411)
+    // =========================================================================
+
+    /**
+     * Text that merely reads "@php" is not a directive. Blade compiles every one of these back
+     * to itself, so reporting an unclosed block against them recommended an @endphp that would
+     * have changed what the template renders.
+     *
+     * The annotation is not redundant with the attribute: composer allows phpunit ^9
+     * through ^13, and the CI matrix resolves 9 on Laravel 9, which reads only the
+     * annotation, while 12 dropped annotations and reads only the attribute.
+     *
+     * @dataProvider phpMentionProvider
+     */
+    #[DataProvider('phpMentionProvider')]
+    public function test_a_mention_of_the_php_directive_is_not_an_unclosed_block(string $blade): void
+    {
+        $tempDir = $this->createTempDirectory(['views/mention.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function phpMentionProvider(): array
+    {
+        return [
+            'a mention in prose' => ["<div>\n    <p>Use @php blocks here.</p>\n</div>\n"],
+            'a mention in an html comment' => ["<div>\n    <!-- @php -->\n</div>\n"],
+            'the escape' => ["<div>\n    <p>@@php renders the directive itself.</p>\n</div>\n"],
+            // Blade turns this into one self-contained PHP tag pair, so nothing stays open.
+            'a block opened and closed on one line' => ["<div>\n    @php \$label = 'badge'; @endphp\n    <span>{{ \$label }}</span>\n</div>\n"],
+            // storeVerbatimBlocks() empties this before storePhpBlocks() ever runs.
+            'a directive shown inside verbatim' => ["<div>\n@verbatim\n    @php\n@endverbatim\n</div>\n"],
+            // compileComments() strips this, so nothing of it reaches the browser.
+            'a directive inside a blade comment' => ["<div>\n{{--\n    @php\n--}}\n</div>\n"],
+            // A longer name is a different directive, so the word boundary must hold.
+            'a directive whose name merely starts with php' => ["<div>\n    @phpunit\n    <p>{{ \$x }}</p>\n</div>\n"],
+        ];
+    }
+
+    /**
+     * The narrowed reading still has to catch the thing it is for. A sentence mentioning the
+     * directive sits above a real opener here, and only the opener may be reported.
+     */
+    public function test_an_unclosed_block_is_reported_against_its_opening_line(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    <p>Write your setup in a @php block.</p>
+    @php
+        $var = 1;
+</div>
+BLADE;
+
+        $issues = $this->structuralIssues($blade, 'blade-unclosed-php-block');
+
+        $this->assertCount(1, $issues);
+        $this->assertSame(3, $issues[0]->location?->line);
+    }
+
+    /**
+     * One cursor could only ever describe one block. Reading spans reports each of them.
+     */
+    public function test_each_oversized_block_is_reported_at_its_own_opening_line(): void
+    {
+        $body = str_repeat("        \$x = 1;\n", 11);
+        $blade = "<div>\n    @php\n".$body."    @endphp\n    @php\n".$body."    @endphp\n</div>\n";
+
+        $issues = $this->structuralIssues($blade, 'blade-php-block-too-long');
+
+        $this->assertCount(2, $issues);
+        $this->assertSame(2, $issues[0]->location?->line);
+        $this->assertSame(15, $issues[1]->location?->line);
+        $this->assertSame(11, $issues[0]->metadata['block_lines']);
+        $this->assertSame(11, $issues[1]->metadata['block_lines']);
+    }
+
+    /**
+     * Run the analyzer over a single Blade template and return only findings carrying $code.
+     *
+     * Filtering by code keeps these cases honest: an unrelated rule firing inside a fixture
+     * cannot make the assertion pass or fail for the wrong reason.
+     *
+     * @return list<Issue>
+     */
+    private function structuralIssues(string $blade, string $code): array
+    {
+        $tempDir = $this->createTempDirectory(['views/structure.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        return array_values(array_filter(
+            $analyzer->analyze()->getIssues(),
+            fn ($issue): bool => ($issue->metadata['code'] ?? null) === $code
+        ));
     }
 }

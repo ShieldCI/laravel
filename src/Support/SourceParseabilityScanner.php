@@ -19,6 +19,11 @@ use SplFileInfo;
  * silently: the run then reports no issues for that file, which is indistinguishable from
  * having checked it and found nothing. This scanner is the only place that difference is
  * recorded, so a report can state which files were never examined.
+ *
+ * @internal No analyzer consumes this yet. It is published only so a consumer can be
+ * built against it, and the failure channel may move to analyzers-core's AstParser,
+ * which records what the suite actually parsed rather than predicting it. Do not
+ * depend on it from outside this package.
  */
 final class SourceParseabilityScanner
 {

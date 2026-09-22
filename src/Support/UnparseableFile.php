@@ -12,6 +12,11 @@ use ShieldCI\Enums\ParseFailureCause;
  * The point of recording it is the consequence, not the file: an unparseable file
  * is skipped by every AST-based analyzer, and a run that skips it still reports a
  * clean bill of health for it.
+ *
+ * @internal No analyzer consumes this yet. It is published only so a consumer can be
+ * built against it, and the failure channel may move to analyzers-core's AstParser,
+ * which records what the suite actually parsed rather than predicting it. Do not
+ * depend on it from outside this package.
  */
 final class UnparseableFile
 {

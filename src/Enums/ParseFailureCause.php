@@ -10,6 +10,11 @@ namespace ShieldCI\Enums;
  * The causes need different fixes, so they are never collapsed into one: broken
  * code is the author's to repair, syntax the pinned parser does not implement yet
  * is the toolchain's, and a file that reached no parser at all is neither.
+ *
+ * @internal No analyzer consumes this yet. It is published only so a consumer can be
+ * built against it, and the failure channel may move to analyzers-core's AstParser,
+ * which records what the suite actually parsed rather than predicting it. Do not
+ * depend on it from outside this package.
  */
 enum ParseFailureCause: string
 {

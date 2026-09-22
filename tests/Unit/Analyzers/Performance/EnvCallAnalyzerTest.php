@@ -1059,7 +1059,10 @@ PHP;
 
     public function test_it_parses_through_the_shared_container_parser(): void
     {
-        $analyzer = $this->createAnalyzer();
+        // Resolved through the container rather than constructed with the singleton:
+        // handing it the parser and then asserting it holds that parser would only
+        // catch a constructor that discarded its own argument.
+        $analyzer = app(EnvCallAnalyzer::class);
 
         $parser = new \ReflectionProperty(EnvCallAnalyzer::class, 'parser');
 
@@ -1072,9 +1075,9 @@ PHP;
 
     /**
      * The point of the consolidation: a file this analyzer could not parse is skipped
-     * exactly as before — it cannot report env() calls it never saw — but the skip is now
-     * recorded on the parser a run reads back, instead of disappearing into an instance
-     * owned by this analyzer alone.
+     * exactly as before (it cannot report env() calls it never saw), but the skip is now
+     * recorded on the shared parser, instead of disappearing into an instance owned by
+     * this analyzer alone.
      */
     public function test_a_file_it_cannot_parse_is_recorded_on_the_shared_parser(): void
     {
@@ -1098,11 +1101,6 @@ PHP;
 
         $shared = app(AstParser::class);
 
-        // Assigned first so the assertion narrows this variable and not every later
-        // failures() call in the test.
-        $before = $shared->failures();
-        $this->assertSame([], $before, 'Nothing should have failed before this test parses anything.');
-
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['app']);
@@ -1112,12 +1110,17 @@ PHP;
         // Unchanged behaviour: an unparseable file yields no env() calls, so the analyzer passes.
         $this->assertPassed($result);
 
-        $failures = $shared->failures();
-        $this->assertCount(1, $failures);
-        $this->assertSame(
-            realpath($tempDir.'/app/Services/BrokenService.php'),
-            realpath((string) $failures[0]->path)
-        );
-        $this->assertSame(ParseFailureCause::SyntaxError, $failures[0]->cause);
+        // Selected by path rather than asserted on the whole log: the parser is a
+        // process-wide singleton, so counting every failure would couple this test to
+        // anything else the run happens to parse.
+        $expected = (string) realpath($tempDir.'/app/Services/BrokenService.php');
+
+        $byPath = [];
+        foreach ($shared->failures() as $entry) {
+            $byPath[(string) realpath((string) $entry->path)] = $entry;
+        }
+
+        $this->assertArrayHasKey($expected, $byPath, 'The unparseable file must be recorded on the shared parser.');
+        $this->assertSame(ParseFailureCause::SyntaxError, $byPath[$expected]->cause);
     }
 }

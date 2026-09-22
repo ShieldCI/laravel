@@ -451,6 +451,28 @@ class InspectsCodeTest extends TestCase
 
     /** @test */
     #[Test]
+    public function clear_ast_parser_cache_is_a_no_op_that_leaves_the_shared_parser_in_place(): void
+    {
+        $inspector = new ConcreteInspectsCode;
+        $inspector->setFixturePath(__DIR__.'/../../Fixtures/inspects-code');
+
+        $inspector->publicFindFunctionCalls('env');
+
+        $property = new \ReflectionProperty(ConcreteInspectsCode::class, 'parser');
+        $this->assertSame(app(AstParser::class), $property->getValue($inspector));
+
+        // Retained as public API for callers outside this package. It must not unset the
+        // property: the parser is the container singleton now, so releasing it here would
+        // free nothing and only force another lookup. Draining the shared AST cache is
+        // AnalyzerManager::clearParserCache()'s job.
+        $inspector->clearAstParserCache();
+
+        $this->assertTrue($property->isInitialized($inspector), 'The no-op must not unset the shared parser.');
+        $this->assertSame(app(AstParser::class), $property->getValue($inspector));
+    }
+
+    /** @test */
+    #[Test]
     public function it_keeps_a_parser_that_was_injected_before_parsing(): void
     {
         $injected = new AstParser;
@@ -477,11 +499,6 @@ class InspectsCodeTest extends TestCase
     public function a_file_it_cannot_parse_is_recorded_on_the_shared_parser(): void
     {
         $shared = app(AstParser::class);
-
-        // Assigned first so the assertion narrows this variable and not every later
-        // failures() call in the test.
-        $before = $shared->failures();
-        $this->assertSame([], $before, 'Nothing should have failed before this test parses anything.');
 
         $fixtures = __DIR__.'/../../Fixtures/inspects-code';
 

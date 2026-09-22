@@ -20,6 +20,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Enums\Status;
 use ShieldCI\AnalyzersCore\Results\AnalysisResult;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\InlineSuppressionParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
@@ -918,6 +919,7 @@ class AnalyzeCommandTest extends TestCase
 
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
@@ -950,6 +952,7 @@ class AnalyzeCommandTest extends TestCase
             $manager->shouldReceive('getAnalyzers')->andReturn(collect([$throwingAnalyzer]));
             $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
             $manager->shouldReceive('clearParserCache')->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
@@ -1020,6 +1023,7 @@ class AnalyzeCommandTest extends TestCase
                 $manager->shouldReceive('getAnalyzers')->andReturn(collect([$throwingAnalyzer]));
                 $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
                 $manager->shouldReceive('clearParserCache')->andReturn(null);
+                $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
                 return $manager;
             });
@@ -2510,6 +2514,7 @@ class AnalyzeCommandTest extends TestCase
 
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
@@ -3579,6 +3584,7 @@ PHP);
 
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
@@ -3640,6 +3646,7 @@ PHP);
 
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
@@ -3695,6 +3702,7 @@ PHP);
 
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
@@ -3750,6 +3758,7 @@ PHP);
 
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
@@ -3839,6 +3848,7 @@ PHP);
 
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
@@ -3894,6 +3904,7 @@ PHP);
 
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
@@ -3967,6 +3978,7 @@ PHP);
 
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
@@ -4079,6 +4091,7 @@ PHP);
 
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
@@ -4139,9 +4152,30 @@ PHP);
 
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
+    }
+
+    /** @test */
+    #[Test]
+    public function a_run_does_not_report_parse_failures_left_by_an_earlier_run(): void
+    {
+        $parser = app(AstParser::class);
+
+        // Stand in for a previous shield:analyze in this same process. The parser is a
+        // container singleton, so without a run-scoped reset this survives into the run
+        // below and is reported as though this run had hit it.
+        $parser->parseCode('<?php $x = ;', '/from/an/earlier/run.php');
+
+        $seeded = array_map(fn ($failure) => $failure->path, $parser->failures());
+        $this->assertContains('/from/an/earlier/run.php', $seeded, 'Precondition: the earlier failure is on the shared parser.');
+
+        Artisan::call('shield:analyze', ['--format' => 'json']);
+
+        $after = array_map(fn ($failure) => $failure->path, app(AstParser::class)->failures());
+        $this->assertNotContains('/from/an/earlier/run.php', $after, 'A run must not report an earlier run\'s parse failures.');
     }
 
     /**
@@ -4206,6 +4240,7 @@ PHP);
 
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
@@ -4343,6 +4378,7 @@ PHP);
             $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
             $manager->shouldReceive('runAll')->andReturn(collect());
             $manager->shouldReceive('clearParserCache')->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
@@ -4388,6 +4424,7 @@ PHP);
             $manager->shouldReceive('getByCategory')->with(Mockery::any())->andReturn(collect());
             $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
             $manager->shouldReceive('clearParserCache')->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
@@ -4438,6 +4475,7 @@ PHP);
             $manager->shouldReceive('getByCategory')->with(Mockery::any())->andReturn(collect());
             $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
             $manager->shouldReceive('clearParserCache')->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
@@ -5331,6 +5369,7 @@ PHP);
         $manager->shouldReceive('run')->with('test-performance-analyzer')->andReturn($performanceAnalyzer->analyze());
         $manager->shouldReceive('resolveAnalyzerDisplayName')->andReturn('Test Security Analyzer');
         $manager->shouldReceive('clearParserCache')->andReturn(null);
+        $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
         return $manager;
     }
@@ -5603,6 +5642,7 @@ PHP);
 
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
@@ -5634,6 +5674,7 @@ PHP);
 
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });
@@ -5663,6 +5704,7 @@ PHP);
 
             $manager->shouldReceive('clearParserCache')
                 ->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
 
             return $manager;
         });

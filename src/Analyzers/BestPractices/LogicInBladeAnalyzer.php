@@ -75,17 +75,40 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
     private array $reportedLines = [];
 
     /**
-     * @param  AstParser  $astParser  The shared parser. Deliberately required rather than
-     *                                defaulted to `new AstParser`: a default silently hands
-     *                                any caller that omits it a private instance, and a
-     *                                private instance logs the templates this analyzer could
-     *                                not parse where nothing reads them — which is the same
-     *                                silent pass the log exists to expose.
+     * Marks a failure as coming from compiled Blade output rather than the template file.
+     *
+     * The failure log is keyed by origin and keeps the first sighting of each key, so
+     * without this suffix a raw parse of the same .blade.php (core accepts the extension,
+     * and resources/views is in several analyzers' search paths) and this analyzer's parse
+     * of its compiled output would collide and one would be dropped.
+     *
+     * It also keeps our own defect from reading as the author's. What is parsed here is
+     * generated code carrying ShieldCI's line markers, so a marker-injection bug surfaces
+     * as a syntax error; saying "(compiled)" is what separates that from a template the
+     * author actually broke. The cost is that the recorded path is no longer a path a
+     * consumer can open directly, which is the right trade while the alternative is
+     * misattributing our bug to the user.
+     */
+    private const COMPILED_ORIGIN_SUFFIX = ' (compiled)';
+
+    /** The shared parser; never a private instance. */
+    private AstParser $astParser;
+
+    /**
+     * @param  AstParser|null  $astParser  Optional so that constructing this analyzer
+     *                                     directly keeps working, but the fallback is the
+     *                                     container singleton rather than `new AstParser`:
+     *                                     a private instance would log the templates this
+     *                                     analyzer could not parse where no consumer can
+     *                                     reach them, which is the same silent pass the
+     *                                     log exists to expose.
      */
     public function __construct(
         private Config $config,
-        private AstParser $astParser,
-    ) {}
+        ?AstParser $astParser = null,
+    ) {
+        $this->astParser = $astParser ?? app(AstParser::class);
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -340,10 +363,14 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         // map any failing compiled line back through the same line map the issues use.
         // Without both, a template this analyzer silently skips is logged as an anonymous
         // blob of PHP that cannot be traced to a file.
+        //
+        // An unmapped line returns 0, which core normalises to a null line. That matches
+        // what the issues loop below does with the same lookup: a compiled line we cannot
+        // translate is reported without a line rather than as a Blade line it is not.
         $ast = $this->astParser->parseCode(
             $result['compiledPhp'],
-            $file,
-            fn (int $compiledLine): int => $lineMap[$compiledLine] ?? $compiledLine,
+            $file.self::COMPILED_ORIGIN_SUFFIX,
+            fn (int $compiledLine): int => $lineMap[$compiledLine] ?? 0,
         );
 
         if (empty($ast)) {

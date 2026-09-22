@@ -3627,7 +3627,10 @@ BLADE;
 
     public function test_it_compiles_through_the_shared_container_parser(): void
     {
-        $analyzer = $this->createAnalyzer();
+        // Resolved through the container rather than constructed with the singleton:
+        // handing it the parser and then asserting it holds that parser would only
+        // catch a constructor that discarded its own argument.
+        $analyzer = app(LogicInBladeAnalyzer::class);
 
         $parser = new \ReflectionProperty(LogicInBladeAnalyzer::class, 'astParser');
 
@@ -3640,9 +3643,12 @@ BLADE;
 
     /**
      * The point of the consolidation: a template whose compiled PHP will not parse is
-     * skipped exactly as before — pass 2 finds no logic in it — but the skip is now
-     * recorded on the parser a run reads back, named after the Blade file it came from
-     * and at the Blade line the failure maps to, not the compiled line.
+     * skipped exactly as before (pass 2 finds no logic in it), but the skip is now
+     * recorded on the shared parser, named after the Blade file it came from and at the
+     * Blade line the failure maps to, not the compiled line.
+     *
+     * The origin carries a "(compiled)" marker because what failed to parse is generated
+     * output, not the bytes the author wrote.
      */
     public function test_a_template_it_cannot_parse_is_recorded_on_the_shared_parser(): void
     {
@@ -3658,25 +3664,40 @@ BLADE;
 
         $shared = app(AstParser::class);
 
-        // Assigned first so the assertion narrows this variable and not every later
-        // failures() call in the test.
-        $before = $shared->failures();
-        $this->assertSame([], $before, 'Nothing should have failed before this test parses anything.');
-
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['views']);
 
         $analyzer->analyze();
 
-        $failures = $shared->failures();
-        $this->assertCount(1, $failures);
-        $this->assertSame(
-            realpath($tempDir.'/views/broken.blade.php'),
-            realpath((string) $failures[0]->path)
+        // Selected by path rather than asserted on the whole log: the parser is a
+        // process-wide singleton, so counting every failure would couple this test to
+        // anything else the run happens to parse.
+        //
+        // Paths are compared through realpath() because the analyzer records the path it
+        // was handed, which on macOS is /var/... where realpath() gives /private/var/....
+        $suffix = ' (compiled)';
+        $byTemplate = [];
+
+        foreach ($shared->failures() as $entry) {
+            $path = (string) $entry->path;
+
+            if (str_ends_with($path, $suffix)) {
+                $byTemplate[(string) realpath(substr($path, 0, -strlen($suffix)))] = $entry;
+            }
+        }
+
+        $expected = (string) realpath($tempDir.'/views/broken.blade.php');
+
+        $this->assertArrayHasKey(
+            $expected,
+            $byTemplate,
+            'The unparseable template must be recorded against its own origin, marked as compiled output.'
         );
-        $this->assertSame(ParseFailureCause::SyntaxError, $failures[0]->cause);
-        $this->assertSame(3, $failures[0]->line, 'The line must be the Blade line, not the compiled-PHP line.');
+
+        $failure = $byTemplate[$expected];
+        $this->assertSame(ParseFailureCause::SyntaxError, $failure->cause);
+        $this->assertSame(3, $failure->line, 'The line must be the Blade line, not the compiled-PHP line.');
     }
 
     /**

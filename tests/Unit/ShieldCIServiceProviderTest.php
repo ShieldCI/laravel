@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit;
 
+use Illuminate\Contracts\Config\Repository;
 use PHPUnit\Framework\Attributes\Test;
 use Psr\Log\LoggerInterface;
 use ShieldCI\AnalyzerManager;
 use ShieldCI\Analyzers\BestPractices\ChunkMissingAnalyzer;
 use ShieldCI\Analyzers\BestPractices\FatModelAnalyzer;
+use ShieldCI\Analyzers\BestPractices\LogicInBladeAnalyzer;
 use ShieldCI\Analyzers\BestPractices\ServiceContainerResolutionAnalyzer;
+use ShieldCI\Analyzers\Performance\EnvCallAnalyzer;
 use ShieldCI\Analyzers\Security\AuthenticationAnalyzer;
 use ShieldCI\Analyzers\Security\CsrfAnalyzer;
 use ShieldCI\Analyzers\Security\DebugModeAnalyzer;
@@ -61,28 +64,48 @@ class ShieldCIServiceProviderTest extends TestCase
     {
         $singleton = $this->app->make(ParserInterface::class);
 
+        // Class => the property the parser lands in. Most analyzers type-hint it into
+        // the InspectsCode property; LogicInBladeAnalyzer declares its own.
         $analyzerClasses = [
-            AuthenticationAnalyzer::class,
-            MassAssignmentAnalyzer::class,
-            FillableForeignKeyAnalyzer::class,
-            LoginThrottlingAnalyzer::class,
-            FatModelAnalyzer::class,
-            ServiceContainerResolutionAnalyzer::class,
-            ChunkMissingAnalyzer::class,
-            CsrfAnalyzer::class,
-            DebugModeAnalyzer::class,
-            XssAnalyzer::class,
+            AuthenticationAnalyzer::class => 'parser',
+            MassAssignmentAnalyzer::class => 'parser',
+            FillableForeignKeyAnalyzer::class => 'parser',
+            LoginThrottlingAnalyzer::class => 'parser',
+            FatModelAnalyzer::class => 'parser',
+            ServiceContainerResolutionAnalyzer::class => 'parser',
+            ChunkMissingAnalyzer::class => 'parser',
+            CsrfAnalyzer::class => 'parser',
+            DebugModeAnalyzer::class => 'parser',
+            XssAnalyzer::class => 'parser',
+            EnvCallAnalyzer::class => 'parser',
+            LogicInBladeAnalyzer::class => 'astParser',
         ];
 
-        foreach ($analyzerClasses as $class) {
+        foreach ($analyzerClasses as $class => $property) {
             $analyzer = $this->app->make($class);
-            $parser = (new \ReflectionProperty($class, 'parser'))->getValue($analyzer);
+            $parser = (new \ReflectionProperty($class, $property))->getValue($analyzer);
 
             $this->assertSame($singleton, $parser, sprintf(
                 '%s must receive the shared AstParser singleton so its AST cache is cleared between analyzers.',
                 $class
             ));
         }
+    }
+
+    /** @test */
+    #[Test]
+    public function an_analyzer_built_without_a_parser_still_gets_the_singleton(): void
+    {
+        $singleton = $this->app->make(AstParser::class);
+
+        // The constructor argument is optional for backward compatibility, so the
+        // no-argument path has to reach the singleton too. A fallback of `new AstParser`
+        // would satisfy the type and silently reintroduce the private instance.
+        $envCall = new EnvCallAnalyzer;
+        $blade = new LogicInBladeAnalyzer($this->app->make(Repository::class));
+
+        $this->assertSame($singleton, (new \ReflectionProperty(EnvCallAnalyzer::class, 'parser'))->getValue($envCall));
+        $this->assertSame($singleton, (new \ReflectionProperty(LogicInBladeAnalyzer::class, 'astParser'))->getValue($blade));
     }
 
     /** @test */

@@ -52,20 +52,18 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
     private const EXCLUDE_PATHS = ['/config/', '/tests/', '/Tests/'];
 
     /**
-     * This analyzer used to parse through two private instances — the trait's and a
-     * `$staticParser` of its own — so every file it could not parse was logged twice over,
-     * both times into an object no run reads. The container binds AstParser as a singleton
-     * (see ShieldCIServiceProvider), so the injected instance is the one whose failures()
-     * a run reports.
-     *
-     * @param  AstParser  $parser  The shared parser, assigned into the InspectsCode property
-     *                             so the trait's helpers and this analyzer's own scan use
-     *                             one instance. Assigned rather than promoted because the
-     *                             trait already declares the property.
+     * @param  AstParser|null  $parser  The shared parser, assigned into the InspectsCode
+     *                                  property so the trait's helpers and this analyzer's
+     *                                  own scan use one instance. Assigned rather than
+     *                                  promoted because the trait already declares the
+     *                                  property. Optional so that constructing this
+     *                                  analyzer directly keeps working; the fallback is
+     *                                  the container singleton, never a private instance,
+     *                                  so a caller that omits it still shares one parser.
      */
-    public function __construct(AstParser $parser)
+    public function __construct(?AstParser $parser = null)
     {
-        $this->parser = $parser;
+        $this->parser = $parser ?? app(AstParser::class);
     }
 
     protected function metadata(): AnalyzerMetadata
@@ -151,7 +149,7 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
     private function findAllEnvCalls(array $excludePaths): array
     {
         $results = [];
-        $parser = $this->parser;
+        $this->initializeParser();
 
         // Set paths to analyze
         $this->setPaths(self::SEARCH_PATHS);
@@ -166,7 +164,7 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
 
             try {
                 // Parse file once
-                $ast = $parser->parseFile($filePath);
+                $ast = $this->parser->parseFile($filePath);
 
                 // Find both env() function calls and Env::get() static calls in this AST
                 $nodeFinder = new NodeFinder;

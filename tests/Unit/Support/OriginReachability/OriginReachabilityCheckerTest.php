@@ -928,4 +928,291 @@ class OriginReachabilityCheckerTest extends AnalyzerTestCase
         $this->assertLessThanOrEqual(503, strlen($probe->failureMessage));
         $this->assertStringNotContainsString('hunter2', $probe->failureMessage);
     }
+
+    /**
+     * The origin root is the default, not the only choice. Every prober this helper was
+     * built to unblock asks about a NAMED path — an .env candidate, a compiled asset, the
+     * login route — so a caller that names one must have that path requested.
+     */
+    /** @test */
+    #[Test]
+    public function it_requests_a_named_path_rather_than_the_origin_root(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'APP_KEY=base64:redacted')], $recorded)
+        );
+
+        $report = $checker->probe(
+            [new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])],
+            path: '/.env'
+        );
+
+        $this->assertCount(1, $recorded);
+        $this->assertSame('https://example.com/.env', (string) $recorded[0]->getUri());
+
+        $probe = $report->probeFor('https://example.com');
+
+        $this->assertNotNull($probe);
+        $this->assertSame('https://example.com/.env', $probe->probedUrl);
+        $this->assertSame(200, $probe->statusCode);
+    }
+
+    /**
+     * The cache is keyed on origin AND path. Keyed on the origin alone, the second path
+     * would be handed the first path's captured response: a caller asking about /.env
+     * would be shown the home page's 200 and would conclude the file is exposed. Two
+     * paths, two requests, two answers.
+     */
+    /** @test */
+    #[Test]
+    public function it_probes_each_distinct_path_on_one_origin_separately(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'home'), new Response(404, [], 'not found')], $recorded)
+        );
+
+        $origins = [new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])];
+
+        $root = $checker->probe($origins, path: '/');
+        $env = $checker->probe($origins, path: '/.env');
+
+        $this->assertCount(2, $recorded);
+        $this->assertSame('https://example.com/', (string) $recorded[0]->getUri());
+        $this->assertSame('https://example.com/.env', (string) $recorded[1]->getUri());
+
+        $rootProbe = $root->probeFor('https://example.com');
+        $envProbe = $env->probeFor('https://example.com');
+
+        $this->assertNotNull($rootProbe);
+        $this->assertNotNull($envProbe);
+        $this->assertSame(200, $rootProbe->statusCode);
+        $this->assertSame(404, $envProbe->statusCode);
+        $this->assertSame('https://example.com/', $rootProbe->probedUrl);
+        $this->assertSame('https://example.com/.env', $envProbe->probedUrl);
+    }
+
+    /**
+     * The point of the cache survives the change: ten rules asking the same question of
+     * the same origin still cost one request.
+     */
+    /** @test */
+    #[Test]
+    public function it_probes_a_named_path_once_however_many_callers_ask_for_it(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'ok')], $recorded)
+        );
+
+        $origins = [new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])];
+
+        $first = $checker->probe($origins, path: '/build/app.js');
+        $second = $checker->probe($origins, path: '/build/app.js');
+
+        $this->assertCount(1, $recorded);
+        $this->assertEquals($first->probes(), $second->probes());
+    }
+
+    /**
+     * The guarantee is per path, not per origin: a path that produced no response is a
+     * warning saying so, never a pass.
+     */
+    /** @test */
+    #[Test]
+    public function it_never_reports_passed_when_a_named_path_produced_no_response(): void
+    {
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([$this->connectException('cURL error 28: Operation timed out')])
+        );
+
+        $report = $checker->probe(
+            [new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])],
+            path: '/.env'
+        );
+
+        $this->assertSame(Status::Warning, $report->status());
+        $this->assertFalse($report->hasEvidence());
+        $this->assertCount(1, $report->withoutEvidence());
+        $this->assertSame([], $report->withEvidence());
+        $this->assertStringContainsString('no evidence', strtolower(implode(' ', $report->findings())));
+
+        $probe = $report->probeFor('https://example.com');
+
+        $this->assertNotNull($probe);
+        $this->assertSame(OriginOutcome::Timeout, $probe->outcome);
+        $this->assertSame('https://example.com/.env', $probe->probedUrl);
+    }
+
+    /**
+     * The collapse bug in both directions: a path that answered must not lend its evidence
+     * to one that failed, and a path that failed must not take evidence away from one that
+     * answered.
+     */
+    /** @test */
+    #[Test]
+    public function it_does_not_let_one_path_answer_for_another_on_the_same_origin(): void
+    {
+        $checker = new OriginReachabilityChecker($this->clientReplaying([
+            new Response(200, [], 'home'),
+            $this->connectException('cURL error 28: Operation timed out'),
+        ]));
+
+        $origins = [new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])];
+
+        $root = $checker->probe($origins, path: '/');
+        $asset = $checker->probe($origins, path: '/build/app.js');
+
+        $this->assertSame(Status::Passed, $root->status());
+        $this->assertTrue($root->hasEvidence());
+
+        $this->assertSame(Status::Warning, $asset->status());
+        $this->assertFalse($asset->hasEvidence());
+    }
+
+    /**
+     * Whatever spelling a caller hands over, the request goes to the declared origin.
+     *
+     * A manifest entry is often a fully-qualified CDN URL and the resolver has already
+     * collapsed that host into a DeclaredOrigin of its own, so only the path and query are
+     * read off it: a probe must never be aimed at a host nobody declared. Normalising
+     * before the cache key is built is also what makes 'build/app.js' and '/build/app.js'
+     * one question rather than two.
+     */
+    /** @test */
+    #[Test]
+    public function it_keeps_a_named_path_on_the_declared_origin(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([
+                new Response(200, [], 'a'),
+                new Response(200, [], 'b'),
+                new Response(200, [], 'c'),
+            ], $recorded)
+        );
+
+        $origins = [new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])];
+
+        $checker->probe($origins, path: 'build/app.js');
+        $checker->probe($origins, path: '/build/app.js?v=2');
+        $checker->probe($origins, path: 'https://attacker.test/build/vendor.js');
+
+        // The same path in a second spelling is the same question, so it costs nothing; a
+        // fourth request would empty the mock queue and fail here.
+        $checker->probe($origins, path: '/build/app.js');
+
+        $this->assertSame([
+            'https://example.com/build/app.js',
+            'https://example.com/build/app.js?v=2',
+            'https://example.com/build/vendor.js',
+        ], array_map(static fn (RequestInterface $request): string => (string) $request->getUri(), $recorded));
+    }
+
+    /**
+     * An empty path names the root rather than producing a request with no path at all.
+     */
+    /** @test */
+    #[Test]
+    public function it_treats_an_empty_path_as_the_origin_root(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'ok')], $recorded)
+        );
+
+        $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])], path: '');
+
+        $this->assertCount(1, $recorded);
+        $this->assertSame('https://example.com/', (string) $recorded[0]->getUri());
+    }
+
+    /**
+     * Naming a path changes the URL and nothing else. TLS verification in particular stays
+     * on, because a broken certificate on an asset URL is the same false 200 it is on the
+     * root.
+     */
+    /** @test */
+    #[Test]
+    public function it_verifies_tls_on_a_named_path_too(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientRecordingOptions([new Response(200, [], 'ok')], $recorded)
+        );
+
+        $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])], path: '/.env');
+
+        $this->assertCount(1, $recorded);
+
+        $options = $recorded[0];
+
+        $this->assertTrue($options['verify'], 'TLS verification must stay on for a named path.');
+        $this->assertTrue($options['stream']);
+        $this->assertFalse($options['allow_redirects']);
+        $this->assertFalse($options['http_errors']);
+    }
+
+    /**
+     * The path travels the whole entry point, not just the low-level probe call: a rule
+     * asking the application-level question names its path once and every declared origin
+     * is asked about that path.
+     */
+    /** @test */
+    #[Test]
+    public function it_probes_a_named_path_on_every_origin_the_application_declares(): void
+    {
+        $manifest = json_encode([
+            'resources/js/app.js' => ['file' => 'https://cdn.example.net/build/app-abc123.js'],
+        ]);
+
+        $basePath = $this->createTempDirectory([
+            'composer.json' => '{}',
+            'public/build/manifest.json' => $manifest,
+        ]);
+
+        $config = $this->configWith([
+            'app.url' => 'https://example.com',
+            'app.asset_url' => null,
+            'app.env' => 'production',
+        ]);
+
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(404, [], 'nope'), new Response(404, [], 'nope')], $recorded)
+        );
+
+        $report = $checker->checkApplication($basePath, $config, '/.env');
+
+        $this->assertSame([
+            'https://example.com/.env',
+            'https://cdn.example.net/.env',
+        ], array_map(static fn (RequestInterface $request): string => (string) $request->getUri(), $recorded));
+
+        // Both origins answered, so there is evidence about both; what a 404 means for the
+        // caller's own question is the caller's to judge.
+        $this->assertSame(Status::Passed, $report->status());
+    }
+
+    /**
+     * The same, one level down: check() is the entry point a caller holding its own config
+     * values uses, and it must carry the path through too.
+     */
+    /** @test */
+    #[Test]
+    public function it_probes_a_named_path_from_the_resolving_entry_point(): void
+    {
+        $basePath = $this->createTempDirectory(['composer.json' => '{}']);
+
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'login')], $recorded)
+        );
+
+        $checker->check($basePath, 'https://example.com', null, 'production', '/login');
+
+        $this->assertCount(1, $recorded);
+        $this->assertSame('https://example.com/login', (string) $recorded[0]->getUri());
+    }
 }

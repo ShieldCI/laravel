@@ -12,8 +12,13 @@ use ShieldCI\Concerns\SanitizesErrorMessages;
 use Throwable;
 
 /**
- * Makes exactly one unauthenticated GET per distinct declared origin and classifies the
- * outcome into named states.
+ * Makes exactly one unauthenticated GET per distinct declared origin and path, and
+ * classifies the outcome into named states.
+ *
+ * The path is the caller's to name. Asking whether an origin is reachable at all is the
+ * root, which is the default, but every rule this helper was built to serve asks about a
+ * particular path: an .env candidate, a compiled asset, the login route. Each distinct
+ * (origin, path) is one question and costs one request for the life of this instance.
  *
  * Redirects are deliberately not followed and HTTP errors deliberately not thrown, so the
  * response the origin itself returned is the one captured. TLS verification is left on:
@@ -81,8 +86,14 @@ final class OriginReachabilityChecker
     private ClientInterface $client;
 
     /**
-     * Probes already made, keyed by origin, so an origin costs one request for the life of
-     * this instance however many rules ask about it.
+     * Probes already made, keyed by the URL that was probed, so one question costs one
+     * request for the life of this instance however many rules ask it.
+     *
+     * The key is origin plus path rather than origin alone. Keyed on the origin, a caller
+     * asking about /.env would be handed the response captured for the home page and would
+     * read a 200 as the file being exposed — the cache silently answering a question it
+     * was never asked. The probed URL is unique per (origin, path) by construction, since
+     * an origin never ends in a slash and a normalised path always begins with one.
      *
      * @var array<string, OriginProbeResult>
      */
@@ -105,25 +116,30 @@ final class OriginReachabilityChecker
      *
      * This is the entry point rules use: one call, one request per distinct origin, and a
      * report that cannot say Passed unless something actually answered.
+     *
+     * @param  string  $path  the path to request on each origin; the root by default
      */
-    public function checkApplication(string $basePath, Repository $config): OriginReachabilityReport
+    public function checkApplication(string $basePath, Repository $config, string $path = '/'): OriginReachabilityReport
     {
         return $this->check(
             $basePath,
             $this->stringConfig($config, 'app.url'),
             $this->stringConfig($config, 'app.asset_url'),
             $this->stringConfig($config, 'app.env'),
+            $path,
         );
     }
 
     /**
      * Resolve the declared origins under a base path and probe them.
+     *
+     * @param  string  $path  the path to request on each origin; the root by default
      */
-    public function check(string $basePath, ?string $appUrl, ?string $assetUrl, ?string $environment = null): OriginReachabilityReport
+    public function check(string $basePath, ?string $appUrl, ?string $assetUrl, ?string $environment = null, string $path = '/'): OriginReachabilityReport
     {
         $resolved = $this->resolver->resolve($basePath, $appUrl, $assetUrl);
 
-        return $this->probe($resolved['origins'], $environment, $resolved['unusable']);
+        return $this->probe($resolved['origins'], $environment, $resolved['unusable'], $path);
     }
 
     private function stringConfig(Repository $config, string $key): ?string
@@ -134,25 +150,78 @@ final class OriginReachabilityChecker
     }
 
     /**
-     * Probe each distinct declared origin once.
+     * Probe each distinct declared origin once, at one path.
      *
      * Declarations naming the same origin are merged before anything is sent, so two
      * config values pointing at one host cost one request and produce one probe carrying
      * both declarations as its sources.
      *
+     * One call asks one question of every origin, and the report it returns is the answer
+     * to that question: whether each origin answered at that path, never whether what it
+     * answered was good. A rule with several paths to ask about calls this once per path
+     * and reads each report on its own terms, which is what keeps the never-Passed-from-
+     * silence guarantee true of each path rather than of the origin in general.
+     *
      * @param  array<int, DeclaredOrigin>  $origins
      * @param  string|null  $environment  the application environment (APP_ENV), when known
      * @param  array<int, string>  $unusable  declarations that named no usable origin
+     * @param  string  $path  the path to request on each origin; the root by default
      */
-    public function probe(array $origins, ?string $environment = null, array $unusable = []): OriginReachabilityReport
+    public function probe(array $origins, ?string $environment = null, array $unusable = [], string $path = '/'): OriginReachabilityReport
     {
+        $path = $this->normalizePath($path);
+
         $probes = [];
 
         foreach ($this->distinct($origins) as $origin) {
-            $probes[] = $this->probeOrigin($origin);
+            $probes[] = $this->probeOrigin($origin, $origin->origin.$path);
         }
 
         return new OriginReachabilityReport($probes, $environment, $unusable);
+    }
+
+    /**
+     * Reduce whatever a caller named into a path that is requested on the declared origin.
+     *
+     * Only the path and query are read, so the request cannot leave the origin. Callers
+     * hand over asset URLs straight out of a build manifest, and those are frequently
+     * fully qualified against a CDN host; the resolver has already collapsed that host
+     * into a DeclaredOrigin of its own, and aiming a probe at a host that arrived in a
+     * path argument would report on something nobody declared.
+     *
+     * A leading slash is added when it is missing so 'build/app.js' and '/build/app.js'
+     * are one question rather than two, and a fragment is dropped because it is never sent
+     * and would otherwise split the cache on a difference the server never sees.
+     */
+    private function normalizePath(string $path): string
+    {
+        $path = trim($path);
+
+        if ($path === '' || $path === '/') {
+            return '/';
+        }
+
+        $parts = parse_url($path);
+
+        // parse_url only refuses input it cannot make sense of at all. Reading that as a
+        // literal path still sends the caller's own string to the declared origin, which
+        // is closer to what was asked for than silently substituting the root.
+        if (! is_array($parts)) {
+            $parts = ['path' => $path];
+        }
+
+        $requestPath = isset($parts['path']) && is_string($parts['path']) ? $parts['path'] : '';
+        $query = isset($parts['query']) && is_string($parts['query']) && $parts['query'] !== ''
+            ? '?'.$parts['query']
+            : '';
+
+        if ($requestPath === '') {
+            $requestPath = '/';
+        } elseif (! str_starts_with($requestPath, '/')) {
+            $requestPath = '/'.$requestPath;
+        }
+
+        return $requestPath.$query;
     }
 
     /**
@@ -177,9 +246,9 @@ final class OriginReachabilityChecker
         return array_values($distinct);
     }
 
-    private function probeOrigin(DeclaredOrigin $origin): OriginProbeResult
+    private function probeOrigin(DeclaredOrigin $origin, string $url): OriginProbeResult
     {
-        $cached = $this->probed[$origin->origin] ?? null;
+        $cached = $this->probed[$url] ?? null;
 
         if ($cached !== null) {
             // Union, not replacement: an origin named by app.url and later by app.asset_url
@@ -192,13 +261,11 @@ final class OriginReachabilityChecker
                 : $cached->withDeclaredOrigin($merged);
         }
 
-        return $this->probed[$origin->origin] = $this->sendProbe($origin);
+        return $this->probed[$url] = $this->sendProbe($origin, $url);
     }
 
-    private function sendProbe(DeclaredOrigin $origin): OriginProbeResult
+    private function sendProbe(DeclaredOrigin $origin, string $url): OriginProbeResult
     {
-        $url = $origin->origin.'/';
-
         /** @var GuzzleRequestOptions $options */
         $options = [
             'allow_redirects' => false,

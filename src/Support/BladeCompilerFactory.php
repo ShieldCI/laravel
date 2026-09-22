@@ -39,8 +39,9 @@ class BladeCompilerFactory
     /**
      * Inject __BLADE_LINE_N__ markers before each source line.
      *
-     * Outside @php blocks: a self-contained PHP open/close tag wrapping a marker.
-     * Inside  @php blocks: a single-line // comment on its own line.
+     * Outside PHP mode: a self-contained PHP open/close tag wrapping a marker.
+     * Inside  PHP mode: a single-line // comment on its own line. Two spans are inside it,
+     *         a @php block and the gap between @switch and its first @case.
      *
      * Why dual-mode: @php compiles to a PHP open tag. Injecting another open tag
      * inside would close the PHP mode prematurely, producing invalid PHP.
@@ -52,9 +53,15 @@ class BladeCompilerFactory
      * the comment form for the rest of the file and skip the tracking below. The same test
      * lives in LogicInBladeAnalyzer::analyzeBladeStructure(); keep the two spellings in step.
      *
-     * Why the comment form is confined to @php blocks: Blade copies a block body verbatim, but
-     * rewrites a directive expression. It re-flows a @foreach header onto one line, where a
-     * line comment would swallow the rest of it and orphan the @endforeach.
+     * Why @switch needs the comment form too: it compiles to an open tag that stays open,
+     * because the first @case is what closes it. A markup marker on any line in between opens
+     * PHP inside PHP, so the compiled output does not parse and every caller skips the whole
+     * template. @switch is the only Blade directive that leaves the mode open this way.
+     *
+     * Why the comment form is safe there: it takes its own line ahead of the directive, and the
+     * continuation tracking below still runs for it. What #406 got wrong was not the form but
+     * the @php branch skipping carryOver(), which let a marker land inside a @foreach header
+     * Blade had re-flowed onto one line and orphan the @endforeach.
      *
      * Why some lines get no marker: a directive expression or an echo may span lines
      * ("@include('v', [\n 'k' => 1,\n])"). A marker on a continuation line lands inside
@@ -66,6 +73,7 @@ class BladeCompilerFactory
     {
         $lines = explode("\n", $bladeSource);
         $inPhpBlock = false;
+        $inSwitchHeader = false;
         $openBrackets = 0;
         $openEcho = null;
         $marked = [];
@@ -94,11 +102,27 @@ class BladeCompilerFactory
                 continue;
             }
 
-            $marked[] = $openBrackets > 0 || $openEcho !== null
-                ? $line
-                : "<?php /* __BLADE_LINE_{$lineNum}__ */ ?>".$line;
+            if ($openBrackets > 0 || $openEcho !== null) {
+                $marked[] = $line;
+            } elseif ($inSwitchHeader) {
+                $marked[] = "// __BLADE_LINE_{$lineNum}__";
+                $marked[] = $line;
+            } else {
+                $marked[] = "<?php /* __BLADE_LINE_{$lineNum}__ */ ?>".$line;
+            }
 
             [$openBrackets, $openEcho] = self::carryOver($line, $openBrackets, $openEcho);
+
+            if (preg_match('/(?<!@)@switch\s*\(/', $trimmed)) {
+                $inSwitchHeader = true;
+            }
+
+            // The header runs to the first @case. A @switch whose first branch is @default is
+            // broken in Blade itself, which emits a second open tag there, so no template that
+            // Blade can render reaches this with @default first.
+            if (preg_match('/(?<!@)@case\b/', $trimmed)) {
+                $inSwitchHeader = false;
+            }
         }
 
         return implode("\n", $marked);

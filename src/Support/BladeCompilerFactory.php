@@ -73,6 +73,17 @@ class BladeCompilerFactory
      * bracket that belongs to no directive and leak that state past the @endphp. Blade copies
      * a block body verbatim, so there is no Blade expression in there to track.
      *
+     * Why a raw <?php the author wrote gets the comment form: it opens PHP mode the way a real
+     * block does, so a markup marker inside one nests an open tag inside PHP and the
+     * template stops parsing (#415). ReadsBladePhpBlocks reads that span from PHP's lexer,
+     * which is the only thing that knows a "?>" inside a string or a block comment does not
+     * close the mode.
+     *
+     * Why a heredoc body gets no marker at all: either form would join the string, and if the
+     * closing identifier is indented, a marker at column zero becomes the body's least
+     * indented line and PHP rejects the block. Those lines inherit the marker above them, the
+     * same way the continuation lines below do.
+     *
      * Why some lines get no marker: a directive expression or an echo may span lines
      * ("@include('v', [\n 'k' => 1,\n])"). A marker on a continuation line lands inside
      * the expression, so the compiled PHP does not parse and every caller skips the
@@ -91,6 +102,12 @@ class BladeCompilerFactory
         foreach ($lines as $index => $line) {
             $lineNum = $index + 1;
             $trimmed = trim($line);
+
+            if (isset($phpBlocks['noMarker'][$lineNum])) {
+                $marked[] = $line;
+
+                continue;
+            }
 
             if (isset($phpBlocks['insideBlock'][$lineNum])) {
                 $marked[] = "// __BLADE_LINE_{$lineNum}__";

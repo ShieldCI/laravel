@@ -113,6 +113,10 @@ BLADE;
         $result = $analyzer->analyze();
 
         $this->assertHasIssueContaining('Inline PHP found in Blade template', $result);
+
+        // The raw <?php span used to make the compiled PHP unparseable, so Pass 2 never ran
+        // against this fixture and its query went unreported (#415).
+        $this->assertHasIssueContaining('Database query found in Blade template', $result);
     }
 
     public function test_skips_blade_files_under_excluded_paths(): void
@@ -3617,6 +3621,48 @@ BLADE;
         $this->assertSame(15, $issues[1]->location?->line);
         $this->assertSame(11, $issues[0]->metadata['block_lines']);
         $this->assertSame(11, $issues[1]->metadata['block_lines']);
+    }
+
+    /**
+     * A "<?php" on a line inside a block body is the author's own PHP or text in a string,
+     * not a raw tag they should be told to replace.
+     *
+     * The annotation is not redundant with the attribute: composer allows phpunit ^9
+     * through ^13, and the CI matrix resolves 9 on Laravel 9, which reads only the
+     * annotation, while 12 dropped annotations and reads only the attribute.
+     *
+     * @dataProvider inlinePhpInsideABodyProvider
+     */
+    #[DataProvider('inlinePhpInsideABodyProvider')]
+    public function test_inline_php_inside_a_block_body_is_not_reported(string $blade): void
+    {
+        $this->assertSame([], $this->structuralIssues($blade, 'blade-inline-php'));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function inlinePhpInsideABodyProvider(): array
+    {
+        return [
+            'inside a @php block' => ["<div>\n    @php\n        \$snippet = '<?php echo 1; ?>';\n    @endphp\n    <code>{{ \$snippet }}</code>\n</div>\n"],
+            'inside a raw tag body' => ["<div>\n    @php\n        \$a = 1;\n    @endphp\n    @php\n        \$snippet = '<?php echo 1; ?>';\n    @endphp\n</div>\n"],
+        ];
+    }
+
+    /**
+     * The opening line of a raw tag is never inside a body, so it stays reported. That is the
+     * whole point of the rule, and suppressing it would be the easy way to get the test above
+     * to pass for the wrong reason.
+     */
+    public function test_the_opening_line_of_a_raw_tag_is_still_reported(): void
+    {
+        $blade = "<div>\n<?php\n    \$snippet = '<?php echo 1; ?>';\n?>\n</div>\n";
+
+        $issues = $this->structuralIssues($blade, 'blade-inline-php');
+
+        $this->assertCount(1, $issues);
+        $this->assertSame(2, $issues[0]->location?->line);
     }
 
     /**

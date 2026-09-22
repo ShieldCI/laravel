@@ -46,11 +46,19 @@ class BladeCompilerFactory
      * inside would close the PHP mode prematurely, producing invalid PHP.
      * Why // not block comments: block comments cannot nest in PHP, so user's own
      * block comments would conflict with marker block comments.
+     *
+     * Why some lines get no marker: a directive expression or an echo may span lines
+     * ("@include('v', [\n 'k' => 1,\n])"). A marker on a continuation line lands inside
+     * the expression, so the compiled PHP does not parse and every caller skips the
+     * template silently. Continuation lines therefore inherit the opening line's marker,
+     * which is also the line an author would want a failure reported against.
      */
     private static function injectLineMarkers(string $bladeSource): string
     {
         $lines = explode("\n", $bladeSource);
         $inPhpBlock = false;
+        $openBrackets = 0;
+        $openEcho = null;
         $marked = [];
 
         foreach ($lines as $index => $line) {
@@ -61,19 +69,124 @@ class BladeCompilerFactory
                 && ! str_contains($trimmed, '@endphp')) {
                 $inPhpBlock = true;
                 $marked[] = "<?php /* __BLADE_LINE_{$lineNum}__ */ ?>".$line;
-            } elseif ($inPhpBlock && str_contains($trimmed, '@endphp')) {
-                $marked[] = "// __BLADE_LINE_{$lineNum}__";
-                $marked[] = $line;
-                $inPhpBlock = false;
-            } elseif ($inPhpBlock) {
-                $marked[] = "// __BLADE_LINE_{$lineNum}__";
-                $marked[] = $line;
-            } else {
-                $marked[] = "<?php /* __BLADE_LINE_{$lineNum}__ */ ?>".$line;
+
+                continue;
             }
+
+            if ($inPhpBlock) {
+                $marked[] = "// __BLADE_LINE_{$lineNum}__";
+                $marked[] = $line;
+
+                if (str_contains($trimmed, '@endphp')) {
+                    $inPhpBlock = false;
+                }
+
+                continue;
+            }
+
+            $marked[] = $openBrackets > 0 || $openEcho !== null
+                ? $line
+                : "<?php /* __BLADE_LINE_{$lineNum}__ */ ?>".$line;
+
+            [$openBrackets, $openEcho] = self::carryOver($line, $openBrackets, $openEcho);
         }
 
         return implode("\n", $marked);
+    }
+
+    /**
+     * How much of an expression this line leaves open for the next one.
+     *
+     * Walks the line once, entering a directive expression at "@name(" and an echo at
+     * "{{" or "{!!", and tracking quotes so a bracket inside a string literal does not
+     * count. What comes back is the state the next line starts in.
+     *
+     * @param  int  $openBrackets  Unclosed brackets carried in from earlier lines.
+     * @param  string|null  $openEcho  Closing token of an echo still open, or null.
+     * @return array{int, string|null}
+     */
+    private static function carryOver(string $line, int $openBrackets, ?string $openEcho): array
+    {
+        $quote = null;
+        $length = strlen($line);
+        $i = 0;
+
+        while ($i < $length) {
+            $char = $line[$i];
+
+            if ($quote !== null) {
+                if ($char === '\\') {
+                    $i += 2;
+
+                    continue;
+                }
+
+                if ($char === $quote) {
+                    $quote = null;
+                }
+
+                $i++;
+
+                continue;
+            }
+
+            if ($openEcho !== null) {
+                if (substr($line, $i, strlen($openEcho)) === $openEcho) {
+                    $i += strlen($openEcho);
+                    $openEcho = null;
+
+                    continue;
+                }
+
+                $i++;
+
+                continue;
+            }
+
+            if ($char === "'" || $char === '"') {
+                $quote = $char;
+                $i++;
+
+                continue;
+            }
+
+            if ($openBrackets > 0) {
+                if ($char === '(' || $char === '[') {
+                    $openBrackets++;
+                } elseif ($char === ')' || $char === ']') {
+                    $openBrackets--;
+                }
+
+                $i++;
+
+                continue;
+            }
+
+            if (substr($line, $i, 3) === '{!!') {
+                $openEcho = '!!}';
+                $i += 3;
+
+                continue;
+            }
+
+            if (substr($line, $i, 2) === '{{') {
+                $openEcho = '}}';
+                $i += 2;
+
+                continue;
+            }
+
+            if ($char === '@' && preg_match('/\G@[a-zA-Z]\w*\s*\(/', $line, $m, 0, $i) === 1) {
+                $openBrackets = 1;
+                $i += strlen($m[0]);
+
+                continue;
+            }
+
+            $i++;
+        }
+
+        return [$openBrackets, $openEcho];
     }
 
     /**

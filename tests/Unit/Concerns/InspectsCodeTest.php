@@ -8,6 +8,7 @@ use PhpParser\Node;
 use PhpParser\Node\Expr\FuncCall;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\AnalyzersCore\Support\AstParser;
+use ShieldCI\AnalyzersCore\ValueObjects\ParseFailure;
 use ShieldCI\Concerns\InspectsCode;
 use ShieldCI\Tests\TestCase;
 
@@ -431,23 +432,78 @@ class InspectsCodeTest extends TestCase
 
     /** @test */
     #[Test]
-    public function clear_ast_parser_cache_releases_the_parser_and_reinitializes_on_next_use(): void
+    public function it_parses_through_the_shared_container_parser(): void
     {
         $inspector = new ConcreteInspectsCode;
         $inspector->setFixturePath(__DIR__.'/../../Fixtures/inspects-code');
 
-        $before = $inspector->publicFindFunctionCalls('env');
+        $inspector->publicFindFunctionCalls('env');
 
         $property = new \ReflectionProperty(ConcreteInspectsCode::class, 'parser');
+
         $this->assertTrue($property->isInitialized($inspector));
+        $this->assertSame(
+            app(AstParser::class),
+            $property->getValue($inspector),
+            'The trait must parse through the container singleton, not a private instance.'
+        );
+    }
 
-        $inspector->clearAstParserCache();
+    /** @test */
+    #[Test]
+    public function it_keeps_a_parser_that_was_injected_before_parsing(): void
+    {
+        $injected = new AstParser;
 
-        $this->assertFalse($property->isInitialized($inspector));
+        $inspector = new ConcreteInspectsCode;
+        $inspector->injectParser($injected);
+        $inspector->setFixturePath(__DIR__.'/../../Fixtures/inspects-code');
 
-        $after = $inspector->publicFindFunctionCalls('env');
-        $this->assertTrue($property->isInitialized($inspector));
-        $this->assertCount(count($before), $after);
+        $inspector->publicFindFunctionCalls('env');
+
+        $property = new \ReflectionProperty(ConcreteInspectsCode::class, 'parser');
+
+        $this->assertSame($injected, $property->getValue($inspector));
+        $this->assertNotSame(app(AstParser::class), $property->getValue($inspector));
+    }
+
+    /**
+     * The point of the consolidation: a file the trait could not parse is skipped exactly
+     * as before, but the skip is now recorded on the parser a run reads back, instead of
+     * disappearing into an instance owned by one analyzer.
+     */
+    /** @test */
+    #[Test]
+    public function a_file_it_cannot_parse_is_recorded_on_the_shared_parser(): void
+    {
+        $shared = app(AstParser::class);
+
+        // Assigned first so the assertion narrows this variable and not every later
+        // failures() call in the test.
+        $before = $shared->failures();
+        $this->assertSame([], $before, 'Nothing should have failed before this test parses anything.');
+
+        $fixtures = __DIR__.'/../../Fixtures/inspects-code';
+
+        $inspector = new ConcreteInspectsCode;
+        $inspector->setFixturePath($fixtures);
+
+        // The unparseable fixture yields no calls and no error: the trait skips it silently.
+        $results = $inspector->publicFindFunctionCalls('env');
+        $this->assertCount(2, $results);
+
+        $failedPaths = array_map(
+            static fn (ParseFailure $failure): string => $failure->path === null
+                ? ''
+                : (string) (realpath($failure->path) ?: $failure->path),
+            $shared->failures()
+        );
+
+        $this->assertContains(
+            (string) realpath($fixtures.'/syntax_error.php'),
+            $failedPaths,
+            'The skipped file must be visible on the shared parser after the run.'
+        );
     }
 }
 
@@ -466,6 +522,15 @@ class ConcreteInspectsCode
     public function setFixturePath(string $path): void
     {
         $this->fixturePath = $path;
+    }
+
+    /**
+     * Stand in for the constructor injection real analyzers use: the trait must leave a
+     * parser it was handed alone rather than resolving one over the top of it.
+     */
+    public function injectParser(AstParser $parser): void
+    {
+        $this->parser = $parser;
     }
 
     /**

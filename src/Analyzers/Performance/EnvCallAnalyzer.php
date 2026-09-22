@@ -52,9 +52,21 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
     private const EXCLUDE_PATHS = ['/config/', '/tests/', '/Tests/'];
 
     /**
-     * AST parser for static call detection.
+     * This analyzer used to parse through two private instances — the trait's and a
+     * `$staticParser` of its own — so every file it could not parse was logged twice over,
+     * both times into an object no run reads. The container binds AstParser as a singleton
+     * (see ShieldCIServiceProvider), so the injected instance is the one whose failures()
+     * a run reports.
+     *
+     * @param  AstParser  $parser  The shared parser, assigned into the InspectsCode property
+     *                             so the trait's helpers and this analyzer's own scan use
+     *                             one instance. Assigned rather than promoted because the
+     *                             trait already declares the property.
      */
-    private ?AstParser $staticParser = null;
+    public function __construct(AstParser $parser)
+    {
+        $this->parser = $parser;
+    }
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -129,30 +141,6 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Get the static parser instance (lazy initialization).
-     */
-    private function getStaticParser(): AstParser
-    {
-        if ($this->staticParser === null) {
-            $this->staticParser = new AstParser;
-        }
-
-        return $this->staticParser;
-    }
-
-    /**
-     * Release both lazily created parsers (and their AST caches) after a run.
-     *
-     * Overrides the InspectsCode implementation to also drop $staticParser;
-     * both re-initialize on next use.
-     */
-    public function clearAstParserCache(): void
-    {
-        unset($this->parser);
-        $this->staticParser = null;
-    }
-
-    /**
      * Find all env() calls (both function and Env::get() static calls) in a single parse pass.
      *
      * Parses each file only once to detect both patterns, avoiding duplicate AST parsing.
@@ -163,7 +151,7 @@ class EnvCallAnalyzer extends AbstractFileAnalyzer
     private function findAllEnvCalls(array $excludePaths): array
     {
         $results = [];
-        $parser = $this->getStaticParser();
+        $parser = $this->parser;
 
         // Set paths to analyze
         $this->setPaths(self::SEARCH_PATHS);

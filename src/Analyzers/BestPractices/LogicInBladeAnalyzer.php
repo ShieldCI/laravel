@@ -74,9 +74,17 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
     /** @var array<int, true> Track reported lines to avoid duplicates */
     private array $reportedLines = [];
 
+    /**
+     * @param  AstParser  $astParser  The shared parser. Deliberately required rather than
+     *                                defaulted to `new AstParser`: a default silently hands
+     *                                any caller that omits it a private instance, and a
+     *                                private instance logs the templates this analyzer could
+     *                                not parse where nothing reads them — which is the same
+     *                                silent pass the log exists to expose.
+     */
     public function __construct(
         private Config $config,
-        private AstParser $astParser = new AstParser,
+        private AstParser $astParser,
     ) {}
 
     protected function metadata(): AnalyzerMetadata
@@ -326,7 +334,18 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $ast = $this->astParser->parseCode($result['compiledPhp']);
+        $lineMap = $result['lineMap'];
+
+        // The parsed source is compiled output, so name the Blade file it came from and
+        // map any failing compiled line back through the same line map the issues use.
+        // Without both, a template this analyzer silently skips is logged as an anonymous
+        // blob of PHP that cannot be traced to a file.
+        $ast = $this->astParser->parseCode(
+            $result['compiledPhp'],
+            $file,
+            fn (int $compiledLine): int => $lineMap[$compiledLine] ?? $compiledLine,
+        );
+
         if (empty($ast)) {
             return;
         }
@@ -339,8 +358,6 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         $traverser = new NodeTraverser;
         $traverser->addVisitor($visitor);
         $traverser->traverse($ast);
-
-        $lineMap = $result['lineMap'];
 
         foreach ($visitor->getIssues() as $astIssue) {
             $compiledLine = $astIssue['line'];

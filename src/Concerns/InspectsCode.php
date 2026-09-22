@@ -22,27 +22,31 @@ use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
  */
 trait InspectsCode
 {
+    /**
+     * The shared parser, never a private instance.
+     *
+     * AstParser records every file it was handed and could not parse, and a run reads
+     * that log back off the one instance the container hands out. A parser of our own
+     * would log the files this analyzer skipped somewhere nobody reads, and the analyzer
+     * would report a pass for them exactly as it does for files it understood.
+     *
+     * Its AST cache is drained between analyzers by AnalyzerManager::clearParserCache(),
+     * which is what keeps the memory behaviour of #302 while the instance is shared.
+     */
     private AstParser $parser;
 
     /**
-     * Initialize the AST parser.
+     * Resolve the shared AST parser.
+     *
+     * Does nothing when one was injected: an analyzer that declares AstParser in its
+     * constructor assigns this property before any parsing starts, and the container
+     * hands it the same singleton.
      */
     private function initializeParser(): void
     {
         if (! isset($this->parser)) {
-            $this->parser = new AstParser;
+            $this->parser = app(AstParser::class);
         }
-    }
-
-    /**
-     * Release the parser (and its AST cache) after an analyzer run.
-     *
-     * Called via method_exists() by AnalyzerManager/AnalyzeCommand between
-     * analyzers; the parser lazily re-initializes on next use.
-     */
-    public function clearAstParserCache(): void
-    {
-        unset($this->parser);
     }
 
     /**

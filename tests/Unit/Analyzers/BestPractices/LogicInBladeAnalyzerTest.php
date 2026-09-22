@@ -7,6 +7,8 @@ namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 use Illuminate\Config\Repository;
 use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\BestPractices\LogicInBladeAnalyzer;
+use ShieldCI\AnalyzersCore\Enums\ParseFailureCause;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Tests\AnalyzerTestCase;
 
@@ -26,7 +28,7 @@ class LogicInBladeAnalyzerTest extends AnalyzerTestCase
             ],
         ]);
 
-        return new LogicInBladeAnalyzer($config);
+        return new LogicInBladeAnalyzer($config, app(AstParser::class));
     }
 
     public function test_passes_with_simple_blade_syntax(): void
@@ -1165,7 +1167,7 @@ BLADE;
             ],
         ]);
 
-        $analyzer = new LogicInBladeAnalyzer($config);
+        $analyzer = new LogicInBladeAnalyzer($config, app(AstParser::class));
 
         $blade = <<<'BLADE'
 <div>
@@ -2647,7 +2649,7 @@ BLADE;
 
         $analyzer = new LogicInBladeAnalyzer(new Repository([
             'shieldci' => ['analyzers' => ['best-practices' => ['logic-in-blade' => $config]]],
-        ]));
+        ]), app(AstParser::class));
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['views']);
 
@@ -3621,6 +3623,60 @@ BLADE;
         $this->assertSame(15, $issues[1]->location?->line);
         $this->assertSame(11, $issues[0]->metadata['block_lines']);
         $this->assertSame(11, $issues[1]->metadata['block_lines']);
+    }
+
+    public function test_it_compiles_through_the_shared_container_parser(): void
+    {
+        $analyzer = $this->createAnalyzer();
+
+        $parser = new \ReflectionProperty(LogicInBladeAnalyzer::class, 'astParser');
+
+        $this->assertSame(
+            app(AstParser::class),
+            $parser->getValue($analyzer),
+            'The analyzer must parse compiled Blade through the container singleton, not a private instance.'
+        );
+    }
+
+    /**
+     * The point of the consolidation: a template whose compiled PHP will not parse is
+     * skipped exactly as before — pass 2 finds no logic in it — but the skip is now
+     * recorded on the parser a run reads back, named after the Blade file it came from
+     * and at the Blade line the failure maps to, not the compiled line.
+     */
+    public function test_a_template_it_cannot_parse_is_recorded_on_the_shared_parser(): void
+    {
+        $blade = <<<'BLADE'
+<div>
+    @php
+        $total = ;
+    @endphp
+</div>
+BLADE;
+
+        $tempDir = $this->createTempDirectory(['views/broken.blade.php' => $blade]);
+
+        $shared = app(AstParser::class);
+
+        // Assigned first so the assertion narrows this variable and not every later
+        // failures() call in the test.
+        $before = $shared->failures();
+        $this->assertSame([], $before, 'Nothing should have failed before this test parses anything.');
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['views']);
+
+        $analyzer->analyze();
+
+        $failures = $shared->failures();
+        $this->assertCount(1, $failures);
+        $this->assertSame(
+            realpath($tempDir.'/views/broken.blade.php'),
+            realpath((string) $failures[0]->path)
+        );
+        $this->assertSame(ParseFailureCause::SyntaxError, $failures[0]->cause);
+        $this->assertSame(3, $failures[0]->line, 'The line must be the Blade line, not the compiled-PHP line.');
     }
 
     /**

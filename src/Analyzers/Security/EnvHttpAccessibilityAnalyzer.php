@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
-use GuzzleHttp\Client;
-use GuzzleHttp\Exception\RequestException;
 use Illuminate\Routing\Router;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -14,6 +12,9 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Concerns\FindsLoginRoute;
+use ShieldCI\Support\OriginReachability\DeclaredOrigin;
+use ShieldCI\Support\OriginReachability\OriginProbeResult;
+use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
 
 /**
  * Checks if .env file is publicly accessible via HTTP.
@@ -31,6 +32,8 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
 {
     use FindsLoginRoute;
 
+    private OriginReachabilityChecker $checker;
+
     /**
      * HTTP checks require a live web server, not applicable in CI.
      */
@@ -40,8 +43,6 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
      * Minimum number of indicators required to confirm .env file.
      */
     private const MIN_INDICATORS_FOR_DETECTION = 2;
-
-    private Client $httpClient;
 
     /**
      * Sensitive keys that indicate .env file content.
@@ -59,15 +60,21 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
         'DB_PASSWORD=',
     ];
 
-    public function __construct(Router $router)
+    /**
+     * The checker is a container singleton, so the origin is probed once per path for the
+     * whole run however many analyzers ask about it.
+     *
+     * Certificate verification is the checker's and is left on. This analyzer used to
+     * disable it to tolerate self-signed certificates in staging, but it runs in production
+     * too, and a conclusion of "the web server is properly configured" drawn over a
+     * connection whose peer was never authenticated is a claim about a host we cannot
+     * identify. An untrusted certificate is now a named outcome carrying no evidence, which
+     * is more than the pass it used to produce.
+     */
+    public function __construct(Router $router, OriginReachabilityChecker $checker)
     {
         $this->router = $router;
-        $this->httpClient = new Client([
-            'timeout' => 5,
-            'connect_timeout' => 3,
-            'http_errors' => false, // Don't throw on 4xx/5xx
-            'verify' => false, // Allow self-signed certs in staging
-        ]);
+        $this->checker = $checker;
     }
 
     protected function metadata(): AnalyzerMetadata
@@ -152,28 +159,33 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
             'config/.env',         // In config directory
         ];
 
-        $testedUrls = [];
+        if ($appUrl === '') {
+            return $this->warning('Could not determine the application origin - skipping HTTP accessibility check');
+        }
+
+        $origin = new DeclaredOrigin($appUrl, [DeclaredOrigin::SOURCE_APP_URL]);
+
+        // Paths that produced no response at all. They are neither safe nor exposed: they
+        // are unknown, and the difference decides whether this run may claim anything.
+        $unobserved = [];
 
         foreach ($envPaths as $path) {
-            $testUrl = rtrim($appUrl, '/').'/'.ltrim($path, '/');
+            $result = $this->checkEnvAccessibility($origin, $path);
 
-            // Avoid duplicate tests
-            if (in_array($testUrl, $testedUrls, true)) {
+            if (! $result['observed']) {
+                $unobserved[] = $path;
+
                 continue;
             }
 
-            $testedUrls[] = $testUrl;
-
-            $result = $this->checkEnvAccessibility($testUrl);
-
             if ($result['accessible']) {
                 $issues[] = $this->createIssue(
-                    message: sprintf('.env file is publicly accessible via HTTP at: %s', $testUrl),
+                    message: sprintf('.env file is publicly accessible via HTTP at: %s', $result['url']),
                     location: new Location('.env'),
                     severity: $this->determineSeverity($path),
                     recommendation: $this->getRecommendation($path),
                     metadata: [
-                        'url' => $testUrl,
+                        'url' => $result['url'],
                         'path' => $path,
                         'accessible' => true,
                         'indicators_found' => $result['indicators_found'],
@@ -185,84 +197,131 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
             }
         }
 
-        $summary = empty($issues)
+        // Nothing found and something unchecked is not a clean bill of health. Returning
+        // passed here is the defect this analyzer was filed for: every probe failing read
+        // as the web server being properly configured.
+        if ($issues === [] && $unobserved !== []) {
+            return $this->warning(sprintf(
+                'Could not verify .env accessibility: %d of %d location%s on %s produced no response, so nothing was learned about %s.',
+                count($unobserved),
+                count($envPaths),
+                count($envPaths) === 1 ? '' : 's',
+                $appUrl,
+                count($unobserved) === 1 ? 'it' : 'them'
+            ));
+        }
+
+        $summary = $issues === []
             ? '.env file is not accessible via HTTP - web server properly configured'
             : sprintf('.env file is publicly accessible at %d location%s', count($issues), count($issues) === 1 ? '' : 's');
+
+        if ($issues !== [] && $unobserved !== []) {
+            $summary .= sprintf(' (%d further location%s could not be checked)', count($unobserved), count($unobserved) === 1 ? '' : 's');
+        }
 
         return $this->resultBySeverity($summary, $issues);
     }
 
     /**
-     * Check if .env is accessible at the given URL.
+     * Check whether .env is reachable at one path on the declared origin.
      *
-     * @return array{accessible: bool, indicators_found: array<string>, status_code?: int, response_size?: int, server_type?: string|null}
+     * Three states, not two. "The server answered and the file is not there" and "nothing
+     * answered" are different facts about the deployment, and reporting the first when the
+     * second happened is how this analyzer used to certify a web server it never reached.
+     * The caller reads `observed` before it reads `accessible`.
+     *
+     * @return array{observed: bool, accessible: bool, indicators_found: array<string>, url: string, status_code?: int, response_size?: int, server_type?: string|null, reason?: string}
      */
-    private function checkEnvAccessibility(string $url): array
+    private function checkEnvAccessibility(DeclaredOrigin $origin, string $path): array
     {
-        try {
-            $response = $this->httpClient->get($url);
-            $statusCode = $response->getStatusCode();
-            $body = (string) $response->getBody();
-            $responseSize = strlen($body);
-            $serverType = $response->getHeaderLine('Server');
+        $probe = $this->checker->probe([$origin], null, [], $path)->probeFor($origin->origin);
 
-            // If we don't get a 200, it's likely blocked (good!)
-            if ($statusCode !== 200) {
-                return [
-                    'accessible' => false,
-                    'indicators_found' => [],
-                    'status_code' => $statusCode,
-                ];
-            }
-
-            // Check if the content looks like an .env file
-            $indicatorsFound = [];
-
-            foreach ($this->envIndicators as $indicator) {
-                if (str_contains($body, $indicator)) {
-                    $indicatorsFound[] = $indicator;
-                }
-            }
-
-            // If we found enough indicators, it's very likely an .env file
-            if (count($indicatorsFound) >= self::MIN_INDICATORS_FOR_DETECTION) {
-                return [
-                    'accessible' => true,
-                    'indicators_found' => $indicatorsFound,
-                    'status_code' => $statusCode,
-                    'response_size' => $responseSize,
-                    'server_type' => $serverType ?: null,
-                ];
-            }
-
-            // Check for .env-like patterns (key=value format)
-            $envPattern = '/^[A-Z_][A-Z0-9_]*\s*=\s*.+$/m';
-            if (preg_match($envPattern, $body)) {
-                // Found key=value patterns, but no specific indicators
-                // Could be a false positive, so mark as accessible but with caution
-                return [
-                    'accessible' => true,
-                    'indicators_found' => ['KEY=VALUE pattern detected'],
-                    'status_code' => $statusCode,
-                    'response_size' => $responseSize,
-                    'server_type' => $serverType ?: null,
-                ];
-            }
-
+        if ($probe === null || ! $probe->hasEvidence()) {
             return [
+                'observed' => false,
                 'accessible' => false,
                 'indicators_found' => [],
+                'url' => $probe->probedUrl ?? $origin->origin,
+                'reason' => $probe?->describe() ?? 'the origin was not probed',
+            ];
+        }
+
+        $url = $probe->probedUrl;
+        $statusCode = $probe->statusCode ?? 0;
+
+        // If we don't get a 200, it's likely blocked (good!)
+        if ($statusCode !== 200) {
+            return [
+                'observed' => true,
+                'accessible' => false,
+                'indicators_found' => [],
+                'url' => $url,
                 'status_code' => $statusCode,
             ];
-
-        } catch (RequestException $e) {
-            // Network errors, timeouts, DNS failures, etc.
-            // We'll assume the file is not accessible (could be blocked, which is good)
-            return ['accessible' => false, 'indicators_found' => []];
-        } catch (\Throwable $e) {
-            // Any other error - assume not accessible
-            return ['accessible' => false, 'indicators_found' => []];
         }
+
+        $body = $probe->bodyPrefix ?? '';
+        $serverType = $probe->header('Server');
+
+        // Check if the content looks like an .env file
+        $indicatorsFound = [];
+
+        foreach ($this->envIndicators as $indicator) {
+            if (str_contains($body, $indicator)) {
+                $indicatorsFound[] = $indicator;
+            }
+        }
+
+        $found = static fn (array $indicators): array => [
+            'observed' => true,
+            'accessible' => true,
+            'indicators_found' => $indicators,
+        ];
+
+        // If we found enough indicators, it's very likely an .env file
+        if (count($indicatorsFound) >= self::MIN_INDICATORS_FOR_DETECTION) {
+            return $found($indicatorsFound) + [
+                'url' => $url,
+                'status_code' => $statusCode,
+                'response_size' => $this->responseSize($probe, $body),
+                'server_type' => $serverType ?: null,
+            ];
+        }
+
+        // Check for .env-like patterns (key=value format)
+        $envPattern = '/^[A-Z_][A-Z0-9_]*\s*=\s*.+$/m';
+        if (preg_match($envPattern, $body)) {
+            // Found key=value patterns, but no specific indicators
+            // Could be a false positive, so mark as accessible but with caution
+            return $found(['KEY=VALUE pattern detected']) + [
+                'url' => $url,
+                'status_code' => $statusCode,
+                'response_size' => $this->responseSize($probe, $body),
+                'server_type' => $serverType ?: null,
+            ];
+        }
+
+        return [
+            'observed' => true,
+            'accessible' => false,
+            'indicators_found' => [],
+            'url' => $url,
+            'status_code' => $statusCode,
+        ];
+    }
+
+    /**
+     * Size of the exposed file.
+     *
+     * The probe keeps only a prefix of the body, so the captured length understates a large
+     * file. Content-Length is what the server said the whole thing weighs and is preferred
+     * when it is present and sane.
+     */
+    private function responseSize(OriginProbeResult $probe, string $body): int
+    {
+        $declared = $probe->header('Content-Length');
+
+        return $declared !== null && ctype_digit($declared) ? (int) $declared : strlen($body);
     }
 
     /**
@@ -330,13 +389,5 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
         $port = isset($parsed['port']) ? ':'.$parsed['port'] : '';
 
         return "{$scheme}://{$host}{$port}";
-    }
-
-    /**
-     * Allow injection of HTTP client for testing.
-     */
-    public function setHttpClient(Client $client): void
-    {
-        $this->httpClient = $client;
     }
 }

@@ -1215,4 +1215,45 @@ class OriginReachabilityCheckerTest extends AnalyzerTestCase
         $this->assertCount(1, $recorded);
         $this->assertSame('https://example.com/login', (string) $recorded[0]->getUri());
     }
+
+    /**
+     * A query with no path of its own asks about the root, not about a URL with no path
+     * at all. Guzzle would otherwise be handed "https://example.com?v=2".
+     */
+    /** @test */
+    #[Test]
+    public function it_treats_a_bare_query_as_a_query_on_the_root(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'ok')], $recorded)
+        );
+
+        $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])], path: '?v=2');
+
+        $this->assertCount(1, $recorded);
+        $this->assertSame('https://example.com/?v=2', (string) $recorded[0]->getUri());
+    }
+
+    /**
+     * parse_url() refuses input it cannot make sense of at all. Reading that as a literal
+     * path still sends the caller's own string to the declared origin, which is closer to
+     * what was asked for than silently substituting the root and probing the wrong thing.
+     */
+    /** @test */
+    #[Test]
+    public function it_sends_an_unparseable_path_to_the_declared_origin_verbatim(): void
+    {
+        $this->assertFalse(parse_url('//:80'), 'fixture must be unparseable for this test to mean anything');
+
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(404, [], 'nope')], $recorded)
+        );
+
+        $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])], path: '//:80');
+
+        $this->assertCount(1, $recorded);
+        $this->assertSame('https://example.com//:80', (string) $recorded[0]->getUri());
+    }
 }

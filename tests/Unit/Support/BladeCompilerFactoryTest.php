@@ -151,6 +151,12 @@ class BladeCompilerFactoryTest extends TestCase
      * Markers used to be injected on every line, which dropped a self-contained PHP tag
      * into the middle of the expression and made the compiled output unparseable. Callers
      * skip such a template silently, so a healthy view became invisible to analysis.
+     *
+     * The annotation is not redundant with the attribute: composer allows phpunit ^9
+     * through ^13, and the CI matrix resolves 9 on Laravel 9, which reads only the
+     * annotation, while 12 dropped annotations and reads only the attribute.
+     *
+     * @dataProvider multiLineDirectiveProvider
      */
     #[DataProvider('multiLineDirectiveProvider')]
     public function test_a_directive_split_across_lines_still_compiles_to_parseable_php(string $blade): void

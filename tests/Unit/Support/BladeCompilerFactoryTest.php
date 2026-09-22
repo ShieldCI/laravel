@@ -186,6 +186,13 @@ class BladeCompilerFactoryTest extends TestCase
             'echo split across lines' => ["<div>\n{{ \$a\n    + \$b }}\n</div>\n"],
             'foreach with a split expression' => ["<div>\n@foreach (\$items\n    as \$item)\n    {{ \$item }}\n@endforeach\n</div>\n"],
             'forelse with a split expression' => ["<div>\n@forelse (\$items\n    as \$item)\n    {{ \$item }}\n@empty\n    none\n@endforelse\n</div>\n"],
+            // An inline @php(...) is self-closing, so the tracking above must stay live for
+            // the rest of the file. Blade re-flows a foreach header onto one line, so if the
+            // marker had switched to the comment form it would swallow the rest of that
+            // header and leave @endforeach orphaned.
+            'foreach split after an inline @php call' => ["<div>\n@php(\$x = 1)\n@foreach (\$items\n    as \$item)\n    {{ \$item }}\n@endforeach\n</div>\n"],
+            'forelse split after an inline @php call' => ["<div>\n@php(\$x = 1)\n@forelse (\$items\n    as \$item)\n    {{ \$item }}\n@empty\n    none\n@endforelse\n</div>\n"],
+            'inline @php call split across lines' => ["<div>\n@php(\$x = [\n    1,\n    2,\n])\n{{ count(\$x) }}\n</div>\n"],
         ];
     }
 
@@ -205,6 +212,76 @@ class BladeCompilerFactoryTest extends TestCase
         // and the body keeps its own line rather than being dragged back to the opening.
         $this->assertSame(2, $result['lineMap'][$condition] ?? null);
         $this->assertSame(4, $result['lineMap'][$body] ?? null);
+    }
+
+    /**
+     * An inline @php(...) compiles to a self-contained <?php ... ?> and has no @endphp,
+     * so the lines after it are still markup and must keep the markup marker form.
+     */
+    public function test_an_inline_php_call_does_not_switch_the_rest_of_the_file_to_the_block_marker_form(): void
+    {
+        $blade = "<div>\n@php(\$x = 1)\n{{ \$x }}\n<p>after</p>\n</div>\n";
+
+        $result = BladeCompilerFactory::compile($blade);
+
+        $this->assertNotNull($result);
+
+        $this->assertStringNotContainsString(
+            '// __BLADE_LINE_',
+            $result['compiledPhp'],
+            'The comment marker form is only safe inside a @php block, where Blade copies the body verbatim.'
+        );
+
+        // The echo opens on Blade line 3 and the paragraph on line 4; neither may shift.
+        $echo = $this->compiledLineContaining($result['compiledPhp'], 'echo e(');
+        $tail = $this->compiledLineContaining($result['compiledPhp'], '<p>after</p>');
+
+        $this->assertSame(3, $result['lineMap'][$echo] ?? null);
+        $this->assertSame(4, $result['lineMap'][$tail] ?? null);
+    }
+
+    /**
+     * Only a bare @php opens a block that runs until @endphp. Reading the call form as an
+     * opening latches the comment marker for the rest of the file, because no @endphp ever
+     * arrives to close it.
+     *
+     * The annotation is not redundant with the attribute: composer allows phpunit ^9
+     * through ^13, and the CI matrix resolves 9 on Laravel 9, which reads only the
+     * annotation, while 12 dropped annotations and reads only the attribute.
+     *
+     * @dataProvider phpDirectiveFormProvider
+     */
+    #[DataProvider('phpDirectiveFormProvider')]
+    public function test_only_a_bare_php_directive_opens_a_block(string $blade, bool $opensBlock): void
+    {
+        $result = BladeCompilerFactory::compile($blade);
+
+        $this->assertNotNull($result);
+
+        if ($opensBlock) {
+            $this->assertStringContainsString('// __BLADE_LINE_', $result['compiledPhp']);
+
+            return;
+        }
+
+        $this->assertStringNotContainsString('// __BLADE_LINE_', $result['compiledPhp']);
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function phpDirectiveFormProvider(): array
+    {
+        return [
+            'bare directive opens a block' => ["<div>\n@php\n    \$x = 1;\n@endphp\n{{ \$x }}\n</div>\n", true],
+            'call form is self-closing' => ["<div>\n@php(\$x = 1)\n{{ \$x }}\n</div>\n", false],
+            // Blade's own statement matcher allows horizontal space before the parenthesis.
+            'call form after a space' => ["<div>\n@php (\$x = 1)\n{{ \$x }}\n</div>\n", false],
+            'call form after a tab' => ["<div>\n@php\t(\$x = 1)\n{{ \$x }}\n</div>\n", false],
+            'block opened and closed on one line' => ["<div>\n@php \$x = 1; @endphp\n{{ \$x }}\n</div>\n", false],
+            // A longer name is a different directive, so the word boundary must hold.
+            'a directive whose name merely starts with php' => ["<div>\n@phpunit\n{{ \$x }}\n</div>\n", false],
+        ];
     }
 
     /**

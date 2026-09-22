@@ -55,12 +55,12 @@ class OriginProbeResultTest extends TestCase
     public function it_describes_what_a_captured_response_was(): void
     {
         $this->assertSame(
-            'https://example.com/ — connected (2xx) HTTP 200',
+            'https://example.com/: connected (2xx) HTTP 200',
             $this->connected('https://example.com', 200)->describe()
         );
 
         $this->assertSame(
-            'https://example.com/ — connected (non-2xx) HTTP 503',
+            'https://example.com/: connected (non-2xx) HTTP 503',
             $this->connected('https://example.com', 503)->describe()
         );
     }
@@ -78,7 +78,7 @@ class OriginProbeResultTest extends TestCase
         );
 
         $this->assertSame(
-            'https://example.com/ — redirected off host HTTP 302 to https://elsewhere.test/',
+            'https://example.com/: redirected off host HTTP 302 to https://elsewhere.test/',
             $probe->describe()
         );
     }
@@ -95,7 +95,7 @@ class OriginProbeResultTest extends TestCase
         );
 
         $this->assertSame(
-            'https://example.com/ — DNS failure: cURL error 6: Could not resolve host',
+            'https://example.com/: DNS failure: cURL error 6: Could not resolve host',
             $probe->describe()
         );
     }
@@ -110,7 +110,7 @@ class OriginProbeResultTest extends TestCase
             outcome: OriginOutcome::TransportFailure,
         );
 
-        $this->assertSame('https://example.com/ — transport failure', $probe->describe());
+        $this->assertSame('https://example.com/: transport failure', $probe->describe());
     }
 
     /** @test */
@@ -162,7 +162,7 @@ class OriginProbeResultTest extends TestCase
 
         $this->assertCount(1, $findings);
         $this->assertSame(
-            'https://example.com (declared by app.url) could not be reached — transport failure. No evidence was obtained about this origin.',
+            'https://example.com (declared by app.url) could not be reached: transport failure. No evidence was obtained about this origin.',
             $findings[0]
         );
         $this->assertSame(Status::Warning, $report->status());

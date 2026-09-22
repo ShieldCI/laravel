@@ -8,6 +8,7 @@ use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
 use Illuminate\Contracts\Config\Repository;
 use Psr\Http\Message\ResponseInterface;
+use ShieldCI\Concerns\SanitizesErrorMessages;
 use Throwable;
 
 /**
@@ -19,14 +20,20 @@ use Throwable;
  * turning it off would silently convert a broken certificate into a clean 200, which is
  * exactly the kind of false evidence this helper exists to prevent.
  *
+ * The response is streamed rather than buffered. Only BODY_PREFIX_BYTES of the body is ever
+ * kept, and an origin serving a large document at its root should not be downloaded in full
+ * for the sake of the first two kilobytes.
+ *
  * Guzzle 8 types its request options as an array shape, so options forwarded to the client
  * have to name the keys they may carry. Guzzle 7 declares the same parameter as a plain
  * array and accepts this unchanged.
  *
- * @phpstan-type GuzzleRequestOptions array{allow_redirects?: bool, connect_timeout?: int|float, headers?: array<string, string>, http_errors?: bool, timeout?: int|float, verify?: bool|string}
+ * @phpstan-type GuzzleRequestOptions array{allow_redirects?: bool, connect_timeout?: int|float, headers?: array<string, string>, http_errors?: bool, stream?: bool, timeout?: int|float, verify?: bool|string}
  */
 final class OriginReachabilityChecker
 {
+    use SanitizesErrorMessages;
+
     public const DEFAULT_TIMEOUT = 10.0;
 
     public const DEFAULT_CONNECT_TIMEOUT = 5.0;
@@ -37,24 +44,36 @@ final class OriginReachabilityChecker
     /**
      * cURL error numbers mapped onto the outcomes they mean.
      *
-     * Taken from libcurl's CURLE_* constants: 6 could-not-resolve-host, 7 could-not-connect,
-     * 28 operation-timed-out, and the SSL family for handshake and certificate problems.
+     * Taken from libcurl's CURLE_* constants: 6 could-not-resolve-host, 28 operation-timed-out,
+     * and the SSL family for handshake and certificate problems the far end is responsible for.
+     *
+     * Two families are deliberately absent.
+     *
+     * 7 is CURLE_COULDNT_CONNECT, which libcurl also raises for "network is unreachable" and
+     * "no route to host". Naming all three "connection refused" would be a specific and wrong
+     * diagnosis, because refused means something answered the SYN with a RST. It falls through
+     * to the message instead, which does distinguish the refusal.
+     *
+     * 53, 54, 58, 66 and 77 are local TLS faults: a missing SSL engine, a bad client
+     * certificate, an unreadable CA bundle. In a container with no ca-certificates package
+     * every origin raises 77, and calling that a TLS failure blames the deployed origin for
+     * this machine's setup. They stay a transport failure, which is true and still an absence
+     * of evidence.
      *
      * @var array<int, string>
      */
     private const CURL_ERRNO_OUTCOMES = [
         6 => 'dns',
-        7 => 'refused',
         28 => 'timeout',
         35 => 'tls',
         51 => 'tls',
-        53 => 'tls',
-        54 => 'tls',
-        58 => 'tls',
+        53 => 'local',
+        54 => 'local',
+        58 => 'local',
         59 => 'tls',
         60 => 'tls',
-        66 => 'tls',
-        77 => 'tls',
+        66 => 'local',
+        77 => 'local',
         83 => 'tls',
         91 => 'tls',
     ];
@@ -102,7 +121,9 @@ final class OriginReachabilityChecker
      */
     public function check(string $basePath, ?string $appUrl, ?string $assetUrl, ?string $environment = null): OriginReachabilityReport
     {
-        return $this->probe($this->resolver->resolve($basePath, $appUrl, $assetUrl), $environment);
+        $resolved = $this->resolver->resolve($basePath, $appUrl, $assetUrl);
+
+        return $this->probe($resolved['origins'], $environment, $resolved['unusable']);
     }
 
     private function stringConfig(Repository $config, string $key): ?string
@@ -121,8 +142,9 @@ final class OriginReachabilityChecker
      *
      * @param  array<int, DeclaredOrigin>  $origins
      * @param  string|null  $environment  the application environment (APP_ENV), when known
+     * @param  array<int, string>  $unusable  declarations that named no usable origin
      */
-    public function probe(array $origins, ?string $environment = null): OriginReachabilityReport
+    public function probe(array $origins, ?string $environment = null, array $unusable = []): OriginReachabilityReport
     {
         $probes = [];
 
@@ -130,7 +152,7 @@ final class OriginReachabilityChecker
             $probes[] = $this->probeOrigin($origin);
         }
 
-        return new OriginReachabilityReport($probes, $environment);
+        return new OriginReachabilityReport($probes, $environment, $unusable);
     }
 
     /**
@@ -160,9 +182,14 @@ final class OriginReachabilityChecker
         $cached = $this->probed[$origin->origin] ?? null;
 
         if ($cached !== null) {
-            return $cached->declaredOrigin->sources === $origin->sources
+            // Union, not replacement: an origin named by app.url and later by app.asset_url
+            // is misconfigured in both places, and a report that credits only the second
+            // sends the user to fix one of the two keys that need it.
+            $merged = $cached->declaredOrigin->mergeSources($origin);
+
+            return $merged->sources === $cached->declaredOrigin->sources
                 ? $cached
-                : $cached->withDeclaredOrigin($origin);
+                : $cached->withDeclaredOrigin($merged);
         }
 
         return $this->probed[$origin->origin] = $this->sendProbe($origin);
@@ -179,6 +206,7 @@ final class OriginReachabilityChecker
             'timeout' => $this->timeout,
             'connect_timeout' => $this->connectTimeout,
             'verify' => true,
+            'stream' => true,
             'headers' => ['Accept' => '*/*'],
         ];
 
@@ -188,8 +216,12 @@ final class OriginReachabilityChecker
             return new OriginProbeResult(
                 declaredOrigin: $origin,
                 probedUrl: $url,
+                // Classified from the raw message and stored sanitised. SanitizesErrorMessages
+                // draws that line itself: redaction rewrites the substrings classification
+                // depends on, so the matching reads the original and only the copy that
+                // reaches a result message, an issue or the uploaded report is bounded.
                 outcome: $this->classifyFailure($exception),
-                failureMessage: $exception->getMessage(),
+                failureMessage: $this->sanitizedErrorMessage($exception->getMessage()),
                 loopback: $this->isLoopback($origin->host()),
             );
         }
@@ -287,7 +319,7 @@ final class OriginReachabilityChecker
             return $this->outcomeForKind(self::CURL_ERRNO_OUTCOMES[$errno]);
         }
 
-        $message = strtolower($message);
+        $message = strtolower($this->withoutProbedUrl($message));
 
         return match (true) {
             $this->messageMentions($message, ['could not resolve host', "couldn't resolve host", 'name or service not known', 'nodename nor servname', 'getaddrinfo', 'no such host']) => OriginOutcome::DnsFailure,
@@ -298,12 +330,27 @@ final class OriginReachabilityChecker
         };
     }
 
+    /**
+     * Drop the " for <url>" Guzzle appends to a transport error.
+     *
+     * The URL always carries the host that was probed, so leaving it in means the needles
+     * below are matched against the origin's own name: https://ssl.cdn.example.com would be
+     * called a TLS failure on the strength of its hostname. Only what the handler said about
+     * the failure should decide what the failure is called.
+     */
+    private function withoutProbedUrl(string $message): string
+    {
+        $stripped = preg_replace('/\s+for\s+https?:\/\/\S*\s*$/i', '', $message);
+
+        return $stripped ?? $message;
+    }
+
     private function outcomeForKind(string $kind): OriginOutcome
     {
         return match ($kind) {
             'dns' => OriginOutcome::DnsFailure,
-            'refused' => OriginOutcome::ConnectionRefused,
             'timeout' => OriginOutcome::Timeout,
+            'local' => OriginOutcome::TransportFailure,
             default => OriginOutcome::TlsFailure,
         };
     }

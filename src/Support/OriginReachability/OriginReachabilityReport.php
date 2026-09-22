@@ -22,11 +22,24 @@ final class OriginReachabilityReport
     /**
      * @param  array<int, OriginProbeResult>  $probes
      * @param  string|null  $environment  the application environment, when known (APP_ENV)
+     * @param  array<int, string>  $unusableDeclarations  names of declarations that carried a
+     *                                                    value naming no usable http(s) origin
      */
     public function __construct(
         private readonly array $probes,
         private readonly ?string $environment = null,
+        private readonly array $unusableDeclarations = [],
     ) {}
+
+    /**
+     * Declarations that were present but named no origin that could be probed.
+     *
+     * @return array<int, string>
+     */
+    public function unusableDeclarations(): array
+    {
+        return $this->unusableDeclarations;
+    }
 
     /**
      * @return array<int, OriginProbeResult>
@@ -104,7 +117,7 @@ final class OriginReachabilityReport
 
     /**
      * Passed only when every declared origin answered and none of them was a loopback
-     * address in production. Otherwise a Warning — never a pass built on silence.
+     * address in production. Otherwise a Warning, never a pass built on silence.
      */
     public function status(): Status
     {
@@ -120,11 +133,21 @@ final class OriginReachabilityReport
      */
     public function findings(): array
     {
-        if ($this->probes === []) {
+        if ($this->probes === [] && $this->unusableDeclarations === []) {
             return ['The application declares no origin it is served from, so no evidence was obtained about how it answers over HTTP.'];
         }
 
         $findings = [];
+
+        // Reported before the probes: a declaration that could not be parsed is the reason
+        // an origin is missing from the list below, and saying "nothing was declared" when
+        // something was declared and is broken points the user away from the fault.
+        foreach ($this->unusableDeclarations as $source) {
+            $findings[] = sprintf(
+                '%s is set to a value that is not a usable http or https origin, so it could not be probed and no evidence was obtained about it.',
+                $source
+            );
+        }
 
         foreach ($this->withoutEvidence() as $probe) {
             $reason = $probe->failureMessage === null
@@ -132,7 +155,7 @@ final class OriginReachabilityReport
                 : "{$probe->outcome->label()}: {$probe->failureMessage}";
 
             $findings[] = sprintf(
-                '%s (declared by %s) could not be reached — %s. No evidence was obtained about this origin.',
+                '%s (declared by %s) could not be reached: %s. No evidence was obtained about this origin.',
                 $probe->origin(),
                 $probe->declaredOrigin->describeSources(),
                 $reason
@@ -140,8 +163,13 @@ final class OriginReachabilityReport
         }
 
         foreach ($this->loopbackInProduction() as $probe) {
+            // Two different sentences because only one of them is true at a time. The probe
+            // may have failed, and claiming "whatever answered is this machine" about a
+            // connection that was refused is the report asserting a response it never got.
             $findings[] = sprintf(
-                '%s (declared by %s) is a loopback address while the environment is %s. Whatever answered is this machine, not the deployed origin, so it is not evidence about production.',
+                $probe->hasEvidence()
+                    ? '%s (declared by %s) is a loopback address while the environment is %s. Whatever answered is this machine, not the deployed origin, so it is not evidence about production.'
+                    : '%s (declared by %s) is a loopback address while the environment is %s. It names the machine running the analysis, so probing it could not have produced evidence about the deployed origin either way.',
                 $probe->origin(),
                 $probe->declaredOrigin->describeSources(),
                 (string) $this->environment
@@ -157,18 +185,24 @@ final class OriginReachabilityReport
     public function message(): string
     {
         if ($this->probes === []) {
-            return 'No declared origin to probe; no evidence obtained.';
+            return $this->unusableDeclarations === []
+                ? 'No declared origin to probe; no evidence obtained.'
+                : 'No declared origin could be probed; no evidence obtained.';
         }
 
         $reached = count($this->withEvidence());
         $total = count($this->probes);
 
-        return sprintf(
+        $summary = sprintf(
             'Probed %d declared %s; %d answered.',
             $total,
             $total === 1 ? 'origin' : 'origins',
             $reached
         );
+
+        return $this->unusableDeclarations === []
+            ? $summary
+            : $summary.sprintf(' %d further %s unusable.', count($this->unusableDeclarations), count($this->unusableDeclarations) === 1 ? 'declaration is' : 'declarations are');
     }
 
     /**

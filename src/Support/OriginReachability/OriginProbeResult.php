@@ -39,11 +39,13 @@ final class OriginProbeResult
     }
 
     /**
-     * The same captured evidence, attributed to a declaration carrying more sources.
+     * The same captured evidence, re-attributed to a declaration carrying more sources.
      *
      * Used when a later caller names the same origin through a different config value: the
      * origin is not probed again, but the report should still say every declaration it
-     * came from.
+     * came from. The caller is responsible for passing a declaration whose sources are the
+     * union of both, which is what OriginReachabilityChecker::probeOrigin() builds with
+     * DeclaredOrigin::mergeSources(); this method copies what it is handed.
      */
     public function withDeclaredOrigin(DeclaredOrigin $declaredOrigin): self
     {
@@ -109,15 +111,15 @@ final class OriginProbeResult
         if (! $this->hasEvidence()) {
             $reason = $this->failureMessage === null ? '' : ": {$this->failureMessage}";
 
-            return "{$this->probedUrl} — {$this->outcome->label()}{$reason}";
+            return "{$this->probedUrl}: {$this->outcome->label()}{$reason}";
         }
 
         $status = $this->statusCode === null ? '' : " HTTP {$this->statusCode}";
 
         if ($this->outcome === OriginOutcome::RedirectedOffHost && $this->redirectLocation !== null) {
-            return "{$this->probedUrl} — {$this->outcome->label()}{$status} to {$this->redirectLocation}";
+            return "{$this->probedUrl}: {$this->outcome->label()}{$status} to {$this->redirectLocation}";
         }
 
-        return "{$this->probedUrl} — {$this->outcome->label()}{$status}";
+        return "{$this->probedUrl}: {$this->outcome->label()}{$status}";
     }
 }

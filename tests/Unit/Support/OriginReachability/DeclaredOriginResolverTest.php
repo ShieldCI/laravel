@@ -35,13 +35,23 @@ class DeclaredOriginResolverTest extends AnalyzerTestCase
         return array_map(static fn (DeclaredOrigin $origin): string => $origin->origin, $origins);
     }
 
+    /**
+     * The origins half of a resolve(), which is what most of these tests assert over.
+     *
+     * @return array<int, DeclaredOrigin>
+     */
+    private function originsFor(string $basePath, ?string $appUrl, ?string $assetUrl): array
+    {
+        return $this->resolver()->resolve($basePath, $appUrl, $assetUrl)['origins'];
+    }
+
     /** @test */
     #[Test]
     public function it_resolves_the_app_url_down_to_its_origin(): void
     {
         $basePath = $this->createTempDirectory(['composer.json' => '{}']);
 
-        $origins = $this->resolver()->resolve($basePath, 'https://example.com/app/', null);
+        $origins = $this->originsFor($basePath, 'https://example.com/app/', null);
 
         $this->assertCount(1, $origins);
         $this->assertSame('https://example.com', $origins[0]->origin);
@@ -54,7 +64,7 @@ class DeclaredOriginResolverTest extends AnalyzerTestCase
     {
         $basePath = $this->createTempDirectory(['composer.json' => '{}']);
 
-        $origins = $this->resolver()->resolve($basePath, 'https://example.com', 'https://example.com:443/assets');
+        $origins = $this->originsFor($basePath, 'https://example.com', 'https://example.com:443/assets');
 
         $this->assertCount(1, $origins);
         $this->assertSame('https://example.com', $origins[0]->origin);
@@ -70,7 +80,7 @@ class DeclaredOriginResolverTest extends AnalyzerTestCase
     {
         $basePath = $this->createTempDirectory(['composer.json' => '{}']);
 
-        $origins = $this->resolver()->resolve($basePath, 'http://localhost:8000', null);
+        $origins = $this->originsFor($basePath, 'http://localhost:8000', null);
 
         $this->assertSame(['http://localhost:8000'], $this->originStrings($origins));
     }
@@ -81,7 +91,7 @@ class DeclaredOriginResolverTest extends AnalyzerTestCase
     {
         $basePath = $this->createTempDirectory(['composer.json' => '{}']);
 
-        $origins = $this->resolver()->resolve($basePath, 'https://example.com', 'https://cdn.example.net');
+        $origins = $this->originsFor($basePath, 'https://example.com', 'https://cdn.example.net');
 
         $this->assertSame(['https://example.com', 'https://cdn.example.net'], $this->originStrings($origins));
         $this->assertSame([DeclaredOrigin::SOURCE_ASSET_URL], $origins[1]->sources);
@@ -104,7 +114,7 @@ class DeclaredOriginResolverTest extends AnalyzerTestCase
             'public/build/manifest.json' => $manifest,
         ]);
 
-        $origins = $this->resolver()->resolve($basePath, 'https://example.com', null);
+        $origins = $this->originsFor($basePath, 'https://example.com', null);
 
         $this->assertSame(['https://example.com', 'https://cdn.example.net'], $this->originStrings($origins));
         $this->assertSame([DeclaredOrigin::SOURCE_VITE_MANIFEST], $origins[1]->sources);
@@ -123,7 +133,7 @@ class DeclaredOriginResolverTest extends AnalyzerTestCase
             'public/mix-manifest.json' => $manifest,
         ]);
 
-        $origins = $this->resolver()->resolve($basePath, 'https://example.com', null);
+        $origins = $this->originsFor($basePath, 'https://example.com', null);
 
         $this->assertSame(['https://example.com', 'https://cdn.example.net'], $this->originStrings($origins));
         $this->assertSame([DeclaredOrigin::SOURCE_MIX_MANIFEST], $origins[1]->sources);
@@ -142,7 +152,7 @@ class DeclaredOriginResolverTest extends AnalyzerTestCase
             'public/build/manifest.json' => $manifest,
         ]);
 
-        $origins = $this->resolver()->resolve($basePath, 'https://example.com', null);
+        $origins = $this->originsFor($basePath, 'https://example.com', null);
 
         $this->assertSame(['https://example.com'], $this->originStrings($origins));
     }
@@ -167,7 +177,7 @@ class DeclaredOriginResolverTest extends AnalyzerTestCase
             'public/manifest.json' => $manifest,
         ]);
 
-        $origins = $this->resolver()->resolve($basePath, 'https://example.com', null);
+        $origins = $this->originsFor($basePath, 'https://example.com', null);
 
         $this->assertSame(['https://example.com'], $this->originStrings($origins));
     }
@@ -181,7 +191,7 @@ class DeclaredOriginResolverTest extends AnalyzerTestCase
             'public/build/manifest.json' => '{ this is not json',
         ]);
 
-        $origins = $this->resolver()->resolve($basePath, 'https://example.com', null);
+        $origins = $this->originsFor($basePath, 'https://example.com', null);
 
         $this->assertSame(['https://example.com'], $this->originStrings($origins));
     }
@@ -192,28 +202,30 @@ class DeclaredOriginResolverTest extends AnalyzerTestCase
     {
         $basePath = $this->createTempDirectory(['composer.json' => '{}']);
 
-        $this->assertSame([], $this->originStrings($this->resolver()->resolve($basePath, '', null)));
-        $this->assertSame([], $this->originStrings($this->resolver()->resolve($basePath, 'not a url', null)));
-        $this->assertSame([], $this->originStrings($this->resolver()->resolve($basePath, '/relative/path', null)));
-        $this->assertSame([], $this->originStrings($this->resolver()->resolve($basePath, 'ftp://example.com', null)));
+        $this->assertSame([], $this->originStrings($this->originsFor($basePath, '', null)));
+        $this->assertSame([], $this->originStrings($this->originsFor($basePath, 'not a url', null)));
+        $this->assertSame([], $this->originStrings($this->originsFor($basePath, '/relative/path', null)));
+        $this->assertSame([], $this->originStrings($this->originsFor($basePath, 'ftp://example.com', null)));
     }
 
     /**
-     * A URL malformed enough that parse_url() refuses it outright — a non-numeric port is
+     * A URL malformed enough that parse_url() refuses it outright, where a non-numeric port is
      * the everyday way to get there, usually an unsubstituted placeholder in an env file.
-     * It declares no origin, so nothing is probed for it.
+     * It declares no origin that can be probed, and it is reported as such rather than
+     * discarded: a broken APP_URL and an absent one are different faults.
      */
     /** @test */
     #[Test]
-    public function it_ignores_a_declaration_that_cannot_be_parsed_at_all(): void
+    public function it_reports_a_declaration_that_cannot_be_parsed_at_all(): void
     {
         $basePath = $this->createTempDirectory(['composer.json' => '{}']);
 
         $this->assertFalse(parse_url('http://example.com:port'), 'fixture must be unparseable for this test to mean anything');
 
-        $origins = $this->resolver()->resolve($basePath, 'http://example.com:port', 'https://');
+        $resolved = $this->resolver()->resolve($basePath, 'http://example.com:port', 'https://');
 
-        $this->assertSame([], $this->originStrings($origins));
+        $this->assertSame([], $this->originStrings($resolved['origins']));
+        $this->assertSame([DeclaredOrigin::SOURCE_APP_URL, DeclaredOrigin::SOURCE_ASSET_URL], $resolved['unusable']);
     }
 
     /**
@@ -226,6 +238,79 @@ class DeclaredOriginResolverTest extends AnalyzerTestCase
     {
         $basePath = $this->createTempDirectory(['composer.json' => '{}']);
 
-        $this->assertSame([], $this->resolver()->resolve($basePath, null, null));
+        $resolved = $this->resolver()->resolve($basePath, null, null);
+
+        $this->assertSame([], $resolved['origins']);
+        $this->assertSame([], $resolved['unusable']);
+    }
+
+    /**
+     * An empty string is an absent declaration, not a broken one. Treating it as unusable
+     * would report a fault at every application that simply leaves ASSET_URL unset.
+     */
+    /** @test */
+    #[Test]
+    public function it_does_not_call_an_empty_declaration_unusable(): void
+    {
+        $basePath = $this->createTempDirectory(['composer.json' => '{}']);
+
+        $this->assertSame([], $this->resolver()->resolve($basePath, '', '   ')['unusable']);
+    }
+
+    /**
+     * A relative manifest entry is how a manifest normally looks, not a misconfiguration,
+     * so it must not be reported alongside a genuinely broken APP_URL.
+     */
+    /** @test */
+    #[Test]
+    public function it_does_not_call_a_relative_manifest_entry_unusable(): void
+    {
+        $manifest = json_encode([
+            'resources/js/app.js' => ['file' => 'assets/app-abc123.js'],
+        ]);
+
+        $basePath = $this->createTempDirectory([
+            'composer.json' => '{}',
+            'public/build/manifest.json' => $manifest,
+        ]);
+
+        $resolved = $this->resolver()->resolve($basePath, 'https://example.com', null);
+
+        $this->assertSame(['https://example.com'], $this->originStrings($resolved['origins']));
+        $this->assertSame([], $resolved['unusable']);
+    }
+
+    /**
+     * A protocol-relative asset base names a host, so it names an origin. Dropping it would
+     * leave a CDN the application is genuinely served from unprobed while the report still
+     * read Passed, which is the silence-reads-as-success outcome this helper exists to stop.
+     */
+    /** @test */
+    #[Test]
+    public function it_inherits_the_app_url_scheme_for_a_protocol_relative_asset_base(): void
+    {
+        $manifest = json_encode([
+            'resources/js/app.js' => ['file' => '//cdn.example.net/build/app-abc123.js'],
+        ]);
+
+        $basePath = $this->createTempDirectory([
+            'composer.json' => '{}',
+            'public/build/manifest.json' => $manifest,
+        ]);
+
+        $origins = $this->originsFor($basePath, 'http://example.com', null);
+
+        $this->assertSame(['http://example.com', 'http://cdn.example.net'], $this->originStrings($origins));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_falls_back_to_https_for_a_protocol_relative_declaration_when_no_scheme_is_known(): void
+    {
+        $basePath = $this->createTempDirectory(['composer.json' => '{}']);
+
+        $origins = $this->originsFor($basePath, null, '//cdn.example.net/assets');
+
+        $this->assertSame(['https://cdn.example.net'], $this->originStrings($origins));
     }
 }

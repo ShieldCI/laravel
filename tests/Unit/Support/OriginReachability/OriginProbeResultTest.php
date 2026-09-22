@@ -190,4 +190,64 @@ class OriginProbeResultTest extends TestCase
         $this->assertSame('Probed 2 declared origins; 1 answered.', $two->message());
         $this->assertNull($two->probeFor('https://nowhere.test'));
     }
+
+    /**
+     * The summary has to account for a declaration that never became a probe, or the count
+     * it reports silently omits the part of the configuration that is broken.
+     */
+    /** @test */
+    #[Test]
+    public function a_report_counts_declarations_that_could_not_be_probed(): void
+    {
+        $noneResolved = new OriginReachabilityReport([], null, [DeclaredOrigin::SOURCE_APP_URL]);
+
+        $this->assertSame('No declared origin could be probed; no evidence obtained.', $noneResolved->message());
+        $this->assertSame([DeclaredOrigin::SOURCE_APP_URL], $noneResolved->unusableDeclarations());
+
+        $oneOfEach = new OriginReachabilityReport(
+            [$this->connected('https://example.com', 200)],
+            null,
+            [DeclaredOrigin::SOURCE_ASSET_URL]
+        );
+
+        $this->assertSame(
+            'Probed 1 declared origin; 1 answered. 1 further declaration is unusable.',
+            $oneOfEach->message()
+        );
+
+        $several = new OriginReachabilityReport(
+            [$this->connected('https://example.com', 200)],
+            null,
+            [DeclaredOrigin::SOURCE_APP_URL, DeclaredOrigin::SOURCE_ASSET_URL]
+        );
+
+        $this->assertSame(
+            'Probed 1 declared origin; 1 answered. 2 further declarations are unusable.',
+            $several->message()
+        );
+    }
+
+    /**
+     * An origin that answered alongside a declaration that could not be parsed is still not
+     * a pass: the broken declaration is its own finding, and the status follows the findings.
+     */
+    /** @test */
+    #[Test]
+    public function a_reachable_origin_does_not_excuse_a_broken_declaration(): void
+    {
+        $report = new OriginReachabilityReport(
+            [$this->connected('https://example.com', 200)],
+            null,
+            [DeclaredOrigin::SOURCE_ASSET_URL]
+        );
+
+        $findings = $report->findings();
+
+        $this->assertCount(1, $findings);
+        $this->assertSame(
+            'app.asset_url is set to a value that is not a usable http or https origin, so it could not be probed and no evidence was obtained about it.',
+            $findings[0]
+        );
+        $this->assertSame(Status::Warning, $report->status());
+    }
 }

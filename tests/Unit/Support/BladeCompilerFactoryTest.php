@@ -281,7 +281,43 @@ class BladeCompilerFactoryTest extends TestCase
             'block opened and closed on one line' => ["<div>\n@php \$x = 1; @endphp\n{{ \$x }}\n</div>\n", false],
             // A longer name is a different directive, so the word boundary must hold.
             'a directive whose name merely starts with php' => ["<div>\n@phpunit\n{{ \$x }}\n</div>\n", false],
+            // Text that merely reads @php is not a directive. Each of these carries a @foreach
+            // whose expression spans lines, because that is what a latched marker destroys:
+            // Blade re-flows the header onto one line and the comment swallows its closing
+            // parenthesis. A single-line tail would parse either way and prove nothing.
+            'an escaped directive' => ["<div>\n<p>@@php</p>\n@foreach (\n    \$users as \$user\n)\n{{ \$user }}\n@endforeach\n</div>\n", false],
+            'a mention in prose' => ["<div>\n<p>Use @php blocks here</p>\n@foreach (\n    \$users as \$user\n)\n{{ \$user }}\n@endforeach\n</div>\n", false],
+            'a mention in an html comment' => ["<div>\n<!-- @php -->\n@foreach (\n    \$users as \$user\n)\n{{ \$user }}\n@endforeach\n</div>\n", false],
         ];
+    }
+
+    /**
+     * Reading a mention of @php as a block opening stopped the continuation tracking, so a
+     * marker landed inside a @foreach header Blade had re-flowed onto one line and commented
+     * out its closing parenthesis. parseCode() then returned [] and both Blade analyzers
+     * skipped the whole template without saying so.
+     *
+     * The annotation is not redundant with the attribute: composer allows phpunit ^9
+     * through ^13, and the CI matrix resolves 9 on Laravel 9, which reads only the
+     * annotation, while 12 dropped annotations and reads only the attribute.
+     *
+     * @dataProvider phpDirectiveFormProvider
+     */
+    #[DataProvider('phpDirectiveFormProvider')]
+    public function test_every_php_directive_form_leaves_the_compiled_php_parseable(string $blade, bool $opensBlock): void
+    {
+        // $opensBlock belongs to the sibling test above; the provider is shared, and PHPUnit
+        // warns on a data set with more arguments than the method takes.
+        unset($opensBlock);
+
+        $result = BladeCompilerFactory::compile($blade);
+
+        $this->assertNotNull($result);
+
+        $this->assertNotEmpty(
+            (new AstParser)->parseCode($result['compiledPhp']),
+            'Compiled PHP did not parse, so every AST-based analyzer would skip this template.'
+        );
     }
 
     /**

@@ -20,44 +20,30 @@ use SplFileInfo;
  * having checked it and found nothing. This scanner is the only place that difference is
  * recorded, so a report can state which files were never examined.
  */
-class SourceParseabilityScanner
+final class SourceParseabilityScanner
 {
-    /**
-     * Directories whose PHP files the suite reads.
-     *
-     * @var list<string>
-     */
-    private const SOURCE_DIRECTORIES = ['app', 'config', 'routes', 'database', 'bootstrap'];
-
-    /**
-     * Where the Blade templates that get compiled live.
-     */
-    private const VIEW_DIRECTORY = 'resources/views';
-
     private const BLADE_SUFFIX = '.blade.php';
 
-    /**
-     * Relative path prefixes holding generated code rather than application source.
-     *
-     * @var list<string>
-     */
-    private const SKIPPED_PREFIXES = ['bootstrap/cache/'];
-
-    /**
-     * Directory names that are never application source, wherever they appear.
-     *
-     * @var list<string>
-     */
-    private const SKIPPED_SEGMENTS = ['vendor', 'node_modules'];
+    private const PHP_SUFFIX = '.php';
 
     private readonly Parser $parser;
 
     /**
+     * The reading set comes in rather than being restated here.
+     *
+     * What the suite reads is paths.analyze filtered by excluded_paths, which the service
+     * provider already resolves into a PathFilter and AnalyzerManager already pushes into
+     * every file analyzer. A second copy of those two lists would make this class claim
+     * files no analyzer was pointed at, and stay silent about paths an application added
+     * -- which is the silence it exists to remove.
+     *
      * The parser is injectable so a caller can share one, and so tests can pin a parser
-     * older than the runtime — the arrangement that produces an UnsupportedSyntax result.
+     * older than the runtime, the arrangement that produces an UnsupportedSyntax result.
      */
-    public function __construct(?Parser $parser = null)
-    {
+    public function __construct(
+        private readonly PathFilter $paths,
+        ?Parser $parser = null,
+    ) {
         $this->parser = $parser ?? (new ParserFactory)->createForNewestSupportedVersion();
     }
 
@@ -91,19 +77,17 @@ class SourceParseabilityScanner
         $basePath = $this->normaliseBasePath($basePath);
         $files = [];
 
-        foreach (self::SOURCE_DIRECTORIES as $directory) {
-            foreach ($this->filesIn($basePath, $directory, '.php') as $file) {
+        foreach ($this->paths->getAnalyzePaths() as $path) {
+            foreach ($this->filesIn($basePath, trim($path, '/')) as $file) {
                 $files[] = $file;
             }
         }
 
-        foreach ($this->filesIn($basePath, self::VIEW_DIRECTORY, self::BLADE_SUFFIX) as $file) {
-            $files[] = $file;
-        }
-
         sort($files);
 
-        return $files;
+        // Configured paths may nest ('app' and 'app/Models'), which would otherwise
+        // report the same file twice.
+        return array_values(array_unique($files));
     }
 
     /**
@@ -133,11 +117,13 @@ class SourceParseabilityScanner
             $compiled = BladeCompilerFactory::compile($source);
 
             if ($compiled === null) {
+                // No PHP was produced, so nothing was parsed: this is not evidence that
+                // the author's code is broken, the same reasoning as Unreadable.
                 return new UnparseableFile(
                     path: $relativePath,
                     line: 1,
                     parserMessage: 'Blade template could not be compiled to PHP',
-                    cause: ParseFailureCause::SyntaxError,
+                    cause: ParseFailureCause::Uncompilable,
                 );
             }
 
@@ -168,14 +154,15 @@ class SourceParseabilityScanner
      *
      * The running PHP is the second opinion. token_get_all() with TOKEN_PARSE runs the real
      * compiler front end and throws on invalid syntax, so code it accepts while the pinned
-     * parser rejects it is, by elimination, valid syntax the parser does not implement —
+     * parser rejects it is, by elimination, valid syntax the parser does not implement,
      * which is what a PHP runtime newer than the pinned parser looks like.
      */
     private function classify(string $code): ParseFailureCause
     {
         try {
-            // A non-empty token list means the runtime read the whole file; TOKEN_PARSE
-            // makes it throw rather than warn on anything it cannot read.
+            // Only the throw matters here, not the tokens. The result is still compared
+            // rather than discarded because PHPStan's function.resultUnused rejects a
+            // bare call, and a suppression would be worse than a comparison.
             $acceptedByRuntime = token_get_all($code, TOKEN_PARSE) !== [];
         } catch (\CompileError) {
             $acceptedByRuntime = false;
@@ -187,41 +174,46 @@ class SourceParseabilityScanner
     }
 
     /**
-     * Relative paths of every file under $directory whose name ends in $suffix.
+     * Relative paths of every PHP file the suite would read under $path.
      *
      * @return list<string>
      */
-    private function filesIn(string $basePath, string $directory, string $suffix): array
+    private function filesIn(string $basePath, string $path): array
     {
-        $absoluteDirectory = $basePath.DIRECTORY_SEPARATOR
-            .str_replace('/', DIRECTORY_SEPARATOR, $directory);
+        $absolutePath = $basePath.DIRECTORY_SEPARATOR
+            .str_replace('/', DIRECTORY_SEPARATOR, $path);
 
-        if (! is_dir($absoluteDirectory)) {
+        // A configured path may name one file rather than a directory, which is what
+        // the suite's own walk does with it.
+        if (is_file($absolutePath)) {
+            return str_ends_with($path, self::PHP_SUFFIX) && $this->paths->shouldAnalyze($path)
+                ? [$path]
+                : [];
+        }
+
+        if (! is_dir($absolutePath)) {
             return [];
         }
 
         $files = [];
 
         $iterator = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($absoluteDirectory, RecursiveDirectoryIterator::SKIP_DOTS),
-            RecursiveIteratorIterator::LEAVES_ONLY
+            new RecursiveDirectoryIterator($absolutePath, RecursiveDirectoryIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::LEAVES_ONLY,
+            // Without this a directory the process cannot read throws out of the walk and
+            // costs us every finding, including the ones already collected.
+            RecursiveIteratorIterator::CATCH_GET_CHILD
         );
 
         /** @var SplFileInfo $file */
         foreach ($iterator as $file) {
-            if (! $file->isFile() || ! str_ends_with($file->getFilename(), $suffix)) {
+            if (! $file->isFile() || ! str_ends_with($file->getFilename(), self::PHP_SUFFIX)) {
                 continue;
             }
 
-            // The iterator is rooted at $absoluteDirectory, so every pathname it yields
-            // starts with it: the remainder is the path below $directory.
-            $relativePath = $directory.'/'.str_replace(
-                '\\',
-                '/',
-                substr($file->getPathname(), strlen($absoluteDirectory) + 1)
-            );
+            $relativePath = $path.'/'.$this->subPathOf($file, $absolutePath);
 
-            if (! $this->isSkipped($relativePath)) {
+            if ($this->paths->shouldAnalyze($relativePath)) {
                 $files[] = $relativePath;
             }
         }
@@ -229,24 +221,21 @@ class SourceParseabilityScanner
         return $files;
     }
 
-    private function isSkipped(string $relativePath): bool
+    /**
+     * The part of $file's pathname below $root, forward-slashed.
+     *
+     * Only a real separator is rewritten. A blanket backslash-to-slash replacement would
+     * corrupt a filename that legally contains one on Linux, turning it into a path that
+     * does not exist and then reporting that path as unreadable.
+     */
+    private function subPathOf(SplFileInfo $file, string $root): string
     {
-        foreach (self::SKIPPED_PREFIXES as $prefix) {
-            if (str_starts_with($relativePath, $prefix)) {
-                return true;
-            }
-        }
+        // The iterator is rooted at $root, so every pathname it yields starts with it.
+        $subPath = substr($file->getPathname(), strlen($root) + 1);
 
-        $segments = explode('/', $relativePath);
-        array_pop($segments);
-
-        foreach ($segments as $segment) {
-            if (in_array($segment, self::SKIPPED_SEGMENTS, true)) {
-                return true;
-            }
-        }
-
-        return false;
+        return DIRECTORY_SEPARATOR === '/'
+            ? $subPath
+            : str_replace(DIRECTORY_SEPARATOR, '/', $subPath);
     }
 
     private function normaliseBasePath(string $basePath): string

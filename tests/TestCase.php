@@ -77,6 +77,39 @@ abstract class TestCase extends Orchestra
     }
 
     /**
+     * Create a temporary directory with PHP files.
+     *
+     * @param  array<string, string|false>  $files  filename => contents (false, e.g. from a failed json_encode, is written as empty)
+     */
+    protected function createTempDirectory(array $files): string
+    {
+        $tempDir = $this->makeTempDirectory();
+
+        foreach ($files as $filename => $content) {
+            $filepath = $tempDir.'/'.$filename;
+            $dirname = dirname($filepath);
+
+            // Checked for the same reason the directory itself is: an unchecked failure
+            // here emits a warning that Testbench rethrows as an ErrorException naming
+            // whichever test happened to be running, which reads as a behaviour change
+            // rather than a full disk or a bad permission.
+            if (! is_dir($dirname) && ! @mkdir($dirname, 0755, true)) {
+                throw new \RuntimeException(
+                    "Unable to create fixture directory {$dirname}: {$this->lastErrorMessage()}"
+                );
+            }
+
+            if (@file_put_contents($filepath, $content === false ? '' : $content) === false) {
+                throw new \RuntimeException(
+                    "Unable to write fixture file {$filepath}: {$this->lastErrorMessage()}"
+                );
+            }
+        }
+
+        return $tempDir;
+    }
+
+    /**
      * Get test fixture path.
      */
     protected function getFixturePath(string $path = ''): string

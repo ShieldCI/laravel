@@ -47,6 +47,15 @@ class BladeCompilerFactory
      * Why // not block comments: block comments cannot nest in PHP, so user's own
      * block comments would conflict with marker block comments.
      *
+     * Why @php(...) is not a block opening: the inline call form compiles to a self-contained
+     * <?php ... ?> and never has an @endphp to close it, so reading it as a block would latch
+     * the comment form for the rest of the file and skip the tracking below. The same test
+     * lives in LogicInBladeAnalyzer::analyzeBladeStructure(); keep the two spellings in step.
+     *
+     * Why the comment form is confined to @php blocks: Blade copies a block body verbatim, but
+     * rewrites a directive expression. It re-flows a @foreach header onto one line, where a
+     * line comment would swallow the rest of it and orphan the @endforeach.
+     *
      * Why some lines get no marker: a directive expression or an echo may span lines
      * ("@include('v', [\n 'k' => 1,\n])"). A marker on a continuation line lands inside
      * the expression, so the compiled PHP does not parse and every caller skips the
@@ -66,6 +75,7 @@ class BladeCompilerFactory
             $trimmed = trim($line);
 
             if (! $inPhpBlock && preg_match('/@php\b/', $trimmed)
+                && ! preg_match('/@php\s*\(/', $trimmed)
                 && ! str_contains($trimmed, '@endphp')) {
                 $inPhpBlock = true;
                 $marked[] = "<?php /* __BLADE_LINE_{$lineNum}__ */ ?>".$line;
